@@ -245,7 +245,12 @@ type ClawExecutor struct {
 	// Ambient context (ADR-119): what a node inherits besides its prompt. Same
 	// precedence shape: run override (CLI --ambient-context / launch API) >
 	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
-	wfAmbientContext         string
+	wfAmbientContext string
+	// Codemode (ADR-165): whether a node is handed the script host's tool.
+	// The precedence is node DSL > workflow DSL > off, and there is
+	// deliberately no environment rung — ADR-132 §1 forbids the environment
+	// as a source for what a node is configured with.
+	wfCodemode               string
 	ambientContextOverride   string
 	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
@@ -1136,6 +1141,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfAutoMemory:             wf.AutoMemory,
 		autoMemoryEnvDefault:     envGetenv(context.Background(), automemory.ModeEnv),
 		wfAmbientContext:         wf.AmbientContext,
+		wfCodemode:               wf.Codemode,
 		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,
 		wfPermAllow:              wf.PermissionAllow,

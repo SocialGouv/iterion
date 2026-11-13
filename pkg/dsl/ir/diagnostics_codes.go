@@ -492,5 +492,16 @@ const (
 
 	DiagInvalidCodemode DiagCode = "C337" // codemode: value not one of on|off (error)
 
-	DiagCodemodeNoConsumer DiagCode = "C338" // `codemode: on` declared while no build serves it — the attribute is carried and documented, and nothing reads it yet: the slice that wires the tool deletes this code's emission, not the attribute (warning)
+	// C338 was `codemode: on` declared while no build served it. It shipped
+	// in v5.32.0 as the honesty clause of the attribute-only slice, and that
+	// slice's own text promised this: the slice that registers the tool
+	// deletes the emission. It is RETIRED rather than reused — a code names
+	// one defect for as long as anyone can read it in a log, and the defect
+	// it named ceased to exist when claw's cell went to shipped. C339 is the
+	// narrowed question that replaces it, and it is an ERROR, because what it
+	// diagnoses now fails the dispatch rather than running degraded.
+	//
+	// Nothing may be allocated to "C338" again.
+
+	DiagCodemodeBackendUnsupported DiagCode = "C339" // `codemode: on` on a route whose backend serves no codemode tool — refused at dispatch (error)
 )

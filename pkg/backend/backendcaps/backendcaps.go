@@ -41,6 +41,15 @@ const (
 	AutoMemory             = "auto-memory"
 	AutoMemoryPrompt       = "auto-memory-prompt"
 
+	// Codemode is "does a node on this backend get the codemode tool"
+	// (ADR-165): the one extra tool whose input is a program, run in a
+	// confined child that holds no credential and can only call the node's
+	// own tools. It is a property of the GENERATION LOOP and not of a
+	// model — the loop is what owns the tool dispatcher a program's calls go
+	// back through — so a CLI-agent backend refuses it however capable the
+	// model behind it is.
+	Codemode = "codemode"
+
 	// ImagePresence is CLI reachability in the images iterion publishes: does
 	// a published image put this backend's executable on PATH? It is derived
 	// from the image manifests, not from prose — see

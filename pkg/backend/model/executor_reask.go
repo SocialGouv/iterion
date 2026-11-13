@@ -82,6 +82,11 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 			retryTask.HasTools = false
 			retryTask.ToolDefs = nil
 			retryTask.AllowedTools = nil
+			// Codemode with it: it is a tool, and a turn that wants no tools
+			// wants no program composing them either. Left set, the backend
+			// installs it and the node's own HasTools reset is the only thing
+			// keeping it off the wire — a coincidence, not a decision.
+			retryTask.Codemode = false
 			retryTask.ToolMaxSteps = 0
 			retryTask.Sandbox = nil
 			return schemaReask{task: retryTask, mode: ReaskContinueConversation}

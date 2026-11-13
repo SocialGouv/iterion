@@ -96,7 +96,21 @@ func newScriptToolServer(ctx context.Context, withheld string) (*scriptToolServe
 	// will actually serve. Derived from the same predicate that refuses —
 	// not a second list — so the two cannot drift: a tool added to the
 	// withheld class disappears from discovery in the same edit.
-	s.ctx = tool.WithExecutableToolFilter(ctx, func(name string) bool {
+	// withAsksDenied is the OTHER half of the rule, and round 5 shipped only
+	// the first. Withholding the ask TOOLS stops a program from asking on
+	// purpose; it does nothing about the ask VERDICT, which an ordinary tool
+	// raises from inside a program when a permission rule matches it. An
+	// adversarial round drove exactly that: `call("Bash", …)` under an `ask`
+	// policy tore the program down mid-flight — with its earlier calls
+	// already committed — and paused the whole run on the codemode tool_use.
+	//
+	// The degradation is the one subagent.go states for the identical
+	// problem (#2877): the gate answers a refusal tool_result the program can
+	// catch, instead of raising ErrAskUser from a place no resume can return
+	// to. A program is the node's own turn, so there is no parent to carry
+	// the question — which is why the only honest answer is "call it
+	// directly".
+	s.ctx = tool.WithExecutableToolFilter(withAsksDenied(ctx), func(name string) bool {
 		_, withheldHere := s.withhold(name)
 		return !withheldHere
 	})
@@ -165,6 +179,19 @@ func (s *scriptToolServer) CallTool(_ context.Context, name string, input json.R
 //   - the script host's own tool, so a script cannot nest another.
 func (s *scriptToolServer) withhold(name string) (string, bool) {
 	switch {
+	// The ask channel, from the predicate subagent.go already derives from
+	// the spellings the runtime appends these under — never a fresh list.
+	// permission.IsInfrastructureTool does NOT reach it: it matches
+	// `ask_user` by name and the rest by the `mcp_iterion` namespace, while
+	// claw registers `ask_user_async` and `await_answers` as NATIVE tools,
+	// whose bare names carry no namespace. An adversarial round reached both
+	// from inside a program, which ADR-165 forbids in the plainest words it
+	// uses: a script "cannot pause the run".
+	case isRunPausingAskTool(name):
+		return fmt.Sprintf(
+			"tool %q pauses the run to ask the operator, which a script cannot do: the question has to "+
+				"reach the operator from the node's own turn, not from inside a program. Call it directly "+
+				"instead.", name), true
 	case permission.IsInfrastructureTool(name):
 		return fmt.Sprintf(
 			"tool %q is iterion's own interaction surface and is not callable from a script: "+

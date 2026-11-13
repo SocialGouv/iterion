@@ -331,8 +331,19 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// runner lands vendor crossings on a team_gateway run's gateway nodes and
 	// runs its auxiliaries on the pod's environment — failing open, on the
 	// pod. MinSchemaVersion stays 27: the fence is the maximum that rises.
-	if SchemaVersion != 30 {
-		t.Errorf("SchemaVersion = %d, want 30 (bump intentionally)", SchemaVersion)
+	// v=31 carries `codemode:` inside the compiled IR (ADR-165): dropped, a
+	// stale runner runs the node without the tool its author asked for —
+	// failing quiet, on the pod, with the run still reported successful.
+	// MinSchemaVersion stays 27 because the maximum is what rises, NOT
+	// because no old message can carry codemode: a v30 message published by
+	// a v5.32.x server can, that release having compiled the attribute with
+	// only a warning. Such a message is inside the accept window, so the
+	// fence never sees it — an upgraded runner recompiles it, C339 refuses,
+	// and the run parks on the DLQ. The migration sentence on ADR-165 is
+	// what answers that, and this comment said the opposite until an
+	// adversarial round read both files.
+	if SchemaVersion != 31 {
+		t.Errorf("SchemaVersion = %d, want 31 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
@@ -340,7 +351,7 @@ func TestSchemaVersionConstant(t *testing.T) {
 }
 
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
-// At v30 the window is [27, 30]: a v27 message lacks the wire-carried
+// At v31 the window is [27, 31]: a v27 message lacks the wire-carried
 // BotSourceTier (#1959) but its publisher already stamped the run document,
 // so the floor re-reads it from there; a v27, v28 or v29 message carrying no
 // content boundary is the unstamped reading (one replaying team_gateway parks:

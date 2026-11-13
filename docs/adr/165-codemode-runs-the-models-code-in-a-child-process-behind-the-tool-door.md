@@ -90,3 +90,135 @@ Four parallel readers were sent to inventory the ground CM-1 stands on, with pro
 CM-1's binding must land inside `pkg/backend/model`, or widen the walk of `toolFunnelCallers` in the same change: that guard reads `os.ReadDir(".")`, so a host in `cmd/iterion` is invisible to the very check that exists to refuse a second dispatch path. And the one existing IPC tool proxy — `ClawBackend.multiplexerHandler`'s `OnToolCall` — ends at `td.Execute` with the gate re-applied by hand and never constructs a dispatcher, so the nearest working example is the anti-pattern. Since the dispatcher is a per-node value built inside `GenerateText`, the script host's parent is the node's tool-execution site, not the backend's crossing.
 
 Seams to implement rather than write: `pkg/backend/delegate/envelope.go` (one framing, plus its fail-closed convention), `pkg/internal/proc` (binary location, process group, wait delay, work dir — and the new self-confinement verb, since `SysProcAttr` carries no rlimit field), `pkg/config/scrub_linux.go` (`PR_SET_DUMPABLE`, already written, with a witness that reads a child's `/proc/<pid>/environ`), `internal/proctest`'s `NoProcessLeaks` for the no-orphan arm, and `pkg/operatormcp/spawn.go` as the stdio-child template. No rlimit seam exists anywhere in the tree.
+
+## Amendment — 2026-11-13: the abandonment criterion CM-17 measures against
+
+The record above says the switch "defaults off until CM-17 measures it against
+a named abandonment criterion written **before** CM-5 lands". The attribute
+landed inert and self-declaring (`bfb031129`: `codemode: on|off` carried to the
+IR, a C338 warning that no build served it), which is why that slice could land
+without this. The slice that gives the switch an EFFECT cannot. Here is the
+criterion, named, before any measurement exists to be fitted to.
+
+**What is measured.** `TurnUsage.InputTokens` per node turn, read from the run
+store (`pkg/store/turn.go`) — no new instrumentation. Only turns where the
+backend reported a real split count: a turn carrying `AggregateTokens` instead
+is **excluded from both arms**.
+
+**The void condition, corrected 2026-11-13 after an adversarial round showed
+the first draft voided itself.** That draft read "if the two arms do not
+retain comparable counts of countable turns (within 10%) the measurement is
+void" — and collapsing many tool-call turns into one program turn IS
+codemode's mechanism, so the arms' absolute turn counts diverge by
+construction and the only reachable verdict was `void`. A criterion that can
+only return one answer is not a criterion. What the clause was reaching for is
+that neither arm may lose its EXPENSIVE turns to exclusion, so it is stated as
+a **retention rate**: countable turns ÷ total turns, computed per arm, and the
+measurement is void if the two rates differ by more than 10 points. The arms
+may then differ in turn COUNT as much as codemode makes them — which is the
+thing being measured — while a backend that silently stopped splitting its
+counts on one arm still voids the run.
+
+**And a rate alone is not enough, which a sixth adversarial round showed by
+constructing the cheat the clause is named for.** Two arms can hold the same
+90% retention while one drops only CHEAP turns and the other drops its single
+expensive program turn: the rate reports a 0.0-point difference and the median
+falls 98%, a win manufactured from nothing but which turns each arm lost. A
+rate is blind to WHICH turns it drops. So the second half of the clause: an
+excluded turn still carries a number — `TurnUsage.AggregateTokens` — and the
+measurement is also void if, in either arm, the median `AggregateTokens` of
+the EXCLUDED set and the median `InputTokens` of the countable set differ by
+more than 2×. In the constructed cheat that is 1,000 against 50,000. Still no
+new instrumentation: the number was already in the store and was being thrown
+away.
+
+**On what.** At least three catalogue bots whose output is contractual, and at
+least twenty runs per arm per bot, same inputs, same models. Two arms: the
+same bots with `codemode: off` and with `codemode: on`.
+
+**The threshold.** The MEDIAN input tokens per countable turn must fall by at
+least **20%** in the `on` arm. The median rather than the mean: one run that
+avoids a single enormous tool result would carry a mean on its own, and the
+thesis is about the ordinary turn, not the outlier.
+
+**At equal verdict quality.** Each bot's own contract must still hold —
+`review-pr`'s gate verdict and finding count, every other bot's declared
+output schema and deliverables. A regression in any bot's contract voids the
+win whatever the token number says. The win is not "fewer tokens"; it is
+"fewer tokens for the same work".
+
+**And if the threshold is not met: the switch is REMOVED** — the attribute,
+its two diagnostics and the tool registration — rather than shipped off by
+default. A bound nobody can justify is a maintenance cost and a bound with no
+override (philosophy 1 cuts both ways): the honest end of a measured
+experiment that failed is deletion, not a dial left at zero.
+
+## Amendment — 2026-11-13: the capability is refused, never degraded
+
+The slice that registers the tool had to answer a question the record above
+left open: what happens to a node whose author wrote `codemode: on` and whose
+backend serves no codemode tool. Three decisions, each against a plausible
+alternative.
+
+**It is a typed refusal, not a silent degradation.** Philosophy 1 says warn
+rather than reject, and the first draft of this check was a warning. It is
+wrong here, and `ambient_context` is the precedent that says why: a declared
+value the backend cannot honour is refused at dispatch
+(`ErrCapabilityUnsupported`), while an inherited DEFAULT is not. A node that
+silently ran without the capability its author asked for would keep its whole
+loop in context and bill the very cost codemode exists to avoid, with nothing
+in the run saying so — the "fallback silencieux" the conventions forbid. The
+DEFAULT is never refused, because a fleet inheriting nothing must not start
+failing the day a registry cell moves.
+
+**The refusal is TERMINAL, and an earlier draft of this amendment said
+otherwise.** It claimed a `fallbacks:` route would carry a node past an
+`ErrCapabilityUnsupported`; an adversarial round executed that and found no
+route is tried — a refused PRIMARY never enters the chain (its task is built
+outside it), and a refused FALLBACK ends the chain rather than being skipped,
+which the twin's own `TestAmbientContextRefusesAFallbackThatCannotHonourIt`
+already asserted. In this codebase the class ends a node. Being typed is what
+lets a reader tell a missing capability from a transport failure; it is not a
+recovery path. The claim is corrected here rather than quietly dropped,
+because it was one of three legs the decision stood on; the other two carry
+it — silent degradation is forbidden, and the operator keeps two escape
+hatches (`codemode: off` on the node, or a route to a backend that serves it).
+
+**What a dialled route is judged as.** The compiler resolves
+`backend: "${VAR:-name}"` to the name written in the SOURCE — deliberately, so
+one artifact compiles the same on every machine — while the dispatch expands
+the same text from the pod's environment. The two can name different backends,
+so C339's verdict says when it was read from a source default, and a
+deployment that dials a route elsewhere is judged at dispatch.
+
+**Migration, owed because C338 invited the declaration.** `codemode: on` on a
+non-claw backend COMPILED in v5.32.0 and v5.32.1: C338 warned that nothing
+served it, and its hint read "keep the declaration if you are preparing a
+bot". It is now refused. A `.bot` written in that window — and an already
+queued run carrying one — must re-route the node to a backend that serves
+codemode or declare `codemode: off`. The wire version fence does not catch
+this: such a message is inside the accept window, so an upgraded runner
+recompiles it, C339 refuses it, and the run parks on the DLQ.
+
+**The cell is the capability ceiling (law 4).** `claw` is `shipped`, every
+other backend `typed-refused`, and the discriminator is not model quality but
+structure: codemode's guarantee is that a nested call IS a direct call, which
+only a loop that owns the tool dispatcher can offer. A CLI-agent backend owns
+none. The compiler reads the same registry the engine reads
+(`ir.CodemodeServedBy`), so the two cannot disagree — a compiler that accepted
+what the engine refuses would cost an operator a green gate and a failed run.
+The bounds ceiling is unchanged: `scripthost.Ceiling`, clamped in the parent.
+
+**C338 is retired, not renarrowed.** The warning that said nothing served the
+attribute shipped one day earlier and its own text promised this slice would
+delete the emission. Its successor, C339, asks a narrower question and is an
+ERROR rather than a warning, because what it diagnoses now fails the dispatch
+instead of running degraded — C267's discriminator. A code names one defect
+for as long as anyone can read it in a log, so the number is burned rather
+than reused.
+
+**The wire version rises with it (v31).** `codemode:` adds no RunMessage
+field — it rides `IRCompiled`, which already travels — but a pre-codemode
+runner's decoder drops the key and runs the node without the tool, which is
+the additive-field rule's case: a knob the caller set, that a stale runner
+silently falls back from. `MinSchemaVersion` stays 27.

@@ -80,6 +80,13 @@ func buildBackendOverrideOptions(
 				ir.EffectiveAskRules(llm, wf),
 			)
 			if choice.UnavailableReason == "" {
+				// A declared `codemode: on` the chosen backend cannot serve.
+				// The override wins over the source, so C339 never saw this
+				// route: this screen is the only one between the operator
+				// and a dispatch that refuses.
+				choice.UnavailableReason = ir.CodemodeOverrideRefusalReason(backend, llm, wf)
+			}
+			if choice.UnavailableReason == "" {
 				choice.Warning = ir.ToolRestrictionLossReason(
 					currentBackend,
 					backend,

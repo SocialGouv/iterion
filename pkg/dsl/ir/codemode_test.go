@@ -102,113 +102,6 @@ workflow w:
 	}
 }
 
-// TestCodemodeSaysNothingServesItYet is the honesty clause's own witness: the
-// attribute exists, no build reads it, and the compiler says so on an
-// explicit `on`.
-//
-// Counted PER SURFACE, not in one bucket. The catalogue entry, `docs/dsl.md`
-// and `docs/references/diagnostics.md` all promise the warning on an agent, a
-// judge AND a workflow; a one-bucket count let a mutant that skipped judges
-// entirely (`|| kind != "agent"`) keep the whole perimeter green — measured.
-// The fourth node declares nothing, and its zero is what holds "a workflow
-// default does not warn per node" apart from the three real emissions.
-func TestCodemodeSaysNothingServesItYet(t *testing.T) {
-	r := compileFile(t, `
-agent a:
-  model: "m"
-  codemode: on
-
-judge j:
-  model: "m"
-  codemode: on
-
-agent q:
-  model: "m"
-  codemode: off
-
-agent silent:
-  model: "m"
-
-workflow w:
-  entry: a
-  codemode: on
-  a -> j
-  j -> q
-  q -> silent
-  silent -> done
-`)
-	// Keyed on the node id the diagnostic carries; the workflow's is empty.
-	seen := map[string]int{}
-	var invalid int
-	for _, d := range r.Diagnostics {
-		switch d.Code {
-		case DiagCodemodeNoConsumer:
-			seen[d.NodeID]++
-			if !strings.Contains(d.Message, "codemode: on") {
-				t.Errorf("C338 does not name what it is about: %q", d.Message)
-			}
-		case DiagInvalidCodemode:
-			invalid++
-		}
-	}
-	for _, want := range []struct {
-		surface string
-		n       int
-	}{
-		{"", 1},       // the workflow's own declaration
-		{"a", 1},      // the agent
-		{"j", 1},      // the judge — the surface a mutant could skip in silence
-		{"q", 0},      // an explicit `off` says no, and is not warned about
-		{"silent", 0}, // inheriting the workflow's `on` is not a declaration
-	} {
-		if got := seen[want.surface]; got != want.n {
-			label := want.surface
-			if label == "" {
-				label = "the workflow"
-			}
-			t.Errorf("C338 on %s: %d time(s), want %d (all: %v)", label, got, want.n, seen)
-		}
-	}
-	if invalid != 0 {
-		t.Errorf("valid values produced %d invalid-value diagnostic(s)", invalid)
-	}
-}
-
-// TestCodemodeWorkflowDefaultWarnsOnce holds the WORKFLOW arm of the honesty
-// clause, which nothing else does: a review bench found that the whole
-// `} else if norm(w.Codemode) == "on"` branch could be deleted, or lose its
-// property name, or start warning on every inheriting node, and the gate
-// stayed green. One declared line is one warning — and the warning sits on
-// the WORKFLOW, which is where the author wrote it.
-func TestCodemodeWorkflowDefaultWarnsOnce(t *testing.T) {
-	r := compileFile(t, `
-agent a:
-  model: "m"
-
-agent b:
-  model: "m"
-
-workflow w:
-  entry: a
-  codemode: on
-  a -> b
-  b -> done
-`)
-	if got := countCode(r, DiagCodemodeNoConsumer); got != 1 {
-		t.Errorf("C338 emitted %d time(s) for one workflow declaration and two inheriting nodes, want 1: %+v",
-			got, r.Diagnostics)
-	}
-	for _, d := range r.Diagnostics {
-		if d.Code != DiagCodemodeNoConsumer {
-			continue
-		}
-		if d.NodeID != "" || d.Property != "codemode" {
-			t.Errorf("the workflow warning is not positioned on the workflow's own property: node=%q property=%q",
-				d.NodeID, d.Property)
-		}
-	}
-}
-
 // TestInvalidCodemodeIsAnError pins the value contract on every surface that
 // can carry it. The workflow case is not a duplicate of the node cases: its
 // parser arm is a different shape (it peeks, so it consumes its own keyword
@@ -258,5 +151,53 @@ workflow w:
 				t.Errorf("no %s for an invalid value; got %+v", DiagInvalidCodemode, r.Diagnostics)
 			}
 		})
+	}
+}
+
+// TestTheAcceptedSpellingsAreExactlyOnOffAndInherit closes two holes an
+// adversarial round found by mutation: widening CodemodeValues with a third
+// word left the suite green — and a third word is not merely accepted, it
+// resolves to OFF, which is the silent misreading the string form exists to
+// prevent — and dropping the trim from normCodemode left the validator's own
+// documented ` on ` example unproven.
+//
+// It asserts the predicate in BOTH directions, because `Valid` alone cannot
+// see a value that is accepted and then read as something else: every
+// accepted non-empty spelling must ALSO resolve to a decided on/off.
+func TestTheAcceptedSpellingsAreExactlyOnOffAndInherit(t *testing.T) {
+	accepted := map[string]bool{
+		"":      true, // inherit
+		"on":    true,
+		"off":   true,
+		"ON":    true, // the compiler lowercases before judging
+		"Off":   true,
+		" on ":  true, // and trims: the doc comment's own example
+		"\toff": true,
+	}
+	for _, refused := range []string{"yes", "no", "true", "false", "1", "0", "enabled", "auto", "onn", "o n"} {
+		accepted[refused] = false
+	}
+	for value, want := range accepted {
+		if got := ValidCodemode(value); got != want {
+			t.Errorf("ValidCodemode(%q) = %v, want %v", value, got, want)
+		}
+		if !want {
+			continue
+		}
+		if value == "" {
+			if p := ResolveCodemode(value, ""); p.Source != CodemodeFromDefault {
+				t.Errorf("%q is the ABSENCE of a declaration and must inherit, got %+v", value, p)
+			}
+			continue
+		}
+		// An accepted spelling must be DECIDED, never silently read as off:
+		// the node's rung has to answer, and the answer has to match the word.
+		p := ResolveCodemode(value, "")
+		if p.Source != CodemodeFromNode {
+			t.Errorf("%q did not decide at the node rung: %+v", value, p)
+		}
+		if wantOn := strings.Contains(strings.ToLower(value), "on"); p.On != wantOn {
+			t.Errorf("%q resolved On=%v, want %v — an accepted spelling the resolver reads as something else is worse than a refused one", value, p.On, wantOn)
+		}
 	}
 }

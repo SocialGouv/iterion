@@ -234,7 +234,29 @@ import (
 // unchanged a new runner admits every trusted message the old server still
 // publishes (the v29 rule above still parks an untrusted message older than
 // v29), and an old runner never sees a v30 message.
-const SchemaVersion = 30
+// v=31 (2026-11-13): the compiled IR carries `codemode:` (ADR-165), the
+// attribute that hands a node the script host's tool. NO new RunMessage
+// field — the value rides IRCompiled, which already travels — and the bump is
+// owed for the reason the ADDITIVE-field bullet above gives: a pre-codemode
+// runner's IR decoder is a plain json.Unmarshal with no DisallowUnknownFields,
+// so it DROPS the key and runs the node without the tool. The author asked
+// for the composition and gets none; the model keeps its whole loop in
+// context, the bill is the one codemode exists to avoid, and nothing in the
+// run says so. That is v=5's shape (Contributions): a run that still
+// "succeeds" while doing the thing the launch was configured not to do.
+//
+// Server-first; MinSchemaVersion stays 27, because the maximum is what rises.
+// What the fence does NOT cover, written rather than implied — an adversarial
+// round refuted an earlier clause here claiming "every message below v31 is a
+// run that asked for nothing": a v30 message published by a v5.32.x server
+// CAN carry `codemode: on`, because that release COMPILED the attribute (it
+// only warned, C338, and its hint invited authors to keep the line). Such a
+// message sits inside the accept window, so an upgraded runner recompiles it,
+// C339 refuses it, and the run parks on the DLQ as ErrIRUnloadable. The
+// version fence cannot catch that and is not what answers it: the migration
+// sentence on ADR-165 is — re-route the node to claw, or declare
+// `codemode: off`.
+const SchemaVersion = 31
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its

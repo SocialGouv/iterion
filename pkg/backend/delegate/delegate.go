@@ -730,6 +730,20 @@ type Task struct {
 	// policy and applies the default as far as it can (ambient.Declared).
 	AmbientContextSource string
 
+	// Codemode says this node is handed the codemode tool (ADR-165): one
+	// extra tool whose input is a PROGRAM, run in a child process that holds
+	// no credential and whose only capability is to call this node's own
+	// tools, back through this node's own dispatcher.
+	//
+	// It is the RESOLVED decision, not an authored value: the executor walks
+	// the node/workflow precedence (ir.ResolveCodemode) and refuses, before
+	// building this task, a declared `on` the backend cannot serve
+	// (ir.CodemodeServedBy). A backend reading this field therefore never
+	// has to ask whether it may — only the one that registers the tool reads
+	// it, and the zero value is off, so a task built outside the executor
+	// gets no script host rather than an accidental one.
+	Codemode bool
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each
@@ -1105,6 +1119,22 @@ type MCPLauncherRefusal struct {
 func (t Task) Hostless() bool {
 	return t.Sandbox == nil || t.Sandbox.Driver() == "noop"
 }
+
+// NeedsToolLoop reports whether this node runs a tool loop — because it
+// declared tools, or because codemode gave it one.
+//
+// It is a PREDICATE and not a mutation of HasTools, and that distinction is
+// the whole of it: an adversarial round found the mutation crossing the
+// sandbox boundary, where a runner image older than codemode keeps the
+// `has_tools: true` it cannot explain and drops the `codemode` that justified
+// it — a node with zero tools, told to finish "after completing all tool
+// operations". Reading the question instead of rewriting the answer leaves
+// the wire exactly as it was.
+//
+// HasTools keeps its own meaning (the node DECLARED tools), which readers
+// that care about the declaration — the IPC mirror, the re-ask's reset — go
+// on reading.
+func (t Task) NeedsToolLoop() bool { return t.HasTools || t.Codemode }
 
 // StateLocation says WHO could have put something at the state root, which is
 // the only question the guards actually ask.

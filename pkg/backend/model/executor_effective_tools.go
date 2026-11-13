@@ -162,6 +162,7 @@ func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 		staticProgramOnly: true,
 		defaultBackend:    wf.DefaultBackend,
 		wfAutoMemory:      wf.AutoMemory,
+		wfCodemode:        wf.Codemode,
 		wfCapabilities:    wf.Capabilities,
 		// The image-attachment append is decided by the PROGRAM — a
 		// workflow's `attachments:` and the prompt body that references one —

@@ -14,7 +14,7 @@ of the seven backends: `claude_code`, `claw`, `codex`, `pi`, `grok`, `kimi`,
 file:line at the seed commit, or test name), and optional scope detail.
 The inventory records three different observations:
 
-- **168 implementation cells** record existing wiring, using `shipped`,
+- **175 implementation cells** record existing wiring, using `shipped`,
   `partial`, `typed-refused`, `inert`, `unwired (gap)`, `unwired (no image)`
   and explicit `unknown`. A partial capability still needs runtime checks.
 - **63 published proof cells** preserve the nine columns of
