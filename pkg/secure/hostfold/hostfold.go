@@ -1,7 +1,8 @@
 // Package hostfold folds a URL hostname to the name a dial resolves. A leaf:
-// it imports the IDN tables and nothing that dials, so the store and the
-// credential layer read one host the way the transport does without linking
-// an HTTP client.
+// it imports the IDN tables and nothing that dials, so a package that must
+// read one host the way the transport does — the store's capacity subjects,
+// the credential layer's endpoint identity — gets the fold without linking an
+// HTTP client through it.
 package hostfold
 
 import (
