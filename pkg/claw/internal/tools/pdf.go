@@ -1,0 +1,417 @@
+package tools
+
+import (
+	"bytes"
+	"compress/flate"
+	"compress/zlib"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+)
+
+// ErrBudgetExceeded is returned when the extraction blows the caller's
+// budget — a single FlateDecode stream inflating past it (a compressed
+// bomb), or the document-wide sum of streams doing the same through
+// many small ones. Neither is a corrupt stream to skip: the caller set
+// a budget, the document broke it, the extraction fails whole.
+var ErrBudgetExceeded = errors.New("pdf extraction past the caller's budget")
+
+// DefaultDecompressionBudget bounds what one FlateDecode stream may
+// inflate to when the caller has no opinion. zlib holds roughly 1000:1,
+// so a budget is the only thing standing between a small compressed
+// bomb and an allocation the host process dies of.
+const DefaultDecompressionBudget = 64 << 20
+
+// ExtractText reads a PDF file and extracts all readable text from BT/ET
+// operators across all content streams. Non-text pages or encrypted PDFs
+// yield an empty string rather than an error. maxDecompressed is the
+// INFLATION budget: any single FlateDecode stream inflating past it, or
+// the document-wide sum of inflated streams doing the same through many
+// small ones, fails with ErrBudgetExceeded instead of allocating. The
+// path form reads the whole file unbounded — size-bound it yourself or
+// use ExtractTextFromBytes.
+func ExtractText(path string, maxDecompressed int64) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read PDF: %w", err)
+	}
+	return ExtractTextFromBytes(data, maxDecompressed)
+}
+
+// ExtractTextFromBytes extracts text from raw PDF bytes. This is the core
+// extraction function, useful for testing without touching the filesystem.
+func ExtractTextFromBytes(data []byte, maxDecompressed int64) (string, error) {
+	var allText strings.Builder
+	// The budget's consumers are TWO: any single inflate (bounded inside
+	// inflate) and the document-wide sum of inflated bytes — many small
+	// streams, each under the cap, allocate the same memory one bomb
+	// would, whether or not any of it is text.
+	var inflatedTotal int64
+	offset := 0
+
+	for offset < len(data) {
+		// "stream" with a NON-ALPHANUMERIC byte before it. Bare
+		// "stream" matches inside "endstream" (a multi-stream document
+		// had every stream after the first consumed as mis-aligned
+		// garbage), and the "\nstream" form excluded spec-tolerated
+		// delimiters ("<< … >>stream" glued, lone \r, space, tab).
+		streamStart := bytes.Index(data[offset:], []byte("stream"))
+		for streamStart >= 0 {
+			prev := offset + streamStart - 1
+			if prev < 0 || !isPDFNameByte(data[prev]) {
+				break
+			}
+			next := bytes.Index(data[offset+streamStart+1:], []byte("stream"))
+			if next < 0 {
+				streamStart = -1
+				break
+			}
+			streamStart += next + 1
+		}
+		if streamStart < 0 {
+			break
+		}
+		absStart := offset + streamStart
+
+		// Skip past "stream\r\n" or "stream\n" (the leading \n of the
+		// needle is not part of the stream content).
+		contentStart := skipStreamEOL(data, absStart+len("\nstream"))
+
+		endRel := bytes.Index(data[contentStart:], []byte("endstream"))
+		if endRel < 0 {
+			break
+		}
+		contentEnd := contentStart + endRel
+
+		// Look backwards from "stream" for a FlateDecode hint (up to 512 bytes).
+		dictWindowStart := absStart - 512
+		if dictWindowStart < 0 {
+			dictWindowStart = 0
+		}
+		dictWindow := data[dictWindowStart:absStart]
+		isFlate := bytes.Contains(dictWindow, []byte("FlateDecode"))
+
+		raw := data[contentStart:contentEnd]
+		var streamBytes []byte
+		if isFlate {
+			decompressed, err := inflate(raw, maxDecompressed)
+			if err != nil {
+				if errors.Is(err, ErrBudgetExceeded) {
+					// A compressed bomb is not a corrupt stream to
+					// skip: the caller asked for a budget and the
+					// document blew through it — fail the whole
+					// extraction explicitly.
+					return "", err
+				}
+				offset = contentEnd
+				continue
+			}
+			inflatedTotal += int64(len(decompressed))
+			if inflatedTotal > maxDecompressed {
+				return "", ErrBudgetExceeded
+			}
+			streamBytes = decompressed
+		} else {
+			streamBytes = raw
+		}
+
+		text := extractBTETText(streamBytes)
+		if text != "" {
+			if allText.Len() > 0 {
+				allText.WriteByte('\n')
+			}
+			allText.WriteString(text)
+		}
+
+		offset = contentEnd
+	}
+
+	return allText.String(), nil
+}
+
+// isPDFNameByte reports whether b is a PDF name character — the ones a
+// longer word like "endstream" (or "downstream" in a dict string) puts
+// immediately before a "stream" token it should absorb.
+func isPDFNameByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
+// inflate decompresses zlib/deflate data. Tries zlib first, falls back to
+// raw deflate for PDFs that omit the zlib header. The read is capped at
+// limit+1 bytes: a stream inflating past limit fails with
+// ErrBudgetExceeded instead of allocating (zlib holds ~1000:1, so an
+// uncapped ReadAll here turned a 1 MiB file into a 1 GiB slice).
+func inflate(data []byte, limit int64) ([]byte, error) {
+	// Try zlib first.
+	r, err := zlib.NewReader(bytes.NewReader(data))
+	if err == nil {
+		buf, readErr := io.ReadAll(io.LimitReader(r, limit+1))
+		r.Close()
+		if readErr == nil {
+			if int64(len(buf)) > limit {
+				return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
+			}
+			return buf, nil
+		}
+	}
+	// Fallback: raw deflate (no zlib header).
+	fr := flate.NewReader(bytes.NewReader(data))
+	buf, err := io.ReadAll(io.LimitReader(fr, limit+1))
+	fr.Close()
+	if err != nil {
+		return nil, fmt.Errorf("flate inflate error: %w", err)
+	}
+	if int64(len(buf)) > limit {
+		return nil, fmt.Errorf("%w (limit %d)", ErrBudgetExceeded, limit)
+	}
+	return buf, nil
+}
+
+// extractBTETText extracts text from PDF content-stream operators between
+// BT and ET markers.
+//
+// Handles: Tj (show string), TJ (show array), ' (next line + string),
+// " (set spacing + next line + string).
+func extractBTETText(stream []byte) string {
+	// Lossy UTF-8 conversion
+	text := toValidUTF8(stream)
+	var result strings.Builder
+	inBT := false
+
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "BT" {
+			inBT = true
+			continue
+		}
+		if trimmed == "ET" {
+			inBT = false
+			continue
+		}
+		if !inBT {
+			continue
+		}
+
+		// Tj operator: (text) Tj
+		if strings.HasSuffix(trimmed, "Tj") {
+			if s, ok := extractParenthesizedString(trimmed); ok {
+				if result.Len() > 0 && !strings.HasSuffix(result.String(), "\n") {
+					result.WriteByte(' ')
+				}
+				result.WriteString(s)
+			}
+		} else if strings.HasSuffix(trimmed, "TJ") {
+			// TJ operator: [ (text) 123 (text) ] TJ
+			extracted := extractTJArray(trimmed)
+			if extracted != "" {
+				if result.Len() > 0 && !strings.HasSuffix(result.String(), "\n") {
+					result.WriteByte(' ')
+				}
+				result.WriteString(extracted)
+			}
+		} else if isNewlineShowOperator(trimmed) {
+			// ' or " operator
+			if s, ok := extractParenthesizedString(trimmed); ok {
+				if result.Len() > 0 {
+					result.WriteByte('\n')
+				}
+				result.WriteString(s)
+			}
+		}
+	}
+
+	return result.String()
+}
+
+// isNewlineShowOperator returns true when trimmed looks like a ' or " text-show operator.
+func isNewlineShowOperator(trimmed string) bool {
+	if len(trimmed) > 1 && strings.HasSuffix(trimmed, "'") {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "\"") && strings.Contains(trimmed, "(") {
+		return true
+	}
+	return false
+}
+
+// extractParenthesizedString pulls text from the first (...) group, handling
+// escaped parens and common PDF escape sequences.
+func extractParenthesizedString(input string) (string, bool) {
+	openIdx := strings.IndexByte(input, '(')
+	if openIdx < 0 {
+		return "", false
+	}
+	data := []byte(input)
+	var result strings.Builder
+	depth := 0
+	i := openIdx
+
+	for i < len(data) {
+		switch data[i] {
+		case '(':
+			if depth > 0 {
+				result.WriteByte('(')
+			}
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return result.String(), true
+			}
+			result.WriteByte(')')
+		case '\\':
+			if i+1 < len(data) {
+				i++
+				switch data[i] {
+				case 'n':
+					result.WriteByte('\n')
+				case 'r':
+					result.WriteByte('\r')
+				case 't':
+					result.WriteByte('\t')
+				case '\\':
+					result.WriteByte('\\')
+				case '(':
+					result.WriteByte('(')
+				case ')':
+					result.WriteByte(')')
+				default:
+					if data[i] >= '0' && data[i] <= '7' {
+						// Octal sequence — up to 3 digits.
+						octal := uint32(data[i] - '0')
+						for k := 0; k < 2; k++ {
+							if i+1 < len(data) && data[i+1] >= '0' && data[i+1] <= '7' {
+								i++
+								octal = octal*8 + uint32(data[i]-'0')
+							} else {
+								break
+							}
+						}
+						if octal < 128 {
+							result.WriteByte(byte(octal))
+						} else {
+							// Write as UTF-8 rune if valid.
+							var buf [4]byte
+							n := utf8.EncodeRune(buf[:], rune(octal))
+							result.Write(buf[:n])
+						}
+					} else {
+						result.WriteByte(data[i])
+					}
+				}
+			}
+		default:
+			result.WriteByte(data[i])
+		}
+		i++
+	}
+
+	return "", false // unbalanced
+}
+
+// extractTJArray extracts concatenated strings from a TJ array like
+// [ (Hello) -120 (World) ] TJ.
+func extractTJArray(input string) string {
+	bracketStart := strings.IndexByte(input, '[')
+	if bracketStart < 0 {
+		return ""
+	}
+	bracketEnd := strings.LastIndexByte(input, ']')
+	if bracketEnd < 0 || bracketEnd <= bracketStart {
+		return ""
+	}
+	inner := input[bracketStart+1 : bracketEnd]
+
+	var result strings.Builder
+	data := []byte(inner)
+	i := 0
+	for i < len(data) {
+		if data[i] == '(' {
+			if s, ok := extractParenthesizedString(inner[i:]); ok {
+				result.WriteString(s)
+				// Skip past the closing paren.
+				depth := 0
+				for _, b := range data[i:] {
+					i++
+					if b == '(' {
+						depth++
+					} else if b == ')' {
+						depth--
+						if depth == 0 {
+							break
+						}
+					}
+				}
+				continue
+			}
+		}
+		i++
+	}
+
+	return result.String()
+}
+
+// skipStreamEOL skips the EOL after the "stream" keyword (either \r\n or \n).
+func skipStreamEOL(data []byte, pos int) int {
+	if pos < len(data) && data[pos] == '\r' {
+		if pos+1 < len(data) && data[pos+1] == '\n' {
+			return pos + 2
+		}
+		return pos + 1
+	}
+	if pos < len(data) && data[pos] == '\n' {
+		return pos + 1
+	}
+	return pos
+}
+
+// toValidUTF8 converts bytes to a string, replacing invalid UTF-8 sequences.
+func toValidUTF8(data []byte) string {
+	if utf8.Valid(data) {
+		return string(data)
+	}
+	return strings.ToValidUTF8(string(data), "\uFFFD")
+}
+
+// LooksLikePDFPath checks if a user-supplied text contains a PDF file reference.
+// Returns the cleaned path and true if found, or empty string and false.
+func LooksLikePDFPath(text string) (string, bool) {
+	for _, token := range strings.Fields(text) {
+		cleaned := strings.Trim(token, "'\"`")
+		dotPos := strings.LastIndexByte(cleaned, '.')
+		if dotPos > 0 && strings.EqualFold(cleaned[dotPos+1:], "pdf") {
+			return cleaned, true
+		}
+	}
+	return "", false
+}
+
+// MaybeExtractPDFFromPrompt auto-extracts text from a PDF path mentioned in
+// a user prompt. Returns (path, text, true) when a .pdf path is detected and
+// the file exists with extractable text, otherwise ("", "", false).
+func MaybeExtractPDFFromPrompt(prompt string) (string, string, bool) {
+	pdfPath, ok := LooksLikePDFPath(prompt)
+	if !ok {
+		return "", "", false
+	}
+	absPath, err := filepath.Abs(pdfPath)
+	if err != nil {
+		return "", "", false
+	}
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		// Try original path too
+		if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
+			return "", "", false
+		}
+		absPath = pdfPath
+	}
+	text, err := ExtractText(absPath, DefaultDecompressionBudget)
+	if err != nil || text == "" {
+		return "", "", false
+	}
+	return pdfPath, text, true
+}

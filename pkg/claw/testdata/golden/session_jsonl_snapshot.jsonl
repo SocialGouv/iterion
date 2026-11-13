@@ -1,0 +1,5 @@
+{"type":"session_meta","version":1,"session_id":"test-session","created_at_ms":1000000,"updated_at_ms":2000000}
+{"type":"compaction","count":1,"removed_message_count":0,"summary":"test summary"}
+{"type":"prompt_history","timestamp_ms":500000,"text":"what is the weather"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Hello"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]}}
