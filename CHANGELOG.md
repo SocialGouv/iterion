@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.32.1](https://github.com/SocialGouv/iterion/compare/v5.32.0...v5.32.1) (2026-11-13)
+
+### Bug Fixes
+
+* **ci:** isolate image staging manifests by workflow run ([349b482](https://github.com/SocialGouv/iterion/commit/349b482a8c83581fddee32561c957ff5d5884e6a)), closes [#3198](https://github.com/SocialGouv/iterion/issues/3198)
+
+    <details><summary>why</summary>
+
+    Main and release builds of the same SHA can carry different OCI labels and inputs. Their shared per-architecture staging tags allowed one workflow to publish another workflow's manifest. Include run_id in both architecture producers and both publication paths. Keep run_attempt out so a failed-job retry can reuse the successful architecture from its previous attempt.
+
+    </details>
+
 ## [5.32.0](https://github.com/SocialGouv/iterion/compare/v5.31.0...v5.32.0) (2026-11-13)
 
 ### Features
