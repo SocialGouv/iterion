@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // WriteFileAtomic writes data to path atomically by first writing to a sibling
@@ -130,31 +129,9 @@ func WriteFileAtomicNew(path string, data []byte, perm os.FileMode) error {
 }
 
 // SyncDir makes a directory's entries durable — a name published in it by a
-// rename — where the platform syncs a directory at all (fsyncDir).
+// rename — where the platform syncs a directory at all (fsyncDir, one per
+// platform: fsync_dir_other.go, fsync_dir_windows.go).
 func SyncDir(dir string) error { return fsyncDir(dir) }
-
-// fsyncDir opens dir and calls Sync on the descriptor so the directory
-// entry update from the most recent rename/create reaches the platter.
-// On platforms where opening a directory for sync isn't supported the
-// fallback is a best-effort no-op (see openat_other.go's companions).
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	syncErr := d.Sync()
-	closeErr := d.Close()
-	if syncErr != nil {
-		// On some platforms (notably Windows) Sync on a directory
-		// handle returns EBADF/ENOTSUP. Swallow those — the atomic
-		// rename semantics differ on those filesystems anyway.
-		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
-			return closeErr
-		}
-		return syncErr
-	}
-	return closeErr
-}
 
 // SanitizePathComponent validates that a path component (RunID, NodeID,
 // InteractionID) does not contain path traversal sequences, separators,

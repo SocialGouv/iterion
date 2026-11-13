@@ -15,7 +15,7 @@ type RunLock interface {
 
 // LockRun acquires an exclusive file-based lock for the given run.
 // On Unix, it uses flock(2) which is automatically released on process crash.
-// On Windows, it uses a lockfile with PID-based stale detection.
+// On Windows, it uses LockFileEx, released the same way.
 //
 // The lock is advisory: it protects against concurrent iterion processes
 // sharing the same store directory. It does not replace the internal
@@ -32,7 +32,7 @@ func (s *FilesystemRunStore) LockRun(_ context.Context, runID string) (RunLock, 
 
 // AcquireFileLock returns an exclusive lock pinned to a specific file
 // path. It is the directory-agnostic surface of the same flock /
-// PID-lock primitive that backs LockRun, exposed so consumers outside
+// LockFileEx primitive that backs LockRun, exposed so consumers outside
 // pkg/store (typically the dispatcher's process-level lock on the
 // workspace root) can reuse the implementation instead of reinventing
 // it cross-platform.
