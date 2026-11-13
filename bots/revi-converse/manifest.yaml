@@ -1,7 +1,12 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.6
+version: 0.1.7
+## 0.1.7 — the converse agent declares its tools (bash, read_file, glob,
+## grep): a routing cell that moves it to claw (the team gateway lanes) gave
+## it NO tool, so it could neither read the diff nor post and answered a
+## placeholder. converse_health now flags a run that posted nothing without
+## a skipped_reason as degraded instead of reporting it healthy.
 ## 0.1.6 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

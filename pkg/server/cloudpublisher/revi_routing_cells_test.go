@@ -23,6 +23,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -432,6 +433,78 @@ func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T)
 	}
 	if !found {
 		t.Fatal("no converge call site — the fixture no longer names the node this witness pins")
+	}
+}
+
+// TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools reads, on
+// the bots this repo ships, every site the block moves onto claw from a CLI
+// backend its author wrote. An undeclared `tools:` list means the full native
+// toolset on a CLI backend and NO tool on claw (the compiler's claw⇄CLI
+// inversion, C176), so such a node keeps its work only if it declares its
+// list: revi-converse's converse_agent, moved off claude_code, could neither
+// read the diff nor post and answered a placeholder until it did.
+//
+// One exception, named and required to still hold: review-pr's `converge` is
+// the CLI family's merge, `tools:`-less by design (its node comment), and the
+// block routes it only so the launch walk — which cannot prune on a launch
+// var — reads every site on the gateway. The gateway integrations run
+// `mono_family=gpt`, whose merge is `converge_gpt` (claw, tools declared), so
+// `converge` never dispatches there.
+func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.T) {
+	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
+	exempt := map[string]map[string]bool{"review-pr": {"converge": true, "converge#glm": true}}
+	for _, bot := range reviBots {
+		t.Run(bot, func(t *testing.T) {
+			freezeCatalogBotDials(t, bot)
+			wf := compileShippedBot(t, bot)
+			view := reviGatewayView(t, bot, wf, pol)
+			moved := 0
+			seenExempt := map[string]bool{}
+			for _, s := range model.CallSites(view, nil) {
+				if s.Backend != "claw" || s.Node == nil || (s.Kind != model.SiteNode && s.Kind != model.SiteFallback) {
+					continue
+				}
+				var authored string
+				var tools []string
+				var routes []ir.Fallback
+				switch n := s.Node.(type) {
+				case *ir.AgentNode:
+					authored, tools, routes = n.Backend, n.Tools, n.Fallbacks
+				case *ir.JudgeNode:
+					authored, tools, routes = n.Backend, n.Tools, n.Fallbacks
+				default:
+					continue
+				}
+				if s.Kind == model.SiteFallback {
+					_, name, _ := strings.Cut(s.ID, "#")
+					for _, r := range routes {
+						if r.Name == name && r.Backend != "" {
+							authored = r.Backend
+						}
+					}
+				}
+				authored = strings.ToLower(strings.TrimSpace(ir.ExpandEnvWithDefault(authored)))
+				if authored == "" || authored == "claw" {
+					continue
+				}
+				moved++
+				if exempt[bot][s.ID] {
+					seenExempt[s.ID] = true
+					continue
+				}
+				if !toolcatalog.ToolsDeclared(tools) {
+					t.Errorf("site %q is written for %s and the cells run it on claw, but its node declares no tools: list — on claw it gets no tool at all", s.ID, authored)
+				}
+			}
+			if moved == 0 {
+				t.Fatal("no site moved from a CLI backend onto claw: the check read nothing")
+			}
+			for id := range exempt[bot] {
+				if !seenExempt[id] {
+					t.Errorf("exception %q no longer reads a site the block moves onto claw — drop it", id)
+				}
+			}
+		})
 	}
 }
 
