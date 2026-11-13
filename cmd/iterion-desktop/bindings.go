@@ -6,13 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
-	"syscall"
 
 	cli "github.com/SocialGouv/iterion/pkg/cli"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -491,8 +491,8 @@ func (a *App) stopDaemonForRemovedProject(projectDir string) {
 		return
 	}
 	if info.PID > 0 {
-		if proc, perr := os.FindProcess(info.PID); perr == nil {
-			_ = proc.Signal(syscall.SIGTERM)
+		if err := stopDaemonProcess(info.PID); err != nil {
+			log.Printf("desktop: stop daemon pid=%d of removed project %s: %v", info.PID, projectDir, err)
 		}
 	}
 	_ = os.Remove(target)
