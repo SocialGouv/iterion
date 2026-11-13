@@ -145,3 +145,21 @@ func TestCredSlotHolderStale(t *testing.T) {
 		})
 	}
 }
+
+// A gateway's capacity subject is one row whatever the spelling of the host
+// a team's key carries: hostnames compare without case, and two keys on one
+// gateway written `LiteLLM.example` and `litellm.example` must hold one
+// subject's places, not two. No host names no subject — never a bare `gw:`
+// row every unresolved gateway would share.
+func TestGatewayCapacitySubject(t *testing.T) {
+	for _, c := range []struct{ host, want string }{
+		{"litellm.example", "gw:litellm.example"},
+		{"LiteLLM.Example", "gw:litellm.example"},
+		{"10.0.0.7", "gw:10.0.0.7"},
+		{"", ""},
+	} {
+		if got := GatewayCapacitySubject(c.host); got != c.want {
+			t.Errorf("GatewayCapacitySubject(%q) = %q, want %q", c.host, got, c.want)
+		}
+	}
+}
