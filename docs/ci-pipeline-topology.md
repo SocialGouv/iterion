@@ -74,6 +74,25 @@ release-images.yml   runner + sandbox @ :vX.Y.Z   push tags v*  (await image.yml
   before it `COPY`s the binary — so the two workflows never race to publish
   the server tag.
 
+### Staging manifests belong to one workflow run
+
+`_build-image.yml` stages each architecture under
+`<source-sha>-<workflow-run-id>-<architecture>`. Both the single-architecture
+publication and the multi-architecture merge consume that same run's tags.
+Main and release workflows can build the same source SHA with different labels
+and inputs: SHA-only staging allowed a release merge to select a main build's
+manifest and sign the wrong composition (#3198, observed on v5.29.2).
+
+The key deliberately excludes `run_attempt`. GitHub can retry only failed jobs;
+a successful architecture from the preceding attempt must remain available to
+the merge. Different workflow runs remain isolated, including manual dispatches
+and workflows triggered by another workflow's completion. Reusable callers
+must use each image name for only one build configuration within a run.
+
+Workflow success is the build-completion signal, not a substitute for checking
+the published image: release qualification verifies both architectures, source
+revision, version labels and the keyless signature before accepting its digest.
+
 ### workflow_run notes
 
 - `workflow_run` triggers use the workflow definition from the **default

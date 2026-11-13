@@ -111,7 +111,10 @@ jobs:
 
   # --------------------------------------------------------------------------
   # amd64 — built on the in-house buildkit-operator warm daemon, pushed to a
-  # per-arch staging tag the merge job stitches into the published index.
+  # per-run, per-arch staging tag the merge job stitches into the published index.
+  # Main and release builds can share a SHA but carry different labels/inputs.
+  # run_id separates them; do not add run_attempt, because retrying only failed
+  # jobs must still find an architecture that succeeded in the previous attempt.
   # --------------------------------------------------------------------------
   amd64:
     if: ${{ !inputs.is-pr }}
@@ -164,7 +167,7 @@ jobs:
           file: ${{ inputs.file }}
           build-args: ${{ inputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-amd64
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-${{ github.run_id }}-amd64
           push: true
           # Provenance + SBOM only on release (multiarch) builds, matching the
           # sign policy: `:edge` is ephemeral and unsigned, and generating them
@@ -196,12 +199,13 @@ jobs:
         env:
           TAGS: ${{ steps.fasttags.outputs.tags }}
           SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
         run: |
           set -eux
           tflags=""
           for t in $TAGS; do tflags="$tflags -t $t"; done
           # shellcheck disable=SC2086
-          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-amd64"
+          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-amd64"
 
   # --------------------------------------------------------------------------
   # arm64 — native build on a GitHub arm runner (no QEMU), pushed to a per-arch
@@ -243,7 +247,7 @@ jobs:
           file: ${{ inputs.file }}
           platforms: linux/arm64
           push: true
-          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-arm64
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-${{ github.run_id }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ inputs.build-args }}
           provenance: mode=max
@@ -305,14 +309,15 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
           MULTIARCH: ${{ inputs.multiarch }}
         run: |
           set -eux
           tflags=""
           for t in $TAGS; do tflags="$tflags -t $t"; done
           # amd64 always; arm64 only when this is a multiarch (main/tag) build.
-          sources="${IMAGE_REF}:${SHA}-amd64"
-          [ "$MULTIARCH" = "true" ] && sources="$sources ${IMAGE_REF}:${SHA}-arm64"
+          sources="${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-amd64"
+          [ "$MULTIARCH" = "true" ] && sources="$sources ${IMAGE_REF}:${SHA}-${BUILD_RUN_ID}-arm64"
           # shellcheck disable=SC2086
           docker buildx imagetools create $tflags $sources
           # The index digest is the authoritative address we sign + attest (the
