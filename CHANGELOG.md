@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.32.3](https://github.com/SocialGouv/iterion/compare/v5.32.2...v5.32.3) (2026-11-13)
+
+### Bug Fixes
+
+* **scripthost:** stop the test binary leaking a 130 MB iterion build per run ([#3261](https://github.com/SocialGouv/iterion/issues/3261)) ([ca2a40e](https://github.com/SocialGouv/iterion/commit/ca2a40ef9518653005bbc8ccd8ea4759405e2147)), closes [#3252](https://github.com/SocialGouv/iterion/issues/3252)
+
+    <details><summary>why</summary>
+
+    The pkg/scripthost tests built the iterion CLI (CGO_ENABLED=0 and 1) into os.MkdirTemp("", "scripthost-artifact-") and never removed it: 130-210 MB per build, up to two per package run, in the TMPDIR every session on a machine shares (181 directories, ~23 GB in 48 h on the operator's machine).
+
+    </details>
+
 ## [5.32.2](https://github.com/SocialGouv/iterion/compare/v5.32.1...v5.32.2) (2026-11-13)
 
 ### Bug Fixes
