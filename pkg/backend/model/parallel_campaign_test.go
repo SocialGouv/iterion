@@ -63,6 +63,7 @@ import (
 // surface, which takes no ctx — a breaking signature change for two test
 // files, refused here and recorded on #2789.
 var serialFamily = map[string]string{
+	"codemode_sandbox_crossing_test.go": "Setenv",
 	"sandbox_transport_env_test.go":     "Setenv",
 	"gateway_feed_test.go":              "Setenv",
 	"feed_effort_test.go":               "Setenv",

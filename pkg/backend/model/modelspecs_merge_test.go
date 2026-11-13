@@ -1,11 +1,13 @@
 package model
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // TestMain isolates this package's tests from the host's live model prices
@@ -18,7 +20,20 @@ import (
 // capParallelism first, because the cap has to land before m.Run builds the
 // test context that reads `-parallel` (testparallel_test.go carries the
 // measurement that chose the number).
+// It also makes this test binary able to BE a script-host child, which is
+// what lets codemode_tool_test.go run a real program through a real child
+// process without building the release binary: scripthost.Host re-execs
+// whatever Binary names, and here that is this binary, which answers the
+// subcommand exactly as `iterion __script-host` does. The arm must come
+// FIRST, before any isolation runs: the child is not running tests.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == scripthost.Subcommand {
+		if err := scripthost.RunChild(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "script-host child:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	capParallelism()
 	restore := pricingtest.Isolate()
 	restoreProviders := isolateProviders()

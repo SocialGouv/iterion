@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
@@ -446,7 +447,7 @@ func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []Gene
 // async pair. Read from the same spellings the runtime appends them under
 // (executor_build_task.go), never a fresh string.
 func isRunPausingAskTool(name string) bool {
-	switch name {
+	switch strings.ToLower(strings.TrimSpace(name)) {
 	case askUserToolName, delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName:
 		return true
 	}

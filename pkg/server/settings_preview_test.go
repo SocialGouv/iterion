@@ -291,3 +291,52 @@ func TestBuildBackendOverrideOptionsReadsTheNodesOwnAskRules(t *testing.T) {
 		t.Fatalf("grok assessment = %q, want a refusal from the NODE's ask rules", got)
 	}
 }
+
+// TestBuildBackendOverrideOptionsRefusesCodemodeCrossings holds the CALL
+// SITE of the codemode screen. The predicate it calls has its own matrix in
+// pkg/dsl/ir; this is what reddens if the picker stops asking the question —
+// the shape an adversarial round found live, with all three refusing backends
+// offered as selectable and an empty unavailable_reason.
+//
+// A launch override beats everything the source wrote, so the route it lands
+// on is one C339 never judged: this screen is the only thing between an
+// operator and a dispatch that refuses.
+func TestBuildBackendOverrideOptionsRefusesCodemodeCrossings(t *testing.T) {
+	t.Setenv("ITERION_PERMISSION", "")
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
+	wf := compileSource(t, `agent composer:
+  model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  permission: off
+  codemode: on
+
+agent plain:
+  model: "anthropic/claude-sonnet-4-6"
+  backend: "claw"
+  permission: off
+
+workflow main:
+  composer -> plain
+  plain -> done
+`)
+
+	choices := buildBackendOverrideOptions(wf, "", "", []string{"claw", "claude_code", "codex"})
+	if got := choices["composer"]["claw"].UnavailableReason; got != "" {
+		t.Errorf("the backend that serves codemode is refused: %s", got)
+	}
+	for _, backend := range []string{"claude_code", "codex"} {
+		got := choices["composer"][backend].UnavailableReason
+		if got == "" {
+			t.Errorf("the picker offers %q to a `codemode: on` node; the dispatch refuses it", backend)
+			continue
+		}
+		if !strings.Contains(got, "codemode") {
+			t.Errorf("%q is refused for the wrong reason: %s", backend, got)
+		}
+		// A node that declared nothing keeps every backend: the screen
+		// follows the declaration, not the capability.
+		if other := choices["plain"][backend].UnavailableReason; other != "" {
+			t.Errorf("a node without codemode lost %q: %s", backend, other)
+		}
+	}
+}

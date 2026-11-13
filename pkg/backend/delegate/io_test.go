@@ -50,6 +50,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		SettingsHooks:          json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
 		AmbientContext:         ambient.None,
 		AmbientContextSource:   "workflow",
+		Codemode:               true,
 	}
 
 	ioTask := ToIOTask(original)
@@ -153,6 +154,13 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if string(got.SettingsHooks) != string(original.SettingsHooks) {
 		t.Errorf("SettingsHooks = %s, want %s", got.SettingsHooks, original.SettingsHooks)
+	}
+	if got.Codemode != original.Codemode {
+		// A sandboxed node rebuilds its loop on the other side of this
+		// mirror: a field missing here is a node that silently runs without
+		// the codemode tool its author asked for, in exactly the posture
+		// (in-pod, in-container) codemode targets.
+		t.Errorf("Codemode = %v, want %v", got.Codemode, original.Codemode)
 	}
 	if got.AmbientContext != original.AmbientContext || got.AmbientContextSource != original.AmbientContextSource {
 		t.Errorf("ambient context = %v (from %q), want %v (from %q)", got.AmbientContext, got.AmbientContextSource, original.AmbientContext, original.AmbientContextSource)

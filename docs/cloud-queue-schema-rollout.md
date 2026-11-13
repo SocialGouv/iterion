@@ -28,7 +28,7 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v30 consumer accepts v27 through v30: a v27
+  directions. The current v31 consumer accepts v27 through v31: a v27
   message predates the wire-carried `bot_source_tier`, and the run document
   its publisher persisted already carries the stamp — the runner re-reads the
   tier from there, so the #1959 floor never silently drops; a v28 message
@@ -379,6 +379,29 @@ as a schema bump.
 > Runner-first left the DLQ byte-identical — depth 30, `last_seq` 220, newest
 > message hours older than the rollout — with no
 > `iterion_runner_admission_rejected_total` sample anywhere in the fleet.
+
+## v31: codemode in the compiled IR
+
+**What rose.** `codemode:` (ADR-165) reaches the runner inside `ir_compiled`.
+No RunMessage field was added — the value rides a field that already travels —
+and the bump is the ADDITIVE-field rule's case rather than a formality: the IR
+decoder is a plain `json.Unmarshal` with no `DisallowUnknownFields`, so a
+pre-codemode runner DROPS the key and runs the node without the tool its
+author declared. A run that still succeeds while doing the thing its launch
+was configured not to do is v=5's shape.
+
+**Order: server first.** `MinSchemaVersion` stays 27, so a new runner accepts
+every message the old server still publishes, and an old runner parks a v31
+message transiently until the fleet is upgraded.
+
+**What this bump does NOT cover, and what answers it instead.** A v30 message
+published by a v5.32.x server can itself carry `codemode: on`: that release
+compiled the attribute on every backend and only warned (C338). Such a message
+is INSIDE the accept window, so the fence never sees it — an upgraded runner
+recompiles it, C339 refuses it, and the run parks on the DLQ as
+`ErrIRUnloadable`. The answer is the migration on ADR-165, not a version
+number: re-route the node to a backend that serves codemode, or declare
+`codemode: off`.
 
 ## Rollout procedure for a schema bump vN → vN+1
 

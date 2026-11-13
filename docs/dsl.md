@@ -366,7 +366,7 @@ agent reviewer:
   max_tokens: 12000
   reasoning_effort: high
   ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
-  codemode: off           ## on|off — nothing serves it yet; an explicit `on` warns C338
+  codemode: off           ## on|off — the model composes its calls as code (claw only, ADR-165)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -390,10 +390,19 @@ Important property groups:
 harness runs in a credential-less child, instead of one call per turn
 (ADR-165). Declared on the node or the workflow, with **no environment
 rung** — the switch reads no environment variable (ADR-132).
-**Nothing serves it yet**: the attribute is carried to the IR and read by
-no build, so the compiler warns **C338** on an explicit `on` and the node
-runs exactly as it did without the line. The slice that registers the
-tool removes that warning, not the attribute.
+A node with `on` is handed one extra tool: its input is a program, and
+the program's only capability is to call that node's OWN tools, back
+through the node's own dispatcher — the same hooks, the same permission
+gate, the same events, the same budget. What the model gets back is the
+program's last expression.
+
+It is served by **claw**. The backends whose loop owns no tool dispatcher
+cannot serve it, so a declared `on` routed to one is refused — **C339**
+at compile where the route is known, and a typed refusal at dispatch
+where it is not. The refusal is TERMINAL — it ends the node, and no
+`fallbacks:` route is tried. A node writes
+`codemode: off` to stay off a workflow default; the empty value inherits,
+which is why this is a string and not a flag.
 
 `ambient_context: none | workspace | operator | all` picks what the node
 inherits from its surroundings besides its prompt (ADR-119): the

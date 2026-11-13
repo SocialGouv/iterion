@@ -73,10 +73,12 @@ type Host struct {
 	// bounds whenever [Limits.Clamp] reduced something.
 	//
 	// It exists because philosophy 1 forbids silently replacing an operator's
-	// explicit choice, and a clamp IS a replacement. Nothing consumes it yet —
-	// the slice that binds codemode to a node wires it to a compile warning —
-	// so a nil hook means the reduction is unobserved, which is a gap stated
-	// rather than a promise pretended.
+	// explicit choice, and a clamp IS a replacement. The codemode tool wires
+	// it to a run-time warning on the node's logger; a nil hook means the
+	// reduction is unobserved, which is a gap stated rather than a promise
+	// pretended. Nothing can PRODUCE a clamp yet, because no DSL surface
+	// lets a `.bot` ask for bounds: the hook is wired ahead of the slice that
+	// opens one, and until then its warning has never been printed.
 	OnClamp func(requested, applied Limits)
 }
 

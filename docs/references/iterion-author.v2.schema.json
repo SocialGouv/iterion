@@ -789,7 +789,7 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1339,7 +1339,7 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -2457,7 +2457,7 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },

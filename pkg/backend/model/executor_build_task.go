@@ -59,6 +59,7 @@ type backendFields struct {
 	compress         string // node-level `compress:` value ("" = unset)
 	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
 	ambientContext   string // node-level `ambient_context:` value ("" = inherit workflow)
+	codemode         string // node-level `codemode:` value ("" = inherit workflow)
 	permission       string // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
@@ -110,6 +111,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
+			codemode:         n.Codemode,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -139,6 +141,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
+			codemode:         n.Codemode,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -1372,6 +1375,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if err != nil {
 		return delegate.Task{}, err
 	}
+	codemodePolicy, err := e.codemodePolicy(f, backendName)
+	if err != nil {
+		return delegate.Task{}, err
+	}
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
@@ -1432,6 +1439,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		NodeID:                f.id,
 		AmbientContext:        ambientPolicy,
 		AmbientContextSource:  ambientSource,
+		Codemode:              codemodePolicy.On,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,

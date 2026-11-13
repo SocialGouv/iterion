@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -292,5 +293,47 @@ func TestCopiesAndUnknowns(t *testing.T) {
 	}
 	if !slices.Equal(nativeBefore, NativeTools(ClaudeCode)) {
 		t.Fatal("a caller mutates the native roster through its projection")
+	}
+}
+
+// TestThePublishedCellCountsMatchTheRegistry is a canary for a class that
+// rotted silently: docs/backend-capability-registry.md publishes the size of
+// this registry in prose, and an adversarial round found the number four
+// cells stale after a capability was added — nothing read it, so nothing
+// said so.
+//
+// It reads the numbers out of the page rather than restating them, so the
+// page stays the publication and this stays the check.
+func TestThePublishedCellCountsMatchTheRegistry(t *testing.T) {
+	const page = "../../../docs/backend-capability-registry.md"
+	data, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, proof := 0, 0
+	for _, b := range Snapshot().Backends {
+		impl += len(b.Cells)
+		proof += len(b.Proof)
+	}
+	for _, c := range []struct {
+		kind string
+		want int
+		re   *regexp.Regexp
+	}{
+		{"implementation", impl, regexp.MustCompile(`\*\*(\d+) implementation cells\*\*`)},
+		{"published proof", proof, regexp.MustCompile(`\*\*(\d+) published proof cells\*\*`)},
+	} {
+		m := c.re.FindSubmatch(data)
+		if m == nil {
+			t.Errorf("%s: the page no longer publishes a count in the shape this check reads (%v) — if the sentence moved, move this check with it", c.kind, c.re)
+			continue
+		}
+		got, err := strconv.Atoi(string(m[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("%s cells: the page says %d, the registry holds %d — update %s", c.kind, got, c.want, page)
+		}
 	}
 }

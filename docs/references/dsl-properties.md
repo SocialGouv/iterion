@@ -275,7 +275,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it) |
+| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
@@ -328,7 +328,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it) |
+| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
@@ -561,7 +561,7 @@ A top-level declaration: `workflow <name>:`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it) |
+| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
 | `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
 | `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |

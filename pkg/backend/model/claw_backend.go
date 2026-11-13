@@ -38,6 +38,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -485,7 +486,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// When both tools AND output schema are present, inject schema format
 	// instruction into user text (GenerateText supports tool loop,
 	// GenerateObject does not).
-	if task.OutputSchema != nil && task.HasTools {
+	// The question, not the flag: a codemode node runs a tool loop even when
+	// it declared no tools, and this instruction is what that arm depends on
+	// to get its JSON back.
+	if task.OutputSchema != nil && task.NeedsToolLoop() {
 		schemaJSON, _ := json.MarshalIndent(task.OutputSchema, "", "  ")
 		userText += fmt.Sprintf(
 			"\n\nOUTPUT FORMAT: After completing all tool operations, your final message MUST be a raw JSON object matching this schema:\n%s\nNo markdown fences, no extra text — ONLY the JSON object.",
@@ -764,6 +768,18 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// Codemode (ADR-165): the node's extra tool, whose input is a program.
+	// The decision is the executor's — it walked the precedence and refused a
+	// declared `on` this backend could not serve before building the task —
+	// so the only question left here is whether the task says so.
+	if task.Codemode {
+		installCodemode(&opts, func(requested, applied scripthost.Limits) {
+			if b.logger != nil {
+				b.logger.Warn("[%s] codemode: the platform ceiling reduced this node's script bounds (requested %+v, applied %+v)", task.NodeID, requested, applied)
+			}
+		})
+	}
+
 	// Dispatch to the appropriate generation strategy. A gateway route's
 	// catalog record is resolved ONCE, HERE, before anything runs, and
 	// carried immutable on everything the invocation produces (ADR-122
@@ -789,9 +805,9 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		genErr error
 	)
 	switch {
-	case hasSchema && !task.HasTools:
+	case hasSchema && !task.NeedsToolLoop():
 		res, genErr = b.generateStructuredWithRetry(ctx, client, task, opts)
-	case hasSchema && task.HasTools:
+	case hasSchema && task.NeedsToolLoop():
 		res, genErr = b.generateTextWithToolsAndSchemaRetry(ctx, client, task, opts)
 	default:
 		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
@@ -1267,7 +1283,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// emitted a JSON verdict (looksStructured) or that used its tools is
 	// left untouched, so a reviewer whose data is inline (e.g.
 	// whole_improve_loop's chunk_content) never pays for it.
-	if task.HasTools && countToolCalls(result) == 0 && !looksStructured(result.Text) {
+	if task.NeedsToolLoop() && countToolCalls(result) == 0 && !looksStructured(result.Text) {
 		nudged := opts
 		// The nudge is the harness's re-ask, not the operator's prompt —
 		// already screened on the first pass.

@@ -56,6 +56,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "shipped",
@@ -348,6 +357,15 @@
             "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
           ],
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/codemode_tool_test.go:TestCodemodeCallsReachTheNodesOwnDoor"
+          ],
+          "detail": "The tool is registered on the generation loop that owns the tool dispatcher, so a program's calls are the node's own dispatches."
         },
         {
           "name": "command-override",
@@ -645,6 +663,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -937,6 +964,15 @@
             "pkg/backend/delegate/pi.go:405"
           ],
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
         },
         {
           "name": "command-override",
@@ -1235,6 +1271,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -1528,6 +1573,15 @@
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
         },
         {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
+        },
+        {
           "name": "command-override",
           "axis": "workspace-commands",
           "verdict": "inert",
@@ -1819,6 +1873,15 @@
             "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
           ],
           "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "codemode",
+          "axis": "codemode",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/codemode_backend_test.go:TestCodemodeIsRefusedOnABackendThatCannotServeIt"
+          ],
+          "detail": "No generation loop here owns a tool dispatcher a program could call back through; a declared `codemode: on` is refused (C339) rather than dropped."
         },
         {
           "name": "command-override",

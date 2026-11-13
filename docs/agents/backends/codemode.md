@@ -10,7 +10,7 @@ back is what the script chose to return.
 This page is the operational half — what is built, what is not, and the
 contract anything new has to honour.
 
-## What is built, as of 2026-11-12
+## What is built, as of 2026-11-13
 
 Three pieces. **The door**: `toolDispatcher` in
 [pkg/backend/model/generation_toolexec.go](../../../pkg/backend/model/generation_toolexec.go)
@@ -40,15 +40,24 @@ Measured against the shipping `CGO_ENABLED=0` binary: a five-iteration loop
 crossed the pipe five times and returned **one** number — compose outside the
 model's context, return the distilled result.
 
-**No model can reach it yet, and the compiler says so.** `codemode: on|off`
-is declared on an agent, a judge and a workflow and carried to the IR — and
-read by nothing: no capability cell, no registered tool. The compiler warns
-**C338** on an explicit `on`, and such a node runs exactly as it did without
-the line. Treat any claim that codemode is *usable* as false until this
-section says otherwise; the slice that registers the tool deletes that
-warning, not the attribute. Epic
+**A model on claw can reach it.** `codemode: on|off` is declared on an agent,
+a judge or a workflow; the executor resolves node > workflow > off
+(`ir.ResolveCodemode`, no environment rung). Two ceilings bound it and no
+`.bot` raises either: the capability cell — `claw` `shipped`, every other
+backend `typed-refused`, a CLI-agent loop owning no dispatcher a program could
+call back through — and `scripthost.Ceiling`, clamped in the parent. A
+declared `on` elsewhere is refused, never dropped: **C339** at compile where
+the route is known (a `${VAR:-name}` is read as its source default and says
+so), a typed `ErrCapabilityUnsupported` at dispatch where it is not. That
+refusal ENDS the node — no `fallbacks:` route is tried, as ambient's does not
+either. C338 is retired.
+
+**Not there yet** (claiming it is false): no run-level override, no studio
+form, no DSL surface for the bounds — a node runs under `DefaultLimits`.
+#3155, the in-pod bench that declares codemode usable in CLOUD, has not
+run. Epic
 [#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
-#3182, #3195); the in-pod bench that will declare it usable is #3155.
+#3182, #3195).
 
 ### Four decisions the binding owes its reviewers
 
@@ -83,30 +92,19 @@ warning, not the attribute. Epic
 the gate's own shape: a synthetic `isError` tool_result, not a panic and not a
 silent pass.
 
-It exists because four per-node facts ride the context rather than the struct,
-and **three of them fail open**:
+It exists because five per-node facts ride the context rather than the struct,
+and **three of them fail open** — the `allowed-tools:` command scope (#1717),
+the policy a child inherits (absent: a child spawned through `agent` is
+**ungated entirely**), and the parent loop shape bounding a child's tools. The
+other two fail loud: the Ask degradation (#2877) pauses the run, and
+`tool.HostCapabilitiesFrom` refuses — the precedent this guard follows.
 
-| fact | absent from the context ⇒ |
-|---|---|
-| the `allowed-tools:` command scope (#1717) | nothing is narrowed |
-| the child-conversation Ask degradation (#2877) | a child's Ask pauses the whole run instead of degrading |
-| the parent policy a child inherits | a child spawned through `agent` is **ungated entirely** |
-| the parent loop shape bounding a child's tools | the child falls back to the run's whole registry |
-
-`tool.HostCapabilitiesFrom` is the fifth and the exception — it fails closed,
-and it is the precedent the guard follows.
-
-Two things the guard does **not** do, because they have bitten already:
-
-- It checks **provenance, not content**. A dispatcher built from a factless
-  context vouches for a factless context. Supplying the node execution's
-  context to the *constructor* is the caller's job; on the model loop's own
-  path `GenerateText` guarantees the scope (no generation runs scopeless).
-- Capturing those facts and re-pinning them inside `dispatch` was tried and is
-  **wrong**: writing a captured scope over a caller's live one erases a
-  narrowing that was present, and writing a captured "asks allowed" over a
-  child's context restores the pause #2877 removes. Both pass the whole suite.
-  Do not reintroduce it.
+Each fact, what its absence costs, the 17 tests that redden when the conduit
+is cut across the four that ride the dispatch context, and the two things the guard deliberately does NOT do — it checks
+provenance rather than content, and it does not re-pin those facts (tried,
+and it erases a narrowing that was present, with the whole suite green) — are
+in `dispatch`'s own doc comment, which is where they bind. Do not reintroduce
+the re-pinning.
 
 A second path into the tool-running funnel is refused mechanically:
 `toolFunnelCallers` in
