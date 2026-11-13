@@ -33,6 +33,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `examples/mcp_test_server` | Tiny MCP stdio server used by the live tests. | — |
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
+| `internal/clawfold` | computes and applies the fold of claw-code-go into pkg/claw, with a per-file proof that each moved file is the pinned source byte for byte except on… | `GoTool` |
 | `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees that… | — |
 | `internal/credheader` | reads ANTHROPIC_CUSTOM_HEADERS-format text — the newline-separated "Name: Value" lines a Claude-Code-compatible CLI applies LAST on every request… | — |
 | `internal/credparity` | ADR-161's parity table: one row per shape of "which credential does this call spend?", and the one answer every reader of that question owes it —… | — |
@@ -264,6 +265,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
 | `scripts/ci/testcaps` | Command testcaps publishes a deterministic source census of test skips and sleeps, plus optional observations of the runner's literal prerequisites. | — |
 | `scripts/ci/testshards` | Command testshards prints the Go test packages of one deterministic shard, the mechanism the CI matrix legs use to split `./...` across runners (the… | — |
+| `scripts/clawfold` | Command clawfold plans, applies and proves the fold of claw-code-go into pkg/claw (see internal/clawfold). | — |
 | `scripts/docslinks` | Command docslinks checks every relative link and `#anchor` in the repository's tracked markdown against the real tree, the way GitHub resolves them… | — |
 | `scripts/modelsnapshot` | Command modelsnapshot regenerates the embedded models.dev snapshot (pkg/backend/modelspecs/snapshot/models-dev.json): fetch, parse, render… | — |
 | `third_party/codex-agent-sdk-go` | provides a Go SDK for interacting with the Codex CLI agent. | `Client`, `Tool` |
