@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
+	"github.com/SocialGouv/iterion/pkg/secure/hostfold"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ func CanonicalEndpoint(raw string) string {
 	if err != nil || parsed.Host == "" {
 		return plain
 	}
-	host := httpdial.CanonicalHost(parsed.Hostname())
+	host := hostfold.Canonical(parsed.Hostname())
 	if host == "" {
 		return plain
 	}
@@ -109,7 +109,7 @@ func EndpointHasHost(raw string) bool {
 	if err != nil || parsed.Host == "" {
 		return false
 	}
-	return httpdial.CanonicalHost(parsed.Hostname()) != ""
+	return hostfold.Canonical(parsed.Hostname()) != ""
 }
 
 // cleanEndpointPath folds a decoded URL path to the target it names: case,
