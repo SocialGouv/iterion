@@ -3,6 +3,67 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.29.3](https://github.com/SocialGouv/iterion/compare/v5.29.2...v5.29.3) (2026-11-13)
+
+### Bug Fixes
+
+* **bots:** a resumed campaign lot is judged where it starts; the steward's reserve and finalize's write time hold at their walls ([2ba14be](https://github.com/SocialGouv/iterion/commit/2ba14be35b50368cfad29eaead1182fc313cf282)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    A campaign whose lot fails is checkpointed at run_lot, and its resume re-runs run_lot with a fresh child, never lot_room: a lot started at 39h of the 48h wall ran past 90% and the campaign ended with no handoff. run_lot now passes the child the campaign's clock (run.elapsed_seconds, run.max_duration_seconds, lot_room_s), rendered at each start, and modernize's new entry, campaign_room, applies lot_room's predicate to it: with no room the child ends at once, no lot taken, and the campaign hands…
+
+    </details>
+* **bots:** campaign declares its clone credential; modernize's lot wall holds its gate and its agent may cross to claw ([ea4dec6](https://github.com/SocialGouv/iterion/commit/ea4dec603a2c541799e2e1b0a91af8c0737967c6)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Ports the two deltas the iterion.cloud platform overrides carried into the catalogue, each re-checked against HEAD before porting (#3181).
+
+    </details>
+* **bots:** campaign says why it ran no lot and reaches its handoff before its wall; modernize's wall claims say what 12h holds ([3acbcbb](https://github.com/SocialGouv/iterion/commit/3acbcbb6c5905e6765674e6f1178f99606e74f89)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Round 3 of #3181: the reserves the operator kept after the round.
+
+    </details>
+* **bots:** campaign starts a lot only where one can finish; the lot's cost share is what the guard funds ([48ee64f](https://github.com/SocialGouv/iterion/commit/48ee64f21189aec389694e3a393e8267a84457c4)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Review round 2 of #3181.
+
+    </details>
+* **bots:** campaign's wall reader passes the purged-extension guard ([d01c0a3](https://github.com/SocialGouv/iterion/commit/d01c0a3618fdb364428740d2a9b07a7edecb4097)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    The Python AST reader that bounds campaign's tool-node walls took a for loop's iterable as `st.iter`, which pkg/cli's TestNoIterExtensionAnywhere reads as the purged `.iter` workflow extension: `task check` was red on bots/campaign_walls_test.go:155. The reader takes the node's "iter" field through getattr, and says why.
+
+    </details>
+* **bots:** carry plan-contract's gate sizing to its family source and re-pin the shared skills ([8d9039d](https://github.com/SocialGouv/iterion/commit/8d9039dcca69cd38cffd0afa8f6c77be26bad665)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Final pass of #3181. `task check` went red on skills:check (internal/skillshare): the lane edited bots/modernize/skills/plan-contract.md, a mirror of bots/assessment/skills/plan-contract.md, and regenerated both iterion-bot-catalog.md copies (campaign's new lot_room_s var), without re-pinning bots/testdata/shared_skills.txt.
+
+    </details>
+* **bots:** judge campaign's forge_token by the launch's own rule; say what modernize's wall, cap and claw route hold ([2dad28f](https://github.com/SocialGouv/iterion/commit/2dad28fb9a82167cd1a333acad6bcc2e737c2295)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Review round 1 of #3181.
+
+    </details>
+* **runview:** name the stored secret an inline value shadows; say where a subbot child's credentials come from ([bd4216e](https://github.com/SocialGouv/iterion/commit/bd4216e76b986903344520fa0bfe7d5bd98ef0ea)), references [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#3181](https://github.com/SocialGouv/iterion/issues/3181) [#1399](https://github.com/SocialGouv/iterion/issues/1399)
+
+    <details><summary>why</summary>
+
+    Round 3 of #3181, its low findings on the round-2 parity fix.
+
+    </details>
+
 ## [5.29.2](https://github.com/SocialGouv/iterion/compare/v5.29.1...v5.29.2) (2026-11-12)
 
 ### Bug Fixes
