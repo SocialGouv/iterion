@@ -533,7 +533,7 @@ cdfbe2b65fa53b1394c469266af7f87827732037f49b33f1f80c0c1b80d6927c 595e61bbe990942
 8b6c147552000bfd667dbdfc5645d9886ed52a0ee08c4e9d11e79f626404a33f 9b0ec2510d12d2e5eef1d354977cdf8a6a2d91987e2c342c685d4500db19ab06 ../../docs/adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md
 567e4e295062ce4fb7969de32b6b970009622c27a3804f36b987a7c25f431cf3 61bc31f777d939d81017d9f36b131d8e95fd4d94720f2a67287e9c36f873b514 ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
 bc0a53c63999934b46c07a87a0119f9a8e181ec4a8567ebb953a391d7c3b036d 2e3d3d68eefdb0dd58da7a2180bc155d1e484c92f5b14c52d780f184ee764536 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
-4d89fead2ac06cf48996bc1532436a48a66da652b08dc5a423b51bd065eacc1e 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
+ef4afa3d554447892ed7d926c2b0365275f6a5d9533aefbbe957d05c8ab5105a 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
 9c03ee3d96afb06ca0cfe1462d8e73def6acd0fec9218ef6eae3cba9f8c28b89 6463e32c378722ec0e6c12d0d7701551f6eb11c01565ef090696231d140f32d2 ../../docs/adr/README.md
 fbbbc44294a4c36f378d8eead10e4005362b9a0d50fc9fc7d1b004508fbd31cb 84e0c0eafaa95a34c293f278ac52e45ce537bab5e752a00e6959a13ae103b65a ../../docs/agents/README.md
 504db14aead0670eaaf4622e895ca6decc8af2e1a9772c33a5bc3735f2df06f1 e4bfa392b5fa6b1c53ed5721c3442aaf843219d3f8f58dfe2a231a318bcef500 ../../docs/agents/backends/README.md

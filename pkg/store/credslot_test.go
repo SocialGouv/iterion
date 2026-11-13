@@ -182,14 +182,28 @@ func TestGatewayCapacitySubject(t *testing.T) {
 // Every field of RunCredStamp reaches the run document through Apply, the
 // writer the launch path and the filesystem twin of SetRunCredStamp share: a
 // field added to the stamp and forgotten there would stamp resumes on Mongo
-// and leave every launch unstamped. Each field is set alone, so one forgotten
-// assignment fails its own row whatever the others do.
+// and leave every launch unstamped. Each field is set alone and must land in
+// its own destination and nowhere else — measured against what Apply writes
+// for an empty stamp, so an unconditional write cannot hide a dropped field
+// and two crossed fields fail both rows.
 func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0).UTC()
+	dest := map[string]string{
+		"Fingerprints":     "CredFingerprints",
+		"CapacitySubjects": "CapacitySubjects",
+		"Tiers":            "CredentialTiers",
+		"SkippedReopensAt": "SkippedCredReopensAt",
+	}
+	var base Run
+	RunCredStamp{}.Apply(&base)
 	typ := reflect.TypeOf(RunCredStamp{})
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
 		t.Run(f.Name, func(t *testing.T) {
+			to, ok := dest[f.Name]
+			if !ok {
+				t.Fatalf("RunCredStamp.%s has no destination in this guard — name the Run field Apply writes it to", f.Name)
+			}
 			var stamp RunCredStamp
 			v := reflect.ValueOf(&stamp).Elem().Field(i)
 			switch v.Interface().(type) {
@@ -202,8 +216,15 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 			}
 			var r Run
 			stamp.Apply(&r)
-			if reflect.DeepEqual(r, Run{}) {
-				t.Fatalf("Apply wrote nothing for RunCredStamp.%s — the launch path and the filesystem twin would drop it", f.Name)
+			got := reflect.ValueOf(&r).Elem().FieldByName(to)
+			if !reflect.DeepEqual(got.Interface(), v.Interface()) {
+				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, want %v", f.Name, to, got.Interface(), v.Interface())
+			}
+			// Put the destination back to the empty stamp's value: anything
+			// left differing is a write the field should not have made.
+			got.Set(reflect.ValueOf(&base).Elem().FieldByName(to))
+			if !reflect.DeepEqual(r, base) {
+				t.Fatalf("RunCredStamp.%s reached a Run field other than %s", f.Name, to)
 			}
 		})
 	}

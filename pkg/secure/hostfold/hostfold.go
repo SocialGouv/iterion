@@ -1,4 +1,8 @@
-package httpdial
+// Package hostfold folds a URL hostname to the name a dial resolves. A leaf:
+// it imports the IDN tables and nothing that dials, so the store and the
+// credential layer read one host the way the transport does without linking
+// an HTTP client.
+package hostfold
 
 import (
 	"strings"
@@ -7,7 +11,7 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// CanonicalHost folds a URL hostname to the name a dial resolves: an
+// Canonical folds a URL hostname to the name a dial resolves: an
 // internationalised spelling mapped to punycode as net/http maps it before
 // dialling, lower-cased AFTER that mapping, and trailing root-zone dots
 // dropped.
@@ -31,7 +35,7 @@ import (
 // The fold is total: a comparison has no refusal to return. pkg/secrets'
 // canonicalGatewayHost is the VALIDATOR of this same shape, refusing a host a
 // stored credential may not name.
-func CanonicalHost(hostname string) string {
+func Canonical(hostname string) string {
 	h := hostname
 	if h == "" {
 		return ""

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
+	"github.com/SocialGouv/iterion/pkg/secure/hostfold"
 )
 
 // CredSlotStore is the optional capability behind a credential's HARD
@@ -153,13 +153,13 @@ const gatewayCapacitySubjectPrefix = "gw:"
 // (compatgw.Config.Host): no scheme, port or path.
 //
 // Two keys spelling one host differently name one subject: the host is folded
-// to the name a dial resolves (httpdial.CanonicalHost — punycode, lower case,
+// to the name a dial resolves (hostfold.Canonical — punycode, lower case,
 // no trailing root dot), and an address literal to its canonical text, an
 // IPv4-mapped IPv6 address to its IPv4 form. A host with no dial name — empty,
 // or a non-ASCII spelling the IDN profile refuses — names no subject and
 // answers "".
 func GatewayCapacitySubject(host string) string {
-	h := httpdial.CanonicalHost(host)
+	h := hostfold.Canonical(host)
 	if addr, err := netip.ParseAddr(h); err == nil {
 		h = addr.Unmap().String()
 	}
