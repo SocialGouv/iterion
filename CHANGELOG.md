@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.32.0](https://github.com/SocialGouv/iterion/compare/v5.31.0...v5.32.0) (2026-11-13)
+
+### Features
+
+* **dsl:** the `codemode:` attribute — carried to the IR, and a diagnostic that says nothing serves it ([#3201](https://github.com/SocialGouv/iterion/issues/3201)) ([bfb0311](https://github.com/SocialGouv/iterion/commit/bfb03112929ab502b5af756174af9a1fa174d85c)), references [#3195](https://github.com/SocialGouv/iterion/issues/3195)
+
+    <details><summary>why</summary>
+
+    The three pieces of codemode are in the tree — the dispatcher door (`d13f6391e`), the confined script host (`a917c371b`), the tool binding (`586476127`) — and no model can reach them. This is the first of the slices that change that: the attribute, and nothing else.
+
+    </details>
+
 ## [5.31.0](https://github.com/SocialGouv/iterion/compare/v5.30.0...v5.31.0) (2026-11-13)
 
 ### Features
