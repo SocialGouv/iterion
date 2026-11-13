@@ -493,6 +493,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/price-feeds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/admin/price-feeds
+         * @description Super-admin only. The platform's feed list, folded below every org and team.
+         */
+        get: operations["getAdminPriceFeeds"];
+        /**
+         * PUT /api/admin/price-feeds
+         * @description Super-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the platform's feed list, null clears it; audited as platform.price_feeds.updated.
+         */
+        put: operations["putAdminPriceFeeds"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/price-feeds/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/price-feeds/sync
+         * @description Super-admin only. Forces one platform feed's refresh (name) or every enabled one's, answering what changed per id.
+         */
+        post: operations["postAdminPriceFeedsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/runner-pools": {
         parameters: {
             query?: never;
@@ -2347,7 +2391,10 @@ export interface paths {
         };
         /** GET /api/orgs/{id}/price-feeds */
         get: operations["getOrgsByIdPriceFeeds"];
-        /** PUT /api/orgs/{id}/price-feeds */
+        /**
+         * PUT /api/orgs/{id}/price-feeds
+         * @description Org-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the org's feed list, null clears it.
+         */
         put: operations["putOrgsByIdPriceFeeds"];
         post?: never;
         delete?: never;
@@ -5340,8 +5387,33 @@ export interface paths {
         };
         /** GET /api/teams/{id}/price-feeds */
         get: operations["getTeamsByIdPriceFeeds"];
-        /** PUT /api/teams/{id}/price-feeds */
+        /**
+         * PUT /api/teams/{id}/price-feeds
+         * @description Team-admin only. Body {"feeds": [feed, ...] | null, "expected_updated_at": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.
+         */
         put: operations["putTeamsByIdPriceFeeds"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/price-feeds/effective": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/teams/{id}/price-feeds/effective
+         * @description Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.
+         */
+        get: operations["getTeamsByIdPriceFeedsEffective"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -7225,6 +7297,10 @@ export interface components {
             max_runs_per_day?: number;
             max_usd_per_day?: number;
         };
+        EffortsEntry: {
+            feed: string;
+            values: string[];
+        };
         Entry: {
             backends?: string[];
             context_window: number;
@@ -7705,6 +7781,14 @@ export interface components {
             /** Format: date-time */
             queued_at?: string;
         };
+        PricefeedEntry: {
+            declared?: boolean;
+            feed: string;
+            fresh_for: number;
+            /** Format: date-time */
+            refreshed_at: string;
+            spec: components["schemas"]["Spec"];
+        };
         ProjectSyncConflict: {
             /** Format: date-time */
             at?: string;
@@ -7981,6 +8065,7 @@ export interface components {
             max_output_tokens?: number;
             output_cost_per_m?: number;
             reasoning?: boolean;
+            reasoning_efforts?: string[];
             temperature?: boolean;
             tool_call?: boolean;
         };
@@ -8051,6 +8136,14 @@ export interface components {
             /** Format: date-time */
             refreshed_at?: string;
             status: string;
+        };
+        Table: {
+            efforts?: {
+                [key: string]: components["schemas"]["EffortsEntry"];
+            };
+            entries: {
+                [key: string]: components["schemas"]["PricefeedEntry"];
+            };
         };
         Token: {
             /** Format: date-time */
@@ -8852,20 +8945,56 @@ export interface components {
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
         };
+        priceFeedContributor: {
+            answers_efforts?: boolean;
+            answers_entry?: boolean;
+            efforts?: string[];
+            feed: string;
+            scope: string;
+            scope_id?: string;
+            spec?: components["schemas"]["Spec"];
+        };
+        priceFeedEffectiveModel: {
+            contributors?: components["schemas"]["priceFeedContributor"][];
+            efforts?: components["schemas"]["EffortsEntry"];
+            efforts_named_only?: boolean;
+            entry?: components["schemas"]["PricefeedEntry"];
+            entry_named_only?: boolean;
+            id: string;
+        };
+        priceFeedEffectiveOverBudget: {
+            budget: number;
+            bytes: number;
+        };
+        priceFeedEffectiveScope: {
+            feeds?: string[];
+            id?: string;
+            scope: string;
+            unread?: string;
+        };
+        priceFeedEffectiveView: {
+            /** Format: date-time */
+            at: string;
+            models: components["schemas"]["priceFeedEffectiveModel"][];
+            org_id?: string;
+            over_budget?: components["schemas"]["priceFeedEffectiveOverBudget"];
+            runner_env_fallback: string;
+            scopes: components["schemas"]["priceFeedEffectiveScope"][];
+            table?: components["schemas"]["Table"];
+            team_id: string;
+            warnings?: string[];
+        };
         priceFeedView: {
+            /** Format: date-time */
+            declared_at?: string;
             entries?: number;
             feed: components["schemas"]["FeedConfig"];
             fresh_for?: number;
             last_error?: string;
+            redacted_params?: string[];
             /** Format: date-time */
             refreshed_at?: string;
             status: string;
-        };
-        priceFeedsPutReq: {
-            /** Format: date-time */
-            expected_updated_at?: string;
-            /** Format: byte */
-            feeds: string;
         };
         priceFeedsSyncReq: {
             name?: string;
@@ -10284,6 +10413,112 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminPriceFeeds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminPriceFeedsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["priceFeedsSyncReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedsSyncResponse"];
+                };
+            };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
             401: {
                 headers: {
@@ -13508,11 +13743,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["priceFeedsPutReq"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {
@@ -18058,11 +18289,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["priceFeedsPutReq"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {
@@ -18071,6 +18298,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    getTeamsByIdPriceFeedsEffective: {
+        parameters: {
+            query?: {
+                /** @description A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets. */
+                model?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedEffectiveView"];
                 };
             };
         };

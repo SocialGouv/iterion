@@ -813,6 +813,42 @@ iterion remote runs mission stop TARGET MISSION
 `--assistant` can resolve the one exact active watch when `--watch` is omitted.
 All four commands support the remote command's normal `--output json` mode.
 
+A gateway model's capabilities — prices, window, output cap, accepted
+reasoning efforts — live in the database under `remote price-feeds`
+(ADR-163, ADR-166). The runner's `OPENAI_COMPATIBLE_*` env tables are
+fallbacks:
+
+```bash
+iterion remote price-feeds list --platform
+iterion remote price-feeds declare pliage --platform \
+  --models-file pool-models.json --efforts-file pool-efforts.json --dry-run
+iterion remote price-feeds declare pliage --platform --file pliage.json
+iterion remote price-feeds sync --platform scaleway
+iterion remote price-feeds effective --team TEAM --model scaleway/deepseek-v4.1-flash
+```
+
+Every verb but `effective` takes one scope: `--platform` (super-admin),
+`--org ID`, or a team — `--team ID`, or the switched team when no scope
+flag is given.
+`declare` writes one feed of type `declared`:
+
+- it checks the table locally with the server's parser;
+- it upserts the feed into the list it read (`--first` puts it ahead of
+  the level's other feeds), and refuses a list holding a param the
+  server's view redacts, or a read answered by a server release older
+  than declared feeds;
+- it prints the per-id diff;
+- it writes the list back under the stamp it read, so a concurrent write
+  answers 409.
+
+`--dry-run` writes nothing. `effective` shows the table a run launched
+now for the team seals — with `--model`, a run naming those ids — each
+answer with its feed and level; a listing over the run channel's byte
+budget says no run seals it whole, each run sealing it narrowed to the ids
+it names. `list`
+prints a param longer than 120 bytes as its size. The full contract is
+in [backends.md](backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163).
+
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 
 `iterion map gen` rewrites the three committed indexes under `docs/references/` — [`map-packages.md`](references/map-packages.md) (every Go package, its one-line purpose and the interfaces it exposes), [`map-docs.md`](references/map-docs.md) (every page and ADR, with the ADR's status) and [`map-bots.md`](references/map-bots.md) (every bundle and skill). Everything is derived deterministically: Go's own parser, markdown headings, the bundle manifest loader — no model call, no embedding. `--check` writes nothing and fails on drift; `task map:check` runs the same assertion as a Go test, so freshness rides the required `test` check.

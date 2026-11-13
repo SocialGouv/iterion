@@ -156,18 +156,28 @@ func (s *MongoStateStore) Get(ctx context.Context, docID string) (*StateRecord, 
 	return &rec, nil
 }
 
-// Put writes one state document, stamping UpdatedAt.
-func (s *MongoStateStore) Put(ctx context.Context, docID string, rec *StateRecord) error {
-	rec.UpdatedAt = time.Now().UTC()
-	body, err := bson.Marshal(stateDoc{ID: docID, StateRecord: *rec})
+// stateToDoc encodes one state document the way Put writes it — the
+// record inline beside its id, through the driver's default codec.
+func stateToDoc(docID string, rec StateRecord) (bson.M, error) {
+	body, err := bson.Marshal(stateDoc{ID: docID, StateRecord: rec})
 	if err != nil {
-		return fmt.Errorf("pricefeed: encode state %s: %w", docID, err)
+		return nil, fmt.Errorf("pricefeed: encode state %s: %w", docID, err)
 	}
 	var doc bson.M
 	if err := bson.Unmarshal(body, &doc); err != nil {
-		return fmt.Errorf("pricefeed: encode state %s: %w", docID, err)
+		return nil, fmt.Errorf("pricefeed: encode state %s: %w", docID, err)
 	}
 	doc["_id"] = docID
+	return doc, nil
+}
+
+// Put writes one state document, stamping UpdatedAt.
+func (s *MongoStateStore) Put(ctx context.Context, docID string, rec *StateRecord) error {
+	rec.UpdatedAt = time.Now().UTC()
+	doc, err := stateToDoc(docID, *rec)
+	if err != nil {
+		return err
+	}
 	if _, err := s.col.ReplaceOne(ctx, bson.M{"_id": docID}, doc, options.Replace().SetUpsert(true)); err != nil {
 		return fmt.Errorf("pricefeed: put state %s: %w", docID, err)
 	}

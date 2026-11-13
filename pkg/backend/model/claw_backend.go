@@ -3027,7 +3027,15 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		// devcontainer.json, which becomes the env the container is
 		// STARTED with — because ExecOpts.Env outranks that environment.
 		env[compatgw.CatalogModelsEnv] = ""
-		env[compatgw.ReasoningEffortsEnv] = envtrust.Inherited(compatgw.ReasoningEffortsEnv)
+		// The accepted efforts cross as the HOST's merged answer, under
+		// the name they always crossed: the env table's valid entries
+		// overlaid by the run's feed-table efforts (normalized id, every
+		// env spelling of it, and this node's own wire spelling), read
+		// through Inherited like the feed table below — so an older
+		// sandbox image, which reads only this name, maps an effort by
+		// the table the host mapped it by; the explicit empty when
+		// neither table states anything.
+		env[compatgw.ReasoningEffortsEnv] = compatgw.CrossingReasoningEfforts(modelroute.Parse(model).Wire, func(name string) string { return credroute.Inherited(ctx, name) }, iterlog.NewFromEnv(os.Stderr).Warn)
 		env[compatgw.CatalogProviderEnv] = ""
 		env[compatgw.ResolvedEnvName] = ""
 		// The run's price-feed table crosses beside them, the same

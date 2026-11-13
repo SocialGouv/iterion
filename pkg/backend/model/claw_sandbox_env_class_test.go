@@ -97,7 +97,6 @@ var crossedByItsOwnBranch = map[string]string{
 	// reader consults does not cross, the RESOLUTION does.
 	"ITERION_CLAW_STREAM_COLD_TIMEOUT":       "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
 	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
-	"OPENAI_COMPATIBLE_REASONING_EFFORTS":    "crosses on a gateway node as the host's planted-as-unset answer (envtrust.Inherited, explicit empty included), so the in-container route maps an effort by the operator's table, never by one the workspace .env or a devcontainer.json planted",
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
 	// ADR-163: the run's price-feed table, folded by the server and
 	// planted on the run's environment (credroute overlay). The crossing
@@ -221,6 +220,7 @@ var notEnvNames = map[string]string{}
 const (
 	whyCrossingSets = "set in the crossing by forwardableProviderEnv's gateway branch, for the in-container factory"
 	whyCatalogEmpty = "set in the crossing by forwardableProviderEnv's gateway branch as an explicit empty: a local source of the in-container catalog, which the host's own forwarded record answers for (the reader is pkg/backend/compatgw)"
+	whyEffortsMerge = "set in the crossing by forwardableProviderEnv's gateway branch as the host's merged accepted-efforts table (compatgw.CrossingReasoningEfforts over credroute.Inherited: the env table's valid entries under the run's feed-table efforts, explicit empty included), so an in-container route — an older image's included — maps an effort by the host's answer, never by a table the workspace .env or a devcontainer.json planted (the reader is pkg/backend/compatgw)"
 	whyForfaitDir   = "set in the crossing to where the run's forfait lands in the container"
 	whyCodexHome    = "set in the crossing to where a ChatGPT forfait lands in the container: the run's own, or the copy of the host's a dispatch writes"
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
@@ -230,12 +230,13 @@ const (
 )
 
 var envWrites = map[string]string{
-	"OPENAI_COMPATIBLE_BASE_URL":         whyCrossingSets,
-	"OPENAI_COMPATIBLE_API_KEY":          whyCrossingSets,
-	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE": whyCrossingSets,
-	"ITERION_OPENAI_COMPATIBLE_RESOLVED": whyCrossingSets,
-	"OPENAI_COMPATIBLE_MODELS":           whyCatalogEmpty,
-	"OPENAI_COMPATIBLE_CATALOG_PROVIDER": whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_BASE_URL":          whyCrossingSets,
+	"OPENAI_COMPATIBLE_API_KEY":           whyCrossingSets,
+	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":  whyCrossingSets,
+	"ITERION_OPENAI_COMPATIBLE_RESOLVED":  whyCrossingSets,
+	"OPENAI_COMPATIBLE_MODELS":            whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_CATALOG_PROVIDER":  whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_REASONING_EFFORTS": whyEffortsMerge,
 	// The engine-owned sandbox proxy channel: this package only sets it in
 	// the runner env it hands on; the reader is pkg/backend/compatgw.
 	"ITERION_SANDBOX_PROXY_ENDPOINT": whyCrossingSets,
@@ -495,10 +496,9 @@ var crossingSpellings = map[string]string{
 // assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
 // name stops crossing by its own branch reds here.
 var consultsWhatCrosses = map[string]string{
-	"ITERION_GATEWAY_PRICE_FEED":          "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
-	"OPENAI_COMPATIBLE_REASONING_EFFORTS": "the effort table crosses as the host's planted-as-unset answer, so the twin maps an effort by what the host maps it by",
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_GATEWAY_PRICE_FEED":       "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
 }
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",

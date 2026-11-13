@@ -383,20 +383,20 @@ func TestEffectivePriceFeedFold(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := EffectivePriceFeed(context.Background(), nil, nil, "org1", "team1", nil, nil); got != nil {
+	if got := mustTable(t)(EffectivePriceFeed(context.Background(), nil, nil, "org1", "team1", nil, nil)); got != nil {
 		t.Fatal("nil stores folded a table")
 	}
-	if got := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil); got != nil {
+	if got := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil)); got != nil {
 		t.Fatal("an empty world folded a table")
 	}
 	put(pricefeed.OrgConfigDocID("org1"), "org-feed", 1)
-	raw := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil)
+	raw := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil))
 	table := pricefeed.ParseTable(string(raw))
 	if table == nil || table.Entries["glm-5.3"].Spec.InputCostPerM != 1 {
 		t.Fatalf("the org feed did not fold: %s", raw)
 	}
 	put(pricefeed.TeamConfigDocID("team1"), "team-feed", 2)
-	raw = EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil)
+	raw = mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil))
 	table = pricefeed.ParseTable(string(raw))
 	if table.Entries["glm-5.3"].Spec.InputCostPerM != 2 || table.Entries["glm-5.3"].Feed != "team-feed" {
 		t.Fatalf("the team feed did not answer over the org: %s", raw)
@@ -514,8 +514,8 @@ func TestPriceFeedURLRedactionAndLateFailure(t *testing.T) {
 	if err != nil || outcome.Status != pricefeed.StateOK {
 		t.Fatalf("the base refresh failed: %+v err %v", outcome, err)
 	}
-	failing := pricefeed.FeedConfig{Name: feed.Name, Type: pricefeed.TypeExec, Enabled: true,
-		Interval: feed.Interval, Timeout: feed.Timeout, Params: map[string]string{"command": "/nonexistent"}}
+	failing := feed
+	failing.Params = map[string]string{"url": priceFeedDeadSource(t), "token": "tenant-litellm-bearer"}
 	lateOutcome, err := s.priceFeedRefresh(context.Background(), docID, failing)
 	if err != nil {
 		t.Fatal(err)

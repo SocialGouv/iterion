@@ -128,7 +128,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// walks the shared tiers with a warning saying the live launch is the
 	// one that decides; "none" only shapes the shared tiers below.
 	sovereignPreview := false
-	policy, ferr := p.llmFallbackForTeam(ctx, spec.Context.TeamID)
+	policy, _, ferr := p.llmFallbackForTeam(ctx, spec.Context.TeamID)
 	switch {
 	case ferr != nil:
 		x.warn("The team's llm_fallback policy could not be read; the live launch refuses on this error and this preview is conditional.")

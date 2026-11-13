@@ -263,6 +263,10 @@ func ResetCatalogCaches() {
 		unknownWarns.Delete(k)
 		return true
 	})
+	asideWarns.Range(func(k, _ any) bool {
+		asideWarns.Delete(k)
+		return true
+	})
 }
 
 var staleWarnOnce sync.Once
@@ -325,8 +329,46 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	// with one warning per feed per process, and the operator table
 	// answers — never a refusal.
 	if e := feedTableLookup(get, id); e != nil {
-		return Resolved{Spec: e.Spec, Source: SourceFeed(e.Feed), RefreshedAt: e.RefreshedAt}
+		answer := Resolved{Spec: e.Spec, Source: SourceFeed(e.Feed), RefreshedAt: e.RefreshedAt}
+		if !e.Declared || answer.Priced() {
+			return answer
+		}
+		// A declared row without the price pair never hides a price
+		// (ADR-166 §2): when the rungs below price the id, their answer
+		// answers whole; otherwise the declared row does, as the pool's
+		// row did.
+		if below := resolveBelowFeed(modelID, live, get, unknownSilent); below.Priced() {
+			if _, loaded := asideWarns.LoadOrStore(id+"\x00"+e.Feed, true); !loaded {
+				iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: id %q — the run table's declared row (feed %s) states no price pair, and the %s table prices it: that row answers whole (a declared row never hides a price)", modelID, e.Feed, below.Source)
+			}
+			return below
+		}
+		return answer
 	}
+	mode := unknownDebug
+	if warnUnknown {
+		mode = unknownWarn
+	}
+	return resolveBelowFeed(modelID, live, get, mode)
+}
+
+// unknownMode says how resolveBelowFeed reports an id no table below the
+// feed carries.
+type unknownMode int
+
+const (
+	// unknownSilent: a probe under a declared row, which answers instead.
+	unknownSilent unknownMode = iota
+	// unknownDebug: a capability read path (ResolveCatalogQuiet).
+	unknownDebug
+	// unknownWarn: a launch or a dispatch, once per id per process.
+	unknownWarn
+)
+
+// resolveBelowFeed resolves one gateway id from the rungs below the run's
+// feed table: the operator table, then the catalog provider's live table
+// and snapshot.
+func resolveBelowFeed(modelID string, live *modelspecs.Registry, get func(string) string, mode unknownMode) Resolved {
 	table, terr := operatorModels(get)
 	if terr != nil {
 		// The operator table is malformed: refuse loudly, resolve to
@@ -361,11 +403,15 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	// Said out loud, once per id per process: the record on the node
 	// output is easy to miss, and a mis-set OPENAI_COMPATIBLE_CATALOG_PROVIDER
 	// would otherwise be invisible in logs. A quiet caller keeps it at debug
-	// and does not consume the memo.
-	if !warnUnknown {
+	// and does not consume the memo; a probe under a declared row says
+	// nothing, the row answering.
+	switch mode {
+	case unknownDebug:
 		iterlog.NewFromEnv(os.Stderr).Debug("openai_compatible: id %q is in no table (read path, not a launch)", modelID)
-	} else if _, loaded := unknownWarns.LoadOrStore(strings.ToLower(strings.TrimSpace(modelID)), true); !loaded {
-		iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: id %q is in no table (set %s, or %s=<models.dev provider> — currently %q)", modelID, CatalogModelsEnv, CatalogProviderEnv, prov)
+	case unknownWarn:
+		if _, loaded := unknownWarns.LoadOrStore(strings.ToLower(strings.TrimSpace(modelID)), true); !loaded {
+			iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: id %q is in no table (set %s, or %s=<models.dev provider> — currently %q)", modelID, CatalogModelsEnv, CatalogProviderEnv, prov)
+		}
 	}
 	return Resolved{Source: SourceUnknown}
 }
@@ -391,6 +437,10 @@ func qualifiedIDs(q, modelID string) []string {
 // unknownWarns bounds the per-id warning to one line each, whatever a
 // workflow's templated model strings throw at the catalog.
 var unknownWarns sync.Map
+
+// asideWarns bounds the warning of a declared row stepping aside for a
+// priced rung below it to one line per (id, feed) per process.
+var asideWarns sync.Map
 
 // ResolvedEnvRecord is the wire shape of ResolvedEnvName — the ONE struct
 // the host writes and the container reads, so a field added to the record
@@ -460,8 +510,8 @@ func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
 		return rec, false
 	}
 	// Provenance is one of the four constants — or a named price feed's
-	// `feed:<name>`: the feed's name is tenant data, so this validates the
-	// PREFIX, not a list. A stale or forged value with a fabricated source
+	// `feed:<name>`: the feed's name is configured data, so this validates
+	// the PREFIX, not a list. A stale or forged value with a fabricated source
 	// must not pass as a record; a feed record without its age still
 	// answers, priced and provenance-carried, the age simply unknown.
 	switch rec.Source {

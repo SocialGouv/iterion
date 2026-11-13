@@ -3,15 +3,33 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pricefeed"
+	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The price feed's END-TO-END chain (ADR-163), deterministic, no model
@@ -43,7 +61,7 @@ func TestPriceFeedEndToEndRunChain(t *testing.T) {
 	t.Setenv(compatgw.ResolvedEnvName, "")
 	t.Setenv(compatgw.FeedTableEnv, "")
 	compatgw.ResetCatalogCaches()
-	raw := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil)
+	raw := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil))
 	if raw == nil {
 		t.Fatal("the launch fold answered no table")
 	}
@@ -140,7 +158,7 @@ func TestPriceFeedEndToEndRunChain(t *testing.T) {
 	if err := s.priceFeedStates.Put(context.Background(), pricefeed.StateDocID(pricefeed.TeamConfigDocID("team1"), "scw"), agedState); err != nil {
 		t.Fatal(err)
 	}
-	if stale := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil); stale != nil {
+	if stale := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil)); stale != nil {
 		t.Fatalf("a fold over aged state answered a table: %s", stale)
 	}
 }
@@ -152,4 +170,485 @@ func marshalJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// The pool-retirement proof (ADR-166), deterministic, no model spend: a
+// run on the DEFAULT runner — every OPENAI_COMPATIBLE_* table absent from
+// its process — maps its effort, sizes its output and prices its usage
+// from a PLATFORM declaration, and a twin run on a pool runner whose env
+// tables state the same values sends the same model, reasoning_effort and
+// max_tokens on the wire at the same cost; only the provenance differs.
+//
+// The launch is the production one: the super-admin's PUT through the
+// real route; the real publisher (cloudpublisher.NewForTesting, the queue
+// left out) launching on the default runner for a team that holds its
+// gateway key, its fold the one the server binary wires
+// (PublisherPriceFeedEffective over the stores the route wrote); the
+// sealed record the published message names, opened under the message's
+// per-run key, team, pool and run id as the runner opens it; the runner's
+// bundle-to-context adapter for the table; the runner binary's credential
+// lookup; the executor every plane builds (runview.BuildExecutor) and the
+// engine. The gateway is a loopback stub that records what it receives.
+//
+// Two legs are not driven here:
+//   - the runner's own open: injectCredentials is unexported in
+//     pkg/runner, so this test opens the record with the call it makes,
+//     plants the table through the adapter it calls, and plants no
+//     credential. pkg/runner's
+//     TestInjectCredentials_OpensThePublishersTeamGatewayLaunch hands the
+//     real publisher's message to injectCredentials;
+//   - the call funded by the sealed key: a sealed gateway key's base URL
+//     is https on a public host (secrets.ValidateGatewayBaseURL, asserted
+//     below on the stub's URLs), so the stub cannot be the team's gateway.
+//     The runner's env pair (OPENAI_COMPATIBLE_BASE_URL / _API_KEY, which
+//     are no table) funds the call here. The pkg/runner test shows the
+//     runner's open of such a launch carrying the sealed key, the ambient
+//     refusal of the pod's environment and the table, and the table
+//     answering the same efforts, window, output cap and prices there.
+func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ITERION_HOME", t.TempDir())
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	for _, name := range []string{
+		compatgw.CatalogModelsEnv, compatgw.ReasoningEffortsEnv, compatgw.CatalogProviderEnv,
+		compatgw.FeedTableEnv, compatgw.ResolvedEnvName,
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+	} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compatgw.ResetCatalogCaches()
+	t.Cleanup(compatgw.ResetCatalogCaches)
+	// The runner binary installs the run-credentials lookup at boot.
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+
+	// 1. The super-admin declares the platform feed through the real route.
+	live := newPriceFeedLive(t)
+	if code, out := live.do(t, "PUT", "/api/admin/price-feeds", live.root, priceFeedPutFeedBody(declaredFeed("pliage", retirePliage))); code != http.StatusOK {
+		t.Fatalf("the platform declaration was refused: %d %s", code, out)
+	}
+
+	gw := newRecordingGateway(t)
+	// A sealed gateway key refuses the stub as its base URL, in either
+	// scheme: the reason the env pair funds the call below.
+	for _, u := range []string{gw.srv.URL + "/v1", "https://" + gw.srv.Listener.Addr().String() + "/v1"} {
+		if _, err := secrets.ValidateGatewayBaseURL(u); err == nil {
+			t.Fatalf("a sealed gateway key accepts the loopback stub's base URL %s: fund the run with the team's key instead of the env pair", u)
+		}
+	}
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", gw.srv.URL+"/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-runner-gateway")
+	wf := compileRetireBot(t)
+
+	// 2. The real publisher launches the run for the team; the runner
+	// opens the record its message names and plants the table.
+	runID, bundle := launchRetireSource(t, live, retireBot, wf)
+	if bundle.GatewayPriceFeed == nil {
+		// Not fatal: the run below then shows what a default runner does
+		// without the declaration, assertion by assertion.
+		t.Error("the launch sealed no table")
+	}
+	// The default runner states no table: every answer below is the
+	// declaration's.
+	for _, name := range []string{compatgw.CatalogModelsEnv, compatgw.ReasoningEffortsEnv, compatgw.CatalogProviderEnv} {
+		if value, set := os.LookupEnv(name); set {
+			t.Fatalf("the default runner's environment sets %s=%q: the run would not prove the declaration alone", name, value)
+		}
+	}
+	feedRun := runRetireWorkflow(t, compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed), wf, gw, runID)
+
+	// 3. What the gateway RECEIVED, and what the run recorded.
+	assertRetiredPoolRun(t, feedRun)
+
+	// 4. The parity twin: the pool's env tables, no feed in the bundle.
+	compatgw.ResetCatalogCaches()
+	t.Setenv(compatgw.CatalogModelsEnv, retirePoolModels)
+	t.Setenv(compatgw.ReasoningEffortsEnv, retirePoolEfforts)
+	poolRun := runRetireWorkflow(t, context.Background(), wf, gw, fmt.Sprintf("run-retire-pool-%d", time.Now().UnixNano()))
+	for id, body := range feedRun.bodies {
+		if poolRun.bodies[id] != body {
+			t.Errorf("%s: the wire differs between the declaration and the pool tables: %+v vs %+v", id, body, poolRun.bodies[id])
+		}
+	}
+	for _, node := range []string{"deep", "glm"} {
+		if poolRun.costs[node] != feedRun.costs[node] || poolRun.sampled[node] != feedRun.sampled[node] {
+			t.Errorf("%s: cost %v / sample %v from the declaration, %v / %v from the pool tables", node, feedRun.costs[node], feedRun.sampled[node], poolRun.costs[node], poolRun.sampled[node])
+		}
+		if poolRun.specs[node].Source != compatgw.SourceOperator {
+			t.Errorf("%s: the pool twin's provenance is %q, want operator", node, poolRun.specs[node].Source)
+		}
+	}
+	if src := poolRun.adjusted["deep"]["source"]; src != compatgw.SourceReasoningEffortsEnv {
+		t.Errorf("the pool twin's effort source is %v, want %s", src, compatgw.SourceReasoningEffortsEnv)
+	}
+}
+
+// assertRetiredPoolRun checks what the gateway received and what the run
+// recorded against retirePliage, as a default runner reads it from the
+// run's table: for each id the declared values, none of them claw's own
+// default (max_tokens 8192), so a value the table dropped reads as the
+// default it fell to.
+func assertRetiredPoolRun(t *testing.T, run retireRun) {
+	t.Helper()
+	deep, glm := run.bodies["scaleway/deepseek-v4.1-flash"], run.bodies["glm-5.3"]
+	if deep.ReasoningEffort != "high" {
+		t.Errorf("the gateway received reasoning_effort %q for deepseek, want high (medium mapped by the platform declaration)", deep.ReasoningEffort)
+	}
+	for id, want := range map[string]int{"scaleway/deepseek-v4.1-flash": 32768, "glm-5.3": 16384} {
+		if got := run.bodies[id].MaxTokens; got != want {
+			t.Errorf("the gateway received max_tokens %d for %s, want the declared max output %d", got, id, want)
+		}
+	}
+	if glm.ReasoningEffort != "" {
+		t.Errorf("the gateway received reasoning_effort %q for glm-5.3, whose node asks none", glm.ReasoningEffort)
+	}
+	if adj := run.adjusted["deep"]; adj["requested"] != "medium" || adj["applied"] != "high" || adj["source"] != "feed:pliage" {
+		t.Errorf("reasoning_effort_adjusted = %v, want medium -> high from feed:pliage", adj)
+	}
+	for node, spec := range run.specs {
+		if spec.Source != "feed:pliage" {
+			t.Errorf("%s: _gateway_spec.source = %q, want feed:pliage", node, spec.Source)
+		}
+	}
+	// Each node's record carries its id's declared window, output cap and
+	// prices, and its cost is its usage at those prices: the stub reports
+	// 100000 prompt and 2000 completion tokens, none cached.
+	for node, want := range map[string]compatgw.ResolvedEnvRecord{
+		"deep": {ContextWindow: 256000, MaxOutputTokens: 32768, InputUSDPerMTok: 0.672, OutputUSDPerMTok: 2.016, CacheReadUSDPerMTok: 0.1344},
+		"glm":  {ContextWindow: 256000, MaxOutputTokens: 16384, InputUSDPerMTok: 2.01, OutputUSDPerMTok: 6.15},
+	} {
+		got := run.specs[node]
+		if got.ContextWindow != want.ContextWindow || got.MaxOutputTokens != want.MaxOutputTokens || got.InputUSDPerMTok != want.InputUSDPerMTok ||
+			got.OutputUSDPerMTok != want.OutputUSDPerMTok || got.CacheReadUSDPerMTok != want.CacheReadUSDPerMTok {
+			t.Errorf("%s: _gateway_spec = window %d, max output %d, prices %v/%v cache %v; want the declaration's %d, %d, %v/%v cache %v", node,
+				got.ContextWindow, got.MaxOutputTokens, got.InputUSDPerMTok, got.OutputUSDPerMTok, got.CacheReadUSDPerMTok,
+				want.ContextWindow, want.MaxOutputTokens, want.InputUSDPerMTok, want.OutputUSDPerMTok, want.CacheReadUSDPerMTok)
+		}
+		wantCost := (100000*want.InputUSDPerMTok + 2000*want.OutputUSDPerMTok) / 1e6
+		if cost := run.costs[node]; math.Abs(cost-wantCost) > 1e-9 {
+			t.Errorf("%s: _cost_usd = %v, want %v (100000 prompt and 2000 completion tokens at the declared prices)", node, cost, wantCost)
+		}
+		if run.sampled[node] <= 0 {
+			t.Errorf("%s: no usage_progress sample carried a USD figure (%v)", node, run.sampled[node])
+		}
+	}
+}
+
+// retirePliage is the platform declaration: deepseek-v4.1-flash with its
+// accepted efforts, window, max output and prices (cache read included),
+// glm-5.3 priced with its window and max output — neither max output
+// claw's 8192 default.
+const retirePliage = `{"scaleway/deepseek-v4.1-flash":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+
+// retirePoolModels and retirePoolEfforts are the same facts as the
+// pool's two env tables.
+const (
+	retirePoolModels  = `{"scaleway/deepseek-v4.1-flash":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+	retirePoolEfforts = `{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"]}`
+)
+
+const retireBot = `agent deep:
+  backend: claw
+  model: "openai_compatible/scaleway/deepseek-v4.1-flash"
+  reasoning_effort: medium
+  user: "Review the change."
+
+agent glm:
+  backend: claw
+  model: "openai_compatible/glm-5.3"
+  user: "Summarize the review."
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: deep
+  deep -> glm
+  glm -> done
+`
+
+func compileRetireBot(t *testing.T) *ir.Workflow {
+	t.Helper()
+	return compileRetireSource(t, retireBot)
+}
+
+// compileRetireSource compiles a fixture bot's source.
+func compileRetireSource(t *testing.T, src string) *ir.Workflow {
+	t.Helper()
+	pr := parsertest.Parse("retire.bot", src)
+	for _, d := range pr.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatalf("fixture does not parse: %s", d.Error())
+		}
+	}
+	cr := ir.Compile(pr.File)
+	for _, d := range cr.Diagnostics {
+		if d.Severity == ir.SeverityError {
+			t.Fatalf("fixture does not compile: %s", d.Error())
+		}
+	}
+	return cr.Workflow
+}
+
+// retireWire is the part of a chat-completions body the proof compares.
+type retireWire struct {
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	MaxTokens       int    `json:"max_tokens"`
+}
+
+// recordingGateway is a loopback chat-completions endpoint: it records
+// each request's wire fields by model and answers one streamed text turn
+// reporting a usage large enough to clear the usage_progress USD floor.
+type recordingGateway struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen map[string]retireWire
+}
+
+func newRecordingGateway(t *testing.T) *recordingGateway {
+	t.Helper()
+	g := &recordingGateway{seen: map[string]retireWire{}}
+	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("gateway: read body: %v", err)
+			return
+		}
+		var req retireWire
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("gateway: decode body: %v (%s)", err, body)
+			return
+		}
+		g.mu.Lock()
+		g.seen[req.Model] = req
+		g.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"done"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":2000}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(g.srv.Close)
+	return g
+}
+
+func (g *recordingGateway) take() map[string]retireWire {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := g.seen
+	g.seen = map[string]retireWire{}
+	return out
+}
+
+// retireRun is what one run left: the wire per model, the effort
+// adjustment per node, and per node its `_gateway_spec`, `_cost_usd` and
+// the largest usage_progress USD figure.
+type retireRun struct {
+	bodies   map[string]retireWire
+	adjusted map[string]map[string]any
+	specs    map[string]compatgw.ResolvedEnvRecord
+	costs    map[string]float64
+	sampled  map[string]float64
+}
+
+// retireTeamKey and retireTeamURL are team-pf's gateway key and its base
+// URL, https on a public host as a sealed key's must be.
+const (
+	retireTeamKey = "sk-team-pf-gateway"
+	retireTeamURL = "https://gw.example"
+)
+
+// launchRetireSource launches src, compiled as wf, for team-pf through
+// the real publisher, the team holding its gateway key and the publisher's
+// fold the one the server binary wires over the stores live's route wrote.
+// It opens the sealed record the published message names as the runner
+// does: read under the message's team, opened under the message's per-run
+// key, team, pool and run id. It answers the run id and the opened bundle.
+func launchRetireSource(t *testing.T, live *priceFeedLive, src string, wf *ir.Workflow) (string, secrets.RunBundle) {
+	t.Helper()
+	launch := submitRetireSourceLaunch(t, live, src, wf, live.configs, live.states)
+	if launch.err != nil {
+		t.Fatalf("the launch was refused: %v", launch.err)
+	}
+	if len(launch.published) != 1 {
+		t.Fatalf("the launch published %d messages, want one", len(launch.published))
+	}
+	msg := launch.published[0]
+	if msg.RunnerPool != "" {
+		t.Fatalf("the launch landed on runner pool %q, want the default runner", msg.RunnerPool)
+	}
+	if msg.SecretsRef == "" {
+		t.Fatal("the launch sealed no bundle")
+	}
+	return msg.RunID, launch.open(t, msg)
+}
+
+// retireLaunch is one launch through the real publisher: the messages it
+// published, its error, and the run-secrets store its bundles sealed into.
+type retireLaunch struct {
+	published  []*queue.RunMessage
+	err        error
+	runSecrets *secrets.MemoryRunSecretsStore
+}
+
+// submitRetireLaunch launches retireBot, compiled as wf, for team-pf
+// through the real publisher (submitRetireSourceLaunch).
+func submitRetireLaunch(t *testing.T, live *priceFeedLive, wf *ir.Workflow, configs pricefeed.ConfigStore, states pricefeed.StateStore) retireLaunch {
+	t.Helper()
+	return submitRetireSourceLaunch(t, live, retireBot, wf, configs, states)
+}
+
+// submitRetireSourceLaunch launches src, compiled as wf, for team-pf
+// through the real publisher, the team holding its gateway key and the
+// publisher's fold the one the server binary wires over configs and
+// states.
+func submitRetireSourceLaunch(t *testing.T, live *priceFeedLive, src string, wf *ir.Workflow, configs pricefeed.ConfigStore, states pricefeed.StateStore) retireLaunch {
+	t.Helper()
+	ctx := context.Background()
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := secrets.NewMemoryApiKeyStore()
+	key := secrets.ApiKey{
+		ID: secrets.NewApiKeyID(), TenantID: "team-pf", ScopeTeamID: "team-pf",
+		Provider: secrets.ProviderOpenAICompatible, Name: "team-pf gateway", BaseURL: retireTeamURL,
+		Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAICompatible, retireTeamKey, retireTeamURL),
+		CreatedAt:   time.Now().UTC(),
+	}
+	if key.SealedSecret, err = secrets.SealAPIKeyFor(sealer, key, []byte(retireTeamKey)); err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.Create(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	launch := retireLaunch{runSecrets: secrets.NewMemoryRunSecretsStore()}
+	runs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	pub := cloudpublisher.NewForTesting(cloudpublisher.Config{
+		Store: runs, ApiKeys: keys, RunSecrets: launch.runSecrets, Sealer: sealer,
+		Identity:           live.s.authStore(),
+		Logger:             iterlog.New(iterlog.LevelError, io.Discard),
+		PriceFeedEffective: PublisherPriceFeedEffective(configs, states, t.Logf),
+	}, func(_ context.Context, msg *queue.RunMessage) error {
+		mu.Lock()
+		defer mu.Unlock()
+		launch.published = append(launch.published, msg)
+		return nil
+	})
+	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
+	_, launch.err = pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: src}, wf, nil)
+	mu.Lock()
+	launch.published = append([]*queue.RunMessage(nil), launch.published...)
+	mu.Unlock()
+	return launch
+}
+
+// open reads the sealed record msg names as the runner does: under the
+// message's team, opened under the message's per-run key, team, pool and
+// run id.
+func (l retireLaunch) open(t *testing.T, msg *queue.RunMessage) secrets.RunBundle {
+	t.Helper()
+	ctx := context.Background()
+	rec, err := l.runSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.TenantID != msg.TenantID {
+		t.Fatalf("the record is sealed for team %q, the message names %q", rec.TenantID, msg.TenantID)
+	}
+	dekSealer, err := secrets.NewAESGCMSealer(msg.BundleDEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := secrets.OpenRunBundle(dekSealer, msg.TenantID, msg.RunnerPool, msg.RunID, rec.KeyID, rec.SealedBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.APIKeys[secrets.ProviderOpenAICompatible]; got != retireTeamKey {
+		t.Fatalf("the bundle seals gateway key %q, want team-pf's own", got)
+	}
+	return bundle
+}
+
+// runRetireWorkflow runs wf as runID on ctx (the context the runner's
+// adapter planted the table on, or a bare one) through the executor every
+// plane builds.
+func runRetireWorkflow(t *testing.T, ctx context.Context, wf *ir.Workflow, gw *recordingGateway, runID string) retireRun {
+	t.Helper()
+	storeDir := t.TempDir()
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	// The run below executes with no sandbox (WithSandboxOverride("none")),
+	// so the spec says it knows the sandbox tiers and names its bot the way
+	// every launch surface does.
+	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+		Ctx: ctx, Workflow: wf, Store: st, RunID: runID, Logger: iterlog.Nop(), WorkDir: workDir,
+		BotID:           runview.ResolveBotID("pricefeed-e2e", "", ""),
+		SandboxOverride: "none", SandboxTiersKnown: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+	if err := runtime.New(wf, st, exec, runtime.WithWorkDir(workDir), runtime.WithSandboxOverride("none")).Run(ctx, runID, nil); err != nil {
+		t.Fatalf("the run failed: %v", err)
+	}
+	events, err := st.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := retireRun{
+		bodies:   gw.take(),
+		adjusted: map[string]map[string]any{},
+		specs:    map[string]compatgw.ResolvedEnvRecord{},
+		costs:    map[string]float64{},
+		sampled:  map[string]float64{},
+	}
+	for _, evt := range events {
+		switch evt.Type {
+		case store.EventReasoningEffortAdjusted:
+			run.adjusted[evt.NodeID] = evt.Data
+		case store.EventUsageProgress:
+			if used, _ := evt.Data["used"].(float64); used > run.sampled[evt.NodeID] {
+				run.sampled[evt.NodeID] = used
+			}
+		case store.EventNodeFinished:
+			out, _ := evt.Data["output"].(map[string]any)
+			if out == nil {
+				continue
+			}
+			rawSpec, err := json.Marshal(out["_gateway_spec"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var spec compatgw.ResolvedEnvRecord
+			if err := json.Unmarshal(rawSpec, &spec); err == nil {
+				run.specs[evt.NodeID] = spec
+			}
+			run.costs[evt.NodeID], _ = out["_cost_usd"].(float64)
+		}
+	}
+	for _, node := range []string{"deep", "glm"} {
+		if _, ok := run.specs[node]; !ok {
+			t.Fatalf("inert bench: node %s left no node_finished output (%d events)", node, len(events))
+		}
+	}
+	if len(run.bodies) != 2 {
+		t.Fatalf("inert bench: the gateway received %v, want one request per node", run.bodies)
+	}
+	return run
 }

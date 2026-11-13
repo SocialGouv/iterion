@@ -3,6 +3,7 @@ package pricefeed
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -32,13 +33,15 @@ func cloneStateRecord(rec *StateRecord) *StateRecord {
 		return nil
 	}
 	cp := *rec
-	// The capability flags are POINTERS: a shallow clone hands every
-	// reader the same *bool (round 2 caught the alias). Clone each.
+	// The capability flags are POINTERS and the accepted efforts a
+	// SLICE: a shallow clone hands every reader the same *bool and the
+	// same backing array. Clone each.
 	cp.Entries = make(map[string]modelspecs.Spec, len(rec.Entries))
 	for id, spec := range rec.Entries {
 		spec.Reasoning = cloneBool(spec.Reasoning)
 		spec.ToolCall = cloneBool(spec.ToolCall)
 		spec.Temperature = cloneBool(spec.Temperature)
+		spec.ReasoningEfforts = slices.Clone(spec.ReasoningEfforts)
 		cp.Entries[id] = spec
 	}
 	return &cp
@@ -53,17 +56,26 @@ func cloneBool(b *bool) *bool {
 }
 
 // The feed's durable state (ADR-163 §7): one config document per scope
-// (org or team) — the tenant's declaration — and one state document per
-// (scope, feed) — the elected reconciler's answer. Composite ids carry
-// the scope the way the routing-policy records do, and org deletion
-// sweeps both collections by prefix (pkg/cloud/orgsweep).
+// (platform, org or team) — the deployment's or the tenant's declaration
+// — and one state document per (scope, feed) — the elected reconciler's
+// answer. Composite ids carry the scope the way the routing-policy
+// records do; org deletion sweeps the org's and its teams' documents of
+// both collections by id and prefix (pkg/cloud/orgsweep), and the
+// platform documents are no org's rows: they survive every org purge.
 
-// The Mongo collections. ColConfigs is tenant data, never a platform
-// family — the routing-policy precedent (platformcfg's store.go).
+// The Mongo collections. ColConfigs holds every scope's feed list, the
+// platform's included: one document shape, one reconciler walk, one CAS
+// and one route body for the three levels — so the platform level is a
+// document id here, not a platformcfg family.
 const (
 	ColConfigs = "price_feeds"
 	ColStates  = "price_feed_state"
 )
+
+// PlatformConfigDocID is the platform's feed-list document id: the
+// deployment's own feeds, folded below every org and team. Its fetched
+// feeds' state documents key "platform/<feed>" (StateDocID).
+const PlatformConfigDocID = "platform"
 
 // OrgConfigDocID is an org's feed-list document id.
 func OrgConfigDocID(orgID string) string { return "org:" + orgID }
@@ -108,8 +120,13 @@ func NewMemoryConfigStore() *MemoryConfigStore {
 	return &MemoryConfigStore{configs: map[string]*ConfigRecord{}}
 }
 
-// Get answers one config document, nil when never written.
-func (m *MemoryConfigStore) Get(_ context.Context, docID string) (*ConfigRecord, error) {
+// Get answers one config document, nil when never written. A read under
+// an expired or cancelled ctx answers the ctx's error, as a database read
+// does: the fold's per-level deadline reads the same here as in Mongo.
+func (m *MemoryConfigStore) Get(ctx context.Context, docID string) (*ConfigRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rec, ok := m.configs[docID]; ok {
@@ -179,8 +196,12 @@ func NewMemoryStateStore() *MemoryStateStore {
 	return &MemoryStateStore{states: map[string]*StateRecord{}}
 }
 
-// Get answers one state document, nil when never written.
-func (m *MemoryStateStore) Get(_ context.Context, docID string) (*StateRecord, error) {
+// Get answers one state document, nil when never written; under an
+// expired or cancelled ctx, the ctx's error (MemoryConfigStore.Get).
+func (m *MemoryStateStore) Get(ctx context.Context, docID string) (*StateRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rec, ok := m.states[docID]; ok {

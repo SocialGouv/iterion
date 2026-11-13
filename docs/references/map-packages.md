@@ -205,7 +205,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/platformcfg` | holds platform-scoped runtime-settings families beyond the usage caps that established the doctrine (ADR-090): env var = deployment default, DB… | `CASDeleter`, `CASStore`, `Deleter`, `RunnerPoolsReader`, `Store` |
 | `pkg/plugin` | implements iterion's plugin ecosystem: declarative, out-of-process extensions described by a `plugin.yaml` manifest with typed contribution points. | — |
 | `pkg/pluginsource` | persists ORG-PRIVATE plugin bindings: "this team's runs get the plugin living in this git repository". | `Store` |
-| `pkg/pricefeed` | — the gateway price feed (ADR-163): operator pricing that syncs into the database and rides the existing IPC, while the operator table stays the… | `ConfigStore`, `Source`, `StateStore` |
+| `pkg/pricefeed` | — the gateway price feed (ADR-163): operator pricing that syncs into the database and rides the existing IPC, while the operator table stays the… | `ConfigStore`, `Source`, `StateStore`, `StaticSource` |
 | `pkg/projectenv` | builds immutable per-project process environments for a unified local Studio. | — |
 | `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — |
 | `pkg/queue/nats` | wraps the NATS / JetStream / KV layer for iterion's cloud queue. | — |

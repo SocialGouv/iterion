@@ -65,6 +65,8 @@ import (
 var serialFamily = map[string]string{
 	"sandbox_transport_env_test.go":     "Setenv",
 	"gateway_feed_test.go":              "Setenv",
+	"feed_effort_test.go":               "Setenv",
+	"hooks_usage_progress_feed_test.go": "via unsetGatewayTables() in feed_effort_test.go",
 	"adverse_schema_test.go":            "Setenv",
 	"correction_budget_warning_test.go": "Setenv",
 	"reask_answered_pause_test.go":      "Setenv",

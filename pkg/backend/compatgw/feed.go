@@ -44,16 +44,16 @@ func FeedSource(source string) (name string, ok bool) {
 // feedTableEntry is one parsed feed table, memoised by the raw value it
 // was parsed from — the operator table's discipline: parse once per
 // value, whatever the reader's provenance. Nothing else rides the entry:
-// the table's ANSWER is its ENTRIES. Freshness was judged once, at the
-// FOLD, by the server (ADR-163 §1: "the server resolves the effective
-// table (feed entry if fresh, else the operator floor)") — the entries
-// that travel are the entries that answered, and every reader of the
-// value (dispatch stamp, meter, crossing, a re-parse after eviction)
-// reads the same answer with no clock of its own. That is ADR-122's
-// "the pricing tables are never read again in mid-flight" held at the
-// feed rung: no reader can re-judge, so no eviction, no queue delay and
-// no per-runner clock can change one invocation's price (the loop's
-// rounds and the gate's verdict converged here).
+// the table's ANSWER is its two maps, ENTRIES and EFFORTS. Freshness was
+// judged once, at the FOLD, by the server (ADR-163 §1: "the server
+// resolves the effective table (feed entry if fresh, else the operator
+// floor)") — the entries that travel are the entries that answered, and
+// every reader of the value (dispatch stamp, meter, crossing, a re-parse
+// after eviction) reads the same answer with no clock of its own. That is
+// ADR-122's "the pricing tables are never read again in mid-flight" held
+// at the feed rung: no reader can re-judge, so no eviction, no queue
+// delay and no per-runner clock can change one invocation's price (the
+// loop's rounds and the gate's verdict converged here).
 type feedTableEntry struct {
 	table *pricefeed.Table
 }
@@ -72,12 +72,26 @@ var (
 )
 
 // feedTableLookup answers one gateway id (already normalized) from the
-// run's feed table — memoised per raw value, planted values refused
-// (catalogEnv), a wrong-shaped value silently no table. PRESENCE IS THE
-// VERDICT: the fold sent these entries because they were fresh when the
-// server folded; the invocation answers from them until it ends, and no
-// reader consults a clock.
+// run's feed table (feedTable). PRESENCE IS THE VERDICT: the fold sent
+// these entries because they were fresh when the server folded; the
+// invocation answers from them until it ends, and no reader consults a
+// clock.
 func feedTableLookup(get func(string) string, id string) *pricefeed.Entry {
+	table := feedTable(get)
+	if table == nil {
+		return nil
+	}
+	if entry, here := table.Entries[id]; here {
+		return &entry
+	}
+	return nil
+}
+
+// feedTable is the run's parsed feed table — memoised per raw value,
+// planted values refused (catalogEnv), a wrong-shaped value silently no
+// table. The price rung (feedTableLookup) and the effort rung
+// (AcceptedEfforts) read through it.
+func feedTable(get func(string) string) *pricefeed.Table {
 	raw := catalogEnv(get, FeedTableEnv)
 	if raw == "" {
 		return nil
@@ -95,13 +109,7 @@ func feedTableLookup(get func(string) string, id string) *pricefeed.Entry {
 		}
 	}
 	feedTableMu.Unlock()
-	if e.table == nil {
-		return nil
-	}
-	if entry, here := e.table.Entries[id]; here {
-		return &entry
-	}
-	return nil
+	return e.table
 }
 
 // ResetFeedTableCache drops the memoised feed tables — tests only; a

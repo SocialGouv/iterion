@@ -200,3 +200,98 @@ func TestResolveCatalog_TheFoldedTableAnswersForTheInvocation(t *testing.T) {
 		t.Fatalf("an id outside the feed table did not reach the operator table: %+v", other)
 	}
 }
+
+// Whole-entry precedence at the feed rung: a feed entry that prices an id
+// and states no window or output cap answers WHOLE over the operator
+// table's entry for that id — the operator's window and output cap are
+// not merged in.
+func TestResolveCatalog_AFeedEntryAnswersWholeOverTheOperatorTable(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	get := mapGet(map[string]string{
+		CatalogModelsEnv: `{"glm-5.3":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344}}`,
+		FeedTableEnv:     feedTableJSON(t, "pliage-litellm", time.Minute, time.Hour, 0.7, 2.1),
+	})
+	res := ResolveCatalog("glm-5.3", nil, get)
+	if res.Source != SourceFeed("pliage-litellm") || res.Spec.InputCostPerM != 0.7 || res.Spec.OutputCostPerM != 2.1 {
+		t.Fatalf("the feed entry did not answer: %+v", res)
+	}
+	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Spec.CacheReadCostPerM != 0 {
+		t.Fatalf("the operator table's fields were merged into the feed's answer: %+v", res.Spec)
+	}
+}
+
+// A pool's OPENAI_COMPATIBLE_MODELS row stating a window and an output
+// cap without prices, declared as written, answers on a default runner
+// what it answered on the pool: the same spec, unpriced, only the
+// provenance differs (feed:pliage for operator).
+func TestResolveCatalog_ADeclaredUnpricedRowAnswersAsThePoolsRowDid(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	const id = "scaleway/qwen-unpriced"
+	row := `{"context_window":131072,"max_output_tokens":16384}`
+	pool := ResolveCatalog(id, nil, mapGet(map[string]string{CatalogModelsEnv: `{"` + id + `":` + row + `}`}))
+	now := time.Now()
+	table := pricefeed.Fold(pricefeed.FoldConfig{Now: now}, pricefeed.ScopeState{Config: &pricefeed.ConfigRecord{UpdatedAt: now, Feeds: []pricefeed.FeedConfig{{
+		Name: "pliage", Type: pricefeed.TypeDeclared, Enabled: true, Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"entries": `{"` + id + `":` + row + `}`},
+	}}}})
+	raw, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := ResolveCatalog(id, nil, mapGet(map[string]string{FeedTableEnv: string(raw)}))
+	if pool.Source != SourceOperator || def.Source != SourceFeed("pliage") {
+		t.Fatalf("sources: pool %q, default runner %q", pool.Source, def.Source)
+	}
+	if !pricefeed.SpecEqual(pool.Spec, def.Spec) || def.Spec.ContextWindow != 131072 || def.Spec.MaxOutputTokens != 16384 {
+		t.Fatalf("the default runner answers %+v, the pool %+v", def.Spec, pool.Spec)
+	}
+	if pool.Priced() || def.Priced() {
+		t.Fatalf("an unpriced row priced: pool %v, default runner %v", pool.Priced(), def.Priced())
+	}
+}
+
+// A declared row without the price pair never hides a price on the runner
+// either: when the rungs below the run table price the id — the operator
+// table, the catalog provider — their answer answers whole; when they state
+// it unpriced or not at all, the declared row answers, as the pool's row did.
+func TestResolveCatalog_ADeclaredUnpricedRowNeverHidesAPriceBelowIt(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	const id = "gpt-oss-120b"
+	row := `{"context_window":131072,"max_output_tokens":16384}`
+	now := time.Now()
+	table := pricefeed.Fold(pricefeed.FoldConfig{Now: now}, pricefeed.ScopeState{Config: &pricefeed.ConfigRecord{UpdatedAt: now, Feeds: []pricefeed.FeedConfig{{
+		Name: "pliage", Type: pricefeed.TypeDeclared, Enabled: true, Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"entries": `{"` + id + `":` + row + `}`},
+	}}}})
+	raw, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := ResolveCatalog(id, nil, mapGet(map[string]string{CatalogProviderEnv: "scaleway"})); snap.Source != SourceCatalogSnapshot || !snap.Priced() {
+		t.Fatalf("fixture: the snapshot answers %q priced=%v for %s, want a priced snapshot entry", snap.Source, snap.Priced(), id)
+	}
+	for _, tc := range []struct {
+		name   string
+		env    map[string]string
+		source string
+		priced bool
+	}{
+		{"the operator table prices it", map[string]string{CatalogModelsEnv: `{"` + id + `":{"context_window":65536,"input_usd_per_mtok":0.15,"output_usd_per_mtok":0.6}}`}, SourceOperator, true},
+		{"the catalog provider prices it", map[string]string{CatalogProviderEnv: "scaleway"}, SourceCatalogSnapshot, true},
+		{"the operator table states it unpriced", map[string]string{CatalogModelsEnv: `{"` + id + `":{"context_window":65536}}`, CatalogProviderEnv: "scaleway"}, SourceFeed("pliage"), false},
+		{"no table below", map[string]string{}, SourceFeed("pliage"), false},
+	} {
+		ResetCatalogCaches()
+		tc.env[FeedTableEnv] = string(raw)
+		res := ResolveCatalog(id, nil, mapGet(tc.env))
+		if res.Source != tc.source || res.Priced() != tc.priced {
+			t.Errorf("[%s] answers %q priced=%v (%+v), want %q priced=%v", tc.name, res.Source, res.Priced(), res.Spec, tc.source, tc.priced)
+		}
+		if res.Source == SourceFeed("pliage") && (res.Spec.ContextWindow != 131072 || res.Spec.MaxOutputTokens != 16384) {
+			t.Errorf("[%s] the declared row answers %+v, want its window and output cap", tc.name, res.Spec)
+		}
+	}
+}

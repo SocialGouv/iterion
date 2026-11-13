@@ -73,13 +73,14 @@ type RunBundle struct {
 	// (ADR-131 §4); absent (false) on every other bundle.
 	AmbientLLMRefused bool `json:"ambient_llm_refused,omitempty"`
 	// GatewayPriceFeed carries the run's effective gateway price table as
-	// the server folded it (ADR-163): fresh org/team feed entries, the
-	// operator floor below. Raw bytes — the sealed wire stays opaque to
-	// this package, and an older runner that knows nothing of the field
-	// decodes the bundle unchanged. Not secret (prices); sealed with the
-	// bundle because the bundle is the one channel a runner reads without
-	// a database. The runner plants it on the run's environment, where
-	// the gateway catalog answers from it before the operator table.
+	// the server folded it (ADR-163): the platform's, org's and team's
+	// answering feed entries, the operator floor below. Raw bytes — the
+	// sealed wire stays opaque to this package, and an older runner that
+	// knows nothing of the field decodes the bundle unchanged. Not secret
+	// (prices); sealed with the bundle because the bundle is the one
+	// channel a runner reads without a database. The runner plants it on
+	// the run's environment, where the gateway catalog answers from it
+	// before the operator table.
 	GatewayPriceFeed json.RawMessage `json:"gateway_price_feed,omitempty"`
 	// GenericSecrets maps workflow secret names to plaintext payloads
 	// resolved from the tenant/user secret store at publish time.

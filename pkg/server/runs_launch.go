@@ -996,7 +996,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.writeQueueOutageError(w, r, "launch", err) {
 			span.RecordError(err)
-			span.SetStatus(codes.Error, "queue unavailable")
+			span.SetStatus(codes.Error, "retryable outage")
 			return
 		}
 		if s.writeCredentialAtCapacityError(w, r, "launch", err) {
@@ -1360,19 +1360,31 @@ func (s *Server) writeNoLLMCredentialError(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
-// writeQueueOutageError is shared by launch and both resume error sites
-// (upload preflight and publication). errors.As deliberately handles the
-// wrapping and errors.Join shapes produced when queue publication and the
+// retryableOutage is a launch or resume refusal the same request clears once
+// a backend answers again, its stable code and retry verdict carried by the
+// error itself: the queue that cannot accept the run
+// (runview.QueueUnavailableError), the price-feed fold that cannot read a
+// level (PriceFeedUnreadError). Its message is the one the caller reads.
+type retryableOutage interface {
+	error
+	Code() string
+	Retryable() bool
+}
+
+// writeQueueOutageError answers a retryable outage — 503 with its code and
+// retryable — and is shared by launch and both resume error sites (upload
+// preflight and publication). errors.As deliberately handles the wrapping
+// and errors.Join shapes produced when queue publication and the
 // compensating run-status update both fail.
 func (s *Server) writeQueueOutageError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
-	var queueErr *runview.QueueUnavailableError
-	if !errors.As(err, &queueErr) {
+	var outage retryableOutage
+	if !errors.As(err, &outage) || !outage.Retryable() {
 		return false
 	}
 	s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
-		"error":      fmt.Sprintf("%s: %v", operation, queueErr),
-		"error_code": queueErr.Code(),
-		"retryable":  queueErr.Retryable(),
+		"error":      fmt.Sprintf("%s: %v", operation, outage),
+		"error_code": outage.Code(),
+		"retryable":  true,
 	})
 	return true
 }

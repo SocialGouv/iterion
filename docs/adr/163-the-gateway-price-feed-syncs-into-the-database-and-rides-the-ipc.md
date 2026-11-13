@@ -67,3 +67,19 @@ points the decision left to the delivery:
    sources dial through the deployment's public-unicast guard
    (`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE`, the existing LLM-endpoint
    hatch). §3's drift bound and §2's staleness are unchanged.
+
+## Pointer 2026-11-12 — model capabilities ride this feed (ADR-166)
+
+[ADR-166](166-model-capabilities-ride-the-price-feed.md) extends this
+feed without reversing any of it:
+
+- a `declared` source, whose answer is its own config and which never
+  ages;
+- a `platform` scope, a third document in `price_feeds` folded below
+  every org and team;
+- accepted reasoning efforts, folded field by field beside the price
+  entries on the run table, which the runner reads before its
+  `OPENAI_COMPATIBLE_REASONING_EFFORTS` table.
+
+The operator table stays the floor, and freshness is still judged once,
+at the fold. A declaration is the one feed that cannot be stale.

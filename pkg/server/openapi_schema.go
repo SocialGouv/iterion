@@ -101,10 +101,30 @@ func routeSchemas() map[string]routeOp {
 			Links []ssoLinkView `json:"links"`
 		}{}},
 
-		// The gateway price feed (ADR-163): a tenant's feed list and the
-		// manual sync; the state view derives staleness at read time.
+		// The gateway price feed (ADR-163): a scope's feed list and the
+		// manual sync; the state view derives staleness at read time. The
+		// PUTs declare NO request schema, like the routing-policy PUTs: the
+		// feeds field is a one-of(list, null) the handler decodes from a
+		// json.RawMessage, which the generator would render as a base64
+		// string and teach every generated client to send base64.
+		"GET /api/admin/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Super-admin only. The platform's feed list, folded below every org and team.",
+		},
+		"PUT /api/admin/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Super-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the platform's feed list, null clears it; audited as platform.price_feeds.updated.",
+		},
+		"POST /api/admin/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Super-admin only. Forces one platform feed's refresh (name) or every enabled one's, answering what changed per id.",
+		},
 		"GET /api/orgs/{id}/price-feeds": {response: priceFeedsView{}},
-		"PUT /api/orgs/{id}/price-feeds": {request: priceFeedsPutReq{}, response: priceFeedsView{}},
+		"PUT /api/orgs/{id}/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Org-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the org's feed list, null clears it.",
+		},
 		"POST /api/orgs/{id}/price-feeds/sync": {
 			request:     priceFeedsSyncReq{},
 			response:    priceFeedsSyncResponse{},
@@ -152,7 +172,17 @@ func routeSchemas() map[string]routeOp {
 			description: "Super-admin only. Runs one pool-signal-sync sweep inline (the onboarding proof).",
 		},
 		"GET /api/teams/{id}/price-feeds": {response: priceFeedsView{}},
-		"PUT /api/teams/{id}/price-feeds": {request: priceFeedsPutReq{}, response: priceFeedsView{}},
+		"PUT /api/teams/{id}/price-feeds": {
+			response:    priceFeedsView{},
+			description: "Team-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.",
+		},
+		"GET /api/teams/{id}/price-feeds/effective": {
+			response:    priceFeedEffectiveView{},
+			description: "Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.",
+			query: []queryParam{
+				{name: "model", description: "A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets.", schemaType: "string"},
+			},
+		},
 		"POST /api/teams/{id}/price-feeds/sync": {
 			request:     priceFeedsSyncReq{},
 			response:    priceFeedsSyncResponse{},

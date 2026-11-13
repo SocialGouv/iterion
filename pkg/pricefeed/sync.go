@@ -3,6 +3,7 @@ package pricefeed
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ type EntryChange struct {
 // answers and what the reconciler records.
 type SyncOutcome struct {
 	Feed        string        `json:"feed"`
-	Status      string        `json:"status"` // ok | failing (staleness derives on read)
+	Status      string        `json:"status"` // ok | failing | declared (staleness derives on read)
 	RefreshedAt time.Time     `json:"refreshed_at,omitempty"`
 	FreshFor    Duration      `json:"fresh_for,omitempty"`
 	Error       string        `json:"error,omitempty"`
@@ -47,7 +48,11 @@ type Drift struct {
 // own timeout, normalize, diff against the previous state, and derive
 // the durable state. It is idempotent — the elected reconciler and the
 // manual trigger call the same function; a concurrent double refresh
-// converges on the same source answer.
+// converges on the same source answer. The record it answers is stamped
+// with the feed's source type, and a prev stamped with another type is
+// read as no prev (StateRecord.Of). A fetched table holding a price that
+// is not a finite number fails the refresh, naming the id
+// (finiteEntries).
 //
 // The operator table (the SERVER's own reading of
 // OPENAI_COMPATIBLE_MODELS, passed by the caller — this package never
@@ -59,8 +64,12 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// A record written for another source type (the feed retyped under
+	// its name) is not this feed's: nothing of it is retained or diffed.
+	prev = prev.Of(feed.Type)
 	state := StateRecord{
 		Feed:        feed.Name,
+		Type:        feed.Type,
 		FreshFor:    feed.FreshFor(),
 		LastAttempt: now,
 	}
@@ -89,6 +98,9 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	fetchCtx, cancel := context.WithTimeout(ctx, time.Duration(feed.Timeout))
 	defer cancel()
 	fetched, err := src.Fetch(fetchCtx, feed.Params)
+	if err == nil {
+		err = finiteEntries(fetched)
+	}
 	if err != nil {
 		state.Status = DeriveStatus(state.Entries, state.RefreshedAt, state.FreshFor, err.Error(), now)
 		state.LastError = err.Error()
@@ -106,8 +118,28 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	state.Status = StateOK
 	outcome.Status = StateOK
 	outcome.RefreshedAt = now
-	outcome.Changes = diffEntries(prevEntries(prev), fetched)
+	outcome.Changes = DiffEntries(prevEntries(prev), fetched)
 	return state, outcome
+}
+
+// finiteEntries refuses a fetched table holding a price no wire can
+// carry — NaN or ±Inf, as a LiteLLM per-token cost scaled to per-mtok past
+// float64's range answers: stored, it would leave every fold naming the id
+// with a table that does not encode, its accepted efforts with it. It names
+// the first such id, sorted, so the refusal reads the same on every
+// refresh.
+func finiteEntries(entries map[string]modelspecs.Spec) error {
+	ids := make([]string, 0, len(entries))
+	for id := range entries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if field, value, bad := nonFinitePrice(entries[id]); bad {
+			return fmt.Errorf("pricefeed: entry %q: %s is %v, not a finite price — the source answered a number no table can carry", id, field, value)
+		}
+	}
+	return nil
 }
 
 func prevEntries(prev *StateRecord) map[string]modelspecs.Spec {
@@ -117,9 +149,9 @@ func prevEntries(prev *StateRecord) map[string]modelspecs.Spec {
 	return prev.Entries
 }
 
-// diffEntries lists the ids whose spec moved, added and removed — sorted
+// DiffEntries lists the ids whose spec moved, added and removed — sorted
 // by id, deterministic whatever map order ranged.
-func diffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
+func DiffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
 	if len(old) == 0 && len(new) == 0 {
 		return nil
 	}
@@ -154,16 +186,17 @@ func diffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
 	return changes
 }
 
-// SpecEqual compares two specs BY VALUE, the capability flags
-// dereferenced: the struct's *bool fields make a plain != compare
-// POINTER addresses, so an unchanged models.dev entry (every refresh
-// allocating new pointers) reported as a change (the gate's finding).
+// SpecEqual compares two specs BY VALUE, field by field: the capability
+// flags dereferenced (a plain != on the *bool fields compares POINTER
+// addresses, and every refresh allocates new ones for the same verdicts)
+// and the accepted efforts element by element, in order.
 func SpecEqual(a, b modelspecs.Spec) bool {
 	if a.ContextWindow != b.ContextWindow || a.MaxOutputTokens != b.MaxOutputTokens ||
 		a.InputCostPerM != b.InputCostPerM || a.OutputCostPerM != b.OutputCostPerM || a.CacheReadCostPerM != b.CacheReadCostPerM {
 		return false
 	}
-	return boolPtrEqual(a.Reasoning, b.Reasoning) && boolPtrEqual(a.ToolCall, b.ToolCall) && boolPtrEqual(a.Temperature, b.Temperature)
+	return boolPtrEqual(a.Reasoning, b.Reasoning) && boolPtrEqual(a.ToolCall, b.ToolCall) && boolPtrEqual(a.Temperature, b.Temperature) &&
+		slices.Equal(a.ReasoningEfforts, b.ReasoningEfforts)
 }
 
 func boolPtrEqual(a, b *bool) bool {
@@ -177,13 +210,18 @@ func boolPtrEqual(a, b *bool) bool {
 // operator table disagree on price. Window and context windows can
 // legitimately differ (the feed's business may be the price alone); the
 // PRICE disagreement is the one that changes what a run is billed, so
-// that is the one surfaced.
+// that is the one surfaced. An entry without the price pair (a window or
+// an effort list alone) states no price and never answers one (Fold), so
+// it never drifts.
 func DriftReport(feed string, entries, operatorTable map[string]modelspecs.Spec) []Drift {
 	if len(entries) == 0 || len(operatorTable) == 0 {
 		return nil
 	}
 	ids := make([]string, 0, len(entries))
-	for id := range entries {
+	for id, e := range entries {
+		if e.InputCostPerM <= 0 || e.OutputCostPerM <= 0 {
+			continue
+		}
 		if _, op := operatorTable[NormalizeID(id)]; op {
 			ids = append(ids, id)
 		}
@@ -215,8 +253,17 @@ func FormatDrift(d Drift) string {
 // Due reports whether a feed's next refresh attempt is due at now: a
 // feed refreshes every interval; one whose last attempt FAILED retries
 // on the short backoff, not the full period — a dead source behind a
-// 30-day interval would otherwise stay dead for a month.
+// 30-day interval would otherwise stay dead for a month. A static feed
+// (a declaration) is never due: its answer is its config, which the fold
+// reads directly. A state written for another source type counts as no
+// attempt (StateRecord.Of).
 func Due(feed FeedConfig, state *StateRecord, now time.Time) bool {
+	if IsStatic(feed.Type) {
+		return false
+	}
+	// A record written for another source type says nothing about this
+	// feed's attempts: a retyped feed fetches on the next pass.
+	state = state.Of(feed.Type)
 	if state == nil || state.LastAttempt.IsZero() {
 		return true
 	}
