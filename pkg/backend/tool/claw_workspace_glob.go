@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 )
 
 // A glob result is delivered in a model turn, so keep it below the same

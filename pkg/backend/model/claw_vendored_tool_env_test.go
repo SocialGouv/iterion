@@ -16,12 +16,11 @@ import (
 // registers claw's own TOOLS from the env that crossed, and those tools read
 // the environment under names no provider table carries either — a bash
 // budget, a todos path, the config dirs a skill lookup walks. This file is
-// the classification of every such name, DERIVED from the vendored claw the
-// tool registry imports (pkg/backend/tool imports claw-code-go/pkg/api/tools,
+// the classification of every such name, DERIVED from the claw source the
+// tool registry imports (pkg/backend/tool imports pkg/claw/pkg/api/tools,
 // which forwards to internal/tools), never hand-listed, so a tool claw gains
 // arrives classified or red. The walk fails LOUDLY when a package disappears:
-// vendor/ is being pruned (ADR-142), and a pruned tool package would
-// otherwise shrink this list in silence.
+// a removed tool package would otherwise shrink this list in silence.
 //
 // What it does not see, named rather than hidden (same shape as the provider
 // half): a name claw builds at run time instead of spelling it, and a name
@@ -229,14 +228,14 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 }
 
 // vendoredToolDirs derives, from the imports of iterion's tool package, the
-// vendored claw tool directories whose env reads a node's tools perform: the
+// claw tool directories whose env reads a node's tools perform: the
 // re-exporting package pkg/backend/tool imports, and the internal package it
 // forwards to. A rename or a prune fails loudly rather than shrinking the
 // derivation — the hazard TestEveryVendoredProviderEnvNameIsDecided names for
 // the provider half.
 func vendoredToolDirs(t *testing.T, root string) []string {
 	t.Helper()
-	const clawPrefix = "github.com/SocialGouv/claw-code-go/"
+	const clawPrefix = clawImportPrefix
 	const apiTools = clawPrefix + "pkg/api/tools"
 	const internalTools = clawPrefix + "internal/tools"
 
@@ -248,11 +247,11 @@ func vendoredToolDirs(t *testing.T, root string) []string {
 	if !slices.Contains(imports, apiTools) {
 		t.Fatalf("pkg/backend/tool no longer imports %s: the registry's tools come from elsewhere now — re-point this derivation at the packages that serve them, or every tool env name is unguarded", apiTools)
 	}
-	apiToolsDir := filepath.Join(root, "vendor", filepath.FromSlash(apiTools))
+	apiToolsDir := clawSourceDir(root, apiTools)
 	if !slices.Contains(importsOfDir(t, apiToolsDir), internalTools) {
 		t.Fatalf("%s no longer imports %s: the tool implementations moved — re-point this derivation, or the names they read are unguarded", apiTools, internalTools)
 	}
-	dirs := []string{apiToolsDir, filepath.Join(root, "vendor", filepath.FromSlash(internalTools))}
+	dirs := []string{apiToolsDir, clawSourceDir(root, internalTools)}
 	for _, dir := range dirs {
 		if names := envNamesReadIn(t, []string{dir}); len(names) == 0 && strings.HasSuffix(dir, "internal/tools") {
 			t.Fatalf("no env read found in %s: a prune took the package's reads, and with them every classification here — decide the names it used to read before pruning it", dir)

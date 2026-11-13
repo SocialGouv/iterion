@@ -3,7 +3,7 @@ package mcp
 import (
 	"context"
 
-	clawmcp "github.com/SocialGouv/claw-code-go/pkg/api/mcp"
+	clawmcp "github.com/SocialGouv/iterion/pkg/claw/pkg/api/mcp"
 )
 
 // ClawProvider satisfies clawmcp.Provider on top of iterion's *Manager

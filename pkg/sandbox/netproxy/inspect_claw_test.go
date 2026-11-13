@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
-	clawanthropic "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
-	clawmoonshot "github.com/SocialGouv/claw-code-go/pkg/api/providers/moonshot"
-	clawopenai "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawanthropic "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/anthropic"
+	clawmoonshot "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/moonshot"
+	clawopenai "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/openai"
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"

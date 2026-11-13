@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
+	clawcmds "github.com/SocialGouv/iterion/pkg/claw/pkg/api/commands"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"

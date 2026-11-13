@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )

@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	"github.com/SocialGouv/iterion/internal/liveenv"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"

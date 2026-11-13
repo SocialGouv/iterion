@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
-	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/permissions"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"

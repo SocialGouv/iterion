@@ -55,11 +55,9 @@ the macOS notarization + Windows EV cert + GPG key flow is **manual**
 (see `docs/desktop-release-checklist.md`). Acceptable below ~1k
 installs; revisit before broad consumer distribution.
 
-§ Sprint-8 Phase-4 vendor bump pulled 4 P2 fixes via a transient
-`replace github.com/SocialGouv/claw-code-go => ../../.works/claw-code-go`
-directive. **Pre-merge action**: push the sibling branch upstream,
-tag, then `go get @tag && go mod vendor` in this branch and drop the
-replace.
+§ Sprint-8 Phase-4 pulled 4 P2 fixes through a transient `replace` of
+claw-code-go. Moot since the fold (MG-4, #3247): claw lives in `pkg/claw`,
+with no pin to bump and no replace to drop.
 
 ---
 
@@ -97,12 +95,8 @@ hardening commits on this branch:
 
 ## Pre-merge checklist (this branch)
 
-- [ ] Push `.works/claw-code-go` branch `iterion-sprint-8-p2`
-      upstream, tag (e.g. `v0.1.1`).
-- [ ] Drop the transient `replace` from `go.mod`; bump via
-      `go get github.com/SocialGouv/claw-code-go@<tag>`; re-run
-      `go mod tidy && go mod vendor`; verify `git diff` shows no
-      net vendor delta.
+- [x] The claw `replace` and its bump — moot since the fold (MG-4,
+      #3247): claw lives in `pkg/claw`.
 - [ ] Open the PR; let the new `vendor-check`, `helm-lint`,
       `govulncheck`, and `cloud-e2e` jobs gate it.
 - [ ] On a clean post-merge: cut a `vX.Y.Z` tag and verify the

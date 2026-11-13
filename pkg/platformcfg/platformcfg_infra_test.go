@@ -230,8 +230,8 @@ var classificationTables = map[string]string{
 }
 
 // engineEnvNames maps every ITERION_ name the engine spells to the files that
-// spell it: the string literals of its Go source and of the vendored claw it
-// links — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
+// spell it: the string literals of its Go source, the claw runtime under
+// pkg/claw included — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
 // — and every name written in the manifests and scripts it embeds under pkg
 // (plugin manifests, the pi extension). The classification tables themselves
 // are cut out first, wherever they live ([classificationTables]).
@@ -269,7 +269,7 @@ func engineEnvNames(t *testing.T) map[string][]string {
 		}
 	}
 	blanked := map[string]int{}
-	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal", "../../vendor/github.com/SocialGouv/claw-code-go"} {
+	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal"} {
 		walk(dir, []string{".go"}, func(path, src string) {
 			slash := filepath.ToSlash(path)
 			if prefix, classifies := classificationTables[slash]; classifies {
@@ -297,7 +297,7 @@ func engineEnvNames(t *testing.T) map[string][]string {
 	for anchor, tree := range map[string]string{
 		"ITERION_PERMISSION":  "pkg/",
 		"ITERION_SHARD_INDEX": "cmd/",
-		"ITERION_TOOL_INPUT":  "vendor/github.com/SocialGouv/claw-code-go/",
+		"ITERION_TOOL_INPUT":  "pkg/claw/",
 		"ITERION_RTK_BIN":     "pkg/plugin/builtin/",
 		"ITERION_PI_RUN_ID":   "pkg/backend/delegate/piext/asset/",
 	} {

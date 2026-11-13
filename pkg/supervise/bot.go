@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/auxllm"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"

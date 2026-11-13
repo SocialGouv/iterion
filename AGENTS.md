@@ -42,9 +42,7 @@ interactive sessions).
   `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
 - **Do not comment `/billy`** — the fixer is paused here
   ([why, and the re-arm](docs/agents/workflow/billy.md#billy-is-paused)).
-- **Never hand-edit `CHANGELOG.md`.** Bump `claw-code-go` only with
-  `scripts/bump-claw.sh`; first-party — improve it in its `.works/` worktree
-  when a seam crosses it, then bump.
+- **Never hand-edit `CHANGELOG.md`.**
 - **`.bot` traps.** A tool node's `command:` runs under `bash -c`; a `script:`
   with `language: sh` runs `sh`, so keep it POSIX ([pitfalls](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes)).
   A literal `{{` in a template is `{{"{{"}}` ([delimiters](docs/dsl.md#literal-template-delimiters)).

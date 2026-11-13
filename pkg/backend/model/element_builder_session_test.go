@@ -3,7 +3,7 @@ package model
 import (
 	"context"
 	"errors"
-	api "github.com/SocialGouv/claw-code-go/pkg/api"
+	api "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"testing"
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
 )
 
 func mustSafetyHook(t *testing.T, patterns []string) hooks.Handler {

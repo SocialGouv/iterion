@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/internal/credheader"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // The block this package reads is the one the CLI reads, so the walk is pinned

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	anthropicprovider "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/anthropic"
 )
 
 // The engine's in-process claw clients refuse the ambient header block
@@ -38,7 +38,7 @@ func TestEngineRegistryClientRefusesAmbientHeaderBlock(t *testing.T) {
 		t.Fatalf("client type %T, want *api.Client", cli)
 	}
 	if !c.NoAmbientHeaders {
-		t.Fatal("the vendored anthropic provider dropped NoAmbientHeaders while threading the config — bump-claw carries a claw-code-go regression")
+		t.Fatal("claw's anthropic provider (pkg/claw) dropped NoAmbientHeaders while threading the config — a pkg/claw change regressed it")
 	}
 	if ua := c.UserAgent; ua != "operator-agent/1" {
 		t.Errorf("the documented UA chain broke: UserAgent = %q, want CLAW_USER_AGENT's value", ua)

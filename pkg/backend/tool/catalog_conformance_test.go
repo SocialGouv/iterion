@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"

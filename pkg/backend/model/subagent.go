@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawhooks "github.com/SocialGouv/claw-code-go/pkg/api/hooks"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawhooks "github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
+	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"

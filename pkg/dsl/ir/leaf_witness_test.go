@@ -26,7 +26,7 @@ var theLeafClosureNeverLinks = []string{
 	"github.com/SocialGouv/iterion/pkg/dispatcher",
 	"github.com/SocialGouv/iterion/pkg/forge",
 	"github.com/SocialGouv/iterion/pkg/mail",
-	"github.com/SocialGouv/claw-code-go",
+	"github.com/SocialGouv/iterion/pkg/claw",
 }
 
 func TestTheLeafClosureLinksNoDispatcherForgeMailerOrClawRuntime(t *testing.T) {
