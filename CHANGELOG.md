@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.0.0](https://github.com/SocialGouv/iterion/compare/v5.32.3...v6.0.0) (2026-11-13)
+
+### ⚠ BREAKING CHANGES
+
+* **codemode:** `codemode: on` on a backend whose registry cell is
+  typed-refused is now a compile error (C339) and a typed refusal at dispatch.
+  It compiled with a warning (C338) in v5.32.0 and v5.32.1. Re-route the node to
+  a backend that serves codemode, or declare `codemode: off`.
+
+### Features
+
+* **codemode:** the capability cell, the registered tool, and the typed refusal ([#3262](https://github.com/SocialGouv/iterion/issues/3262)) ([1f1f253](https://github.com/SocialGouv/iterion/commit/1f1f253400ccd8286d10db0d8616e8ed3c1464a2)), closes [#3249](https://github.com/SocialGouv/iterion/issues/3249) [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    Yesterday's slice (`bfb031129`) landed `codemode:` inert and said so: C338 warned that no build served the attribute, and promised that the slice registering the tool would delete that emission. This is that slice. A `codemode: on` node on claw is now handed one extra tool whose input is a PROGRAM, run in a child process that holds no credential and whose only capability is calling that node's own tools, back through that node's own dispatcher.
+
+    </details>
+
 ## [5.32.3](https://github.com/SocialGouv/iterion/compare/v5.32.2...v5.32.3) (2026-11-13)
 
 ### Bug Fixes
