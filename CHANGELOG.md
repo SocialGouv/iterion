@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.30.0](https://github.com/SocialGouv/iterion/compare/v5.29.3...v5.30.0) (2026-11-13)
+
+### Features
+
+* **clawfold:** the tool that folds claw-code-go into pkg/claw — a computed membership, slices under a cap, a proof per file (MG-3) ([#3202](https://github.com/SocialGouv/iterion/issues/3202)) ([e6a3df1](https://github.com/SocialGouv/iterion/commit/e6a3df16f4ac4802481d238e727844bb1c570874)), references [#3153](https://github.com/SocialGouv/iterion/issues/3153) [#3190](https://github.com/SocialGouv/iterion/issues/3190) [#3156](https://github.com/SocialGouv/iterion/issues/3156) [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    MG-3 of #3153 writes the tool, not the fold: nothing moves in the tree. `internal/clawfold` behind `scripts/clawfold` (stdlib only) computes, applies and proves the fold, so MG-4's ~140 k lines are reviewed through a hash per file instead of trusted. Doc: docs/agents/backends/clawfold.md.
+
+    </details>
+
 ## [5.29.3](https://github.com/SocialGouv/iterion/compare/v5.29.2...v5.29.3) (2026-11-13)
 
 ### Bug Fixes
