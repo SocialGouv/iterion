@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.31.0](https://github.com/SocialGouv/iterion/compare/v5.30.0...v5.31.0) (2026-11-13)
+
+### Features
+
+* **pricefeed,server,compatgw:** model capabilities ride the price feed — declared source, platform scope, accepted efforts per field (ADR-166) ([#3197](https://github.com/SocialGouv/iterion/issues/3197)) ([f9ad69a](https://github.com/SocialGouv/iterion/commit/f9ad69a973f08d6013c91a783c06acdbd00e0c1b))
+
+    <details><summary>why</summary>
+
+    A gateway model's capabilities — accepted reasoning efforts, window, output cap, prices — get a database seat by extending ADR-163's price feeds (ADR-166), so every product can run on the default runners and the dedicated runner pools can retire.
+
+    </details>
+
 ## [5.30.0](https://github.com/SocialGouv/iterion/compare/v5.29.3...v5.30.0) (2026-11-13)
 
 ### Features
