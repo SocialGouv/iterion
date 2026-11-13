@@ -91,6 +91,16 @@ func (c ProviderFallbackConfig) IsEmpty() bool {
 	return c.Primary == "" && len(c.Fallbacks) == 0
 }
 
+// decodeInto sets *dst from raw only when raw decodes whole: a field that
+// does not parse stays at its zero value, never half-filled — the contract
+// ExtractFeatureConfig states.
+func decodeInto[T any](raw json.RawMessage, dst *T) {
+	var v T
+	if json.Unmarshal(raw, &v) == nil {
+		*dst = v
+	}
+}
+
 // ExtractFeatureConfig extracts a RuntimeFeatureConfig from raw JSON settings data.
 // Missing or unparseable fields are left at zero values.
 func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
@@ -129,13 +139,13 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 			}
 			// Permission rules
 			if ar, ok2 := perms["allow"]; ok2 {
-				json.Unmarshal(ar, &cfg.PermissionRules.Allow)
+				decodeInto(ar, &cfg.PermissionRules.Allow)
 			}
 			if dr, ok2 := perms["deny"]; ok2 {
-				json.Unmarshal(dr, &cfg.PermissionRules.Deny)
+				decodeInto(dr, &cfg.PermissionRules.Deny)
 			}
 			if askr, ok2 := perms["ask"]; ok2 {
-				json.Unmarshal(askr, &cfg.PermissionRules.Ask)
+				decodeInto(askr, &cfg.PermissionRules.Ask)
 			}
 		}
 	}
@@ -154,13 +164,13 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 		var hooks map[string]json.RawMessage
 		if json.Unmarshal(v, &hooks) == nil {
 			if pre, ok2 := hooks["PreToolUse"]; ok2 {
-				json.Unmarshal(pre, &cfg.Hooks.PreToolUse)
+				decodeInto(pre, &cfg.Hooks.PreToolUse)
 			}
 			if post, ok2 := hooks["PostToolUse"]; ok2 {
-				json.Unmarshal(post, &cfg.Hooks.PostToolUse)
+				decodeInto(post, &cfg.Hooks.PostToolUse)
 			}
 			if fail, ok2 := hooks["PostToolUseFailure"]; ok2 {
-				json.Unmarshal(fail, &cfg.Hooks.PostToolUseFailure)
+				decodeInto(fail, &cfg.Hooks.PostToolUseFailure)
 			}
 		}
 	}
@@ -170,10 +180,10 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 		var plugins map[string]json.RawMessage
 		if json.Unmarshal(v, &plugins) == nil {
 			if ep, ok2 := plugins["enabled"]; ok2 {
-				json.Unmarshal(ep, &cfg.Plugins.EnabledPlugins)
+				decodeInto(ep, &cfg.Plugins.EnabledPlugins)
 			}
 			if ed, ok2 := plugins["externalDirectories"]; ok2 {
-				json.Unmarshal(ed, &cfg.Plugins.ExternalDirectories)
+				decodeInto(ed, &cfg.Plugins.ExternalDirectories)
 			}
 			if ir, ok2 := plugins["installRoot"]; ok2 {
 				var s string
@@ -204,7 +214,7 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 	// Legacy enabledPlugins fallback
 	if len(cfg.Plugins.EnabledPlugins) == 0 {
 		if v, ok := raw["enabledPlugins"]; ok {
-			json.Unmarshal(v, &cfg.Plugins.EnabledPlugins)
+			decodeInto(v, &cfg.Plugins.EnabledPlugins)
 		}
 	}
 
@@ -219,14 +229,14 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 				}
 			}
 			if f, ok2 := fb["fallbacks"]; ok2 {
-				json.Unmarshal(f, &cfg.ProviderFallbacks.Fallbacks)
+				decodeInto(f, &cfg.ProviderFallbacks.Fallbacks)
 			}
 		}
 	}
 
 	// Trusted roots
 	if v, ok := raw["trustedRoots"]; ok {
-		json.Unmarshal(v, &cfg.TrustedRoots)
+		decodeInto(v, &cfg.TrustedRoots)
 	}
 
 	// Sandbox
@@ -258,7 +268,7 @@ func ExtractFeatureConfig(data []byte) RuntimeFeatureConfig {
 				}
 			}
 			if am, ok2 := sandbox["allowedMounts"]; ok2 {
-				json.Unmarshal(am, &cfg.Sandbox.AllowedMounts)
+				decodeInto(am, &cfg.Sandbox.AllowedMounts)
 			}
 		}
 	}

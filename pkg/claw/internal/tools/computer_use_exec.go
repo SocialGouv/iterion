@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/claw/internal/api"
 )
 
@@ -38,7 +39,7 @@ type computerUseRunner interface {
 type defaultRunner struct{}
 
 func (defaultRunner) lookPath(name string) string {
-	p, err := exec.LookPath(name)
+	p, err := envtrust.LookPath(name)
 	if err != nil {
 		return ""
 	}

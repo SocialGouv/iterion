@@ -62,7 +62,7 @@ func TestTimeline_OrdersEventsChronologically(t *testing.T) {
 	if createdIdx == -1 || firstIdx == -1 || secondIdx == -1 {
 		t.Fatalf("missing expected markers in output:\n%s", out)
 	}
-	if !(createdIdx < firstIdx && firstIdx < secondIdx) {
+	if createdIdx >= firstIdx || firstIdx >= secondIdx {
 		t.Errorf("events out of order: created=%d first=%d second=%d\n%s", createdIdx, firstIdx, secondIdx, out)
 	}
 	if !strings.Contains(out, "🔧") {

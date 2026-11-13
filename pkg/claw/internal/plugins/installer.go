@@ -194,7 +194,7 @@ func extractTarGz(data []byte, dest string) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	remaining := int64(maxTarballBytes)
+	remaining := maxTarballBytes
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -220,7 +220,7 @@ func extractTarGz(data []byte, dest string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return fmt.Errorf("installer: mkdir %s: %w", target, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("installer: mkdir parent: %w", err)
 			}

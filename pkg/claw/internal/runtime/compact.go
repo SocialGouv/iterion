@@ -566,8 +566,8 @@ func SummarizeMessages(messages []api.Message) string {
 	sb.WriteString("Conversation summary:\n")
 
 	// Scope line.
-	sb.WriteString(fmt.Sprintf("- Scope: %d earlier messages compacted (user=%d, assistant=%d, tool=%d).\n",
-		len(messages), roleCounts["user"], roleCounts["assistant"], roleCounts["tool"]))
+	fmt.Fprintf(&sb, "- Scope: %d earlier messages compacted (user=%d, assistant=%d, tool=%d).\n",
+		len(messages), roleCounts["user"], roleCounts["assistant"], roleCounts["tool"])
 
 	// Tools mentioned.
 	if len(toolNames) > 0 {
@@ -822,7 +822,7 @@ func truncateSummary(content string, maxChars int) string {
 // Continuations are injected user-role messages; system-role is still accepted
 // for sessions persisted before the wire-safety fix.
 func extractExistingCompactedSummary(msg api.Message) string {
-	if msg.Role != "system" && !(msg.Role == "user" && msg.IsInjected) {
+	if msg.Role != "system" && (msg.Role != "user" || !msg.IsInjected) {
 		return ""
 	}
 	text := firstTextBlock(msg)

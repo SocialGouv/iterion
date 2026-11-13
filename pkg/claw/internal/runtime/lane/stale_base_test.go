@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 func initBaseTestRepo(t *testing.T) string {
@@ -26,12 +28,7 @@ func initBaseTestRepo(t *testing.T) string {
 
 func baseGitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
-	}
+	gittest.Run(t, dir, args...)
 }
 
 func baseCommitFile(t *testing.T, dir, name, msg string) {
@@ -43,13 +40,7 @@ func baseCommitFile(t *testing.T, dir, name, msg string) {
 
 func headSHA(t *testing.T, dir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(out))
+	return gittest.Run(t, dir, "rev-parse", "HEAD")
 }
 
 func TestMatchesWhenHeadEqualsExpectedBase(t *testing.T) {

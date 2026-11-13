@@ -1,14 +1,20 @@
 package apikit
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestLoadLiveCache_Missing(t *testing.T) {
+	// TestMain switches the live registry off for the process; the switch
+	// also gates the cache this test reads, so it is cleared here.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	cache, err := LoadLiveCache()
 	if err != nil {
@@ -20,6 +26,9 @@ func TestLoadLiveCache_Missing(t *testing.T) {
 }
 
 func TestLoadLiveCache_Corrupt(t *testing.T) {
+	// TestMain switches the live registry off for the process; the switch
+	// also gates the cache this test reads, so it is cleared here.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "")
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)
 	clawDir := filepath.Join(dir, "claw-code-go")
@@ -57,6 +66,9 @@ func TestParseUSDPerToken(t *testing.T) {
 }
 
 func TestSaveAndLoadLiveCachePreservesPricing(t *testing.T) {
+	// TestMain switches the live registry off for the process; the switch
+	// also gates the cache this test reads, so it is cleared here.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	want := &LiveCache{
 		Entries: []LiveCacheEntry{
@@ -89,6 +101,9 @@ func TestSaveAndLoadLiveCachePreservesPricing(t *testing.T) {
 }
 
 func TestSaveAndLoadLiveCacheRoundtrip(t *testing.T) {
+	// TestMain switches the live registry off for the process; the switch
+	// also gates the cache this test reads, so it is cleared here.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	want := &LiveCache{
 		Entries: []LiveCacheEntry{
@@ -274,5 +289,32 @@ func TestMergeLiveIntoRegistryDoesNotMutatePublishedEntries(t *testing.T) {
 	}
 	if got, want := entry.MaxOutput, uint32(64_000+passes); got != want {
 		t.Errorf("last merge must win for MaxOutput: got %d, want %d", got, want)
+	}
+}
+
+// countingTransport refuses every request and counts it: a fetch shows up
+// as a count, never as a connection.
+type countingTransport struct{ requests atomic.Int32 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.requests.Add(1)
+	return nil, errors.New("no network in tests")
+}
+
+// A refresh that runs once the switch is on fetches nothing, whenever it was
+// started: the switch makes the cache unreadable, and an unreadable cache is
+// not a stale one.
+func TestRefreshLiveFetchesNothingOnceSwitchedOff(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
+	transport := &countingTransport{}
+	saved := liveHTTP
+	liveHTTP = &http.Client{Transport: transport}
+	t.Cleanup(func() { liveHTTP = saved })
+
+	refreshLive(DefaultModelRegistry())
+
+	if n := transport.requests.Load(); n != 0 {
+		t.Fatalf("refreshLive sent %d request(s) with the live registry switched off", n)
 	}
 }

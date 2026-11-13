@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 func TestStashCommandNoGit(t *testing.T) {
@@ -52,12 +54,8 @@ func TestLogCommand(t *testing.T) {
 	os.Chdir(dir)
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %s: %v", args, out, err)
-		}
+		t.Helper()
+		gittest.Run(t, dir, args...)
 	}
 	run("init")
 	run("config", "user.email", "test@test.com")
@@ -219,12 +217,8 @@ func TestStashCommandInRepo(t *testing.T) {
 	os.Chdir(dir)
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %s: %v", args, out, err)
-		}
+		t.Helper()
+		gittest.Run(t, dir, args...)
 	}
 	run("init")
 	run("config", "user.email", "test@test.com")

@@ -326,6 +326,9 @@ func TestASeamLookupKeepsThePathItResolved(t *testing.T) {
 			reason: "refuseAbsentImageCLI only decides whether a hostless dispatch is refused for a backend CLI absent from " +
 				"the operator's PATH and spawns nothing; the spawn that follows (cliagent.go) runs the bare name through " +
 				"exec.CommandContext, the implicit class #2988 converts"},
+		"pkg/claw/internal/commands/code_cmds.go": {sites: 1,
+			reason: "gitAvailable answers requireGit's \"is git there\" for claw's slash commands and spawns nothing; " +
+				"the spawn that follows (runGit) resolves its own path through the seam and runs that path"},
 	}
 
 	var offenders []string

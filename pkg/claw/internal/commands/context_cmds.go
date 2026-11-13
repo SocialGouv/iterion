@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // contextLoop is the interface for commands that inspect conversation context.
@@ -37,11 +39,11 @@ func clipboardCmd() (string, []string, error) {
 	case "darwin":
 		return "pbcopy", nil, nil
 	case "linux":
-		if _, err := exec.LookPath("xclip"); err == nil {
-			return "xclip", []string{"-selection", "clipboard"}, nil
+		if p, err := envtrust.LookPath("xclip"); err == nil {
+			return p, []string{"-selection", "clipboard"}, nil
 		}
-		if _, err := exec.LookPath("xsel"); err == nil {
-			return "xsel", []string{"--clipboard", "--input"}, nil
+		if p, err := envtrust.LookPath("xsel"); err == nil {
+			return p, []string{"--clipboard", "--input"}, nil
 		}
 		return "", nil, fmt.Errorf("clipboard: install xclip or xsel")
 	case "windows":
@@ -57,11 +59,17 @@ func isValidBranchName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '/' || r == '.') {
+		if !isBranchNameRune(r) {
 			return false
 		}
 	}
 	return !strings.Contains(name, "..") && !strings.HasSuffix(name, ".lock")
+}
+
+// isBranchNameRune reports whether r may appear in a branch name /branch
+// accepts: ASCII letters and digits, '-', '_', '/' and '.'.
+func isBranchNameRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '/' || r == '.'
 }
 
 // RegisterContextCommands registers context and workspace slash commands.
@@ -483,10 +491,11 @@ func RegisterContextCommands(r *Registry) {
 			if !isValidBranchName(name) {
 				return fmt.Errorf("branch: invalid branch name %q (use alphanumeric, dash, underscore, slash, dot)", name)
 			}
-			cmd := exec.Command("git", "checkout", "-b", name)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("branch: %s", strings.TrimSpace(string(output)))
+			if output, err := runGit("checkout", "-b", name); err != nil {
+				if output = strings.TrimSpace(output); output != "" {
+					return fmt.Errorf("branch: %s: %w", output, err)
+				}
+				return fmt.Errorf("branch: %w", err)
 			}
 			fmt.Printf("Created and switched to branch %s\n", name)
 			return nil

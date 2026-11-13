@@ -42,8 +42,7 @@ func TestSchemaRepairsOnWire(t *testing.T) {
 					t.Fatal(err)
 				}
 				tool := envelope["tools"].([]any)[0].(map[string]any)
-				var got any
-				got = tool["function"].(map[string]any)["parameters"]
+				got := tool["function"].(map[string]any)["parameters"]
 				var want any
 				if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
 					t.Fatal(err)

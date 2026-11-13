@@ -33,7 +33,7 @@ func WriteLSPFrameTo(w io.Writer, payload []byte) error {
 // ReadLSPFrameFrom reads a single Content-Length framed payload from r.
 // Returns (nil, nil) on clean EOF before any header is read.
 func ReadLSPFrameFrom(r *bufio.Reader) ([]byte, error) {
-	var contentLength int = -1
+	contentLength := -1
 	firstHeader := true
 
 	for {

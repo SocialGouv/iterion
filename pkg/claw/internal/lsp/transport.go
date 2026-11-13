@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -197,18 +199,14 @@ func (t *LspTransport) Shutdown(ctx context.Context) error {
 
 	_, err := t.Request(shutdownCtx, "shutdown", nil)
 	if err != nil {
-		// Best effort: try to kill the process.
-		if t.cmd.Process != nil {
-			t.cmd.Process.Kill()
-		}
-		return fmt.Errorf("lsp shutdown: %w", err)
+		// The server did not take the shutdown request: end it.
+		return errors.Join(fmt.Errorf("lsp shutdown: %w", err), t.kill())
 	}
 
 	if notifyErr := t.Notify("exit", nil); notifyErr != nil {
-		if t.cmd.Process != nil {
-			t.cmd.Process.Kill()
-		}
-		return nil
+		// A server that cannot hear "exit" is ended instead; the shutdown
+		// holds if the kill does.
+		return t.kill()
 	}
 
 	// Wait for process exit with timeout.
@@ -217,19 +215,30 @@ func (t *LspTransport) Shutdown(ctx context.Context) error {
 		waitDone <- t.cmd.Wait()
 	}()
 
+	var killErr error
 	select {
 	case <-waitDone:
 		// Process exited.
 	case <-time.After(5 * time.Second):
-		if t.cmd.Process != nil {
-			t.cmd.Process.Kill()
-		}
+		killErr = t.kill()
 	}
 
 	if t.cancel != nil {
 		t.cancel()
 	}
 
+	return killErr
+}
+
+// kill ends the server process. A process that already exited is not a
+// failure: the shutdown it was asked for has happened.
+func (t *LspTransport) kill() error {
+	if t.cmd.Process == nil {
+		return nil
+	}
+	if err := t.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("lsp kill: %w", err)
+	}
 	return nil
 }
 

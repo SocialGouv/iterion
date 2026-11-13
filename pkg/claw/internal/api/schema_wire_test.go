@@ -33,8 +33,7 @@ func TestSchemaRepairsOnWire(t *testing.T) {
 					t.Fatal(err)
 				}
 				tool := envelope["tools"].([]any)[0].(map[string]any)
-				var got any
-				got = tool["input_schema"]
+				got := tool["input_schema"]
 				var want any
 				if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
 					t.Fatal(err)

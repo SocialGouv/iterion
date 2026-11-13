@@ -286,8 +286,42 @@ func importsOfDir(t *testing.T, dir string) []string {
 	return out
 }
 
+// envReadForms are the calls that read an environment variable named by
+// their first argument — the forms internal/envtrust's routing census knows —
+// keyed by import path. claw is first-party code since the fold and may read
+// through envtrust as well as os.
+var envReadForms = map[string][]string{
+	"os": {"Getenv", "LookupEnv"},
+	"github.com/SocialGouv/iterion/internal/envtrust":     {"Inherited", "Planted"},
+	"github.com/SocialGouv/iterion/internal/isolationenv": {"Value"},
+}
+
+// namedEnvRead reports whether sel is one of envReadForms, under the name f
+// imports its package by.
+func namedEnvRead(f *ast.File, sel *ast.SelectorExpr) bool {
+	x, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := filepath.Base(path)
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name == x.Name && slices.Contains(envReadForms[path], sel.Sel.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 // envNamesReadIn returns, sorted and deduplicated, every env name the given
-// files and directories read as a literal.
+// files and directories read. A read whose name is not a string literal is a
+// failure: the derivation cannot decide a name it cannot read.
 func envNamesReadIn(t *testing.T, paths []string) []string {
 	t.Helper()
 	found := map[string]bool{}
@@ -304,7 +338,8 @@ func envNamesReadIn(t *testing.T, paths []string) []string {
 		files = append(files, path)
 	}
 	for _, path := range files {
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
@@ -314,15 +349,12 @@ func envNamesReadIn(t *testing.T, paths []string) []string {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Getenv" && sel.Sel.Name != "LookupEnv" {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pkg.Name != "os" {
+			if !ok || !namedEnvRead(f, sel) {
 				return true
 			}
 			lit, ok := call.Args[0].(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
+				t.Errorf("%s reads an environment variable whose name is not a string literal: spell the name at the read, so this derivation can decide it", fset.Position(call.Pos()))
 				return true
 			}
 			if name, err := strconv.Unquote(lit.Value); err == nil && name != "" {

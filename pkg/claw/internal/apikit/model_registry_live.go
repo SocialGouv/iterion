@@ -267,45 +267,56 @@ func MaybeRefreshLive(reg *ModelRegistry) {
 	liveFetchInFlight = true
 	liveFetchMu.Unlock()
 
-	go func() {
-		var fetchSucceeded bool
-		defer func() {
-			liveFetchMu.Lock()
-			liveFetchInFlight = false
-			// Only mark the TTL window consumed when fetchLive actually
-			// produced a usable cache. Bumping liveFetchLast on every
-			// completion meant a single transient failure (both
-			// upstreams down at once) silenced retries for the whole
-			// LiveCacheTTL (24h) — defeating the point of async
-			// refresh. Now: failures leave liveFetchLast at its
-			// previous value, the next caller's TTL check fails, and
-			// liveFetchInFlight (still toggled off here) lets a fresh
-			// attempt start. Stampedes are still prevented by the
-			// in-flight flag.
-			if fetchSucceeded {
-				liveFetchLast = time.Now()
-			}
-			liveFetchMu.Unlock()
-		}()
-		cache, _ := LoadLiveCache()
-		fresh := cache != nil && time.Since(cache.FetchedAt) < LiveCacheTTL
-		if cache != nil {
-			mergeLiveIntoRegistry(reg, cache)
+	go refreshLive(reg)
+}
+
+// refreshLive is MaybeRefreshLive's background half: merge the disk cache,
+// and fetch only when it is stale. It runs whenever it gets scheduled, so it
+// reads CLAW_DISABLE_LIVE_REGISTRY again before the network: a refresh
+// started while the registry was on, and run once the switch was set, would
+// otherwise find the cache unreadable — the switch gates the read too — and
+// fetch on a switch that is on.
+func refreshLive(reg *ModelRegistry) {
+	var fetchSucceeded bool
+	defer func() {
+		liveFetchMu.Lock()
+		liveFetchInFlight = false
+		// Only mark the TTL window consumed when fetchLive actually
+		// produced a usable cache. Bumping liveFetchLast on every
+		// completion meant a single transient failure (both
+		// upstreams down at once) silenced retries for the whole
+		// LiveCacheTTL (24h) — defeating the point of async
+		// refresh. Now: failures leave liveFetchLast at its
+		// previous value, the next caller's TTL check fails, and
+		// liveFetchInFlight (still toggled off here) lets a fresh
+		// attempt start. Stampedes are still prevented by the
+		// in-flight flag.
+		if fetchSucceeded {
+			liveFetchLast = time.Now()
 		}
-		if fresh {
-			// Existing disk cache is still within TTL — treat the
-			// refresh as a no-op success.
-			fetchSucceeded = true
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if newCache, err := fetchLive(ctx); err == nil && newCache != nil {
-			_ = saveLiveCache(newCache)
-			mergeLiveIntoRegistry(reg, newCache)
-			fetchSucceeded = true
-		}
+		liveFetchMu.Unlock()
 	}()
+	cache, _ := LoadLiveCache()
+	fresh := cache != nil && time.Since(cache.FetchedAt) < LiveCacheTTL
+	if cache != nil {
+		mergeLiveIntoRegistry(reg, cache)
+	}
+	if fresh {
+		// Existing disk cache is still within TTL — treat the
+		// refresh as a no-op success.
+		fetchSucceeded = true
+		return
+	}
+	if os.Getenv("CLAW_DISABLE_LIVE_REGISTRY") == "1" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if newCache, err := fetchLive(ctx); err == nil && newCache != nil {
+		_ = saveLiveCache(newCache)
+		mergeLiveIntoRegistry(reg, newCache)
+		fetchSucceeded = true
+	}
 }
 
 // fetchLive hits OpenRouter and models.dev, normalises the responses, merges

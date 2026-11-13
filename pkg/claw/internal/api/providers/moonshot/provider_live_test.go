@@ -52,7 +52,7 @@ func TestLiveMoonshotStream(t *testing.T) {
 			if ev.Delta.Text != "" {
 				text += ev.Delta.Text
 			}
-			kinds["delta:"+string(ev.Delta.Type)]++
+			kinds["delta:"+ev.Delta.Type]++
 		}
 		if ev.Type == "error" {
 			t.Fatalf("stream error event: %+v", ev)

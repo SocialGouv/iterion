@@ -3,10 +3,13 @@ package lane
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // BranchFreshnessKind identifies the freshness state.
@@ -68,8 +71,9 @@ func (r *ExecGitRunner) RevListCount(ctx context.Context, repoPath, a, b string)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", fmt.Sprintf("%s..%s", b, a))
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks("rev-list", "--count", fmt.Sprintf("%s..%s", b, a))...)
 	cmd.Dir = repoPath
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return 0
@@ -85,8 +89,9 @@ func (r *ExecGitRunner) LogSubjects(ctx context.Context, repoPath, a, b string) 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "log", "--format=%s", fmt.Sprintf("%s..%s", b, a))
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks("log", "--format=%s", fmt.Sprintf("%s..%s", b, a))...)
 	cmd.Dir = repoPath
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return nil

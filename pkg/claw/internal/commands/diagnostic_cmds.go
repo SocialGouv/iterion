@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // RegisterDiagnosticCommands registers diagnostic slash commands.
@@ -25,7 +28,7 @@ func RegisterDiagnosticCommands(r *Registry) {
 			fmt.Println(" ✓")
 
 			// Check git
-			gitPath, err := exec.LookPath("git")
+			gitPath, err := envtrust.LookPath("git")
 			if err != nil {
 				fmt.Println("  git:          not found ⚠")
 				fmt.Println("    Hint: Install git to enable diff, commit, and branch operations.")
@@ -80,7 +83,7 @@ func RegisterDiagnosticCommands(r *Registry) {
 		ResumeSupported: true,
 		Category:        CategoryDiagnostics,
 		Handler: func(args string, loop interface{}) error {
-			gitPath, err := exec.LookPath("git")
+			gitPath, err := envtrust.LookPath("git")
 			if err != nil {
 				fmt.Println("git not found. Install git to use /diff.")
 				return nil
@@ -91,7 +94,8 @@ func RegisterDiagnosticCommands(r *Registry) {
 				cmdArgs = append(cmdArgs, strings.Fields(extra)...)
 			}
 
-			cmd := exec.Command(gitPath, cmdArgs...)
+			cmd := exec.Command(gitPath, gitlib.NoRunHooks(cmdArgs...)...)
+			cmd.Env = gitlib.SanitizeEnv(os.Environ())
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {

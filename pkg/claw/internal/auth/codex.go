@@ -24,7 +24,7 @@ func CodexAuthPath() (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", errors.New("Codex authentication directory unavailable")
+		return "", errors.New("codex authentication directory unavailable")
 	}
 	return filepath.Join(home, ".codex", "auth.json"), nil
 }
@@ -32,7 +32,7 @@ func CodexAuthPath() (string, error) {
 // LoadCodexCredentials reads a fresh snapshot of Codex's auth file. Codex
 // owns refresh-token rotation; callers must never rewrite this file.
 func LoadCodexCredentials(path string) (CodexCredentials, error) {
-	const hint = "Codex authentication unavailable; run `codex login` and retry"
+	const hint = "codex authentication unavailable; run `codex login` and retry"
 	for attempt := 0; attempt < 2; attempt++ {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -57,7 +57,7 @@ func LoadCodexCredentials(path string) (CodexCredentials, error) {
 			return CodexCredentials{}, errors.New(hint)
 		}
 		if expiredCodexToken(document.Tokens.AccessToken, time.Now()) {
-			return CodexCredentials{}, errors.New("Codex access token expired; open Codex to refresh your login, then retry")
+			return CodexCredentials{}, errors.New("codex access token expired; open Codex to refresh your login, then retry")
 		}
 		tokens := document.Tokens
 		return CodexCredentials{AccessToken: tokens.AccessToken, AccountID: tokens.AccountID}, nil

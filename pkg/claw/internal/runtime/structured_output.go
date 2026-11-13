@@ -6,7 +6,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/claw/internal/tools"
 )
 
-const structuredOutputRequiresWorkMessage = "structured_output rejected: no work has been performed yet in this session. Do the mission with the available tools first; call structured_output only when the mission is complete — it ends the session."
+const structuredOutputRequiresWorkMessage = "structured_output rejected: no work has been performed yet in this session. Do the mission with the available tools first; call structured_output only when the mission is complete — it ends the session"
 
 var nonWorkTools = map[string]struct{}{
 	"structured_output": {},
