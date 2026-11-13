@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.32.2](https://github.com/SocialGouv/iterion/compare/v5.32.1...v5.32.2) (2026-11-13)
+
+### Bug Fixes
+
+* **claw:** hold pkg/claw to iterion's gates — lint, hookless sanitized git, the PATH seam, isolated tests (MG-4 3/3) ([9f97074](https://github.com/SocialGouv/iterion/commit/9f97074e8fb2161fee9354575428be967a7967ec)), references [#2988](https://github.com/SocialGouv/iterion/issues/2988) [#1686](https://github.com/SocialGouv/iterion/issues/1686) [#3256](https://github.com/SocialGouv/iterion/issues/3256) [#3247](https://github.com/SocialGouv/iterion/issues/3247) [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    pkg/claw is first-party code now: every gate reads it, with no exemption. What each gate found, and what changed:
+
+    </details>
+
 ## [5.32.1](https://github.com/SocialGouv/iterion/compare/v5.32.0...v5.32.1) (2026-11-13)
 
 ### Bug Fixes
