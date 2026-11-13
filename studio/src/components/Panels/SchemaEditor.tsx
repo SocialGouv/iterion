@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { SchemaDecl, SchemaField, FieldType } from "@/api/types";
 import { defaultSchema } from "@/lib/defaults";
+import { dslNameError } from "@/lib/dslName";
 import { TextField, CommittedTextField, SelectField, TagListField } from "./forms/FormField";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import { Button } from "@/components/ui/Button";
@@ -110,6 +111,7 @@ function SchemaCard({
           onChange={(v) => onRename(schema.name, v)}
           validate={(v) => {
             if (!v.trim()) return "Name cannot be empty";
+            if (dslNameError(v)) return dslNameError(v);
             const names = new Set(allSchemas.map((s) => s.name));
             names.delete(schema.name);
             if (names.has(v)) return "Schema name already exists";
@@ -138,6 +140,7 @@ function SchemaCard({
                   value={field.name}
                   onChange={(v) => updateField(i, { name: v })}
                   placeholder="field_name"
+                  error={dslNameError(field.name) ?? undefined}
                 />
               </div>
               <div className="w-24">

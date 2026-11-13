@@ -36,7 +36,9 @@ function uniqueName(base: string, existing: Set<string>): string {
 
 /** Convert a display name to a snake_case identifier. */
 function toSnakeCase(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const name = text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  // A .bot name starts with a letter or _ (lib/dslName): "3d review" -> _3d_review.
+  return /^[0-9]/.test(name) ? `_${name}` : name;
 }
 
 /** Terminal node names that should not be remapped in edge templates. */

@@ -45,6 +45,11 @@ func directiveLine(text string) int {
 // later one) IS such a change — its nearest written form de-indents it —
 // and is refused by name before anything is compared.
 func Verify(f *ast.File, text string) error {
+	// A name the writer puts down bare must read back as one name; one that
+	// does not is said by name here rather than as the re-read's parse errors.
+	if err := checkNames(f); err != nil {
+		return err
+	}
 	for _, p := range f.Prompts {
 		if p.Inline {
 			continue // written as a quoted string: every body has that form

@@ -17,6 +17,7 @@ import { NODE_COLORS } from "@/lib/constants";
 import { CommittedTextField, SelectField, TextField, CheckboxField, PromptPickerField, NodeFormHeader } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
+import { dslNameError } from "@/lib/dslName";
 
 interface Props {
   decl: RouterDecl;
@@ -104,7 +105,7 @@ export default function RouterForm({ decl }: Props) {
         onCommit={(v) => setSelectedNode(v)}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const names = getAllNodeNames(document!);
           names.delete(decl.name);
           if (names.has(v)) return "Name already exists";
@@ -233,6 +234,7 @@ export default function RouterForm({ decl }: Props) {
             value={decl.as ?? ""}
             onChange={(v) => updateRouter(decl.name, { as: v || undefined })}
             placeholder="item"
+            error={dslNameError(decl.as ?? "") ?? undefined}
             help="Name the element is bound to (default: item). Reference as {{outputs.<router>.<as>.<field>}}."
           />
           <TextField
