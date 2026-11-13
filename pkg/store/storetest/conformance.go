@@ -5125,6 +5125,15 @@ func testCapacitySubjectHolder(t *testing.T, s store.RunStore) {
 	if n, err := s.CountAliveRunsWithCredFingerprint(ctx, subject, "gw_alive"); err != nil || n != 0 {
 		t.Fatalf("alive(%s, excluding gw_alive) = %d/%v, want 0", subject, n, err)
 	}
+	// The ledger matches a subject exactly, on both twins: the predicate and
+	// the Mongo filter agree on every other spelling holding nothing. Folding
+	// a host's spellings is GatewayCapacitySubject's job, done once, before a
+	// subject is stamped or asked for.
+	for _, other := range []string{"GW:LITELLM.EXAMPLE", "gw:LiteLLM.example", "litellm.example", "gw:", "gw:litellm.example."} {
+		if n, err := s.CountAliveRunsWithCredFingerprint(ctx, other, ""); err != nil || n != 0 {
+			t.Fatalf("alive(%q) = %d/%v, want 0 — only %q is the subject the run holds", other, n, err, subject)
+		}
+	}
 
 	// The admission of another run on a gateway of one place: the alive run,
 	// which no admission ever named, is adopted, so the newcomer is refused
@@ -5243,7 +5252,7 @@ func testCapacitySubjectStampRoundTrip(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatalf("LoadRun %s: %v", id, err)
 	}
-	r.CapacitySubjects = []string{first, second}
+	store.RunCredStamp{Fingerprints: []string{"fp-launch"}, CapacitySubjects: []string{first, second}}.Apply(r)
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun %s: %v", id, err)
 	}
