@@ -539,9 +539,12 @@ def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped=''
     # required check that never lands blocks the pull request for good, so the
     # run must be able to say so with a predicate rather than with prose a
     # reader has to notice -- publish_health is what raises it.
-    # The fold travels the same way: fallback is the forge layer saying the
-    # anchors it refused were folded into the review body. It is the empty
-    # string on every exit that reached no forge, so the field is always there.
+    # The fold travels the same way: fallback summary says every comment is in
+    # the review body (folded by the forge layer, by the server in summary
+    # mode, or by this node when no finding had a diff anchor); partial says
+    # fewer comments landed than were sent, which GitLab folds and GitHub and
+    # Forgejo do not. It is the empty string on every exit that reached no
+    # forge, so the field is always there.
     # (No backticks in these comments: this block is a backtick-delimited
     # command: string, and one would terminate it. Same trap as below.)
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
@@ -1333,11 +1336,23 @@ sugg = int(res.get('suggestions_posted') or 0)
 fallback = str(res.get('fallback') or '')
 verified = bool(res.get('verified'))
 body_missing = res.get('body_missing') is True
+# No finding had a diff anchor (no file or line, or HEAD moved since the
+# review): each was written into the summary above and no inline comment was
+# sent, so the endpoint saw nothing to fold and reports no fallback. The fold
+# is this node's own; publish_health reads it as one only when it is said.
+self_folded = (not fallback and not comments and bool(unanchored)
+               and bool(res.get('published')) and not body_missing)
+if self_folded:
+    fallback = 'summary'
 s = 'posted ' + str(posted) + ' inline comment(s), ' + str(sugg) + ' with one-click suggestions, via the iterion forge-publish endpoint (server-side live-token client); counts ' + ('re-fetched from the forge.' if verified else 'as submitted (forge re-fetch unavailable).')
 if body_missing:
     s = s + ' review body did not land; only the inline comments reported above can be confirmed.'
+elif self_folded:
+    s = s + ' fallback=summary: no finding had a diff anchor, all ' + str(len(unanchored)) + ' were written into the review summary body.'
+elif fallback == 'summary':
+    s = s + ' fallback=summary: every inline comment was folded into the review summary body, not dropped.'
 elif fallback:
-    s = s + ' fallback=' + fallback + ': rejected inline anchors were folded into the review summary body, not dropped.'
+    s = s + ' fallback=' + fallback + ': the forge holds fewer inline comments than were sent (GitLab folds the missing ones into its summary note, GitHub and Forgejo fold nothing).'
 if bool(res.get('gate_posted')):
     s = s + ' merge gate: ' + gate_ctx + '=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
 elif str(res.get('gate_error') or ''):
@@ -1354,9 +1369,11 @@ emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
 ## Deterministic anti-façade gate (no LLM): when findings existed but
 ## zero inline comments landed, or the review body did not land, emit a
 ## loud banner. The board + report already succeeded upstream, so this
-## informs (degraded=true) rather than hard-failing the run. A review the
-## forge layer reports as folded (fallback summary/partial, body landed)
-## carries its findings in its body: that is a publish, not a failure.
+## informs (degraded=true) rather than hard-failing the run. A review
+## reported folded (fallback summary, body landed) carries its findings in
+## its body: that is a publish, not a failure. fallback partial with zero
+## inline comments is not a fold: on GitHub and Forgejo it is the re-fetch
+## listing fewer comments than were sent, nothing folded.
 tool publish_health:
   command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} BODY_MISSING={{input.body_missing}} FALLBACK={{input.fallback}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -I -c "
 import os, json, sys
@@ -1376,13 +1393,17 @@ gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
 placeholder_refused = skipped.startswith('placeholder-shape:')
 published = flag('PUBLISHED')
 anchors_lost = total > 0 and posted == 0
+fallback = os.environ.get('FALLBACK', '').strip()
 # Zero inline comments on a published review whose body landed is not a lost
-# publish when the forge layer says it folded the refused anchors into that
-# body: the findings reached the PR, as file:line entries in the review. Only
-# the forge-reported fold counts - a published review that reports none has
-# lost its comments somewhere nothing accounts for.
-folded = (anchors_lost and published and not body_missing
-          and os.environ.get('FALLBACK', '').strip() in ('summary', 'partial'))
+# publish when the publish step says every comment is in that body: fallback
+# summary - folded by the forge layer after it refused the anchors, by the
+# server in summary mode, or by publish_review when no finding had a diff
+# anchor. The findings reached the PR, as file:line entries in the review.
+# partial is no fold here: GitLab, which folds, reports summary when none
+# landed, so partial at zero is the GitHub and Forgejo re-fetch listing fewer
+# comments than were sent, with the body as submitted. A published review
+# that reports no fold has lost its comments somewhere nothing accounts for.
+folded = anchors_lost and published and not body_missing and fallback == 'summary'
 degraded = body_missing or (anchors_lost and not folded) or gate_missing or placeholder_refused
 banners = []
 if placeholder_refused:
@@ -1394,9 +1415,10 @@ if gate_missing:
 if banners:
     banner = ' '.join(banners)
 elif folded:
-    banner = 'forge publish OK: ' + str(total) + ' finding(s) folded into the review body (the forge refused their inline anchors); review: ' + (review_url or 'n/a')
+    banner = 'forge publish OK: ' + str(total) + ' finding(s) folded into the review body (no inline comment landed); review: ' + (review_url or 'n/a')
 elif anchors_lost and published:
-    banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but none of its ' + str(total) + ' inline comment(s) did and nothing reports them folded (reason: ' + (skipped or 'none given') + '). Check the review on the PR; the board + markdown report still succeeded; re-run with the same pr_url to re-post the findings.'
+    reason = skipped or ('the forge holds fewer inline comments than were sent (fallback=partial)' if fallback == 'partial' else 'none given')
+    banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but none of its ' + str(total) + ' inline comment(s) did and nothing reports them folded (reason: ' + reason + '). Check the review on the PR; the board + markdown report still succeeded; re-run with the same pr_url to re-post the findings.'
 elif anchors_lost:
     banner = chr(9888) + ' FORGE PUBLISH FAILED: ' + str(total) + ' finding(s) to post but 0 inline comments landed on the PR (reason: ' + (skipped or 'none given') + '). The board + markdown report still succeeded; fix the forge CLI auth and re-run with the same pr_url to publish.'
 else:

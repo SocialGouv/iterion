@@ -632,7 +632,10 @@ type publishReviewResponse struct {
 	// Verified reports whether comments_posted was confirmed by a
 	// follow-up forge read, not assumed from the create call.
 	Verified bool `json:"verified"`
-	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult).
+	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult: only
+	// "summary" promises every comment is in the body; "partial" is a
+	// shortfall that GitLab folds and GitHub/Forgejo do not). Summary mode
+	// reports "summary" whenever it folded comments into the body itself.
 	Fallback string `json:"fallback,omitempty"`
 	// BodyMissing reports a partial success whose summary note did not land.
 	BodyMissing bool `json:"body_missing,omitempty"`
@@ -840,6 +843,13 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			Verdict:           verdict,
 		})
 		return
+	}
+	// Summary mode folded the comments into the body above, so the provider
+	// saw none and reports no fallback. The fold is this handler's own and the
+	// response states it: a caller reading zero inline comments with no fold
+	// would take findings that sit in the review body for lost ones.
+	if mode == "summary" && len(req.Comments) > 0 {
+		res.Fallback = "summary"
 	}
 	if s.logger != nil {
 		s.logger.Info("forge publish: %s %s#%d → %d inline comment(s) (verified=%v fallback=%q)",

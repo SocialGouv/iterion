@@ -253,12 +253,18 @@ iterion run bots/review-pr/main.bot \
   review when inline anchors are rejected — findings are folded into the
   body, never dropped), and a deterministic `publish_health` gate raises
   a loud banner if findings existed but zero inline comments landed. The
-  endpoint's `fallback` (`summary`: every anchor refused and folded;
-  `partial`: the rest folded) travels structured to that gate: a published
-  review whose body landed with its findings folded reads `forge publish
-  OK … folded into the review body`, not degraded; a published review with
-  no reported fold is `INLINE COMMENTS MISSING` (degraded); only a review
-  that did not publish keeps `FORGE PUBLISH FAILED` and its auth advice. An
+  endpoint's `fallback` travels structured to that gate. `summary` says
+  every finding is in the review body: the forge refused the anchors and
+  they were folded, the server folded them (`pr_review_mode: summary`), or
+  `publish_review` wrote them there because none had a diff anchor (no
+  file:line, or HEAD moved). `partial` says fewer landed than were sent:
+  GitLab folds the missing ones, GitHub and Forgejo do not (a re-fetch
+  shortfall), so with zero inline comments it is no fold. A published
+  review whose body landed with a `summary` fold reads `forge publish OK …
+  folded into the review body`, not degraded; a published review with no
+  fold (`partial` included) is `INLINE COMMENTS MISSING` (degraded); only a
+  review that did not publish keeps `FORGE PUBLISH FAILED` and its auth
+  advice. An
   HTTP 200 can also carry `body_missing=true` when inline comments landed
   but the summary note did not: this is `degraded=true`, with an explicit
   "review body did not land" banner and no claim that rejected anchors were
@@ -267,9 +273,10 @@ iterion run bots/review-pr/main.bot \
 - **Stale-review guard.** The inline findings anchor to `file:line`
   positions computed against the tree the reviewers judged — the worktree
   HEAD `diff_precheck` captured as `reviewed_sha`. `publish_review`
-  re-reads HEAD before posting and, if it has moved, **refuses to
-  publish** rather than landing comments on lines that have since shifted;
-  it emits a `skipped` reason telling you to re-run with the same `pr_url`
+  re-reads HEAD before posting and, if it has moved, **posts no inline
+  comment** rather than landing comments on lines that have since shifted:
+  every finding goes into the review body, unanchored (`fallback`
+  `summary`), under a warning telling you to re-run with the same `pr_url`
   for a fresh review. Within a single run Revi is read-only, so HEAD never
   drifts between the two nodes — the guard bites on a **resume** after the
   branch advanced (and any future mid-run mutation). Fail-open: it fires

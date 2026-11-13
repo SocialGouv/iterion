@@ -1,7 +1,14 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.20
+version: 0.9.21
+## 0.9.21 — only `fallback` `summary` reads as a fold. `partial` with zero
+## inline comments is, on GitHub and Forgejo, the re-fetch listing fewer
+## comments than were sent — nothing folded — and read `forge publish OK`;
+## it now reads `INLINE COMMENTS MISSING` (degraded, no auth advice). The
+## folds nobody reported now say `summary`: the server in
+## `pr_review_mode: summary`, and `publish_review` when no finding had a
+## diff anchor (no file:line, or HEAD moved) — both read degraded before.
 ## 0.9.20 — `publish_health` reads the forge's fold. A review the forge
 ## published with every refused anchor folded into its body (`fallback`
 ## `summary`/`partial`, body landed) raised "FORGE PUBLISH FAILED … fix the

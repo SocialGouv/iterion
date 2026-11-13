@@ -3,11 +3,13 @@ package bots
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -163,14 +165,16 @@ func runReviewPRPublishHealth(t *testing.T, refs map[string]string) (bool, strin
 
 // The forge refuses inline anchors routinely (a line outside the diff hunk, a
 // stale position), and the forge layer then folds the refused comments into the
-// review body and says so: fallback "summary" (all of them) or "partial" (the
-// rest). Such a review carries every finding, with its file:line, on the pull
-// request. Reading it as "0 inline comments landed" and advising a credential
-// fix sends the operator after an auth problem that does not exist
-// (SocialGouv/egapro #5149 and #5157: published=true, both findings in the
-// body). The three shapes are told apart: folded (healthy), published with no
-// reported fold (degraded, no auth advice), not published (the FAILED banner
-// and its auth advice, unchanged).
+// review body and says so with fallback "summary". Such a review carries every
+// finding, with its file:line, on the pull request. Reading it as "0 inline
+// comments landed" and advising a credential fix sends the operator after an
+// auth problem that does not exist (SocialGouv/egapro #5149 and #5157:
+// published=true, both findings in the body). fallback "partial" with zero
+// inline comments is no fold: GitLab, which folds, reports "summary" when none
+// landed, and on GitHub and Forgejo "partial" is the re-fetch listing fewer
+// comments than were sent, the body as submitted. The three shapes are told
+// apart: folded (healthy), published with no fold (degraded, no auth advice),
+// not published (the FAILED banner and its auth advice, unchanged).
 func TestReviewPRPublishHealthFoldedFindings(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -187,13 +191,14 @@ func TestReviewPRPublishHealthFoldedFindings(t *testing.T) {
 	}{
 		{
 			name: "published with every anchor folded into the body is healthy", published: "true", bodyMissing: "false", fallback: "summary",
-			wantParts: []string{"forge publish OK", "2 finding(s) folded into the review body", "refused their inline anchors", "https://forge/review/1"},
+			wantParts: []string{"forge publish OK", "2 finding(s) folded into the review body", "https://forge/review/1"},
 			denyParts: []string{"FAILED", "MISSING", "auth"},
 		},
 		{
-			name: "published with the rest folded is healthy", published: "true", bodyMissing: "false", fallback: "partial",
-			wantParts: []string{"forge publish OK", "folded into the review body"},
-			denyParts: []string{"FAILED", "MISSING", "auth"},
+			name: "partial with no inline comment is a shortfall, not a fold", published: "true", bodyMissing: "false", fallback: "partial",
+			wantDegraded: true,
+			wantParts:    []string{"INLINE COMMENTS MISSING", "the review landed", "fewer inline comments than were sent (fallback=partial)"},
+			denyParts:    []string{"forge publish OK", "folded into the review body", "FORGE PUBLISH FAILED", "auth"},
 		},
 		{
 			name: "published with no reported fold is degraded without auth advice", published: "true", bodyMissing: "false", fallback: "",
@@ -250,37 +255,52 @@ func TestReviewPRPublishHealthFoldedFindings(t *testing.T) {
 	}
 }
 
-// The fold has to travel from the publish endpoint's answer to publish_health
-// through the REAL edge: a fallback that publish_review reads but does not
-// emit, or that the publish_review -> publish_health edge does not map, leaves
-// publish_health reading an empty fallback and raising a false alarm. So this
-// drives publish_review against an endpoint answering a summary fold, resolves
-// every mapping of the compiled edge against what it emitted, and runs
-// publish_health on the result.
-func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not on PATH")
-	}
+// publishChainRequest is the request publish_review sent the endpoint.
+type publishChainRequest struct {
+	Summary  string            `json:"summary"`
+	Mode     string            `json:"mode"`
+	Comments []json.RawMessage `json:"comments"`
+}
+
+// runReviewPRPublishChain drives publish_review against an endpoint answering
+// resp, resolves every mapping of the compiled publish_review -> publish_health
+// edge against what it emitted (total_findings is the count of findings, the
+// fixture standing in for pr_gate), and runs publish_health on the result. It
+// returns the request publish_review sent, its publish_output and the verdict.
+func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode string) (publishChainRequest, map[string]any, bool, string) {
+	t.Helper()
+	var mu sync.Mutex
+	var sent []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"published": true, "provider": "github", "review_url": "https://forge/review/5149",
-			"comments_posted": 0, "suggestions_posted": 0, "verified": true, "fallback": "summary",
-		})
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sent = body
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
-	findings := `[{"file":"a.go","line":1,"title":"first finding","severity":"high"},{"file":"b.go","line":9,"title":"second finding","severity":"medium"}]`
-	command := renderReviewPRBodyHealthNode(t, "publish_review", map[string]string{
+	refs := map[string]string{
 		"vars.forge_publish_url":      srv.URL + "/api/v1/forge/publish-review",
 		"vars.forge_publish_token":    "run-token",
 		"input.pr_url":                "https://github.com/acme/widgets/pull/7",
 		"input.findings":              findings,
 		"input.effective_review_mode": "mono",
 		"vars.gate_enabled":           "false",
-	})
-	out, err := exec.Command("sh", "-c", command).Output()
+	}
+	if mode != "" {
+		refs["vars.pr_review_mode"] = mode
+	}
+	out, err := exec.Command("sh", "-c", renderReviewPRBodyHealthNode(t, "publish_review", refs)).Output()
 	if err != nil {
 		t.Fatalf("publish_review failed: %v (out %q)", err, out)
+	}
+	var req publishChainRequest
+	mu.Lock()
+	sentBody := sent
+	mu.Unlock()
+	if err := json.Unmarshal(sentBody, &req); err != nil {
+		t.Fatalf("publish_review sent no readable request: %v (%q)", err, sentBody)
 	}
 	dec := json.NewDecoder(strings.NewReader(string(out)))
 	dec.UseNumber()
@@ -288,10 +308,11 @@ func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
 	if err := dec.Decode(&published); err != nil {
 		t.Fatalf("output is not publish_output JSON: %v (%q)", err, out)
 	}
-	if got, ok := published["fallback"].(string); !ok || got != "summary" {
-		t.Fatalf("publish_output must carry the endpoint's fallback structured, got %#v in %s", published["fallback"], out)
-	}
 
+	var parsed []any
+	if err := json.Unmarshal([]byte(findings), &parsed); err != nil {
+		t.Fatalf("fixture findings are not a JSON array: %v", err)
+	}
 	u := unittest.Whole(unit.LoadDir("review-pr/main.bot"))
 	if u.Merged == nil {
 		t.Fatalf("review-pr: the bundle did not parse: %v", u.Diagnostics)
@@ -300,11 +321,11 @@ func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
 	if cr.Workflow == nil {
 		t.Fatalf("review-pr: the bundle did not compile: %v", cr.Diagnostics)
 	}
-	upstream := map[string]string{"outputs.pr_gate.total_findings": "2"}
+	upstream := map[string]string{"outputs.pr_gate.total_findings": fmt.Sprint(len(parsed))}
 	for k, v := range published {
 		upstream["outputs.publish_review."+k] = fmt.Sprint(v)
 	}
-	refs := map[string]string{}
+	healthRefs := map[string]string{}
 	seen := false
 	for _, edge := range cr.Workflow.Edges {
 		if edge.From != "publish_review" || edge.To != "publish_health" {
@@ -320,21 +341,141 @@ func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
 			if !ok {
 				t.Fatalf("mapping %s = %q names an output neither publish_review nor the fixture provides", mapping.Key, raw)
 			}
-			refs["input."+mapping.Key] = value
+			healthRefs["input."+mapping.Key] = value
 		}
 	}
 	if !seen {
 		t.Fatal("no publish_review -> publish_health edge")
 	}
+	degraded, banner := runReviewPRPublishHealth(t, healthRefs)
+	return req, published, degraded, banner
+}
 
-	degraded, banner := runReviewPRPublishHealth(t, refs)
+// The fold has to travel from the publish endpoint's answer to publish_health
+// through the REAL edge: a fallback that publish_review reads but does not
+// emit, or that the publish_review -> publish_health edge does not map, leaves
+// publish_health reading an empty fallback and raising a false alarm. So this
+// drives publish_review against an endpoint answering a summary fold, resolves
+// every mapping of the compiled edge against what it emitted, and runs
+// publish_health on the result.
+func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	findings := `[{"file":"a.go","line":1,"title":"first finding","severity":"high"},{"file":"b.go","line":9,"title":"second finding","severity":"medium"}]`
+	_, published, degraded, banner := runReviewPRPublishChain(t, map[string]any{
+		"published": true, "provider": "github", "review_url": "https://forge/review/5149",
+		"comments_posted": 0, "suggestions_posted": 0, "verified": true, "fallback": "summary",
+	}, findings, "")
+	if got, ok := published["fallback"].(string); !ok || got != "summary" {
+		t.Fatalf("publish_output must carry the endpoint's fallback structured, got %#v in %v", published["fallback"], published)
+	}
 	if degraded {
-		t.Errorf("a review the forge published with both findings folded into its body must not read degraded: %q (inputs %v)", banner, refs)
+		t.Errorf("a review the forge published with both findings folded into its body must not read degraded: %q", banner)
 	}
 	if !strings.Contains(banner, "2 finding(s) folded into the review body") || !strings.Contains(banner, "https://forge/review/5149") {
 		t.Errorf("the banner must say the findings were folded and link the review, got %q", banner)
 	}
 	if strings.Contains(banner, "auth") || strings.Contains(banner, "MISSING") {
 		t.Errorf("a folded publish must not raise a missing-comment or auth alarm: %q", banner)
+	}
+}
+
+// Only a fold that put the findings into the review body reads healthy, and
+// every producer of one has to say so. The endpoint answers here are the
+// shapes pkg/server's TestForgePublishReview_FallbackFromRealClients reads off
+// the real GitHub and Forgejo clients: "partial" at zero inline comments is a
+// re-fetch shortfall with the body as submitted (degraded); the server's own
+// fold in summary mode says "summary" (healthy). publish_review's own fold --
+// every finding without a diff anchor, written into the summary, no inline
+// comment sent -- reaches an endpoint that saw nothing to fold, so the node
+// has to report it itself; and it must not when an anchored comment was sent
+// and lost, which the fold does not cover.
+func TestReviewPRPublishChainReadsOnlyARealFold(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	const anchored = `[{"file":"a.go","line":1,"title":"FINDING-ONE","severity":"high"},{"file":"b.go","line":9,"title":"FINDING-TWO","severity":"medium"}]`
+	const unanchored = `[{"file":"","line":0,"title":"FINDING-ONE","severity":"high"},{"file":"b.go","line":0,"title":"FINDING-TWO","severity":"medium"}]`
+	const mixed = `[{"file":"a.go","line":1,"title":"FINDING-ONE","severity":"high"},{"file":"","line":0,"title":"FINDING-TWO","severity":"medium"}]`
+	answer := func(fallback string) map[string]any {
+		m := map[string]any{
+			"published": true, "provider": "github", "review_url": "https://forge/review/7",
+			"comments_posted": 0, "suggestions_posted": 0, "verified": true, "gate_posted": false,
+		}
+		if fallback != "" {
+			m["fallback"] = fallback
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name         string
+		findings     string
+		mode         string
+		resp         map[string]any
+		wantMode     string
+		wantComments int
+		wantFallback string
+		wantDegraded bool
+		wantBanner   []string
+		denyBanner   []string
+	}{
+		{
+			name: "partial at zero inline comments is a shortfall, not a fold", findings: anchored, resp: answer("partial"),
+			wantMode: "inline", wantComments: 2, wantFallback: "partial", wantDegraded: true,
+			wantBanner: []string{"INLINE COMMENTS MISSING", "fewer inline comments than were sent (fallback=partial)"},
+			denyBanner: []string{"forge publish OK", "folded into the review body", "FORGE PUBLISH FAILED", "auth"},
+		},
+		{
+			name: "every finding without an anchor is folded by publish_review itself", findings: unanchored, resp: answer(""),
+			wantMode: "inline", wantComments: 0, wantFallback: "summary",
+			wantBanner: []string{"forge publish OK", "2 finding(s) folded into the review body", "https://forge/review/7"},
+			denyBanner: []string{"MISSING", "FAILED", "auth"},
+		},
+		{
+			name: "an anchored comment sent and lost is not covered by the unanchored fold", findings: mixed, resp: answer(""),
+			wantMode: "inline", wantComments: 1, wantFallback: "", wantDegraded: true,
+			wantBanner: []string{"INLINE COMMENTS MISSING", "reason: none given"},
+			denyBanner: []string{"forge publish OK", "auth"},
+		},
+		{
+			name: "summary mode reads the server's own fold", findings: anchored, mode: "summary", resp: answer("summary"),
+			wantMode: "summary", wantComments: 2, wantFallback: "summary",
+			wantBanner: []string{"forge publish OK", "2 finding(s) folded into the review body"},
+			denyBanner: []string{"MISSING", "FAILED", "auth"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, published, degraded, banner := runReviewPRPublishChain(t, tc.resp, tc.findings, tc.mode)
+			if req.Mode != tc.wantMode || len(req.Comments) != tc.wantComments {
+				t.Fatalf("publish_review sent mode=%q with %d inline comment(s), want mode=%q with %d", req.Mode, len(req.Comments), tc.wantMode, tc.wantComments)
+			}
+			if tc.wantComments == 0 {
+				for _, title := range []string{"FINDING-ONE", "FINDING-TWO"} {
+					if !strings.Contains(req.Summary, title) {
+						t.Fatalf("a finding without an anchor must be written into the summary it claims to fold into: %q missing from %q", title, req.Summary)
+					}
+				}
+			}
+			if got, _ := published["fallback"].(string); got != tc.wantFallback {
+				t.Errorf("publish_output fallback = %q, want %q (output %v)", got, tc.wantFallback, published)
+			}
+			if tc.wantFallback == "partial" && strings.Contains(fmt.Sprint(published["summary"]), "folded into") {
+				t.Errorf("a shortfall must not be described as a fold: %q", published["summary"])
+			}
+			if degraded != tc.wantDegraded {
+				t.Errorf("degraded = %v, banner = %q; want degraded = %v", degraded, banner, tc.wantDegraded)
+			}
+			for _, part := range tc.wantBanner {
+				if !strings.Contains(banner, part) {
+					t.Errorf("banner = %q; want it to contain %q", banner, part)
+				}
+			}
+			for _, part := range tc.denyBanner {
+				if strings.Contains(banner, part) {
+					t.Errorf("banner = %q; must not contain %q", banner, part)
+				}
+			}
+		})
 	}
 }
