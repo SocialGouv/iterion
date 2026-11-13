@@ -67,8 +67,8 @@ func TestRemoteTriggerSuccess(t *testing.T) {
 	if res["status_code"].(float64) != 201 {
 		t.Errorf("status_code = %v", res["status_code"])
 	}
-	if res["success"] != false {
-		// 201 is success
+	if res["success"] != true {
+		t.Errorf("success = %v, want true: 201 is a success", res["success"])
 	}
 	if res["body"].(string) != `{"ok":true}` {
 		t.Errorf("body = %v", res["body"])

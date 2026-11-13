@@ -1,42 +1,31 @@
 package api_test
 
 import (
+	"reflect"
+	"testing"
+
 	internalapi "github.com/SocialGouv/iterion/pkg/claw/internal/api"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
-	"testing"
 )
 
 // TestTypeIdentity verifies that pkg/api types are true aliases of
-// internal/api types — not copies. The assignment below compiles only
-// if the types are identical (type aliases, not new types).
+// internal/api types — not copies.
 func TestTypeIdentity(t *testing.T) {
-	// Assign internal types to pkg types — must compile with zero conversion.
-	var _ api.Tool = internalapi.Tool{
-		Name:        "test",
-		Description: "a test tool",
-		InputSchema: internalapi.InputSchema{
-			Type:       "object",
-			Properties: map[string]internalapi.Property{"x": {Type: "string", Description: "x"}},
-		},
+	// The public types are aliases of the internal ones: the same type, so a
+	// value crosses the boundary with zero conversion. A public type turned
+	// into a defined type of its own fails here.
+	for _, pair := range []struct{ public, internal reflect.Type }{
+		{reflect.TypeFor[api.Tool](), reflect.TypeFor[internalapi.Tool]()},
+		{reflect.TypeFor[api.Message](), reflect.TypeFor[internalapi.Message]()},
+		{reflect.TypeFor[api.CreateMessageRequest](), reflect.TypeFor[internalapi.CreateMessageRequest]()},
+		{reflect.TypeFor[api.StreamEvent](), reflect.TypeFor[internalapi.StreamEvent]()},
+		{reflect.TypeFor[api.AuthSource](), reflect.TypeFor[internalapi.AuthSource]()},
+	} {
+		if pair.public != pair.internal {
+			t.Errorf("%s.%s is not %s.%s: the public type is no longer an alias of the internal one",
+				pair.public.PkgPath(), pair.public.Name(), pair.internal.PkgPath(), pair.internal.Name())
+		}
 	}
-
-	var _ api.Message = internalapi.Message{
-		Role: "user",
-		Content: []internalapi.ContentBlock{
-			{Type: "text", Text: "hello"},
-		},
-	}
-
-	var _ api.CreateMessageRequest = internalapi.CreateMessageRequest{
-		Model:     "claude-sonnet-4-20250514",
-		MaxTokens: 1024,
-	}
-
-	var _ api.StreamEvent = internalapi.StreamEvent{
-		Type: internalapi.EventContentBlockDelta,
-	}
-
-	var _ api.AuthSource = internalapi.APIKeyAuth("test-key")
 }
 
 // TestConstructTypes verifies that core types can be constructed through

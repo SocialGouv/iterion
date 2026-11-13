@@ -5,6 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // promptInjector is the loop interface for commands that inject a prompt
@@ -52,11 +55,12 @@ func detectAndRunTool(specs []toolSpec, label string) (bool, error) {
 		if _, err := os.Stat(s.marker); err != nil {
 			continue
 		}
-		if _, err := exec.LookPath(s.command); err != nil {
+		bin, err := envtrust.LookPath(s.command)
+		if err != nil {
 			continue
 		}
 		fmt.Printf("%s with %s...\n", label, s.command)
-		cmd := exec.Command(s.command, s.args...)
+		cmd := exec.Command(bin, s.args...)
 		out, err := cmd.CombinedOutput()
 		result := strings.TrimSpace(string(out))
 		if err != nil {
@@ -71,9 +75,15 @@ func detectAndRunTool(specs []toolSpec, label string) (bool, error) {
 }
 
 // runGit executes a git command with separate arguments (never shell-interpolated)
-// and returns the trimmed combined output.
+// and returns the trimmed combined output. It spawns the binary the seam
+// resolved, never the name again.
 func runGit(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	bin, err := envtrust.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", args[0], err)
+	}
+	cmd := exec.Command(bin, gitlib.NoRunHooks(args...)...)
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("git %s: %w", args[0], err)
@@ -81,9 +91,10 @@ func runGit(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// gitAvailable returns true if the git binary is on PATH.
+// gitAvailable reports whether git resolves at all; it spawns nothing, and
+// runGit resolves its own path.
 func gitAvailable() bool {
-	_, err := exec.LookPath("git")
+	_, err := envtrust.LookPath("git")
 	return err == nil
 }
 

@@ -126,7 +126,7 @@ func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 			Function: Function{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  json.RawMessage(params),
+				Parameters:  params,
 			},
 		})
 	}

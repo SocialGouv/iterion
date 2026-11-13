@@ -108,3 +108,30 @@ func TestExtractFeatureConfigAliases(t *testing.T) {
 		t.Errorf("Aliases = %v", cfg.Aliases)
 	}
 }
+
+// A field that does not decode whole stays at its zero value, as
+// ExtractFeatureConfig's contract says: never half-filled, never a zero
+// value standing in for the element that did not decode. For a deny list
+// that means the whole list is dropped — which is why no production path
+// reads permission rules from here (worker_create reads trustedRoots, an
+// allowlist, only).
+func TestExtractFeatureConfigMistypedFieldStaysZero(t *testing.T) {
+	data := []byte(`{
+		"trustedRoots": ["/srv/a", 3],
+		"permissions": {"allow": ["Read"], "deny": ["Bash(rm:*)", {"x": 1}]},
+		"sandbox": {"allowedMounts": ["/data", false]}
+	}`)
+	cfg := ExtractFeatureConfig(data)
+	if cfg.TrustedRoots != nil {
+		t.Errorf("TrustedRoots = %q, want nil: the list does not decode whole", cfg.TrustedRoots)
+	}
+	if cfg.PermissionRules.Deny != nil {
+		t.Errorf("PermissionRules.Deny = %q, want nil: the list does not decode whole", cfg.PermissionRules.Deny)
+	}
+	if cfg.Sandbox.AllowedMounts != nil {
+		t.Errorf("Sandbox.AllowedMounts = %q, want nil: the list does not decode whole", cfg.Sandbox.AllowedMounts)
+	}
+	if !reflect.DeepEqual(cfg.PermissionRules.Allow, []string{"Read"}) {
+		t.Errorf("PermissionRules.Allow = %q, want [Read]: a field beside a bad one still decodes", cfg.PermissionRules.Allow)
+	}
+}

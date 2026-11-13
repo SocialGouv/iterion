@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/claw/internal/api"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/claw/internal/api"
 )
 
 func REPLTool() api.Tool {
@@ -85,23 +87,23 @@ func ExecuteREPL(input map[string]any) (string, error) {
 func resolveREPLRuntime(lang string) (string, []string, error) {
 	switch strings.ToLower(lang) {
 	case "python", "py":
-		if p, err := exec.LookPath("python3"); err == nil {
+		if p, err := envtrust.LookPath("python3"); err == nil {
 			return p, []string{"-c"}, nil
 		}
-		if p, err := exec.LookPath("python"); err == nil {
+		if p, err := envtrust.LookPath("python"); err == nil {
 			return p, []string{"-c"}, nil
 		}
 		return "", nil, fmt.Errorf("repl: python3/python not found in PATH")
 	case "javascript", "js", "node":
-		if p, err := exec.LookPath("node"); err == nil {
+		if p, err := envtrust.LookPath("node"); err == nil {
 			return p, []string{"-e"}, nil
 		}
 		return "", nil, fmt.Errorf("repl: node not found in PATH")
 	case "sh", "shell", "bash":
-		if p, err := exec.LookPath("bash"); err == nil {
+		if p, err := envtrust.LookPath("bash"); err == nil {
 			return p, []string{"-lc"}, nil
 		}
-		if p, err := exec.LookPath("sh"); err == nil {
+		if p, err := envtrust.LookPath("sh"); err == nil {
 			return p, []string{"-lc"}, nil
 		}
 		return "", nil, fmt.Errorf("repl: bash/sh not found in PATH")

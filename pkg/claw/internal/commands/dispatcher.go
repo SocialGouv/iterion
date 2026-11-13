@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -17,24 +16,6 @@ type CommandDeps struct {
 	Config         interface{} // config provider when available
 	Session        interface{} // session provider when available
 	GitRunner      interface{} // git command runner when available
-}
-
-// validateNoArgs returns an error if args is non-empty.
-func validateNoArgs(cmdName, args string) error {
-	if strings.TrimSpace(args) != "" {
-		return fmt.Errorf("/%s takes no arguments", cmdName)
-	}
-	return nil
-}
-
-// requireArg returns the trimmed args string or an error when it is empty.
-// hint describes what the command expects (shown in the error message).
-func requireArg(cmdName, args, hint string) (string, error) {
-	trimmed := strings.TrimSpace(args)
-	if trimmed == "" {
-		return "", fmt.Errorf("/%s requires an argument: %s", cmdName, hint)
-	}
-	return trimmed, nil
 }
 
 // splitSubcommand splits "sub rest of args" into ("sub", "rest of args").

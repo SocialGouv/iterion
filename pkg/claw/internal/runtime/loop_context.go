@@ -130,7 +130,7 @@ func (a *LoopAdapter) GetFullConversation() string {
 	}
 	var sb strings.Builder
 	for _, m := range a.loop.Session.Messages {
-		sb.WriteString(fmt.Sprintf("[%s]\n", m.Role))
+		fmt.Fprintf(&sb, "[%s]\n", m.Role)
 		for _, c := range m.Content {
 			switch c.Type {
 			case "text":
@@ -206,7 +206,7 @@ func (a *LoopAdapter) ShowCodeMap(depth int) (string, error) {
 	// Limit output to avoid flooding the terminal.
 	lines := strings.SplitN(string(out), "\n", 101)
 	if len(lines) > 100 {
-		lines = append(lines[:100], fmt.Sprintf("... and more (limited to 100 files)"))
+		lines = append(lines[:100], "... and more (limited to 100 files)")
 	}
 	return strings.Join(lines, "\n"), nil
 }
@@ -221,8 +221,8 @@ func (a *LoopAdapter) GetToolDetails(name string) (string, error) {
 	for _, t := range a.loop.Tools {
 		if t.Name == name {
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Tool: %s\n", t.Name))
-			sb.WriteString(fmt.Sprintf("Description: %s\n", t.Description))
+			fmt.Fprintf(&sb, "Tool: %s\n", t.Name)
+			fmt.Fprintf(&sb, "Description: %s\n", t.Description)
 			if t.InputSchema.Type != "" {
 				sb.WriteString("Input schema: (defined)\n")
 			}

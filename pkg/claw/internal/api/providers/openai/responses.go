@@ -477,7 +477,7 @@ func convertToolsToResponses(tools []api.Tool) ([]oaiResponsesTool, error) {
 			Type:        "function",
 			Name:        t.Name,
 			Description: t.Description,
-			Parameters:  json.RawMessage(params),
+			Parameters:  params,
 		})
 	}
 	return out, nil

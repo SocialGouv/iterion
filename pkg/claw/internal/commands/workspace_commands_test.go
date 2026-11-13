@@ -710,15 +710,17 @@ func TestLookupWorkspaceRefusesABigFileWithoutHoldingIt(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// 16 MiB: far over the ceiling, small enough to keep the test quick.
-	big := make([]byte, 16<<20)
-	for i := range big {
-		big[i] = 'a'
+	// 16 MiB: far over the ceiling, small enough to keep the test quick. The
+	// buffer lives in this block only, so the GC below can reclaim it.
+	{
+		big := make([]byte, 16<<20)
+		for i := range big {
+			big[i] = 'a'
+		}
+		if err := os.WriteFile(filepath.Join(dir, "huge.md"), big, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "huge.md"), big, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	big = nil
 
 	var before, after runtime.MemStats
 	runtime.GC()

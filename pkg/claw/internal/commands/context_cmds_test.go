@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -175,7 +176,7 @@ func TestClipboardCmd(t *testing.T) {
 			t.Logf("no clipboard tool: %v", err)
 			return
 		}
-		if bin != "xclip" && bin != "xsel" {
+		if base := filepath.Base(bin); base != "xclip" && base != "xsel" {
 			t.Fatalf("expected xclip or xsel, got %q", bin)
 		}
 	case "windows":

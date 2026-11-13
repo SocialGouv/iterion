@@ -100,15 +100,12 @@ func TestSseParser_MultiLineData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// The joined data should be the two parts with \n between
-	// This will fail JSON parse because the join creates invalid JSON,
-	// but we're testing the joining behavior
-	if len(events) == 0 && err == nil {
-		// Expected: the JSON parse fails, which is returned as error
-		// Let's test with valid multi-line scenario instead
+	// The two data lines join with "\n", which JSON reads as whitespace.
+	if len(events) != 1 || events[0].Delta.Text != "x" {
+		t.Fatalf("events = %+v, want one text delta %q", events, "x")
 	}
 
-	// More realistic: multi-line data that forms valid JSON when joined
+	// Multi-line data behind an event: line
 	p2 := NewSseParser()
 	chunk2 := []byte("event: message_start\ndata: {\"type\":\"message_start\",\ndata: \"message\":{\"usage\":{\"input_tokens\":10}}}\n\n")
 	events2, err2 := p2.Push(chunk2)

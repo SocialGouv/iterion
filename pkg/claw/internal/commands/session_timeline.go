@@ -159,9 +159,10 @@ func describeMessage(msg timelineMessage) []messageLine {
 		switch cb.Type {
 		case "text":
 			emoji := "🤖"
-			if msg.Role == "user" {
+			switch msg.Role {
+			case "user":
 				emoji = "👤"
-			} else if msg.Role == "system" {
+			case "system":
 				emoji = "⚙️"
 			}
 			text := truncate(cb.Text, 80)

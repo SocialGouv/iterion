@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // BaseCommitState describes the outcome of comparing HEAD against an expected base.
@@ -130,8 +132,9 @@ func resolveRev(cwd, rev string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", rev)
+	cmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks("rev-parse", rev)...)
 	cmd.Dir = cwd
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false

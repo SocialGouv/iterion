@@ -497,14 +497,9 @@ func FuzzParseHookOutput(f *testing.F) {
 	f.Add(`{"continue": true}`)
 
 	f.Fuzz(func(t *testing.T, input string) {
-		// Must not panic regardless of input.
-		result := parseHookOutput(input)
-		// Basic invariant: Messages is never nil for non-empty input.
-		if input != "" && len(result.Messages) == 0 && !result.Deny {
-			// parseHookOutput always adds at least one message for non-empty input
-			// unless it's valid JSON that produces structured output.
-			// This is a weak invariant — we mainly care about no panics.
-		}
+		// Must not panic regardless of input. The result is not asserted: valid
+		// JSON may yield structured output and no message at all.
+		parseHookOutput(input)
 	})
 }
 

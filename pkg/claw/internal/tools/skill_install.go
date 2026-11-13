@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // MarketplaceURL is the canonical source for installing official skills.
@@ -158,11 +160,13 @@ func ensureMarketplaceClone(cache, url string) error {
 	case err == nil && stat.IsDir():
 		// Existing clone — refresh if stale.
 		if time.Since(modTime(cache)) > marketplaceCacheTTL {
-			cmd := exec.Command("git", "-C", cache, "fetch", "--depth=1", "origin")
+			cmd := exec.Command("git", gitlib.NoRunHooks("-C", cache, "fetch", "--depth=1", "origin")...)
+			cmd.Env = gitlib.SanitizeEnv(os.Environ())
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("git fetch failed: %v: %s", err, out)
 			}
-			cmd = exec.Command("git", "-C", cache, "reset", "--hard", "origin/HEAD")
+			cmd = exec.Command("git", gitlib.NoRunHooks("-C", cache, "reset", "--hard", "origin/HEAD")...)
+			cmd.Env = gitlib.SanitizeEnv(os.Environ())
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("git reset failed: %v: %s", err, out)
 			}
@@ -173,7 +177,8 @@ func ensureMarketplaceClone(cache, url string) error {
 		if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
 			return err
 		}
-		cmd := exec.Command("git", "clone", "--depth", "1", url, cache)
+		cmd := exec.Command("git", gitlib.NoRunHooks("clone", "--depth", "1", url, cache)...)
+		cmd.Env = gitlib.SanitizeEnv(os.Environ())
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git clone failed: %v: %s", err, out)
 		}

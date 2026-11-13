@@ -2,8 +2,12 @@ package context
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // GitCommitEntry represents a single git commit.
@@ -74,8 +78,13 @@ func CollectWorktreeInfo(workDir string) *GitWorktreeInfo {
 	if revList != "" {
 		parts := strings.Fields(revList)
 		if len(parts) == 2 {
-			fmt.Sscanf(parts[0], "%d", &info.Ahead)
-			fmt.Sscanf(parts[1], "%d", &info.Behind)
+			// Both counts or neither: a half-read pair would report a
+			// divergence git never measured.
+			ahead, aheadErr := strconv.Atoi(parts[0])
+			behind, behindErr := strconv.Atoi(parts[1])
+			if aheadErr == nil && behindErr == nil {
+				info.Ahead, info.Behind = ahead, behind
+			}
 		}
 	}
 
@@ -87,7 +96,7 @@ func CollectWorktreeInfo(workDir string) *GitWorktreeInfo {
 
 // RecentCommits returns the most recent count commits from workDir.
 func RecentCommits(workDir string, count int) []GitCommitEntry {
-	log := runGit(workDir, "--no-optional-locks", "log", fmt.Sprintf("--format=%%h %%s"), fmt.Sprintf("-n"), fmt.Sprintf("%d", count), "--no-decorate")
+	log := runGit(workDir, "--no-optional-locks", "log", "--format=%h %s", "-n", strconv.Itoa(count), "--no-decorate")
 	if log == "" {
 		return nil
 	}
@@ -147,8 +156,9 @@ func GitStatus(workDir string) string {
 }
 
 func runGit(workDir string, args ...string) string {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", gitlib.NoRunHooks(args...)...)
 	cmd.Dir = workDir
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

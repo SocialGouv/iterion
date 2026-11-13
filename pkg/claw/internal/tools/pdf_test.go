@@ -31,20 +31,20 @@ func buildSimplePDF(text string) []byte {
 	pdf.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n")
 
 	obj4Offset := pdf.Len()
-	pdf.WriteString(fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n", len(streamBytes)))
+	fmt.Fprintf(&pdf, "4 0 obj\n<< /Length %d >>\nstream\n", len(streamBytes))
 	pdf.Write(streamBytes)
 	pdf.WriteString("\nendstream\nendobj\n")
 
 	xrefOffset := pdf.Len()
 	pdf.WriteString("xref\n0 5\n")
 	pdf.WriteString("0000000000 65535 f \n")
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj1Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj2Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj3Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj4Offset))
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj1Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj2Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj3Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj4Offset)
 
 	pdf.WriteString("trailer\n<< /Size 5 /Root 1 0 R >>\n")
-	pdf.WriteString(fmt.Sprintf("startxref\n%d\n%%%%EOF\n", xrefOffset))
+	fmt.Fprintf(&pdf, "startxref\n%d\n%%%%EOF\n", xrefOffset)
 
 	return pdf.Bytes()
 }
@@ -73,20 +73,20 @@ func buildFlatePDF(text string) []byte {
 	pdf.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n")
 
 	obj4Offset := pdf.Len()
-	pdf.WriteString(fmt.Sprintf("4 0 obj\n<< /Length %d /Filter /FlateDecode >>\nstream\n", len(compressedBytes)))
+	fmt.Fprintf(&pdf, "4 0 obj\n<< /Length %d /Filter /FlateDecode >>\nstream\n", len(compressedBytes))
 	pdf.Write(compressedBytes)
 	pdf.WriteString("\nendstream\nendobj\n")
 
 	xrefOffset := pdf.Len()
 	pdf.WriteString("xref\n0 5\n")
 	pdf.WriteString("0000000000 65535 f \n")
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj1Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj2Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj3Offset))
-	pdf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj4Offset))
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj1Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj2Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj3Offset)
+	fmt.Fprintf(&pdf, "%010d 00000 n \n", obj4Offset)
 
 	pdf.WriteString("trailer\n<< /Size 5 /Root 1 0 R >>\n")
-	pdf.WriteString(fmt.Sprintf("startxref\n%d\n%%%%EOF\n", xrefOffset))
+	fmt.Fprintf(&pdf, "startxref\n%d\n%%%%EOF\n", xrefOffset)
 
 	return pdf.Bytes()
 }

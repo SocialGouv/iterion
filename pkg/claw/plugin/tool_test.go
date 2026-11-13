@@ -202,8 +202,11 @@ func TestExecuteLargeStdout(t *testing.T) {
 	}
 }
 
+// Not parallel: the test writes a script and execs it at once, and a sibling
+// forking in between inherits the write descriptor — exec then fails with
+// ETXTBSY ("text file busy"). A sequential test runs before the parallel
+// ones start.
 func TestExecuteTempScript(t *testing.T) {
-	t.Parallel()
 	skipWindows(t)
 
 	tmpDir := t.TempDir()

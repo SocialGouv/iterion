@@ -190,7 +190,7 @@ func TestCompressSummary_Integration_FitsDefaultBudget(t *testing.T) {
 	sb.WriteString("- Key files referenced: internal/runtime/compact.go, internal/runtime/summary_compression.go.\n")
 	sb.WriteString("- Key timeline:\n")
 	for i := 0; i < 40; i++ {
-		sb.WriteString(fmt.Sprintf("  - user: asked about implementation details for feature number %d with detail ", i))
+		fmt.Fprintf(&sb, "  - user: asked about implementation details for feature number %d with detail ", i)
 		sb.WriteString(strings.Repeat("x", 80))
 		sb.WriteString(".\n")
 	}

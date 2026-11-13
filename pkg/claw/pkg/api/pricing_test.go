@@ -17,13 +17,6 @@ import (
 func TestLookupModelPricing_FromLiveCache(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)
-	// CLAW_DISABLE_LIVE_REGISTRY is intentionally NOT set — that env
-	// var also short-circuits liveCachePath (returns an error) which
-	// would prevent LoadLiveCache from finding the file we seeded
-	// below. Leaving it unset means MaybeRefreshLive's once-guard
-	// fires a goroutine that tries to fetch from OpenRouter; in CI
-	// without network it fails silently and the test still completes
-	// because our seeded cache is read synchronously by LoadLiveCache.
 
 	clawDir := filepath.Join(dir, "claw-code-go")
 	if err := os.MkdirAll(clawDir, 0o755); err != nil {
@@ -53,6 +46,23 @@ func TestLookupModelPricing_FromLiveCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), data, 0o644); err != nil {
 		t.Fatalf("write cache: %v", err)
 	}
+	// TestMain switches the live registry off for the process; the switch
+	// also short-circuits liveCachePath, which would hide the cache seeded
+	// above, so this test clears it — after seeding: the cache is fresh
+	// (FetchedAt now), so the refresh it re-enables finds nothing to fetch.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "")
+	// The refresh this test enables reads the environment whenever it gets
+	// scheduled: do not return before it has read this test's.
+	t.Cleanup(func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for apikit.DefaultModelRegistry().LookupModel("free-model") == nil {
+			if time.Now().After(deadline) {
+				t.Error("the refresh this test enabled never merged the seeded cache")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
 
 	cases := []struct {
 		name    string
@@ -87,13 +97,27 @@ func TestLookupModelPricing_FromLiveCache(t *testing.T) {
 	}
 }
 
-// TestLookupModelPricing_NoCache returns ok=false when the cache is
-// missing — the caller should fall back to whatever static table it
-// maintains for offline / cold-start operation.
-func TestLookupModelPricing_NoCache(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+// With the live registry switched off (TestMain), the live tier prices
+// nothing — not even from a fresh cache that prices the model. The
+// missing-cache branch with the registry on has no witness in this package:
+// reaching it starts a refresh that fetches.
+func TestLookupModelPricing_RegistrySwitchedOff(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	clawDir := filepath.Join(dir, "claw-code-go")
+	if err := os.MkdirAll(clawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	data, _ := json.Marshal(apikit.LiveCache{
+		Entries:   []apikit.LiveCacheEntry{{Canonical: "gpt-5.5", Provider: "openai", InputUSDPerM: 2.0, OutputUSDPerM: 15.0}},
+		FetchedAt: time.Now().UTC(),
+		Source:    "test",
+	})
+	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), data, 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
 
-	if _, ok := LookupModelPricing("gpt-5.5"); ok {
-		t.Error("expected ok=false when no cache file exists")
+	if got, ok := LookupModelPricing("gpt-5.5"); ok {
+		t.Errorf("LookupModelPricing = %+v from the cache, want nothing with the live registry switched off", got)
 	}
 }

@@ -2,11 +2,12 @@ package tools
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // makeFakeMarketplace builds a bare git repository that mimics the
@@ -70,12 +71,7 @@ Body.`
 	}
 	runGit := func(args ...string) {
 		t.Helper()
-		full := append(gitConfig, args...)
-		cmd := exec.Command("git", full...)
-		cmd.Dir = work
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, work, append(gitConfig, args...)...)
 	}
 	runGit("init", "-q")
 	runGit("add", ".")
@@ -84,15 +80,9 @@ Body.`
 
 	// Create a bare clone to serve as the remote.
 	bare := filepath.Join(root, "remote.git")
-	cmd := exec.Command("git", "clone", "--bare", work, bare)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git clone bare: %v\n%s", err, out)
-	}
+	gittest.Run(t, root, "clone", "--bare", work, bare)
 	// Set HEAD on the bare repo so origin/HEAD resolves.
-	cmd = exec.Command("git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/main")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git symbolic-ref: %v\n%s", err, out)
-	}
+	gittest.Run(t, root, "-C", bare, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	return bare
 }

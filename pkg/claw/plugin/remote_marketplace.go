@@ -217,7 +217,7 @@ func (m *RemoteMarketplace) FetchManifest(ctx context.Context, name string) (*Re
 			Cause:   err,
 		}
 	}
-	rm.PluginManifest.RawJSON = json.RawMessage(body)
+	rm.RawJSON = json.RawMessage(body)
 	if rm.Name == "" {
 		rm.Name = name
 	}

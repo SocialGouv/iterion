@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -260,5 +261,24 @@ func TestReadLSPFrameMidFrameEOF(t *testing.T) {
 	_, err := readLSPFrame(r)
 	if err == nil {
 		t.Error("expected error for mid-frame EOF")
+	}
+}
+
+// kill ends the server, and a server already gone counts as ended: the
+// second kill, after the process exited, is not a failure.
+func TestLspTransportKillTreatsAnExitedServerAsEnded(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	transport := &LspTransport{cmd: cmd}
+	if err := transport.kill(); err != nil {
+		t.Fatalf("kill = %v, want nil", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("sleep exited cleanly: the kill did not reach it")
+	}
+	if err := transport.kill(); err != nil {
+		t.Fatalf("kill after exit = %v, want nil: the server is already ended", err)
 	}
 }
