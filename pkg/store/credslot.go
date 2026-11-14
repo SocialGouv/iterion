@@ -3,11 +3,21 @@ package store
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"slices"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secure/hostfold"
 )
 
 // CredSlotStore is the optional capability behind a credential's HARD
-// concurrency cap (secrets.ApiKey.MaxConcurrentRuns).
+// concurrency cap (secrets.ApiKey.MaxConcurrentRuns) — the run-admission
+// ledger. A row is keyed by a credential's fingerprint or by a capacity
+// subject (Run.CapacitySubjects: a shared gateway, GatewayCapacitySubject),
+// and both kinds are held, adopted and evicted on the one predicate
+// (Run.SpendsCredential); the method parameters keep the name fingerprint
+// for either. The two namespaces cannot collide: a fingerprint is hex or
+// `account:`-prefixed, a subject `gw:`-prefixed.
 //
 // The walk's own count (CountAliveRunsWithCredFingerprint) is a reading of
 // the run documents taken before the run is written: two publisher replicas
@@ -119,22 +129,44 @@ func AsCredSlotStore(s RunStore) CredSlotStore { return capability[CredSlotStore
 const CredSlotGrace = 2 * time.Minute
 
 // SpendsCredential reports whether the run holds a slot of the credential
-// with this fingerprint right now: alive (RunStatus.HoldsCredentialSlot) and
-// stamped with the fingerprint. Model-idle (LLMIdleSince) releases nothing
-// — the ledger's rule above. The one predicate the alive-run count, the
-// ledger's reconcile and the filesystem twin read, so none can answer
-// differently from the others; the Mongo count's query filter is its
-// mirror, witnessed by the CredFingerprintMeter conformance row.
+// with this fingerprint, or of the capacity subject of that name, right
+// now: alive (RunStatus.HoldsCredentialSlot) and stamped with it — in
+// CredFingerprints or in CapacitySubjects. Model-idle (LLMIdleSince)
+// releases nothing — the ledger's rule above. The one predicate the
+// alive-run count, the ledger's reconcile and the filesystem twin read, so
+// none can answer differently from the others; the Mongo count's query
+// filter is its mirror, witnessed by the CredFingerprintMeter and
+// CapacitySubjectHolder conformance rows.
 func (r *Run) SpendsCredential(fingerprint string) bool {
 	if r == nil || fingerprint == "" || !r.Status.HoldsCredentialSlot() {
 		return false
 	}
-	for _, fp := range r.CredFingerprints {
-		if fp == fingerprint {
-			return true
-		}
+	return slices.Contains(r.CredFingerprints, fingerprint) || slices.Contains(r.CapacitySubjects, fingerprint)
+}
+
+// gatewayCapacitySubjectPrefix opens every gateway capacity subject.
+const gatewayCapacitySubjectPrefix = "gw:"
+
+// GatewayCapacitySubject is the capacity subject of a shared gateway: the
+// ledger row every alive run whose sealed key dials that host holds, whichever
+// team the key belongs to. host is the host the gateway client dials
+// (compatgw.Config.Host): no scheme, port or path.
+//
+// Two keys spelling one host differently name one subject: the host is folded
+// to the name a dial resolves (hostfold.Canonical — punycode, lower case,
+// no trailing root dot), and an address literal to its canonical text, an
+// IPv4-mapped IPv6 address to its IPv4 form. A host with no dial name — empty,
+// or a non-ASCII spelling the IDN profile refuses — names no subject and
+// answers "".
+func GatewayCapacitySubject(host string) string {
+	h := hostfold.Canonical(host)
+	if addr, err := netip.ParseAddr(h); err == nil {
+		h = addr.Unmap().String()
 	}
-	return false
+	if h == "" {
+		return ""
+	}
+	return gatewayCapacitySubjectPrefix + h
 }
 
 // AwaitsCredSlotAdmission reports whether the run is queued for a resume

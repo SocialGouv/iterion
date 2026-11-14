@@ -1254,10 +1254,7 @@ func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, 
 	if err != nil {
 		return err
 	}
-	r.CredFingerprints = stamp.Fingerprints
-	r.CredentialTiers = stamp.Tiers
-	r.SkippedCredReopensAt = stamp.SkippedReopensAt
-	r.LLMIdleSince = nil
+	stamp.Apply(r)
 	return s.SaveRun(ctx, r)
 }
 
@@ -1389,8 +1386,9 @@ func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID strin
 }
 
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
-// fingerprint, model-idle or not (see RunStore). Scan-and-filter like the
-// other fs-side reverse queries — local scale, no secondary index.
+// fingerprint — a credential's, or a capacity subject — model-idle or not
+// (see RunStore). Scan-and-filter like the other fs-side reverse queries —
+// local scale, no secondary index.
 func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
