@@ -1,6 +1,11 @@
 package commands
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -251,7 +256,7 @@ func TestFullRegistryRustParityCommands(t *testing.T) {
 		"docs", "doctor", "effort", "env", "exit", "explain", "export", "fast",
 		"feedback", "files", "fix", "focus", "format", "git", "help", "history",
 		"hooks", "hover", "ide", "image", "init", "insights", "issue", "keybindings",
-		"language", "lint", "listen", "log", "login", "logout", "macro", "map",
+		"language", "lint", "listen", "log", "macro", "map",
 		"max-tokens", "mcp", "memory", "metrics", "migrate", "model", "multi",
 		"notifications", "output-style", "parallel", "paste", "perf", "permissions",
 		"pin", "plan", "plugin", "pr", "privacy-settings", "profile", "project",
@@ -273,6 +278,55 @@ func TestFullRegistryRustParityCommands(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("missing %d Rust-parity commands: %v", len(missing), missing)
+	}
+}
+
+// claw carries no interactive login: iterion signs in and refreshes through
+// pkg/secrets, so the registry serves no command that would sign claw in on
+// its own, under Claude Code's OAuth client.
+func TestFullRegistryServesNoInteractiveLogin(t *testing.T) {
+	r := NewFullRegistry()
+	for _, name := range []string{"auth", "login", "logout"} {
+		if _, ok := r.Lookup(name); ok {
+			t.Errorf("/%s is served: claw's interactive login is not part of pkg/claw — iterion's sign-in lives in pkg/secrets", name)
+		}
+	}
+}
+
+// retiredCommand matches a message that sends the user to a retired sign-in
+// command: the token as a command (after a space, a quote or a backquote),
+// not a path such as an OAuth URL's /login.
+var retiredCommand = regexp.MustCompile("(^|[\\s\"'`(])/(login|logout|auth)\\b")
+
+// No message of claw's sends the user to /login, /logout or /auth, which it
+// does not serve.
+func TestNothingInClawSendsTheUserToLogin(t *testing.T) {
+	root := filepath.Join("..", "..") // pkg/claw
+	sawDoctor := false
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if filepath.ToSlash(path) == filepath.ToSlash(filepath.Join(root, "internal", "commands", "diagnostic_cmds.go")) {
+			sawDoctor = true
+		}
+		src, err := os.ReadFile(path) // #nosec G304 -- walking pkg/claw's own source
+		if err != nil {
+			return err
+		}
+		if m := retiredCommand.FindString(string(src)); m != "" {
+			t.Errorf("%s mentions %q, which claw does not serve: iterion's sign-in lives in pkg/secrets", path, strings.TrimSpace(m))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawDoctor {
+		t.Fatalf("the walk from %s never reached internal/commands/diagnostic_cmds.go: it is not looking at pkg/claw", root)
 	}
 }
 

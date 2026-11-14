@@ -37,7 +37,7 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 // NewClient creates the HTTP client. cfg.BaseURL overrides DefaultBaseURL;
 // cfg.APIKey is the account key. The env fallback (MOONSHOT_API_KEY) belongs
 // to the caller, mirroring the anthropic provider's seam: the provider wires,
-// the resolver decides where the key comes from.
+// the caller (iterion's model registry) decides where the key comes from.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if err := api.RefuseOpenAIOnlyOptions("moonshot", cfg); err != nil {
 		return nil, err

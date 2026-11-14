@@ -53,7 +53,7 @@ func NewProviderClient(cfg *Config) (api.APIClient, error) {
 // ----- NoAuthClient ----------------------------------------------------------
 
 // NoAuthClient is a placeholder APIClient used when no credentials are configured.
-// Every call returns a friendly error directing the user to /login.
+// Every call returns an error saying no credential is configured.
 type NoAuthClient struct{}
 
 // NewNoAuthClient returns a NoAuthClient as an api.APIClient interface value.
@@ -62,5 +62,5 @@ func NewNoAuthClient() api.APIClient {
 }
 
 func (c *NoAuthClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
-	return nil, fmt.Errorf("not authenticated — type /login to connect to an AI provider")
+	return nil, fmt.Errorf("not authenticated — no credential is configured for this provider")
 }

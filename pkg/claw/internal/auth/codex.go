@@ -1,3 +1,7 @@
+// Package auth reads the Codex CLI's credentials for claw's OpenAI
+// provider. claw carries no model-provider sign-in of its own — iterion signs
+// in and refreshes through pkg/secrets; MCP servers keep theirs
+// (internal/mcp/oauth).
 package auth
 
 import (

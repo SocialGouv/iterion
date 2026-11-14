@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 // AuthSourceKind discriminates AuthSource variants.
@@ -98,58 +97,6 @@ func (a AuthSource) MaskedAuthorizationHeader() string {
 	return "<absent>"
 }
 
-// ResolveStartupAuthWithOAuth resolves auth from environment variables, falling
-// back to a saved OAuth token if available. The loadOAuth callback loads and
-// optionally refreshes a persisted token set. Matches Rust's
-// resolve_startup_auth_source() precedence chain.
-func ResolveStartupAuthWithOAuth(loadOAuth func() (*OAuthTokenSet, error)) (AuthSource, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	bearerToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
-
-	// Env vars take highest priority.
-	if apiKey != "" && bearerToken != "" {
-		return CombinedAuth(apiKey, bearerToken), nil
-	}
-	if apiKey != "" {
-		return APIKeyAuth(apiKey), nil
-	}
-	if bearerToken != "" {
-		return BearerAuth(bearerToken), nil
-	}
-
-	// Fallback to saved OAuth token.
-	if loadOAuth != nil {
-		token, err := loadOAuth()
-		if err != nil {
-			return NoAuth(), err
-		}
-		if token != nil && token.AccessToken != "" {
-			return BearerAuth(token.AccessToken), nil
-		}
-	}
-
-	return NoAuth(), nil
-}
-
-// OAuthTokenSet represents a saved OAuth token set for auth resolution.
-type OAuthTokenSet struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token,omitempty"`
-	ExpiresAt    *uint64  `json:"expires_at,omitempty"`
-	Scopes       []string `json:"scopes,omitempty"`
-}
-
-// IsExpired returns true if the token has an expiration time that has passed.
-func (t *OAuthTokenSet) IsExpired() bool {
-	if t.ExpiresAt == nil {
-		return false
-	}
-	return *t.ExpiresAt <= uint64(time.Now().Unix())
-}
-
-// skAntBearerHint matches Rust's SK_ANT_BEARER_HINT constant.
-const skAntBearerHint = "sk-ant-* keys go in ANTHROPIC_API_KEY (x-api-key header), not ANTHROPIC_AUTH_TOKEN (Bearer header). Move your key to ANTHROPIC_API_KEY."
-
 // EnrichBearerAuthError adds a helpful hint when an API key (sk-ant-*) is
 // mistakenly used as a Bearer token on a 401 response.
 //
@@ -180,61 +127,5 @@ func EnrichBearerAuthError(errMsg string, statusCode int, auth AuthSource) strin
 	return fmt.Sprintf("hint: %s", skAntBearerHint)
 }
 
-// ForeignProviderEnvVar describes a non-Anthropic provider's env var and
-// routing hint, used to suggest model-prefix fixes when Anthropic auth fails.
-// Matches Rust's FOREIGN_PROVIDER_ENV_VARS.
-type ForeignProviderEnvVar struct {
-	EnvVar       string
-	ProviderName string
-	Hint         string
-}
-
-// ForeignProviderEnvVars lists provider env vars to check when Anthropic
-// credentials are missing. If one is set, the user likely intends to use a
-// different provider and needs model-prefix routing.
-var ForeignProviderEnvVars = []ForeignProviderEnvVar{
-	{
-		EnvVar:       "OPENAI_API_KEY",
-		ProviderName: "OpenAI-compat",
-		Hint:         "prefix your model name with `openai/` (e.g. `--model openai/gpt-4.1-mini`) so prefix routing selects the OpenAI-compatible provider, and set `OPENAI_BASE_URL` if you are pointing at OpenRouter/Ollama/a local server",
-	},
-	{
-		EnvVar:       "XAI_API_KEY",
-		ProviderName: "xAI",
-		Hint:         "use an xAI model alias (e.g. `--model grok` or `--model grok-mini`) so the prefix router selects the xAI backend",
-	},
-	{
-		EnvVar:       "DASHSCOPE_API_KEY",
-		ProviderName: "Alibaba DashScope",
-		Hint:         "prefix your model name with `qwen/` or `qwen-` (e.g. `--model qwen-plus`) so prefix routing selects the DashScope backend",
-	},
-	{
-		// z.ai and Moonshot each have a native provider here (providers/zai,
-		// providers/moonshot), selected by their own key. The hints say so
-		// rather than steering the operator to redirect ANTHROPIC_BASE_URL:
-		// that variable is shared by every Anthropic-wire caller in the
-		// environment, so pointing it at one vendor retargets the others —
-		// and a second vendor's hint pointing it elsewhere makes two routes
-		// indistinguishable by base URL.
-		EnvVar:       "ZAI_API_KEY",
-		ProviderName: "z.ai (GLM, Anthropic-compatible)",
-		Hint:         "z.ai is a native provider — with `ZAI_API_KEY` set and no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` ahead of it, it is selected on its own and reaches https://api.z.ai/api/anthropic with that key; `ANTHROPIC_BASE_URL` does not need to point at z.ai",
-	},
-	{
-		EnvVar:       "MOONSHOT_API_KEY",
-		ProviderName: "Moonshot (Kimi, Anthropic-compatible)",
-		Hint:         "Moonshot is a native provider — with `MOONSHOT_API_KEY` set and no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY` ahead of it, it is selected on its own and reaches https://api.moonshot.ai/anthropic with that key; pass the Kimi model id whole (e.g. `--model kimi-k2`), and `ANTHROPIC_BASE_URL` does not need to point at Moonshot",
-	},
-}
-
-// SuggestForeignProvider checks whether a foreign provider's API key is set
-// and returns a hint string suggesting model-prefix routing. Returns "" if
-// no foreign credentials are detected.
-func SuggestForeignProvider() string {
-	for _, fp := range ForeignProviderEnvVars {
-		if os.Getenv(fp.EnvVar) != "" {
-			return fmt.Sprintf("found %s set for %s — %s", fp.EnvVar, fp.ProviderName, fp.Hint)
-		}
-	}
-	return ""
-}
+// skAntBearerHint matches Rust's SK_ANT_BEARER_HINT constant.
+const skAntBearerHint = "sk-ant-* keys go in ANTHROPIC_API_KEY (x-api-key header), not ANTHROPIC_AUTH_TOKEN (Bearer header). Move your key to ANTHROPIC_API_KEY."
