@@ -195,7 +195,7 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 		return
 	}
 	if w.Intakes.exhausted(in.Attempts) {
-		w.buryIntake(ctx, in, fmt.Sprintf("reclaimed %d times without completing", in.Attempts))
+		w.buryIntake(ctx, in, in.Attempts, fmt.Sprintf("reclaimed %d times without completing", in.Attempts))
 		return
 	}
 	mctx, cancel := context.WithTimeout(ctx, deadline.Sub(w.now()))
@@ -259,7 +259,7 @@ func checkVerdicts(vs []Verdict) error {
 func (w *Worker) failIntake(ctx context.Context, in Intake, cause error) {
 	attempts := in.Attempts + 1
 	if w.Intakes.exhausted(attempts) {
-		w.buryIntake(ctx, in, fmt.Sprintf("matching failed %d times: %v", attempts, cause))
+		w.buryIntake(ctx, in, attempts, fmt.Sprintf("matching failed %d times: %v", attempts, cause))
 		return
 	}
 	delay := w.Intakes.Delay(attempts)
@@ -275,9 +275,9 @@ func (w *Worker) releaseIntake(ctx context.Context, in Intake, why string) {
 	}
 }
 
-func (w *Worker) buryIntake(ctx context.Context, in Intake, why string) {
+func (w *Worker) buryIntake(ctx context.Context, in Intake, attempts int, why string) {
 	w.warn("intake: intake %s parked as a dead letter: %s", in.ID, why)
-	if err := w.Store.BuryIntake(ctx, in.ID, in.Generation, why); err != nil {
+	if err := w.Store.BuryIntake(ctx, in.ID, in.Generation, attempts, why); err != nil {
 		w.warn("intake: intake %s dead-letter write: %v", in.ID, err)
 	}
 }
@@ -300,17 +300,28 @@ func (w *Worker) LaunchTick(ctx context.Context) (int, error) {
 
 func (w *Worker) launchOne(ctx context.Context, p Pair) {
 	deadline := window(p.NotBefore, w.Pairs.ClaimTTL)
-	if !w.now().Before(deadline) {
+	release := func() {
 		w.retryPair(ctx, p, PairRetry{Attempts: p.Attempts, NotBefore: w.now(), LastError: "released unattempted: the claim's working window had passed", Epoch: p.Epoch})
+	}
+	if !w.now().Before(deadline) {
+		release()
 		return
 	}
 	if w.Pairs.exhausted(p.Attempts) {
-		w.buryPair(ctx, p, fmt.Sprintf("reclaimed %d times without completing", p.Attempts))
+		w.buryPair(ctx, p, p.Attempts, fmt.Sprintf("reclaimed %d times without completing", p.Attempts))
 		return
 	}
-	in, err := w.Store.GetIntake(ctx, p.TenantID, p.IntakeID)
+	// Everything under the claim spends its window: the read too, and the
+	// window is judged again before the launch, never handed a spent one.
+	rctx, rcancel := context.WithTimeout(ctx, deadline.Sub(w.now()))
+	in, err := w.Store.GetIntake(rctx, p.TenantID, p.IntakeID)
+	rcancel()
 	if errors.Is(err, ErrNotFound) {
 		w.refusePair(ctx, p, "its intake is gone (expired or removed)")
+		return
+	}
+	if !w.now().Before(deadline) {
+		release()
 		return
 	}
 	if err != nil {
@@ -355,7 +366,7 @@ func (w *Worker) failPair(ctx context.Context, p Pair, cause error) {
 func (w *Worker) failPairAt(ctx context.Context, p Pair, cause error, epoch int) {
 	attempts := p.Attempts + 1
 	if w.Pairs.exhausted(attempts) {
-		w.buryPair(ctx, p, fmt.Sprintf("launch failed %d times: %v", attempts, cause))
+		w.buryPair(ctx, p, attempts, fmt.Sprintf("launch failed %d times: %v", attempts, cause))
 		return
 	}
 	delay := w.Pairs.Delay(attempts)
@@ -376,9 +387,9 @@ func (w *Worker) refusePair(ctx context.Context, p Pair, reason string) {
 	}
 }
 
-func (w *Worker) buryPair(ctx context.Context, p Pair, why string) {
+func (w *Worker) buryPair(ctx context.Context, p Pair, attempts int, why string) {
 	w.warn("intake: pair %s parked as a dead letter: %s", p.ID, why)
-	if err := w.Store.BuryPair(ctx, p.ID, p.Generation, why); err != nil {
+	if err := w.Store.BuryPair(ctx, p.ID, p.Generation, attempts, why); err != nil {
 		w.warn("intake: pair %s dead-letter write: %v", p.ID, err)
 	}
 }

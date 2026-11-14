@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -31,8 +33,20 @@ func TestSubmissionRunIDIsStablePerTenantAndKey(t *testing.T) {
 }
 
 func TestClassifySubmission(t *testing.T) {
+	queuedAt := time.Date(2026, 11, 14, 22, 0, 0, 0, time.UTC)
+	later := queuedAt.Add(time.Minute)
 	run := func(status store.RunStatus, code store.FailureCode) *store.Run {
 		return &store.Run{ID: "idem-x", TenantID: "team-a", Status: status, FailureCode: code, Error: "publish failed"}
+	}
+	// queuedBy is a run queued by the launch path's own attempt, which a
+	// mutation may then move away from it.
+	queuedBy := func(mutate func(*store.Run)) *store.Run {
+		at := queuedAt
+		r := &store.Run{ID: "idem-x", TenantID: "team-a", Status: store.RunStatusQueued, QueuedAt: &at, SubmissionAttemptAt: &queuedAt}
+		if mutate != nil {
+			mutate(r)
+		}
+		return r
 	}
 	for _, c := range []struct {
 		name      string
@@ -43,8 +57,16 @@ func TestClassifySubmission(t *testing.T) {
 		refused   bool
 	}{
 		{name: "no run", r: nil, publishes: true, want: SubmissionFresh},
-		{name: "queued, published by a queue", r: run(store.RunStatusQueued, ""), publishes: true, want: SubmissionComplete},
-		{name: "queued in process", r: run(store.RunStatusQueued, ""), publishes: false, want: SubmissionAcknowledged},
+		{name: "queued by its launch, published by a queue", r: queuedBy(nil), publishes: true, want: SubmissionComplete},
+		{name: "queued by its launch, in process", r: queuedBy(nil), publishes: false, want: SubmissionAcknowledged},
+		// A resume's flip stamps a queued_at of its own: the run executed
+		// and was handed on, whatever its status reads now.
+		{name: "re-queued by a resume", r: queuedBy(func(r *store.Run) { r.QueuedAt = &later }), publishes: true, want: SubmissionAcknowledged},
+		{name: "queued with a checkpoint", r: queuedBy(func(r *store.Run) { r.Checkpoint = &store.Checkpoint{NodeID: "step2"} }), publishes: true, want: SubmissionAcknowledged},
+		{name: "queued by no submission attempt", r: queuedBy(func(r *store.Run) { r.SubmissionAttemptAt = nil }), publishes: true, want: SubmissionAcknowledged},
+		// A store that stamps no tenant (the filesystem one) leaves the id,
+		// derived from this tenant's key, as the only identity.
+		{name: "recorded under no tenant", r: queuedBy(func(r *store.Run) { r.TenantID = "" }), publishes: true, want: SubmissionComplete},
 		{name: "running", r: run(store.RunStatusRunning, ""), publishes: true, want: SubmissionAcknowledged},
 		{name: "parked on a credential slot", r: run(store.RunStatusFailedResumable, store.FailureCredSlotWait), publishes: true, want: SubmissionAcknowledged},
 		{name: "failed after running", r: run(store.RunStatusFailed, store.FailureExecutionFailed), publishes: true, want: SubmissionAcknowledged},
@@ -224,4 +246,62 @@ type failingLoadStore struct{ store.RunStore }
 
 func (f *failingLoadStore) LoadRun(context.Context, string) (*store.Run, error) {
 	return nil, errors.New("store unreachable")
+}
+
+// A local launch that fails after creating its run ends that run as never
+// having left its launch path: a row reading running with nothing behind it
+// would be taken, by the key's next submission, for a run that was handed on.
+func TestLaunch_ALaunchThatFailsAfterCreatingItsRunEndsIt(t *testing.T) {
+	svc, fs, bot := localSubmissionService(t)
+	svc.store = &stampFailStore{RunStore: fs}
+	ctx := context.Background()
+	spec := LaunchSpec{FilePath: bot, SubmissionKey: "k", LLMRoutePolicy: &store.RunLLMRoutePolicy{}}
+	_, err := svc.Launch(ctx, spec)
+	var persisted *RunPersistedError
+	if !errors.As(err, &persisted) {
+		t.Fatalf("first submission = %v, want the persisted run's error", err)
+	}
+	id := SubmissionRunID("", "k")
+	r, err := fs.LoadRun(ctx, id)
+	if err != nil || r.Status != store.RunStatusFailed || r.FailureCode != store.FailureLaunchFailed {
+		t.Fatalf("the run left behind = %+v (%v), want it ended LAUNCH_FAILED", r, err)
+	}
+	var spent *SubmissionSpentError
+	if _, err := svc.Launch(ctx, spec); !errors.As(err, &spent) {
+		t.Fatalf("the key's next submission = %v, want its id spent", err)
+	}
+}
+
+// stampFailStore fails the first SaveRun that stamps a routing policy — the
+// write spawnRun performs right after its exclusive CreateRun.
+type stampFailStore struct {
+	store.RunStore
+	once sync.Once
+}
+
+func (s *stampFailStore) SaveRun(ctx context.Context, r *store.Run) error {
+	fail := false
+	if r.LLMRoutePolicy != nil {
+		s.once.Do(func() { fail = true })
+	}
+	if fail {
+		return errors.New("store blip on the routing-policy stamp")
+	}
+	return s.RunStore.SaveRun(ctx, r)
+}
+
+// A keyed launch under a tenant lands in a store that stamps none; its next
+// submission is answered by that run, never refused as another tenant's.
+func TestLaunch_ASubmissionInATenantlessStoreIsAnsweredByItsRun(t *testing.T) {
+	svc, _, bot := localSubmissionService(t)
+	ctx := store.WithIdentity(context.Background(), "team-a", "connector:c1")
+	first, err := svc.Launch(ctx, LaunchSpec{FilePath: bot, SubmissionKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-first.Done
+	again, err := svc.Launch(ctx, LaunchSpec{FilePath: bot, SubmissionKey: "k"})
+	if err != nil || again.RunID != first.RunID || !again.AlreadySubmitted {
+		t.Fatalf("the key's next submission = (%+v, %v), want its run, already submitted", again, err)
+	}
 }

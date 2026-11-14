@@ -240,7 +240,8 @@ erDiagram
 
 - **A delivery is written once.** The intake's `_id` is derived from its tenant, its source and the digest of what the vendor signed, so a redelivery meets the existing row; a pair's `_id` is derived from its intake and subscription, so a matcher that repeats its work writes nothing new.
 - **A claim is a generation, not a token.** Each claim increments `generation`, and every later write matches it with the row's id and state: a worker whose claim expired writes nothing and is told so. A claim past `not_before` is claimable by any worker, and that reclaim spends an attempt.
-- **The run is found by its key.** A pair launches as an idempotent submission keyed by (pair, `epoch`); the run id is derived from that key and the tenant, so a crash anywhere between the run's persistence and the pair's mark is answered by the run the key already names. A spent submission (`LAUNCH_FAILED`) and a replay advance the epoch.
+- **The run is found by its key.** A pair launches as an idempotent submission keyed by (pair, `epoch`); the run id is derived from that key and the tenant, so a crash anywhere between the run's persistence and the pair's mark is answered by the run the key already names. A spent submission (`LAUNCH_FAILED`) and the replay of a launch-refused pair advance the epoch; a dead pair replays under its own key.
+- **Claims follow arrival.** A fresh row is due from its arrival (`not_before`), and pending rows and expired claims are taken in one `not_before` order, so a retry or a crashed worker's claim is never passed over by rows that came after it.
 
 ## Collections
 

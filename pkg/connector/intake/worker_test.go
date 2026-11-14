@@ -44,10 +44,13 @@ func (m *stubMatcher) Match(context.Context, Intake) ([]Verdict, error) {
 // and a repeated key answered with that run. fail, when set, decides the
 // error of a call before any run exists for its key.
 type idempotentSubmitter struct {
-	mu    sync.Mutex
-	runs  map[string]string
-	keys  []string
-	fail  func(key string, call int) error
+	mu   sync.Mutex
+	runs map[string]string
+	keys []string
+	fail func(key string, call int) error
+	// lose, when it says so, loses the answer of a call that started or met
+	// a run: the run exists, the caller hears an error.
+	lose  func(call int) bool
 	calls int
 	// during runs inside Submit, before the answer — a seam for
 	// interleavings.
@@ -70,6 +73,9 @@ func (s *idempotentSubmitter) Submit(_ context.Context, _ Intake, p Pair) (strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if run, ok := s.runs[key]; ok {
+		if s.lose != nil && s.lose(call) {
+			return "", context.DeadlineExceeded
+		}
 		return run, nil
 	}
 	if s.fail != nil {
@@ -79,6 +85,9 @@ func (s *idempotentSubmitter) Submit(_ context.Context, _ Intake, p Pair) (strin
 	}
 	run := fmt.Sprintf("run-%d", len(s.runs)+1)
 	s.runs[key] = run
+	if s.lose != nil && s.lose(call) {
+		return "", context.DeadlineExceeded
+	}
 	return run, nil
 }
 
@@ -185,8 +194,8 @@ func TestWorkerMatchingRetriesThenBuriesThenReplays(t *testing.T) {
 	clock.Add(20 * time.Second)
 	tick(t, w)
 	cur, _ = s.GetIntake(ctx, "t1", in.ID)
-	if cur.State != IntakeDead || cur.Attempts != 2 {
-		t.Fatalf("after the third failure = %+v, want the dead letter", cur)
+	if cur.State != IntakeDead || cur.Attempts != 3 {
+		t.Fatalf("after the third failure = %+v, want the dead letter with its three attempts", cur)
 	}
 
 	m.mu.Lock()
@@ -229,7 +238,8 @@ func TestWorkerRefusesAMalformedVerdictList(t *testing.T) {
 
 // A launch that keeps failing backs off with the doubling schedule, lands in
 // the dead letter when its attempts are spent, and a replay launches it once —
-// under a key no earlier attempt used.
+// under the same key, which the launch path answers with the run of an
+// attempt that was handed on, and starts otherwise.
 func TestWorkerLaunchRetriesWithBackoffThenBuriesThenReplaysOnce(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
@@ -259,8 +269,8 @@ func TestWorkerLaunchRetriesWithBackoffThenBuriesThenReplaysOnce(t *testing.T) {
 	clock.Add(20 * time.Second)
 	tick(t, w)
 	p = onlyPair(t, s, "t1")
-	if p.State != PairDead || sub.runCount() != 0 {
-		t.Fatalf("after the third failure = %+v (%d runs), want the dead letter and no run", p, sub.runCount())
+	if p.State != PairDead || p.Attempts != 3 || sub.runCount() != 0 {
+		t.Fatalf("after the third failure = %+v (%d runs), want the dead letter with three attempts and no run", p, sub.runCount())
 	}
 
 	broken = false
@@ -270,14 +280,87 @@ func TestWorkerLaunchRetriesWithBackoffThenBuriesThenReplaysOnce(t *testing.T) {
 	tick(t, w)
 	tick(t, w)
 	p = onlyPair(t, s, "t1")
-	if p.State != PairLaunched || p.RunID != "run-1" || p.Epoch != 1 || sub.runCount() != 1 {
-		t.Fatalf("after the replay = %+v (%d runs), want one launch in epoch 1", p, sub.runCount())
+	if p.State != PairLaunched || p.RunID != "run-1" || p.Epoch != 0 || sub.runCount() != 1 || sub.keys[3] != sub.keys[0] {
+		t.Fatalf("after the replay = %+v (%d runs, keys %v), want one launch under the dead letter's key", p, sub.runCount(), sub.keys)
 	}
-	for i, key := range sub.keys[:3] {
-		if key == sub.keys[3] {
-			t.Fatalf("the replay submitted under attempt %d's key %s", i+1, key)
-		}
+}
+
+// A last attempt whose submission was handed on but whose answer was lost —
+// the acknowledgement timed out, or the worker died before its mark — buries
+// a pair whose run lives. Its replay re-submits the same key and is answered
+// by that run: one run for the pair, never a second.
+func TestWorkerReplayOfADeadPairNeverStartsASecondRun(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	sub.lose = func(int) bool { return true }
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+	for i := 1; i <= w.Pairs.MaxAttempts; i++ {
+		tick(t, w)
+		clock.Add(w.Pairs.Delay(i))
 	}
+	p := onlyPair(t, s, "t1")
+	if p.State != PairDead || sub.runCount() != 1 {
+		t.Fatalf("after the lost answers: %+v, %d runs — want the dead letter over the one run its key started", p, sub.runCount())
+	}
+	sub.lose = nil
+	if _, err := s.ReplayPair(ctx, "t1", p.ID, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tick(t, w)
+	if p = onlyPair(t, s, "t1"); p.State != PairLaunched || p.RunID != "run-1" || sub.runCount() != 1 {
+		t.Fatalf("after the replay: %+v, %d runs — want the pair answered by its one run", p, sub.runCount())
+	}
+}
+
+// A pair refused by matching never reaches a launch: no filter ever said yes
+// to it, and a replay would launch it without one.
+func TestWorkerNeverLaunchesAMatchRefusedPair(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Refusal: "expression past its budget"}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+	tick(t, w)
+	p := onlyPair(t, s, "t1")
+	if _, err := s.ReplayPair(ctx, "t1", p.ID, clock.Now()); !errors.Is(err, ErrNotReplayable) {
+		t.Fatalf("replay of a match-refused pair = %v, want ErrNotReplayable", err)
+	}
+	tick(t, w)
+	if sub.calls != 0 {
+		t.Fatalf("a match-refused pair was submitted %d times", sub.calls)
+	}
+}
+
+// The intake read under a pair's claim spends the claim's window like the
+// launch: a read that overruns it releases the pair unattempted, and the
+// launch is never handed a spent window.
+func TestWorkerJudgesTheWindowAgainAfterTheIntakeRead(t *testing.T) {
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	w := newWorker(slowIntakeRead{Store: s, clock: clock, by: 31 * time.Second}, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+	tick(t, w)
+	if p := onlyPair(t, s, "t1"); sub.calls != 0 || p.State != PairPending || p.Attempts != 0 {
+		t.Fatalf("pair = %+v after %d submissions, want it released unattempted", p, sub.calls)
+	}
+}
+
+// slowIntakeRead advances the worker's clock while it reads an intake.
+type slowIntakeRead struct {
+	Store
+	clock *fakeClock
+	by    time.Duration
+}
+
+func (s slowIntakeRead) GetIntake(ctx context.Context, tenantID, id string) (Intake, error) {
+	in, err := s.Store.GetIntake(ctx, tenantID, id)
+	s.clock.Add(s.by)
+	return in, err
 }
 
 // spentError is what the launch path answers for a key whose run never left

@@ -167,6 +167,17 @@ func TestPolicyDelayDoublesUpToItsCeiling(t *testing.T) {
 	}
 }
 
+// The doubling never runs past its ceiling, nor past the duration's range:
+// a ceiling near the range's end is the delay, never a negative or zero one.
+func TestPolicyDelayNeverOverflows(t *testing.T) {
+	p := Policy{Backoff: time.Second, BackoffMax: 2562047 * time.Hour}
+	for _, n := range []int{30, 34, 35, 40, 64, 100} {
+		if d := p.Delay(n); d < p.Backoff || d > p.BackoffMax {
+			t.Errorf("Delay(%d) = %s, want within [%s, %s]", n, d, p.Backoff, p.BackoffMax)
+		}
+	}
+}
+
 func TestPolicyFromEnv(t *testing.T) {
 	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
 	p, err := PolicyFromEnv(EnvPairPrefix, env(nil))
@@ -175,11 +186,11 @@ func TestPolicyFromEnv(t *testing.T) {
 	}
 	p, err = PolicyFromEnv(EnvPairPrefix, env(map[string]string{
 		"ITERION_CONNECTOR_PAIR_MAX_ATTEMPTS": "0", "ITERION_CONNECTOR_PAIR_BACKOFF": "1s",
-		"ITERION_CONNECTOR_PAIR_BACKOFF_MAX": "5s", "ITERION_CONNECTOR_PAIR_CLAIM_TTL": "30s",
+		"ITERION_CONNECTOR_PAIR_BACKOFF_MAX": "5s", "ITERION_CONNECTOR_PAIR_CLAIM_TTL": "90s",
 		// Another family's dial is not read.
 		"ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS": "7",
 	}))
-	want := Policy{MaxAttempts: 0, Backoff: time.Second, BackoffMax: 5 * time.Second, ClaimTTL: 30 * time.Second}
+	want := Policy{MaxAttempts: 0, Backoff: time.Second, BackoffMax: 5 * time.Second, ClaimTTL: 90 * time.Second}
 	if err != nil || p != want {
 		t.Fatalf("dials = (%+v, %v), want %+v", p, err, want)
 	}
@@ -187,11 +198,14 @@ func TestPolicyFromEnv(t *testing.T) {
 		t.Fatal("MAX_ATTEMPTS=0 bounds the attempts")
 	}
 	for name, kv := range map[string]map[string]string{
-		"a count that is not one":   {"ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS": "many"},
-		"a negative count":          {"ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS": "-1"},
-		"a duration that is not":    {"ITERION_CONNECTOR_INTAKE_BACKOFF": "soon"},
-		"a zero claim":              {"ITERION_CONNECTOR_INTAKE_CLAIM_TTL": "0s"},
-		"a ceiling under the floor": {"ITERION_CONNECTOR_INTAKE_BACKOFF": "1h"},
+		"a count that is not one": {"ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS": "many"},
+		"a negative count":        {"ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS": "-1"},
+		"a duration that is not":  {"ITERION_CONNECTOR_INTAKE_BACKOFF": "soon"},
+		"a zero claim":            {"ITERION_CONNECTOR_INTAKE_CLAIM_TTL": "0s"},
+		// Half of it is the work's window; under a minute, a launch that
+		// overran it could still be rolling back when the claim expires.
+		"a claim under the worker floor": {"ITERION_CONNECTOR_INTAKE_CLAIM_TTL": "30s"},
+		"a ceiling under the floor":      {"ITERION_CONNECTOR_INTAKE_BACKOFF": "1h"},
 	} {
 		if _, err := PolicyFromEnv(EnvIntakePrefix, env(kv)); err == nil || !strings.Contains(err.Error(), EnvIntakePrefix) {
 			t.Errorf("%s: %v, want an error naming the dial", name, err)

@@ -109,34 +109,32 @@ func (m *MemoryStore) ClaimIntakes(_ context.Context, owner string, now time.Tim
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prune()
-	var out []Intake
-	for _, phase := range []string{IntakePending, IntakeClaimed} {
-		var due []*Intake
-		for _, in := range m.intakes {
-			if in.State == phase && !in.NotBefore.After(now) {
-				due = append(due, in)
-			}
+	var due []*Intake
+	for _, in := range m.intakes {
+		if (in.State == IntakePending || in.State == IntakeClaimed) && !in.NotBefore.After(now) {
+			due = append(due, in)
 		}
-		sort.Slice(due, func(i, j int) bool {
-			if !due[i].NotBefore.Equal(due[j].NotBefore) {
-				return due[i].NotBefore.Before(due[j].NotBefore)
-			}
-			return due[i].ID < due[j].ID
-		})
-		for _, in := range due {
-			if len(out) == limit {
-				return out, nil
-			}
-			if in.State == IntakeClaimed {
-				in.Attempts++
-			}
-			in.State = IntakeClaimed
-			in.Owner = owner
-			in.Generation++
-			in.NotBefore = stamp(now.Add(ttl))
-			in.UpdatedAt = now
-			out = append(out, copyIntake(*in))
+	}
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].NotBefore.Equal(due[j].NotBefore) {
+			return due[i].NotBefore.Before(due[j].NotBefore)
 		}
+		return due[i].ID < due[j].ID
+	})
+	if len(due) > limit {
+		due = due[:limit]
+	}
+	out := make([]Intake, 0, len(due))
+	for _, in := range due {
+		if in.State == IntakeClaimed {
+			in.Attempts++
+		}
+		in.State = IntakeClaimed
+		in.Owner = owner
+		in.Generation++
+		in.NotBefore = stamp(now.Add(ttl))
+		in.UpdatedAt = now
+		out = append(out, copyIntake(*in))
 	}
 	return out, nil
 }
@@ -187,7 +185,7 @@ func (m *MemoryStore) RetryIntake(_ context.Context, id string, generation int64
 	return nil
 }
 
-func (m *MemoryStore) BuryIntake(_ context.Context, id string, generation int64, lastErr string) error {
+func (m *MemoryStore) BuryIntake(_ context.Context, id string, generation int64, attempts int, lastErr string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prune()
@@ -197,6 +195,7 @@ func (m *MemoryStore) BuryIntake(_ context.Context, id string, generation int64,
 	}
 	in.State = IntakeDead
 	in.Owner = ""
+	in.Attempts = attempts
 	in.LastError = lastErr
 	in.UpdatedAt = stamp(m.clock())
 	return nil
@@ -216,7 +215,7 @@ func (m *MemoryStore) ReplayIntake(_ context.Context, tenantID, id string, now t
 	in.State = IntakePending
 	in.Attempts = 0
 	in.Generation++
-	in.NotBefore = time.Time{}
+	in.NotBefore = stamp(now)
 	in.LastError = ""
 	in.UpdatedAt = stamp(now)
 	return copyIntake(*in), nil
@@ -292,34 +291,32 @@ func (m *MemoryStore) ClaimPairs(_ context.Context, owner string, now time.Time,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prune()
-	var out []Pair
-	for _, phase := range []string{PairPending, PairClaimed} {
-		var due []*Pair
-		for _, p := range m.pairs {
-			if p.State == phase && !p.NotBefore.After(now) {
-				due = append(due, p)
-			}
+	var due []*Pair
+	for _, p := range m.pairs {
+		if (p.State == PairPending || p.State == PairClaimed) && !p.NotBefore.After(now) {
+			due = append(due, p)
 		}
-		sort.Slice(due, func(i, j int) bool {
-			if !due[i].NotBefore.Equal(due[j].NotBefore) {
-				return due[i].NotBefore.Before(due[j].NotBefore)
-			}
-			return due[i].ID < due[j].ID
-		})
-		for _, p := range due {
-			if len(out) == limit {
-				return out, nil
-			}
-			if p.State == PairClaimed {
-				p.Attempts++
-			}
-			p.State = PairClaimed
-			p.Owner = owner
-			p.Generation++
-			p.NotBefore = stamp(now.Add(ttl))
-			p.UpdatedAt = now
-			out = append(out, copyPair(*p))
+	}
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].NotBefore.Equal(due[j].NotBefore) {
+			return due[i].NotBefore.Before(due[j].NotBefore)
 		}
+		return due[i].ID < due[j].ID
+	})
+	if len(due) > limit {
+		due = due[:limit]
+	}
+	out := make([]Pair, 0, len(due))
+	for _, p := range due {
+		if p.State == PairClaimed {
+			p.Attempts++
+		}
+		p.State = PairClaimed
+		p.Owner = owner
+		p.Generation++
+		p.NotBefore = stamp(now.Add(ttl))
+		p.UpdatedAt = now
+		out = append(out, copyPair(*p))
 	}
 	return out, nil
 }
@@ -393,7 +390,7 @@ func (m *MemoryStore) RefusePair(_ context.Context, id string, generation int64,
 	return nil
 }
 
-func (m *MemoryStore) BuryPair(_ context.Context, id string, generation int64, lastErr string) error {
+func (m *MemoryStore) BuryPair(_ context.Context, id string, generation int64, attempts int, lastErr string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prune()
@@ -403,6 +400,7 @@ func (m *MemoryStore) BuryPair(_ context.Context, id string, generation int64, l
 	}
 	p.State = PairDead
 	p.Owner = ""
+	p.Attempts = attempts
 	p.LastError = lastErr
 	p.UpdatedAt = stamp(m.clock())
 	return nil
@@ -416,27 +414,45 @@ func (m *MemoryStore) ReplayPair(_ context.Context, tenantID, id string, now tim
 	if !ok || p.TenantID != tenantID {
 		return Pair{}, fmt.Errorf("%w: pair %s", ErrNotFound, id)
 	}
-	if p.State != PairDead && p.State != PairRefused {
-		return Pair{}, fmt.Errorf("%w: pair %s is %s", ErrNotReplayable, id, p.State)
+	if err := replayable(p); err != nil {
+		return Pair{}, err
+	}
+	if p.State == PairRefused {
+		p.Epoch++
 	}
 	p.State = PairPending
 	p.Reason = ""
 	p.Attempts = 0
-	p.Epoch++
 	p.Generation++
-	p.NotBefore = time.Time{}
+	p.NotBefore = stamp(now)
 	p.LastError = ""
 	p.UpdatedAt = stamp(now)
 	return copyPair(*p), nil
 }
+
+// replayable says why a pair cannot be replayed, if it cannot.
+func replayable(p *Pair) error {
+	switch {
+	case p.State == PairRefused && p.MatchRefusal:
+		return fmt.Errorf("%w: pair %s was refused by matching (%s): no filter ever matched it, so it is not replayed into a launch", ErrNotReplayable, p.ID, p.Reason)
+	case p.State != PairDead && p.State != PairRefused:
+		return fmt.Errorf("%w: pair %s is %s", ErrNotReplayable, p.ID, p.State)
+	}
+	return nil
+}
+
+// MinClaimTTL is the shortest claim a store honours: below its millisecond
+// precision, a claim would expire the instant it is written and the same
+// call could take the row again.
+const MinClaimTTL = time.Millisecond
 
 // checkClaim refuses a claim no worker could honour.
 func checkClaim(owner string, ttl time.Duration, limit int) error {
 	switch {
 	case owner == "":
 		return fmt.Errorf("%w: a claim names its owner", ErrInvalid)
-	case ttl <= 0:
-		return fmt.Errorf("%w: claim ttl %s", ErrInvalid, ttl)
+	case ttl < MinClaimTTL:
+		return fmt.Errorf("%w: claim ttl %s is under %s", ErrInvalid, ttl, MinClaimTTL)
 	case limit <= 0:
 		return fmt.Errorf("%w: claim limit %d", ErrInvalid, limit)
 	}

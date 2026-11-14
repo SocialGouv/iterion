@@ -132,8 +132,8 @@ func (f *FileStore) RetryIntake(ctx context.Context, id string, generation int64
 	})
 }
 
-func (f *FileStore) BuryIntake(ctx context.Context, id string, generation int64, lastErr string) error {
-	return f.withState(ctx, func(m *MemoryStore) error { return m.BuryIntake(ctx, id, generation, lastErr) })
+func (f *FileStore) BuryIntake(ctx context.Context, id string, generation int64, attempts int, lastErr string) error {
+	return f.withState(ctx, func(m *MemoryStore) error { return m.BuryIntake(ctx, id, generation, attempts, lastErr) })
 }
 
 func (f *FileStore) ReplayIntake(ctx context.Context, tenantID, id string, now time.Time) (out Intake, err error) {
@@ -188,8 +188,8 @@ func (f *FileStore) RefusePair(ctx context.Context, id string, generation int64,
 	return f.withState(ctx, func(m *MemoryStore) error { return m.RefusePair(ctx, id, generation, reason) })
 }
 
-func (f *FileStore) BuryPair(ctx context.Context, id string, generation int64, lastErr string) error {
-	return f.withState(ctx, func(m *MemoryStore) error { return m.BuryPair(ctx, id, generation, lastErr) })
+func (f *FileStore) BuryPair(ctx context.Context, id string, generation int64, attempts int, lastErr string) error {
+	return f.withState(ctx, func(m *MemoryStore) error { return m.BuryPair(ctx, id, generation, attempts, lastErr) })
 }
 
 func (f *FileStore) ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (out Pair, err error) {

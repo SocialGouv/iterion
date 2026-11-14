@@ -1735,6 +1735,13 @@ type Run struct {
 	// CreateRun time; zero in local mode. Used to compute
 	// queue-position aggregates and queue-wait duration metrics.
 	QueuedAt *time.Time `json:"queued_at,omitempty" bson:"queued_at,omitempty"`
+	// SubmissionAttemptAt is the QueuedAt of the queue attempt the launch
+	// path itself made for an idempotent submission — its first launch, or a
+	// completion (runview/submission.go). While QueuedAt still equals it and
+	// the run is queued, no runner claimed that attempt and nothing re-queued
+	// the run since (a resume's flip stamps a QueuedAt of its own). Nil on
+	// every other run.
+	SubmissionAttemptAt *time.Time `json:"submission_attempt_at,omitempty" bson:"submission_attempt_at,omitempty"`
 	// StartedAt is set by a runner pod the first time it picks up the
 	// run (transitioning queued → running). Distinct from CreatedAt.
 	StartedAt *time.Time `json:"started_at,omitempty" bson:"started_at,omitempty"`

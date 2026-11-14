@@ -111,40 +111,43 @@ func (s *MongoStore) ListIntakes(ctx context.Context, tenantID, state string, li
 	return out, nil
 }
 
-// claim flips up to limit claimable rows of col to claimed for owner: pending
-// rows past their backoff first, then claims past their expiry, which spend
-// an attempt. decode appends each flipped row to the caller's result.
+// claim flips up to limit claimable rows of col to claimed for owner —
+// pending rows past their NotBefore and claims past their expiry, in one
+// NotBefore order — one atomic update per row. The update is a pipeline so
+// the attempt a reclaim spends is decided on the row's own state in the same
+// write. decode appends each flipped row to the caller's result.
 func claim(ctx context.Context, col *mongo.Collection, pending, claimed, owner string, now time.Time, ttl time.Duration, limit int, decode func(*mongo.SingleResult) error) error {
 	if err := checkClaim(owner, ttl, limit); err != nil {
 		return err
 	}
 	now = stamp(now)
-	set := bson.M{"state": claimed, "owner": owner, "not_before": stamp(now.Add(ttl)), "updated_at": now}
-	got := 0
-	for _, phase := range []struct {
-		state string
-		inc   bson.M
-	}{
-		{pending, bson.M{"generation": 1}},
-		{claimed, bson.M{"generation": 1, "attempts": 1}},
-	} {
-		for got < limit {
-			res := col.FindOneAndUpdate(ctx,
-				bson.M{"state": phase.state, "not_before": bson.M{"$lte": now}},
-				bson.M{"$set": set, "$inc": phase.inc},
-				options.FindOneAndUpdate().
-					SetSort(bson.D{{Key: "not_before", Value: 1}, {Key: "_id", Value: 1}}).
-					SetReturnDocument(options.After))
-			if errors.Is(res.Err(), mongo.ErrNoDocuments) {
-				break
-			}
-			if res.Err() != nil {
-				return fmt.Errorf("intake: claim from %s: %w", col.Name(), res.Err())
-			}
-			if err := decode(res); err != nil {
-				return fmt.Errorf("intake: decode claim from %s: %w", col.Name(), err)
-			}
-			got++
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"attempts": bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{"$state", bson.M{"$literal": claimed}}},
+			bson.M{"$add": bson.A{"$attempts", 1}},
+			"$attempts",
+		}},
+		"generation": bson.M{"$add": bson.A{"$generation", 1}},
+		"state":      bson.M{"$literal": claimed},
+		"owner":      bson.M{"$literal": owner},
+		"not_before": stamp(now.Add(ttl)),
+		"updated_at": now,
+	}}}}
+	for got := 0; got < limit; got++ {
+		res := col.FindOneAndUpdate(ctx,
+			bson.M{"state": bson.M{"$in": bson.A{pending, claimed}}, "not_before": bson.M{"$lte": now}},
+			update,
+			options.FindOneAndUpdate().
+				SetSort(bson.D{{Key: "not_before", Value: 1}, {Key: "_id", Value: 1}}).
+				SetReturnDocument(options.After))
+		if errors.Is(res.Err(), mongo.ErrNoDocuments) {
+			return nil
+		}
+		if res.Err() != nil {
+			return fmt.Errorf("intake: claim from %s: %w", col.Name(), res.Err())
+		}
+		if err := decode(res); err != nil {
+			return fmt.Errorf("intake: decode claim from %s: %w", col.Name(), err)
 		}
 	}
 	return nil
@@ -209,9 +212,9 @@ func (s *MongoStore) RetryIntake(ctx context.Context, id string, generation int6
 	})
 }
 
-func (s *MongoStore) BuryIntake(ctx context.Context, id string, generation int64, lastErr string) error {
+func (s *MongoStore) BuryIntake(ctx context.Context, id string, generation int64, attempts int, lastErr string) error {
 	return fenced(ctx, s.intakes, "intake", IntakeClaimed, id, generation, bson.M{
-		"$set":   bson.M{"state": IntakeDead, "last_error": lastErr, "updated_at": stamp(time.Now())},
+		"$set":   bson.M{"state": IntakeDead, "attempts": attempts, "last_error": lastErr, "updated_at": stamp(time.Now())},
 		"$unset": bson.M{"owner": ""},
 	})
 }
@@ -221,7 +224,7 @@ func (s *MongoStore) ReplayIntake(ctx context.Context, tenantID, id string, now 
 	err := s.intakes.FindOneAndUpdate(ctx,
 		bson.M{"_id": id, "tenant_id": tenantID, "state": IntakeDead},
 		bson.M{
-			"$set":   bson.M{"state": IntakePending, "attempts": 0, "not_before": time.Time{}, "updated_at": stamp(now)},
+			"$set":   bson.M{"state": IntakePending, "attempts": 0, "not_before": stamp(now), "updated_at": stamp(now)},
 			"$inc":   bson.M{"generation": 1},
 			"$unset": bson.M{"last_error": ""},
 		},
@@ -366,22 +369,37 @@ func (s *MongoStore) RefusePair(ctx context.Context, id string, generation int64
 	})
 }
 
-func (s *MongoStore) BuryPair(ctx context.Context, id string, generation int64, lastErr string) error {
+func (s *MongoStore) BuryPair(ctx context.Context, id string, generation int64, attempts int, lastErr string) error {
 	return fenced(ctx, s.pairs, "pair", PairClaimed, id, generation, bson.M{
-		"$set":   bson.M{"state": PairDead, "last_error": lastErr, "updated_at": stamp(time.Now())},
+		"$set":   bson.M{"state": PairDead, "attempts": attempts, "last_error": lastErr, "updated_at": stamp(time.Now())},
 		"$unset": bson.M{"owner": ""},
 	})
 }
 
 func (s *MongoStore) ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (Pair, error) {
+	// One pipeline update: a launch-refused pair moves to the next epoch, a
+	// dead one keeps its own (see Store.ReplayPair), decided on the row's own
+	// state in the same write.
 	var p Pair
 	err := s.pairs.FindOneAndUpdate(ctx,
-		bson.M{"_id": id, "tenant_id": tenantID, "state": bson.M{"$in": bson.A{PairDead, PairRefused}}},
-		bson.M{
-			"$set":   bson.M{"state": PairPending, "attempts": 0, "not_before": time.Time{}, "updated_at": stamp(now)},
-			"$inc":   bson.M{"generation": 1, "epoch": 1},
-			"$unset": bson.M{"reason": "", "last_error": ""},
-		},
+		bson.M{"_id": id, "tenant_id": tenantID, "$or": bson.A{
+			bson.M{"state": PairDead},
+			bson.M{"state": PairRefused, "match_refusal": bson.M{"$ne": true}},
+		}},
+		mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			"epoch": bson.M{"$cond": bson.A{
+				bson.M{"$eq": bson.A{"$state", bson.M{"$literal": PairRefused}}},
+				bson.M{"$add": bson.A{"$epoch", 1}},
+				"$epoch",
+			}},
+			"generation": bson.M{"$add": bson.A{"$generation", 1}},
+			"state":      bson.M{"$literal": PairPending},
+			"attempts":   0,
+			"not_before": stamp(now),
+			"updated_at": stamp(now),
+			"reason":     "$$REMOVE",
+			"last_error": "$$REMOVE",
+		}}}},
 		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&p)
 	if err == nil {
 		return p, nil
@@ -393,7 +411,10 @@ func (s *MongoStore) ReplayPair(ctx context.Context, tenantID, id string, now ti
 	if gerr != nil {
 		return Pair{}, gerr
 	}
-	return Pair{}, fmt.Errorf("%w: pair %s is %s", ErrNotReplayable, id, cur.State)
+	if rerr := replayable(&cur); rerr != nil {
+		return Pair{}, rerr
+	}
+	return Pair{}, fmt.Errorf("%w: pair %s changed while it was replayed", ErrNotReplayable, id)
 }
 
 var _ Store = (*MongoStore)(nil)

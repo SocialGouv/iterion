@@ -58,12 +58,14 @@ const (
 	// PairNotMatched is terminal: the subscription's filters refused the
 	// event. Written so a fan-out records every candidate's verdict.
 	PairNotMatched = "not_matched"
-	// PairRefused is terminal until replayed: a verdict no retry changes —
-	// an expression past its budget, a submission refused for good. Reason
-	// says which.
+	// PairRefused is terminal: a verdict no retry changes — an expression
+	// past its budget, a submission refused for good. Reason says which. A
+	// launch-time refusal replays into the next key; a match-time one is not
+	// replayed into a launch (MatchRefusal).
 	PairRefused = "refused"
 	// PairDead is the dead letter: the launch failed past its attempts.
-	// Replayable.
+	// Replayable under its current key, which the launch path answers with
+	// the run when one was handed on.
 	PairDead = "dead"
 )
 
@@ -146,10 +148,15 @@ type Pair struct {
 	State string `json:"state" bson:"state"`
 	// Reason says why a pair was not matched or refused.
 	Reason string `json:"reason,omitempty" bson:"reason,omitempty"`
+	// MatchRefusal marks a pair refused by MATCHING — its filters could not
+	// be judged — as opposed to a launch the launch path refused. No filter
+	// ever said yes to it, so it is never replayed into a launch.
+	MatchRefusal bool `json:"match_refusal,omitempty" bson:"match_refusal,omitempty"`
 	// Epoch numbers the pair's submissions: its key, and so its run id, is
 	// derived from (pair, epoch). It advances when the launch path proves a
-	// submission spent — its run never left the launch path — and on replay,
-	// so a new submission never meets the run of an old one.
+	// submission spent — its run never left the launch path — and when a
+	// launch-time refusal is replayed. It never advances while a run of the
+	// current key may live: a dead pair replays under the same key.
 	Epoch int `json:"epoch" bson:"epoch"`
 	// RunID is the run of the acknowledged submission.
 	RunID string `json:"run_id,omitempty" bson:"run_id,omitempty"`
@@ -207,15 +214,19 @@ type Store interface {
 	// newest first, at most limit (0 = no bound).
 	ListIntakes(ctx context.Context, tenantID, state string, limit int) ([]Intake, error)
 	// ClaimIntakes claims up to limit claimable intakes for owner until
-	// now+ttl: pending ones past their backoff first, then claims past
-	// their expiry, each by NotBefore then id. A reclaim spends an attempt.
+	// now+ttl: pending rows past their NotBefore and claims past their
+	// expiry, in ONE order — NotBefore, then id — so a retry or an expired
+	// claim is never passed over by rows that arrived after it (a fresh row's
+	// NotBefore is its arrival). A reclaim spends an attempt. ttl is at least
+	// the store's millisecond precision.
 	ClaimIntakes(ctx context.Context, owner string, now time.Time, ttl time.Duration, limit int) ([]Intake, error)
 	MarkIntakeMatched(ctx context.Context, id string, generation int64, at time.Time) error
 	RetryIntake(ctx context.Context, id string, generation int64, attempts int, notBefore time.Time, lastErr string) error
-	// BuryIntake moves a claimed intake to its dead letter.
-	BuryIntake(ctx context.Context, id string, generation int64, lastErr string) error
+	// BuryIntake moves a claimed intake to its dead letter with the
+	// attempts it spent.
+	BuryIntake(ctx context.Context, id string, generation int64, attempts int, lastErr string) error
 	// ReplayIntake returns a dead intake to pending with its attempts
-	// reset, under a new generation.
+	// reset, under a new generation, due now.
 	ReplayIntake(ctx context.Context, tenantID, id string, now time.Time) (Intake, error)
 
 	// WritePairs inserts pairs that do not exist yet; an existing pair is
@@ -231,11 +242,15 @@ type Store interface {
 	MarkPairLaunched(ctx context.Context, id string, generation int64, runID string, at time.Time) error
 	RetryPair(ctx context.Context, id string, generation int64, r PairRetry) error
 	RefusePair(ctx context.Context, id string, generation int64, reason string) error
-	// BuryPair moves a claimed pair to its dead letter.
-	BuryPair(ctx context.Context, id string, generation int64, lastErr string) error
-	// ReplayPair returns a dead or refused pair to pending with its
-	// attempts reset, its epoch advanced and a new generation: the replay
-	// is a new submission, which never meets the run of an old one.
+	// BuryPair moves a claimed pair to its dead letter with the attempts it
+	// spent.
+	BuryPair(ctx context.Context, id string, generation int64, attempts int, lastErr string) error
+	// ReplayPair returns a dead or launch-refused pair to pending, due now,
+	// with its attempts reset and a new generation. A dead pair keeps its
+	// epoch: its last attempt may have been handed on, and re-submitting the
+	// same key is answered by that run instead of starting a second. A
+	// launch-refused pair moves to the next epoch, a new submission. A
+	// match-refused pair is not replayable: nothing ever matched it.
 	ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (Pair, error)
 }
 
@@ -258,6 +273,16 @@ func prepareIntake(in Intake) (Intake, error) {
 	if len(in.Event) > 0 && !json.Valid(in.Event) {
 		return Intake{}, fmt.Errorf("%w: intake event is not JSON", ErrInvalid)
 	}
+	if len(in.Event) > 0 {
+		// One canonical encoding whichever twin stores it: the file twin
+		// re-encodes its journal, so bytes kept verbatim by the others would
+		// read back different there.
+		canon, err := json.Marshal(in.Event)
+		if err != nil {
+			return Intake{}, fmt.Errorf("%w: intake event: %v", ErrInvalid, err)
+		}
+		in.Event = canon
+	}
 	in.ID = IntakeID(in.TenantID, in.source(), in.DedupKey)
 	in.ReceivedAt = stamp(in.ReceivedAt)
 	in.ExpiresAt = stampPtr(in.ExpiresAt)
@@ -265,7 +290,9 @@ func prepareIntake(in Intake) (Intake, error) {
 	in.Attempts = 0
 	in.Owner = ""
 	in.Generation = 0
-	in.NotBefore = time.Time{}
+	// Due from its arrival: claims take rows in NotBefore order, so a fresh
+	// row queues behind the retries and expired claims that came before it.
+	in.NotBefore = in.ReceivedAt
 	in.LastError = ""
 	in.MatchedAt = nil
 	in.UpdatedAt = in.ReceivedAt
@@ -291,6 +318,7 @@ func preparePair(p Pair) (Pair, error) {
 		return Pair{}, fmt.Errorf("%w: a %s pair says why", ErrInvalid, p.State)
 	}
 	p.ID = PairID(p.IntakeID, p.SubscriptionID)
+	p.MatchRefusal = p.State == PairRefused
 	p.ReceivedAt = stamp(p.ReceivedAt)
 	p.ExpiresAt = stampPtr(p.ExpiresAt)
 	p.CreatedAt = stamp(p.CreatedAt)
@@ -300,7 +328,7 @@ func preparePair(p Pair) (Pair, error) {
 	p.Attempts = 0
 	p.Owner = ""
 	p.Generation = 0
-	p.NotBefore = time.Time{}
+	p.NotBefore = p.CreatedAt
 	p.LastError = ""
 	p.LaunchedAt = nil
 	return p, nil

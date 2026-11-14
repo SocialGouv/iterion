@@ -443,6 +443,12 @@ type RunMessage struct {
 	Resume         *ResumeSpec   `json:"resume,omitempty"`
 	Trace          TraceContext  `json:"trace"`
 	PublishedAtRFC string        `json:"published_at"`
+	// LaunchAttempt names a launch message that is a NEW attempt of a run
+	// already queued once — an idempotent submission's completion, which
+	// re-stamps the run's queued_at. It salts the message's Nats-Msg-Id, so
+	// the broker's dedup window never swallows the new attempt for the old
+	// one's. Publisher-side only: it does not travel on the wire.
+	LaunchAttempt string `json:"-"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted

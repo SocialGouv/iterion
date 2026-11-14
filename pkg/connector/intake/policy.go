@@ -23,6 +23,14 @@ type Policy struct {
 	ClaimTTL time.Duration
 }
 
+// MinWorkerClaimTTL is the shortest claim a worker runs under. Its half is
+// the window the work under a claim gets; past the window the launch path
+// still returns within its own bounds — an in-flight publish acknowledgement,
+// then a rollback of up to ten seconds — and that must land before the claim
+// expires and another worker can take the row, or the late rollback could end
+// a run the next worker completed.
+const MinWorkerClaimTTL = time.Minute
+
 // DefaultPolicy is the pacing both machines start from.
 var DefaultPolicy = Policy{MaxAttempts: 5, Backoff: 15 * time.Second, BackoffMax: 10 * time.Minute, ClaimTTL: 2 * time.Minute}
 
@@ -33,6 +41,11 @@ func (p Policy) Delay(n int) time.Duration {
 	}
 	d := p.Backoff
 	for i := 1; i < n && d < p.BackoffMax; i++ {
+		if d > p.BackoffMax/2 {
+			// Doubling past the ceiling — and, near the duration's range,
+			// past int64 — is the ceiling.
+			return p.BackoffMax
+		}
 		d *= 2
 	}
 	if d > p.BackoffMax {
@@ -55,8 +68,8 @@ func (p Policy) Validate() error {
 		return fmt.Errorf("intake: backoff %s", p.Backoff)
 	case p.BackoffMax < p.Backoff:
 		return fmt.Errorf("intake: backoff ceiling %s below the backoff %s", p.BackoffMax, p.Backoff)
-	case p.ClaimTTL <= 0:
-		return fmt.Errorf("intake: claim ttl %s", p.ClaimTTL)
+	case p.ClaimTTL < MinWorkerClaimTTL:
+		return fmt.Errorf("intake: claim ttl %s is under %s: the work under a claim gets half of it, and a launch that overruns must have returned — its own rollback included — before another worker can take the row", p.ClaimTTL, MinWorkerClaimTTL)
 	}
 	return nil
 }

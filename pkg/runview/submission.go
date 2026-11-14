@@ -22,11 +22,15 @@ import (
 // failing or creating another:
 //   - a run that never left its launch path (LAUNCH_FAILED) has spent its id:
 //     the caller moves to its next key (SubmissionSpentError);
-//   - a queued run the cloud publisher persisted is COMPLETED: re-persisted
-//     under compare-and-swap and published again, which the queue absorbs
-//     when the first publication landed (the launch's Nats-Msg-Id is its run
-//     id) and the runner's admission absorbs past the dedup window;
-//   - any other run was handed on, and the answer is that run, unpublished.
+//   - a cloud run still queued by the launch path's own attempt — no runner
+//     claimed it, nothing re-queued it (store.Run.SubmissionAttemptAt) — is
+//     COMPLETED as a NEW attempt: re-persisted under compare-and-swap with a
+//     queued_at of its own and published under a message identity of its
+//     own. A runner claims a queued run only for a delivery published at or
+//     after its queued_at, so a first publication that did land can no
+//     longer claim it: one attempt is ever executable;
+//   - any other run was handed on — claimed, parked, re-queued by a resume —
+//     and the answer is that run, unpublished.
 
 // submissionRunIDPrefix marks the run ids the launch path derives from a
 // submission key. The namespace is reserved: a caller-chosen run id that
@@ -123,16 +127,28 @@ func ClassifySubmission(r *store.Run, tenantID string, publishes bool) (Submissi
 	if r == nil {
 		return SubmissionFresh, nil
 	}
-	if r.TenantID != tenantID {
+	// A run that records no tenant comes from a store that stamps none (the
+	// filesystem one): its id, derived from this tenant's key, is the only
+	// identity there is to compare.
+	if r.TenantID != "" && r.TenantID != tenantID {
 		return 0, &SubmissionRefusedError{RunID: r.ID, Reason: fmt.Sprintf("the run belongs to another tenant (%q)", r.TenantID), Err: ErrRunIDTaken}
 	}
 	if r.Status == store.RunStatusFailed && r.FailureCode == store.FailureLaunchFailed {
 		return 0, &SubmissionSpentError{RunID: r.ID, Cause: r.Error}
 	}
-	if publishes && r.Status == store.RunStatusQueued {
+	if publishes && QueuedBySubmission(r) {
 		return SubmissionComplete, nil
 	}
 	return SubmissionAcknowledged, nil
+}
+
+// QueuedBySubmission reports whether r is still queued by the attempt the
+// launch path made for its submission: queued, at the queued_at that attempt
+// stamped, with no checkpoint. A resume's flip, a runner's claim, a park all
+// leave a run that is not — and that was handed on.
+func QueuedBySubmission(r *store.Run) bool {
+	return r.Status == store.RunStatusQueued && r.Checkpoint == nil &&
+		r.QueuedAt != nil && r.SubmissionAttemptAt != nil && r.QueuedAt.Equal(*r.SubmissionAttemptAt)
 }
 
 // SubmissionDeleted is the refusal a deleted run's id answers: the run was

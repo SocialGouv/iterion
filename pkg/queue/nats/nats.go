@@ -490,7 +490,9 @@ func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResourc
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
 // Launches use RunID as Nats-Msg-Id so retries inside JetStream's dedup window
-// are absorbed. Resumes must use a distinct id: a schema-mismatch park can
+// are absorbed; a launch that is a new attempt of an already-queued run (an
+// idempotent submission's completion) salts it with its attempt, so the
+// window never swallows it for the attempt it supersedes. Resumes must use a distinct id: a schema-mismatch park can
 // happen before that window closes, and reusing bare RunID would make an
 // operator's successful resume response enqueue nothing. PublishedAtRFC is
 // stable when the same message object is retried, yet unique per resume
@@ -529,7 +531,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	}
 
 	headers := nats.Header{}
-	headers.Set("Nats-Msg-Id", runMessageID(msg))
+	headers.Set("Nats-Msg-Id", MessageID(msg))
 	headers.Set("iterion-schema-version", fmt.Sprintf("%d", msg.V))
 
 	// Plan §F (T-41): inject W3C traceparent + tracestate from the
@@ -570,9 +572,16 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	})
 }
 
-func runMessageID(msg *queue.RunMessage) string {
+// MessageID is the Nats-Msg-Id a RunMessage is published under, the identity
+// JetStream deduplicates within its window: the run id for a launch, salted
+// per attempt for a resume and for a launch that re-queues an already-queued
+// run.
+func MessageID(msg *queue.RunMessage) string {
 	if msg.Resume != nil {
 		return fmt.Sprintf("%s|resume-%s", msg.RunID, msg.PublishedAtRFC)
+	}
+	if msg.LaunchAttempt != "" {
+		return fmt.Sprintf("%s|launch-%s", msg.RunID, msg.LaunchAttempt)
 	}
 	return msg.RunID
 }

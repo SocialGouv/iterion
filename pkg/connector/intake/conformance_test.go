@@ -197,7 +197,7 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
-	t.Run("a claim takes due rows in order, pending before expired claims", func(t *testing.T) {
+	t.Run("a claim takes due rows in NotBefore order, retries and expired claims alike", func(t *testing.T) {
 		s := newStore(t)
 		late := mustAccept(t, s, delivery("t1", "ing-1", "late", t0))
 		early := mustAccept(t, s, delivery("t1", "ing-1", "early", t0))
@@ -274,7 +274,7 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		for name, write := range map[string]func() error{
 			"matched": func() error { return s.MarkIntakeMatched(ctx, in.ID, stale, t0) },
 			"retry":   func() error { return s.RetryIntake(ctx, in.ID, stale, 9, t0, "late") },
-			"bury":    func() error { return s.BuryIntake(ctx, in.ID, stale, "late") },
+			"bury":    func() error { return s.BuryIntake(ctx, in.ID, stale, 9, "late") },
 		} {
 			if err := write(); !errors.Is(err, ErrClaimLost) {
 				t.Fatalf("%s under the lost claim = %v, want ErrClaimLost", name, err)
@@ -312,21 +312,21 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		if _, err := s.ReplayIntake(ctx, "t1", in.ID, t0); !errors.Is(err, ErrNotReplayable) {
 			t.Fatalf("replay of a claimed row = %v, want ErrNotReplayable", err)
 		}
-		if err := s.BuryIntake(ctx, in.ID, c[0].Generation, "spent"); err != nil {
+		if err := s.BuryIntake(ctx, in.ID, c[0].Generation, 2, "spent"); err != nil {
 			t.Fatal(err)
 		}
 		dead, _ := s.ListIntakes(ctx, "t1", IntakeDead, 0)
-		if len(dead) != 1 || dead[0].LastError != "spent" || dead[0].Owner != "" {
+		if len(dead) != 1 || dead[0].LastError != "spent" || dead[0].Owner != "" || dead[0].Attempts != 2 {
 			t.Fatalf("dead letters = %+v", dead)
 		}
 		if got, _ := s.ClaimIntakes(ctx, "w", t0.Add(time.Hour), ttl, 1); len(got) != 0 {
 			t.Fatalf("a dead letter was claimed: %v", intakeIDs(got))
 		}
 		replayed, err := s.ReplayIntake(ctx, "t1", in.ID, t0.Add(2*time.Hour))
-		if err != nil || replayed.State != IntakePending || replayed.Attempts != 0 || replayed.Generation != c[0].Generation+1 || replayed.LastError != "" {
-			t.Fatalf("replay = %+v (%v), want pending, attempts reset, next generation", replayed, err)
+		if err != nil || replayed.State != IntakePending || replayed.Attempts != 0 || replayed.Generation != c[0].Generation+1 || replayed.LastError != "" || !replayed.NotBefore.Equal(stamp(t0.Add(2*time.Hour))) {
+			t.Fatalf("replay = %+v (%v), want pending, attempts reset, next generation, due at the replay", replayed, err)
 		}
-		if err := s.BuryIntake(ctx, in.ID, c[0].Generation, "late"); !errors.Is(err, ErrClaimLost) {
+		if err := s.BuryIntake(ctx, in.ID, c[0].Generation, 2, "late"); !errors.Is(err, ErrClaimLost) {
 			t.Fatalf("a write under the pre-replay claim = %v, want ErrClaimLost", err)
 		}
 		if got, _ := s.ClaimIntakes(ctx, "w", t0.Add(2*time.Hour), ttl, 1); len(got) != 1 {
@@ -446,12 +446,14 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
-	t.Run("refused and dead pairs replay into a new epoch", func(t *testing.T) {
+	t.Run("a dead pair replays under its key, a launch-refused one under the next, a match-refused one not at all", func(t *testing.T) {
 		s := newStore(t)
 		in := mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
 		nm := pending(in, "s0", t0)
 		nm.State, nm.Reason = PairNotMatched, "filters"
-		if err := s.WritePairs(ctx, []Pair{pending(in, "s1", t0), pending(in, "s2", t0), nm}); err != nil {
+		mr := pending(in, "s3", t0)
+		mr.State, mr.Reason = PairRefused, "expression past its budget"
+		if err := s.WritePairs(ctx, []Pair{pending(in, "s1", t0), pending(in, "s2", t0), nm, mr}); err != nil {
 			t.Fatal(err)
 		}
 		c, _ := s.ClaimPairs(ctx, "w", t0, ttl, 5)
@@ -465,24 +467,100 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		if err := s.RefusePair(ctx, byID["s1"].ID, byID["s1"].Generation, "budget"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.BuryPair(ctx, byID["s2"].ID, byID["s2"].Generation, "spent"); err != nil {
+		if err := s.BuryPair(ctx, byID["s2"].ID, byID["s2"].Generation, 3, "spent"); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.RefusePair(ctx, byID["s1"].ID, byID["s1"].Generation, "again"); !errors.Is(err, ErrClaimLost) {
 			t.Fatalf("a second write on a refused pair = %v, want ErrClaimLost", err)
 		}
-		for _, sub := range []string{"s1", "s2"} {
+		if dead, _ := s.GetPair(ctx, "t1", byID["s2"].ID); dead.State != PairDead || dead.Attempts != 3 {
+			t.Fatalf("buried pair = %+v, want dead with the attempts it spent", dead)
+		}
+		// The epoch a replay submits under: the next one after a refusal, the
+		// same one after a dead letter — whose last attempt may have been
+		// handed on, and whose key is then answered by that run.
+		for sub, epoch := range map[string]int{"s1": byID["s1"].Epoch + 1, "s2": byID["s2"].Epoch} {
 			p := byID[sub]
 			got, err := s.ReplayPair(ctx, "t1", p.ID, t0.Add(time.Hour))
-			if err != nil || got.State != PairPending || got.Epoch != p.Epoch+1 || got.Attempts != 0 || got.Generation != p.Generation+1 || got.Reason != "" || got.LastError != "" {
-				t.Fatalf("replay of %s = %+v (%v), want pending in the next epoch", sub, got, err)
+			if err != nil || got.State != PairPending || got.Epoch != epoch || got.Attempts != 0 || got.Generation != p.Generation+1 || got.Reason != "" || got.LastError != "" || !got.NotBefore.Equal(stamp(t0.Add(time.Hour))) {
+				t.Fatalf("replay of %s = %+v (%v), want pending in epoch %d, due at the replay", sub, got, err, epoch)
 			}
 		}
 		if _, err := s.ReplayPair(ctx, "t1", PairID(in.ID, "s0"), t0); !errors.Is(err, ErrNotReplayable) {
 			t.Fatalf("replay of a not-matched pair = %v, want ErrNotReplayable", err)
 		}
+		// Refused by matching: no filter ever said yes, so no replay may turn
+		// it into a launch.
+		if _, err := s.ReplayPair(ctx, "t1", PairID(in.ID, "s3"), t0); !errors.Is(err, ErrNotReplayable) {
+			t.Fatalf("replay of a match-refused pair = %v, want ErrNotReplayable", err)
+		}
+		if cur, _ := s.GetPair(ctx, "t1", PairID(in.ID, "s3")); cur.State != PairRefused || !cur.MatchRefusal {
+			t.Fatalf("match-refused pair after the refused replay = %+v", cur)
+		}
 		if _, err := s.ReplayPair(ctx, "t2", byID["s1"].ID, t0); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("replay from another tenant = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("claims follow arrival: a newer row never passes a retry or an expired claim", func(t *testing.T) {
+		// Steady load: each tick one delivery arrives and one row is claimed.
+		// A row released once, and a claim a crashed worker left, must be
+		// taken again before the rows that arrived after them.
+		s := newStore(t)
+		released := mustAccept(t, s, delivery("t1", "ing-1", "released", t0))
+		c, _ := s.ClaimIntakes(ctx, "w", t0, ttl, 1)
+		if err := s.RetryIntake(ctx, c[0].ID, c[0].Generation, c[0].Attempts, t0.Add(ttl), "released unattempted"); err != nil {
+			t.Fatal(err)
+		}
+		crashed := mustAccept(t, s, delivery("t1", "ing-1", "crashed", t0.Add(time.Second)))
+		if c, _ := s.ClaimIntakes(ctx, "dead-worker", t0.Add(time.Second), ttl, 1); len(c) != 1 || c[0].ID != crashed.ID {
+			t.Fatalf("the crashed worker's claim = %v", intakeIDs(c))
+		}
+		var order []string
+		for i := 0; i < 6; i++ {
+			now := t0.Add(ttl + time.Duration(2+i)*time.Second)
+			mustAccept(t, s, delivery("t1", "ing-1", fmt.Sprintf("new-%d", i), now))
+			got, err := s.ClaimIntakes(ctx, "w", now, ttl, 1)
+			if err != nil || len(got) != 1 {
+				t.Fatalf("claim = (%v, %v)", intakeIDs(got), err)
+			}
+			order = append(order, got[0].ID)
+			if err := s.MarkIntakeMatched(ctx, got[0].ID, got[0].Generation, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if order[0] != released.ID || order[1] != crashed.ID {
+			t.Fatalf("claim order %v: want the released row, then the expired claim, before any newer delivery", order[:2])
+		}
+	})
+
+	t.Run("a claim under the store's precision is refused", func(t *testing.T) {
+		s := newStore(t)
+		mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+		if _, err := s.ClaimIntakes(ctx, "w", t0, 500*time.Microsecond, 5); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("a 500µs claim = %v, want ErrInvalid", err)
+		}
+		if _, err := s.ClaimPairs(ctx, "w", t0, 500*time.Microsecond, 5); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("a 500µs pair claim = %v, want ErrInvalid", err)
+		}
+		got, err := s.ClaimIntakes(ctx, "w", t0, MinClaimTTL, 5)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("a claim at the precision = (%v, %v), want the row once", intakeIDs(got), err)
+		}
+	})
+
+	t.Run("the event reads back as it was accepted, in one encoding on every twin", func(t *testing.T) {
+		s := newStore(t)
+		d := delivery("t1", "ing-1", "d", t0)
+		d.Event = []byte(`{"title": "a <b> & c", "n": 1}`)
+		acc := mustAccept(t, s, d)
+		got, err := s.GetIntake(ctx, "t1", acc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const canonical = `{"title":"a \u003cb\u003e \u0026 c","n":1}`
+		if string(acc.Event) != canonical || string(got.Event) != canonical {
+			t.Fatalf("event accepted as %s, read back as %s, want %s on both", acc.Event, got.Event, canonical)
 		}
 	})
 

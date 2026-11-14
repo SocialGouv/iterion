@@ -214,6 +214,18 @@ func (s *Service) answerSubmission(parent context.Context, spec *LaunchSpec) (*L
 	return &LaunchResult{RunID: runID, Done: closed, Status: r.Status, FailureCode: r.FailureCode, AlreadySubmitted: true}, nil
 }
 
+// endCreatedRun ends the run THIS launch created when the launch fails before
+// its engine started (store.FailRunAtLaunch): the row would otherwise read
+// running with nothing behind it until a restart reconciles it — and an
+// idempotent re-submission of its key would take it for a run that was handed
+// on. The run was persisted, so the error stays a RunPersistedError.
+func (s *Service) endCreatedRun(ctx context.Context, runID string, err error) error {
+	if ferr := store.FailRunAtLaunch(ctx, s.store, runID, err.Error()); ferr != nil {
+		err = errors.Join(err, fmt.Errorf("end the run it created: %w", ferr))
+	}
+	return &RunPersistedError{RunID: runID, Err: err}
+}
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -1666,7 +1678,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: create run: %w", createErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1690,7 +1702,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1715,7 +1727,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1751,7 +1763,7 @@ func (s *Service) spawnRun(
 			// nothing started — and the question a meter asks is whether
 			// this call started work, never whether a document exists.
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
