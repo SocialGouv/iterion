@@ -479,13 +479,13 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	question := strings.TrimSpace(p.NoteBody)
-	vars := applyWebhookVarLayers(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, map[string]string{
+	vars := applyWebhookVarLayers(withForgeBaseURL(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, map[string]string{
 		"conversation_mode": "reply",
 		"discussion_id":     p.DiscussionID,
 		"trigger_note":      p.NoteBody,
 		"replier":           p.AuthorUsername,
 		"converse_question": question,
-	}), cfg, store.RunTrustDefault)
+	}), cfg), cfg, store.RunTrustDefault)
 	// The discussion transcript the gate fetched — the operator's reply
 	// typically references Revi's earlier review note; the bot grounds its
 	// answer in it.
@@ -603,7 +603,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
-		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg, store.RunTrustDefault)
+		vars = applyWebhookVarLayers(withForgeBaseURL(buildCommandVars(p, route, cmdArgs, nil), cfg), cfg, store.RunTrustDefault)
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.

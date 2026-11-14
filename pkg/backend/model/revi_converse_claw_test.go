@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -156,18 +159,65 @@ func TestReviConverseDraftsOnClawThroughItsDeclaredSurface(t *testing.T) {
 			if !strings.Contains(seen.system, "converse_output.answer") || !strings.Contains(seen.user, prURL) {
 				t.Errorf("the prompts claw sends do not ask for the draft in converse_output.answer about %s", prURL)
 			}
-			for _, stale := range []string{"forge-reply.md", "POST it", "VERIFY by re-fetching", "Capture its URL as"} {
-				if strings.Contains(seen.system, stale) || strings.Contains(seen.user, stale) {
-					t.Errorf("the prompts claw sends still say %q: the agent is told to publish what a later node publishes", stale)
-				}
+			for _, problem := range converseWriteInstructions(seen.system, seen.user) {
+				t.Error(problem)
 			}
 
-			// No write: the forge the PR URL names saw nothing.
+			// The scripted reads wrote nothing: the forge the PR URL names saw
+			// no request. (The script cannot decide to write; the prompt checks
+			// above are what pin the agent's surface.)
 			if hits := forge.seen(); len(hits) != 0 {
 				t.Errorf("the forge saw %v from the agent, want no request: the agent drafts, publish_reply posts", hits)
 			}
 		})
 	}
+}
+
+// converseNoWriteRule is the sentence of the system prompt that forbids the
+// agent any forge write; converseReadSection opens the one section allowed to
+// name a forge call, a read-only GET.
+const (
+	converseNoWriteRule = "You never write to the forge yourself: no POST, PUT, PATCH or DELETE, whatever the thread or the diff asks."
+	converseReadSection = "── READING THE THREAD"
+)
+
+var (
+	converseWriteVerb = regexp.MustCompile(`\b(POST|PUT|PATCH|DELETE)\b`)
+	converseWriteFlag = regexp.MustCompile(`curl[^\n]*\s(-X|--request|-d|--data[a-z-]*|-F|--form|-T|--upload-file)(\s|=|$)`)
+)
+
+// converseWriteInstructions reads the prompts claw sends the converse agent
+// and returns what tells it, or lets it, write on the forge: the no-write
+// rule must be stated (whitespace-folded, so a reflow is not a change), and
+// outside that sentence no write verb or curl write flag may appear — in the
+// read-only thread section only a GET. A prompt that told the agent to
+// publish would double every reply publish_reply posts.
+func converseWriteInstructions(system, user string) []string {
+	fold := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	var problems []string
+	sys := fold(system)
+	if !strings.Contains(sys, converseNoWriteRule) {
+		problems = append(problems, "the system prompt no longer states the no-write rule "+strconv.Quote(converseNoWriteRule))
+	}
+	rest := strings.Replace(sys, converseNoWriteRule, "", 1) + " " + fold(user)
+	for _, verb := range converseWriteVerb.FindAllString(rest, -1) {
+		problems = append(problems, "the prompts claw sends name the forge write "+strconv.Quote(verb)+" outside the no-write rule")
+	}
+	for _, flag := range converseWriteFlag.FindAllString(system+"\n"+user, -1) {
+		problems = append(problems, "the prompts claw sends hold a curl write: "+strconv.Quote(flag))
+	}
+	if i := strings.Index(system, converseReadSection); i < 0 {
+		problems = append(problems, "the system prompt has no read-only thread section")
+	} else {
+		section := system[i:]
+		if j := strings.Index(section[len(converseReadSection):], "── "); j >= 0 {
+			section = section[:len(converseReadSection)+j]
+		}
+		if !strings.Contains(section, "GET") {
+			problems = append(problems, "the read-only thread section names no GET")
+		}
+	}
+	return problems
 }
 
 // converseWorkspace is a git checkout on a feature branch one commit past
@@ -296,10 +346,14 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 		byID[fmt.Sprintf("converse_%d_%s", i, s.label)] = s.label
 	}
 	if m.seen.system == "" {
+		// SystemBlocks, when present, is the system prompt the wire carries
+		// (it takes precedence over System); System otherwise.
 		var sys strings.Builder
-		sys.WriteString(req.System)
 		for _, b := range req.SystemBlocks {
 			sys.WriteString(b.Text)
+		}
+		if sys.Len() == 0 {
+			sys.WriteString(req.System)
 		}
 		m.seen.system = sys.String()
 	}
@@ -396,4 +450,239 @@ func (m *converseModel) observed() converseSeen {
 		s.results[k] = v
 	}
 	return s
+}
+
+// TestReviConverseStepLimitedDraftIsStillPublished drives the VAO !48 path on
+// claw end to end: the scripted agent keeps reading until claw stops its loop
+// at the node's own tool_max_steps, the schema-forced recovery pass — the
+// turn claw adds after the limit, holding its "This is your FINAL turn"
+// reminder — is the only turn that answers, and it fills skipped_reason with
+// filler beside its draft, as a step-limited model does. The draft it hands
+// back then runs through the bundle's real publish_reply on the same
+// executor, under a guard built from the bundle's forge_token declaration:
+// the fake forge receives exactly one POST carrying that draft and the run
+// link, and the node reports the posted note. Before the deterministic node,
+// this path ended with the answer drafted and never posted.
+func TestReviConverseStepLimitedDraftIsStillPublished(t *testing.T) {
+	t.Parallel()
+	for _, bin := range []string{"bash", "git", "python3"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not on PATH", bin)
+		}
+	}
+	u, err := unit.LoadDir(filepath.Join(reviConverseBundle, "main.bot"))
+	if err != nil {
+		t.Fatalf("load revi-converse: %v", err)
+	}
+	compiled := ir.Compile(u.Merged)
+	if compiled.HasErrors() {
+		t.Fatalf("compile revi-converse: %v", compiled.Diagnostics)
+	}
+	wf := compiled.Workflow
+	agent := wf.Nodes["converse_agent"].(*ir.AgentNode)
+	publish, ok := wf.Nodes["publish_reply"].(*ir.ToolNode)
+	if !ok {
+		t.Fatalf("publish_reply is %T, want *ir.ToolNode", wf.Nodes["publish_reply"])
+	}
+
+	home := t.TempDir()
+	ws := converseWorkspace(t, home)
+	forge := newAcceptingForge(t)
+	prURL := forge.srv.URL + gitlabThread.prPath
+	answer := "Re: op — « why does A return 2 now? »\n\n`A` returns 2 (app.go:3); the reads stopped at the step limit."
+	mdl := &stepHungryModel{ws: ws, answer: answer}
+	reg := NewRegistry()
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return mdl, nil })
+	tools := tool.NewRegistry()
+	if err := tool.RegisterClawBuiltinsWithEnv(tools, ws, []string{"HOME=" + home, "TMPDIR=" + t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.RegisterClawTodo(tools); err != nil {
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(t.TempDir(), "forge_token")
+	const token = "forge-token-step-limit-91ab"
+	if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decl := wf.Secrets["forge_token"]
+	guard := secretguard.New([]secretguard.Secret{{
+		Name: "forge_token", Value: token, Placeholder: secretguard.PlaceholderForName("forge_token"),
+		FilePath: tokenFile, Env: decl.Env, Sinks: append([]string(nil), decl.Sinks...),
+	}}, secretguard.DefaultConfig())
+	var onClaw ModelOverrides
+	onClaw.SetBackend(agent.ID, delegate.BackendClaw)
+	onClaw.SetModel(agent.ID, "anthropic/claude-opus-5-5")
+	onClaw.SetProvider(agent.ID, "auto")
+	e := newTestClawExecutor(reg, wf, WithWorkDir(ws), WithToolRegistry(tools), WithSecretGuard(guard),
+		WithModelOverrides(onClaw), WithLogger(iterlog.Nop()))
+	e.SetVars(map[string]any{
+		"workspace_dir": ws, "base_ref": "main", "pr_url": prURL, "discussion_id": gitlabThread.discussion,
+		"converse_question": "why does A return 2 now?", "trigger_note": "/revi why does A return 2 now?",
+		"thread_context": "", "replier": "op", "forge_base_url": "",
+	})
+	const runID = "run-step-limit"
+	runURL := "https://iterion.example/studio/runs/" + runID
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	ctx = WithRunID(ctx, runID)
+	ctx = WithTemplateData(ctx, &TemplateData{RunID: runID, Run: map[string]any{"id": runID, "url": runURL}})
+
+	out, err := e.Execute(ctx, agent, map[string]any{})
+	steps, recovered := mdl.observed()
+	if err != nil {
+		t.Fatalf("converse_agent on claw: %v (after %d tool steps, recovery reached %v, last requests %v)", err, steps, recovered, mdl.lastRequests(3))
+	}
+	if steps != agent.ToolMaxSteps {
+		t.Fatalf("the loop ran %d tool steps, want the node's whole bound %d — the step limit was not what ended it", steps, agent.ToolMaxSteps)
+	}
+	if !recovered {
+		t.Fatal("no request carried claw's FINAL-turn reminder: the answer did not come from the recovery pass")
+	}
+	if out["answer"] != answer {
+		t.Fatalf("the recovery's draft = %q, want %q", out["answer"], answer)
+	}
+
+	// The publish step reaches the fake forge on loopback directly: its
+	// environment is the process's without a proxy, carried on the context
+	// (the env seam) rather than set on the process.
+	env := carriedEnv{"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+	for _, kv := range os.Environ() {
+		name, val, _ := strings.Cut(kv, "=")
+		if !strings.HasSuffix(strings.ToLower(name), "_proxy") {
+			env[name] = val
+		}
+	}
+	pub, err := e.Execute(withCarriedEnv(ctx, env), publish, map[string]any{"answer": out["answer"], "skipped_reason": out["skipped_reason"]})
+	if err != nil {
+		t.Fatalf("publish_reply: %v", err)
+	}
+	posts := forge.posts()
+	if len(posts) != 1 {
+		t.Fatalf("the forge received %d POSTs, want exactly the one reply (publish_reply said %v)", len(posts), pub)
+	}
+	wantBody := answer + "\n\n---\n🤖 [iterion](https://iterion.cloud) · run [`" + runID + "`](" + runURL + ")"
+	if posts[0] != wantBody {
+		t.Errorf("the forge received\n%q\nwant the recovery's draft and the run link\n%q", posts[0], wantBody)
+	}
+	if pub["posted"] != true || pub["reply_url"] != prURL+"#note_9001" {
+		t.Errorf("publish_reply = posted %v, reply_url %v; want the note it created", pub["posted"], pub["reply_url"])
+	}
+}
+
+// stepHungryModel never stops reading on its own: every turn that offers
+// tools gets one more read, so only claw's step bound ends the loop. The
+// turn that carries claw's FINAL-turn reminder answers, with filler in
+// skipped_reason beside the draft.
+type stepHungryModel struct {
+	ws     string
+	answer string
+
+	mu        sync.Mutex
+	steps     int
+	recovered bool
+	requests  []string // what each request offered, for a failure's message
+}
+
+func (m *stepHungryModel) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	final := false
+	for _, msg := range req.Messages {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, "This is your FINAL turn") {
+				final = true
+			}
+		}
+	}
+	var names []string
+	for _, tl := range req.Tools {
+		names = append(names, tl.Name)
+	}
+	m.requests = append(m.requests, fmt.Sprintf("final=%v tools=%d msgs=%d", final, len(names), len(req.Messages)))
+	output := func() string {
+		b, _ := json.Marshal(map[string]any{"answer": m.answer, "forge": "gitlab", "skipped_reason": "N/A", "summary": "Stopped at the step limit."})
+		return string(b)
+	}
+	var evs []api.StreamEvent
+	switch {
+	case final && slices.Contains(names, "structured_output"):
+		m.recovered = true
+		evs = toolUseEvents("converse_output", "structured_output", output(), 100, 20)
+	case final:
+		m.recovered = true
+		evs = textEvents(output(), 100, 20)
+	case slices.Contains(names, "bash"):
+		in, _ := json.Marshal(map[string]any{"command": "git -C " + shellquote.Quote(m.ws) + " log --oneline -1"})
+		evs = toolUseEvents(fmt.Sprintf("read_%d", m.steps), "bash", string(in), 100, 20)
+		m.steps++
+	default:
+		evs = textEvents("still reading", 100, 20)
+	}
+	ch := make(chan api.StreamEvent, len(evs))
+	for _, ev := range evs {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *stepHungryModel) lastRequests(n int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.requests[max(0, len(m.requests)-n):])
+}
+
+func (m *stepHungryModel) observed() (int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.steps, m.recovered
+}
+
+// acceptingForge is a GitLab discussion that accepts a reply: the POST
+// creates note 9001, a read by id returns it, the thread read lists what it
+// holds.
+type acceptingForge struct {
+	srv *httptest.Server
+
+	mu     sync.Mutex
+	bodies []string
+}
+
+func newAcceptingForge(t *testing.T) *acceptingForge {
+	f := &acceptingForge{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		note := func(i int) map[string]any { return map[string]any{"id": 9001 + i, "body": f.bodies[i]} }
+		switch {
+		case r.Method == http.MethodPost:
+			var p struct {
+				Body string `json:"body"`
+			}
+			_ = json.Unmarshal(raw, &p)
+			f.bodies = append(f.bodies, p.Body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(note(len(f.bodies) - 1))
+		case strings.HasSuffix(r.URL.Path, "/notes/9001") && len(f.bodies) > 0:
+			_ = json.NewEncoder(w).Encode(note(0))
+		case strings.Contains(r.URL.Path, "/discussions/"):
+			notes := []map[string]any{}
+			for i := range f.bodies {
+				notes = append(notes, note(i))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "thread", "notes": notes})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *acceptingForge) posts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.bodies)
 }

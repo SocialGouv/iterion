@@ -75,19 +75,36 @@ vars:
   ## The forge username of the operator who asked the question.
   ## Used to address them in the answer ("Re: <replier> — …").
   replier: string = ""
+  ## The forge's web base the webhook is pinned to (its forge_base_url),
+  ## stamped by the webhook lanes when the config names one. publish_reply
+  ## derives the API base from it instead of pr_url's origin — the only
+  ## way to reach a GitLab or a Forgejo served under a sub-path
+  ## (https://example.com/gitlab) — and refuses a pr_url that is not on
+  ## its host and under its path. Empty: pr_url's origin is the base.
+  forge_base_url: string = ""
 
 secrets:
-  ## Forge API token. publish_reply posts the answer with it, by the
-  ## mounted path its command renders; the agent reads a thread with it
-  ## only when the transcript is missing (a GET, never a write). Never
-  ## read into a prompt or echoed. `optional: true` keeps local/manual
-  ## runs unaffected when the binding isn't available (publish_reply
-  ## then skips posting and says so). Same binding name as review-pr so
-  ## an org-level forge_token binding (or per-webhook secret override)
-  ## resolves both bots.
+  ## Forge API token. publish_reply posts the answer with it, read from
+  ## the mounted file whose path its script renders; the agent reads a
+  ## thread with it only when the transcript is missing (a GET, never a
+  ## write), from the same file. Never read into a prompt or echoed.
+  ## `optional: true` keeps local/manual runs unaffected when the binding
+  ## isn't available (publish_reply then skips posting and says so). Same
+  ## binding name as review-pr so an org-level forge_token binding (or
+  ## per-webhook secret override) resolves both bots.
+  ##
+  ## `sinks: [file]` — the mount is the only way the value reaches this
+  ## run (ADR-146): both readers open the file, neither needs a
+  ## placeholder materialised. Without the grant, the default reaches
+  ## every sink, and a `__ITERION_SECRET_forge_token__` the agent merely
+  ## QUOTES — planted in a public thread, a diff or a question — would be
+  ## swapped for the token in publish_reply's body and posted. Withheld
+  ## `agent` and `command`, the engine defuses such a placeholder in data
+  ## before the body runs, and no materialiser resolves it.
   forge_token:
     as: file
     optional: true
+    sinks: [file]
 
 ## ─── Prompts ────────────────────────────────────────────────────
 prompt converse_system:
@@ -189,10 +206,9 @@ prompt converse_system:
     - `answer`: the full markdown reply, exactly as it should appear in
       the thread (header included, footer excluded).
     - `forge`: "github", "gitlab", "forgejo" or "unknown", from the PR URL.
-    - `skipped_reason`: EMPTY whenever `answer` holds an answer. A
-      non-empty value means "publish nothing": set it, with `answer`
-      empty, only when there is nothing to answer — no question, or a
-      diff you could not read at all.
+    - `skipped_reason`: why `answer` is empty — no question, or a diff
+      you could not read at all. Leave it empty beside an answer: a
+      drafted answer is posted whatever this field says.
     - `summary`: one paragraph — the question, the gist of the answer,
       what you read to ground it.
   When the reads run long, stop reading and emit the best answer the
@@ -236,9 +252,10 @@ schema converse_output:
   ## pr_url). Free-form string, not a closed DSL enum. Informative:
   ## publish_reply detects the forge itself.
   forge: string
-  ## skipped_reason: non-empty ONLY when there is nothing to answer
-  ## (no question, an unreadable diff). It stops publish_reply from
-  ## posting, and becomes converse_health's banner.
+  ## skipped_reason: why `answer` is empty (no question, an unreadable
+  ## diff); it becomes converse_health's banner. A drafted answer is
+  ## posted whatever this field holds: the schema requires it, and a
+  ## model at its step limit fills it ("N/A").
   skipped_reason: string
   ## summary: one paragraph — the question, the gist of the answer,
   ## what was read to ground it.
@@ -329,303 +346,483 @@ agent converse_agent:
 ## with, so the note carries the same forge identity and the webhook's
 ## loop guard (isIterionForgeBotAuthor) still drops it.
 ##
-## The forge is read from pr_url's PATH, which every forge's pull
-## request URL carries whatever its host is called:
+## A `script:` (python3 -I): every value lands in the script's temp file as
+## a JSON literal, so an answer of any length or byte content — a NUL, a
+## skipped_reason past the 128 KiB a single exec argument or environment
+## entry may hold — reaches the program, and an input the edge never mapped
+## arrives as null, never as text that happens to open on a template
+## delimiter.
+##
+## The forge is read from pr_url's PATH, under forge_base_url when the
+## webhook pinned one (a GitLab or Forgejo served under a sub-path):
 ##   GitHub   /<o>/<r>/pull/<n>          API https://api.github.com for
-##            github.com, <origin>/api/v3 for a GitHub Enterprise host
+##            github.com, <base>/api/v3 for a GitHub Enterprise host
 ##            (pkg/forge/github APIBaseFor). With a discussion_id — the
 ##            review-thread reply lane — a reply in that thread
 ##            (pulls/<n>/comments/<id>/replies); without one — the `/revi
 ##            <question>` PR comment — an issue comment (issues/<n>/comments).
-##   GitLab   /<group/project>/-/merge_requests/<iid>   <origin>/api/v4: a
+##   GitLab   /<group/project>/-/merge_requests/<iid>   <base>/api/v4: a
 ##            note in discussion_id (both GitLab lanes set it), else an MR
 ##            note.
-##   Forgejo  /<o>/<r>/pulls/<n>         <origin>/api/v1: an issue comment
+##   Forgejo  /<o>/<r>/pulls/<n>         <base>/api/v1: an issue comment
 ##            (no review-thread lane is wired for Forgejo).
+## <base> is forge_base_url when set — pr_url must then sit on its host and
+## under its path, or nothing is sent — and pr_url's origin otherwise.
 ## Auth is the header each forge's client in pkg/forge sends: Bearer on
 ## GitHub and GitLab (GitLab takes a PAT, a project/group token or an
 ## OAuth token there), `token` on Forgejo. Redirects are not followed:
 ## the token would ride them to whatever host they name.
 ##
-## The body: the answer with carriage returns dropped; on GitLab the
-## quick-action guard (#2422) — a line opening, after blanks, on `/` then
-## a letter or a non-ASCII byte gets a backslash before its slash, the
-## rewrite every GitLab-posting skill applies (bots/forge_quickactions_test.go)
-## — so a `/approve` quoted from a diff never runs with the bot's rights;
-## on every forge the anti-trigger guard — the first line the webhook's
-## command grammar reads (webhooks.ParseSlashCommand: blank and `>`
-## lines skipped) gets the same backslash when it opens on `/`, so the
-## bot's own reply never re-fires a command. Then the run footer
-## (docs/agents/bots/run-link.md). An unclosed code fence is closed
-## before it, and an answer past 60000 UTF-16 units (GitHub caps a comment
-## at 65536 characters) is cut with a visible marker: the footer is
-## never cut.
+## The body: the answer with NUL bytes and carriage returns dropped; on
+## GitLab the quick-action guard (#2422) — a line opening, after blanks, on
+## `/` then a letter or a non-ASCII byte gets a backslash before its slash,
+## the rewrite every GitLab-posting skill applies
+## (bots/forge_quickactions_test.go) — so a `/approve` quoted from a diff
+## never runs with the bot's rights; on every forge the anti-trigger guard
+## — the first line the webhook's command grammar reads
+## (webhooks.ParseSlashCommand: blank and `>` lines skipped) gets the same
+## backslash when it opens on `/`, so the bot's own reply never re-fires a
+## command. Then the run footer (docs/agents/bots/run-link.md). An unclosed
+## code fence is closed before it, and an answer past 60000 UTF-16 units
+## (GitHub caps a comment at 65536 characters) is cut with a visible
+## marker: the footer is never cut.
 ##
-## Every outcome exits 0 with posted=false and a skipped_reason saying
-## why — the agent's own reason, an empty answer, no token, an unusable
-## pr_url, the forge's status and message, a re-read that missed — so
-## converse_health always runs and the run informs instead of failing.
-## The answer reaches python on stdin through the shell's printf builtin:
-## no exec argument or environment entry carries it, so its length
-## meets no per-argument limit.
+## The forge token never leaves in a body. Two guards, each enough alone:
+## the declaration grants forge_token the `file` sink only, so a
+## `__ITERION_SECRET_forge_token__` the answer quotes (planted in a thread,
+## a diff, a question) is defused by the engine before this body runs and
+## no materialiser ever swaps it for the value; and this body refuses to
+## post a text carrying the token — raw or encoded (percent, base64, hex,
+## its characters spread apart) — or the token's placeholder, raw or
+## defused, and redacts every such form from what it reports.
+##
+## Idempotent: before posting, one bounded read of the thread (the GitLab
+## discussion, the MR's newest 100 notes, the PR's review comments newest
+## first, or the issue comments of the last 24 hours). A note that is an
+## exact copy of the body this run posts — its footer names the run —
+## means a previous execution of this node already answered: it is
+## reported as posted, with that note's URL, and nothing is written again.
+## A read that fails is said in the summary and does not stop the post.
+##
+## Every outcome exits 0 with posted=false and a skipped_reason saying why
+## — the agent's own reason (used only when it drafted nothing), an empty
+## answer, no token, an unusable pr_url, the forge's status and message, a
+## re-read that missed — so converse_health always runs and the run
+## informs instead of failing. The reason is capped at 2000 characters: it
+## rides converse_health's environment.
 tool publish_reply:
-  command: `printf '%s' {{input.answer}} | AGENT_SKIPPED={{input.skipped_reason}} PR_URL={{vars.pr_url}} DISCUSSION_ID={{vars.discussion_id}} TOKEN_PATH={{secrets.forge_token.path}} RUN_URL={{run.url}} RUN_ID={{run.id}} python3 -I -c "
-import os, sys, json, re, time, urllib.request, urllib.error, urllib.parse
-nl = chr(10)
-bt = chr(96)
-token = ''
-def unresolved(v):
-    return str(v or '').strip().startswith(chr(123) * 2)
-def redact(s):
-    s = str(s)
-    return s.replace(token, '[redacted]') if token else s
-def emit(posted, forge, reply_url='', preview='', skipped='', summary=''):
-    print(json.dumps({'posted': posted, 'forge': forge, 'reply_url': reply_url,
-                      'answer_preview': preview, 'skipped_reason': redact(skipped),
-                      'summary': redact(summary)}))
-    raise SystemExit(0)
+  script: |
+    import base64
+    import json
+    import os
+    import re
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
 
-answer = sys.stdin.buffer.read().decode('utf-8', 'replace')
-agent_skip = os.environ.get('AGENT_SKIPPED', '').strip()
-pr = os.environ.get('PR_URL', '').strip()
-disc = os.environ.get('DISCUSSION_ID', '').strip()
-tok_path = os.environ.get('TOKEN_PATH', '').strip()
+    null, true, false = None, True, False
+    answer = {{input.answer}}
+    agent_skip = {{input.skipped_reason}}
+    pr = {{vars.pr_url}}
+    disc = {{vars.discussion_id}}
+    forge_base = {{vars.forge_base_url}}
+    tok_path = {{secrets.forge_token.path}}
+    run_url = {{run.url}}
+    run_id = {{run.id}}
 
-# The forge, its API base and the target, from the pull request URL.
-forge, api, owner, repo, number, project, pr_problem = 'unknown', '', '', '', '', '', ''
-try:
-    u = urllib.parse.urlsplit(pr)
-    host = u.hostname or ''
-    u.port
-except ValueError:
-    u, host = None, ''
-if not pr:
-    pr_problem = 'pr_url is empty: there is no pull request to reply on'
-elif u is None or u.scheme not in ('http', 'https') or not host or any(c.isspace() for c in pr):
-    pr_problem = 'pr_url is not an http(s) URL: ' + pr
-elif u.username is not None or u.password is not None:
-    pr_problem = 'pr_url carries userinfo; the forge token is never sent to such a URL'
-else:
-    origin = u.scheme + '://' + u.netloc
-    path = urllib.parse.unquote(u.path).rstrip('/')
-    gl = re.fullmatch('/(.+?)/-/merge_requests/([0-9]+)(/.*)?', path)
-    gh = re.fullmatch('/([^/]+)/([^/]+)/pull/([0-9]+)(/.*)?', path)
-    fj = re.fullmatch('/([^/]+)/([^/]+)/pulls/([0-9]+)(/.*)?', path)
-    if any(seg in ('.', '..') for seg in path.split('/')):
-        pass
-    elif gl:
-        forge, api, project, number = 'gitlab', origin + '/api/v4', gl.group(1), gl.group(2)
-    elif gh:
-        forge, owner, repo, number = 'github', gh.group(1), gh.group(2), gh.group(3)
-        api = 'https://api.github.com' if host == 'github.com' else origin + '/api/v3'
-    elif fj:
-        forge, api, owner, repo, number = 'forgejo', origin + '/api/v1', fj.group(1), fj.group(2), fj.group(3)
-    if forge == 'unknown':
-        pr_problem = 'pr_url is not a pull request URL this step can reply on (GitHub /<owner>/<repo>/pull/<n>, GitLab /<project>/-/merge_requests/<iid>, Forgejo /<owner>/<repo>/pulls/<n>): ' + pr
+    nl = "\n"
+    bt = "`"
+    REASON_CAP = 2000
+    # The forge_token placeholder, spelled in two halves so this body never
+    # holds it whole; the prefix matches it raw and defused.
+    PLACEHOLDER = "__ITERION_SECRET_" + "forge_token"
 
-if unresolved(answer):
-    emit(False, forge, skipped='the agent answer did not reach publish_reply (its input is unmapped); nothing was posted')
-preview = answer.strip()[:200]
-if agent_skip:
-    emit(False, forge, preview=preview, skipped=agent_skip, summary='Nothing posted: the agent gave a skipped_reason.')
-if not answer.strip():
-    emit(False, forge, skipped='the agent returned an empty answer and no skipped_reason; nothing was posted', summary='Nothing posted: empty answer.')
-if pr_problem:
-    emit(False, forge, preview=preview, skipped=pr_problem, summary='Nothing posted: ' + pr_problem)
-if not tok_path or unresolved(tok_path) or not os.path.isfile(tok_path):
-    emit(False, forge, preview=preview, skipped='forge_token is not mounted on this run; the answer was not posted (it is in the run report)', summary='Nothing posted: no forge token.')
-with open(tok_path, encoding='utf-8', errors='replace') as fh:
-    token = fh.read().strip()
-if not token:
-    emit(False, forge, preview=preview, skipped='the forge_token file is empty; the answer was not posted (it is in the run report)', summary='Nothing posted: empty forge token.')
 
-q = lambda s: urllib.parse.quote(s, safe='')
-if forge == 'github':
-    base = api + '/repos/' + q(owner) + '/' + q(repo)
-    if disc:
-        if not re.fullmatch('[0-9]+', disc):
-            emit(False, forge, preview=preview, skipped='discussion_id ' + disc + ' is not a GitHub review-comment id; the answer was not posted')
-        where = 'review thread ' + disc
-        post_url = base + '/pulls/' + number + '/comments/' + disc + '/replies'
-        read_url = base + '/pulls/comments/'
-    else:
-        where = 'pull request conversation'
-        post_url = base + '/issues/' + number + '/comments'
-        read_url = base + '/issues/comments/'
-    headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'}
-elif forge == 'gitlab':
-    base = api + '/projects/' + q(project) + '/merge_requests/' + number
-    if disc:
-        if not re.fullmatch('[A-Za-z0-9]+', disc):
-            emit(False, forge, preview=preview, skipped='discussion_id ' + disc + ' is not a GitLab discussion id; the answer was not posted')
-        where = 'discussion ' + disc
-        post_url = base + '/discussions/' + disc + '/notes'
-    else:
-        where = 'merge request'
-        post_url = base + '/notes'
-    read_url = base + '/notes/'
-    headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json'}
-else:
-    base = api + '/repos/' + q(owner) + '/' + q(repo)
-    where = 'pull request conversation'
-    post_url = base + '/issues/' + number + '/comments'
-    read_url = base + '/issues/comments/'
-    headers = {'Authorization': 'token ' + token, 'Accept': 'application/json'}
-headers['Content-Type'] = 'application/json'
-headers['User-Agent'] = 'iterion-revi-converse'
+    def text_of(v):
+        return v.strip() if isinstance(v, str) else ""
 
-# The body. The first line the command grammar reads must not open on a slash.
-def defuse_command(text):
-    lines = text.split(nl)
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s or s.startswith('>'):
-            continue
-        if s.startswith('/'):
-            j = line.index('/')
-            lines[i] = line[:j] + chr(92) + line[j:]
-        break
-    return nl.join(lines)
-def close_fence(text):
-    fence = ''
-    for line in text.split(nl):
-        t = line.lstrip(' ')
-        if len(line) - len(t) > 3:
-            continue
-        for ch in (bt, '~'):
-            if t.startswith(ch * 3):
-                run = len(t) - len(t.lstrip(ch))
-                if not fence:
-                    fence = ch * run
-                elif fence[0] == ch and run >= len(fence) and not t[run:].strip():
-                    fence = ''
-                break
-    return text + nl + fence if fence else text
-def units(s):
-    return len(s.encode('utf-16-le')) // 2
 
-text = answer.replace(chr(13), '').strip()
-if forge == 'gitlab':
-    guard = re.compile('^([ ' + chr(9) + ']*)/([A-Za-z]|[^ -~' + nl + '])', re.M)
-    text = guard.sub(lambda m: m.group(1) + chr(92) + '/' + m.group(2), text)
-text = defuse_command(text)
+    pr, disc, forge_base = text_of(pr), text_of(disc), text_of(forge_base)
+    agent_skip = text_of(agent_skip)
+    token = ""
+    token_forms = []
 
-# The run that wrote it: docs/agents/bots/run-link.md. A run id is
-# caller-chosen at launch; only a plain one becomes a link label. A value
-# still carrying a template delimiter (an engine predating run.url) is no
-# address: the footer degrades to the id alone.
-run_url = os.environ.get('RUN_URL', '').strip()
-run_url = '' if unresolved(run_url) else run_url
-run_id = os.environ.get('RUN_ID', '').strip()
-run_id = '' if unresolved(run_id) else run_id
-raw_id = run_id
-if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._:-]*', run_id):
-    run_id = ''
-foot = chr(0x1F916) + ' [iterion](https://iterion.cloud)'
-if run_url:
-    foot += ' ' + chr(183) + ' run [' + ((bt + run_id + bt) if run_id else 'this run') + '](' + run_url + ')'
-elif run_id:
-    foot += ' ' + chr(183) + ' run ' + bt + run_id + bt
-elif raw_id:
-    foot += ' ' + chr(183) + ' run ' + bt + raw_id.replace(bt, '') + bt
-tail = nl + nl + '---' + nl + foot
 
-LIMIT = 60000
-truncated = False
-if units(close_fence(text)) + units(tail) > LIMIT:
-    marker = nl + nl + '[...] answer truncated to fit the forge comment limit; the full answer is in the run.'
-    room = LIMIT - units(tail) - units(marker)
-    kept, n = [], 0
-    for ch in text:
-        w = 2 if ord(ch) > 65535 else 1
-        if n + w > room:
-            break
-        kept.append(ch)
-        n += w
-    cut = ''.join(kept)
-    # Closing a fence the cut left open costs a line: make room for it.
-    while cut and units(close_fence(cut.rstrip())) + units(marker) + units(tail) > LIMIT:
-        cut = cut[:-64]
-    text = close_fence(cut.rstrip()) + marker
-    truncated = True
-else:
-    text = close_fence(text)
-body = text + tail
-preview = text[:200]
+    def forms_of(t):
+        raw = t.encode("utf-8")
+        forms = {t, urllib.parse.quote(t, safe=""), raw.hex(), raw.hex().upper()}
+        for enc in (base64.b64encode(raw), base64.urlsafe_b64encode(raw)):
+            e = enc.decode("ascii")
+            forms.update((e, e.rstrip("=")))
+        return sorted((f for f in forms if f), key=len, reverse=True)
 
-class Stay(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-        return None
-opener = urllib.request.build_opener(Stay)
-def call(method, url, payload=None):
-    data = None if payload is None else json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with opener.open(req, timeout=30) as resp:
-            return resp.status, resp.read(1048576)
-    except urllib.error.HTTPError as err:
+
+    def squash(s):
+        return "".join(ch for ch in s if ch.isalnum())
+
+
+    def redact(s):
+        s = str(s)
+        for f in token_forms:
+            s = s.replace(f, "[redacted]")
+        return s
+
+
+    def emit(posted, forge, reply_url="", preview="", skipped="", summary=""):
+        skipped = redact(skipped)
+        if len(skipped) > REASON_CAP:
+            skipped = skipped[:REASON_CAP] + " [...]"
+        print(json.dumps({"posted": posted, "forge": forge, "reply_url": reply_url,
+                          "answer_preview": redact(preview), "skipped_reason": skipped,
+                          "summary": redact(summary)}))
+        raise SystemExit(0)
+
+
+    # Read first, so every report this body makes can redact the token.
+    if tok_path and os.path.isfile(tok_path):
+        with open(tok_path, encoding="utf-8", errors="replace") as fh:
+            token = fh.read().strip()
+    token_forms = forms_of(token) if token else []
+
+
+    def split_url(s):
+        if not s or any(c.isspace() for c in s):
+            return None
         try:
-            raw = err.read(4096)
-        except Exception:
-            raw = b''
-        return err.code, raw
-def excerpt(raw):
-    text = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)
-    try:
-        doc = json.loads(text)
-    except ValueError:
-        doc = None
-    if isinstance(doc, dict):
-        for k in ('message', 'error', 'error_description'):
-            if doc.get(k):
-                text = doc[k] if isinstance(doc[k], str) else json.dumps(doc[k])
-                break
-    return ' '.join(text.split())[:300]
-def parse(raw):
-    try:
-        doc = json.loads(raw.decode('utf-8', 'replace'))
-    except ValueError:
-        return {}
-    return doc if isinstance(doc, dict) else {}
+            u = urllib.parse.urlsplit(s)
+            u.port
+        except ValueError:
+            return None
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return None
+        return u
 
-try:
-    status, raw = call('POST', post_url, {'body': body})
-except Exception as err:
-    emit(False, forge, preview=preview, skipped='the forge did not answer the POST to ' + post_url + ' (' + str(getattr(err, 'reason', err)) + '); the reply may or may not have landed, check the thread')
-if status not in (200, 201):
-    emit(False, forge, preview=preview, skipped='the forge refused the reply: POST ' + post_url + ' answered HTTP ' + str(status) + ': ' + excerpt(raw))
-note = parse(raw)
-nid = note.get('id')
-if not isinstance(nid, int) or isinstance(nid, bool):
-    emit(False, forge, preview=preview, skipped='POST ' + post_url + ' answered HTTP ' + str(status) + ' with no note id; the reply may have landed, check the thread')
 
-# VERIFY: the note exists, read back by its own id.
-found, last = {}, ''
-for attempt in (1, 2):
-    try:
-        vstatus, vraw = call('GET', read_url + str(nid))
-        if vstatus == 200 and parse(vraw).get('id') == nid:
-            found = parse(vraw)
+    # The forge, its API base and the target, from the pull request URL.
+    forge, api, owner, repo, number, project, pr_problem = "unknown", "", "", "", "", "", ""
+    u = split_url(pr)
+    if not pr:
+        pr_problem = "pr_url is empty: there is no pull request to reply on"
+    elif u is None:
+        pr_problem = "pr_url is not an http(s) URL: " + pr
+    elif u.username is not None or u.password is not None:
+        pr_problem = "pr_url carries userinfo; the forge token is never sent to such a URL"
+    else:
+        path = urllib.parse.unquote(u.path).rstrip("/")
+        web, prefix = u.scheme + "://" + u.netloc, ""
+        if forge_base:
+            b = split_url(forge_base)
+            if b is None or b.username is not None or b.password is not None or b.query or b.fragment:
+                pr_problem = "forge_base_url is not a usable http(s) base: " + forge_base
+            elif b.netloc.lower() != u.netloc.lower():
+                pr_problem = ("pr_url's host " + u.netloc + " is not the configured forge " + b.netloc
+                              + "; the forge token is only sent to its own forge")
+            else:
+                prefix = urllib.parse.unquote(b.path).rstrip("/")
+                if prefix and path != prefix and not path.startswith(prefix + "/"):
+                    pr_problem = "pr_url is not under the configured forge base " + forge_base
+                else:
+                    path = path[len(prefix):]
+                    web = b.scheme + "://" + b.netloc + prefix
+        if not pr_problem:
+            gl = re.fullmatch("/(.+?)/-/merge_requests/([0-9]+)(/.*)?", path)
+            gh = re.fullmatch("/([^/]+)/([^/]+)/pull/([0-9]+)(/.*)?", path)
+            fj = re.fullmatch("/([^/]+)/([^/]+)/pulls/([0-9]+)(/.*)?", path)
+            if any(seg in (".", "..") for seg in path.split("/")):
+                pass
+            elif gl:
+                forge, api, project, number = "gitlab", web + "/api/v4", gl.group(1), gl.group(2)
+            elif gh:
+                forge, owner, repo, number = "github", gh.group(1), gh.group(2), gh.group(3)
+                api = "https://api.github.com" if (u.hostname == "github.com" and not prefix) else web + "/api/v3"
+            elif fj:
+                forge, api, owner, repo, number = "forgejo", web + "/api/v1", fj.group(1), fj.group(2), fj.group(3)
+            if forge == "unknown":
+                pr_problem = ("pr_url is not a pull request URL this step can reply on (GitHub /<owner>/<repo>/pull/<n>, "
+                              "GitLab /<project>/-/merge_requests/<iid>, Forgejo /<owner>/<repo>/pulls/<n>): " + pr)
+
+    if answer is None:
+        emit(False, forge, skipped="the agent answer did not reach publish_reply (its input is unmapped); nothing was posted")
+    text = (answer if isinstance(answer, str) else json.dumps(answer)).replace("\x00", "").replace("\r", "").strip()
+    drafted = text
+    preview = text[:200]
+    # A drafted answer is posted whatever the skipped_reason beside it says:
+    # the schema makes the field required, and a model fills it ("N/A") on
+    # exactly the run that hit its step limit. The reason speaks only for an
+    # empty draft.
+    if not text:
+        emit(False, forge, skipped=agent_skip or "the agent returned an empty answer and no skipped_reason; nothing was posted",
+             summary="Nothing posted: the agent drafted no answer.")
+    if pr_problem:
+        emit(False, forge, preview=preview, skipped=pr_problem, summary="Nothing posted: " + pr_problem)
+    if not tok_path or not os.path.isfile(tok_path):
+        emit(False, forge, preview=preview, skipped="forge_token is not mounted on this run; the answer was not posted (it is in the run report)",
+             summary="Nothing posted: no forge token.")
+    if not token:
+        emit(False, forge, preview=preview, skipped="the forge_token file is empty; the answer was not posted (it is in the run report)",
+             summary="Nothing posted: empty forge token.")
+
+
+    def leak(s):
+        if PLACEHOLDER in s:
+            return "the forge token's placeholder"
+        if any(f in s for f in token_forms):
+            return "the forge token"
+        if len(squash(token)) >= 16 and squash(token) in squash(s):
+            return "the forge token, spread apart"
+        return ""
+
+
+    q = lambda s: urllib.parse.quote(s, safe="")
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400))
+    if forge == "github":
+        base = api + "/repos/" + q(owner) + "/" + q(repo)
+        if disc:
+            if not re.fullmatch("[0-9]+", disc):
+                emit(False, forge, preview=preview, skipped="discussion_id " + disc + " is not a GitHub review-comment id; the answer was not posted")
+            where = "review thread " + disc
+            post_url = base + "/pulls/" + number + "/comments/" + disc + "/replies"
+            list_url = base + "/pulls/" + number + "/comments?per_page=100&sort=created&direction=desc"
+            read_url = base + "/pulls/comments/"
+        else:
+            where = "pull request conversation"
+            post_url = base + "/issues/" + number + "/comments"
+            list_url = base + "/issues/" + number + "/comments?per_page=100&since=" + since
+            read_url = base + "/issues/comments/"
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+    elif forge == "gitlab":
+        base = api + "/projects/" + q(project) + "/merge_requests/" + number
+        if disc:
+            if not re.fullmatch("[A-Za-z0-9]+", disc):
+                emit(False, forge, preview=preview, skipped="discussion_id " + disc + " is not a GitLab discussion id; the answer was not posted")
+            where = "discussion " + disc
+            post_url = base + "/discussions/" + disc + "/notes"
+            list_url = base + "/discussions/" + disc
+        else:
+            where = "merge request"
+            post_url = base + "/notes"
+            list_url = base + "/notes?sort=desc&order_by=created_at&per_page=100"
+        read_url = base + "/notes/"
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    else:
+        base = api + "/repos/" + q(owner) + "/" + q(repo)
+        where = "pull request conversation"
+        post_url = base + "/issues/" + number + "/comments"
+        list_url = base + "/issues/" + number + "/comments?limit=100&since=" + since
+        read_url = base + "/issues/comments/"
+        headers = {"Authorization": "token " + token, "Accept": "application/json"}
+    headers["Content-Type"] = "application/json"
+    headers["User-Agent"] = "iterion-revi-converse"
+
+
+    # The body. The first line the command grammar reads must not open on a slash.
+    def defuse_command(t):
+        lines = t.split(nl)
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if not s or s.startswith(">"):
+                continue
+            if s.startswith("/"):
+                j = line.index("/")
+                lines[i] = line[:j] + "\\" + line[j:]
             break
-        last = 'HTTP ' + str(vstatus) + ': ' + excerpt(vraw)
+        return nl.join(lines)
+
+
+    def close_fence(t):
+        fence = ""
+        for line in t.split(nl):
+            s = line.lstrip(" ")
+            if len(line) - len(s) > 3:
+                continue
+            for ch in (bt, "~"):
+                if s.startswith(ch * 3):
+                    run = len(s) - len(s.lstrip(ch))
+                    if not fence:
+                        fence = ch * run
+                    elif fence[0] == ch and run >= len(fence) and not s[run:].strip():
+                        fence = ""
+                    break
+        return t + nl + fence if fence else t
+
+
+    def units(s):
+        return len(s.encode("utf-16-le")) // 2
+
+
+    if forge == "gitlab":
+        guard = re.compile("^([ \t]*)/([A-Za-z]|[^ -~\n])", re.M)
+        text = guard.sub(lambda m: m.group(1) + "\\/" + m.group(2), text)
+    text = defuse_command(text)
+
+    # The run that wrote it: docs/agents/bots/run-link.md. A run id is
+    # caller-chosen at launch; only a plain one becomes a link label. A value
+    # still carrying a template delimiter (an engine predating run.url) is no
+    # address: the footer degrades to the id alone.
+    run_url = text_of(run_url)
+    run_url = "" if run_url.startswith("{" + "{") else run_url
+    run_id = text_of(run_id)
+    raw_id = run_id
+    if not re.fullmatch("[A-Za-z0-9][A-Za-z0-9._:-]*", run_id):
+        run_id = ""
+    foot = "\U0001F916 [iterion](https://iterion.cloud)"
+    if run_url:
+        foot += " · run [" + ((bt + run_id + bt) if run_id else "this run") + "](" + run_url + ")"
+    elif run_id:
+        foot += " · run " + bt + run_id + bt
+    elif raw_id:
+        foot += " · run " + bt + raw_id.replace(bt, "") + bt
+    tail = nl + nl + "---" + nl + foot
+
+    LIMIT = 60000
+    truncated = False
+    if units(close_fence(text)) + units(tail) > LIMIT:
+        marker = nl + nl + "[...] answer truncated to fit the forge comment limit; the full answer is in the run."
+        room = LIMIT - units(tail) - units(marker)
+        kept, n = [], 0
+        for ch in text:
+            w = 2 if ord(ch) > 65535 else 1
+            if n + w > room:
+                break
+            kept.append(ch)
+            n += w
+        cut = "".join(kept)
+        # Closing a fence the cut left open costs a line: make room for it.
+        while cut and units(close_fence(cut.rstrip())) + units(marker) + units(tail) > LIMIT:
+            cut = cut[:-64]
+        text = close_fence(cut.rstrip()) + marker
+        truncated = True
+    else:
+        text = close_fence(text)
+    body = text + tail
+    preview = text[:200]
+
+    what = leak(drafted) or leak(body)
+    if what:
+        # The draft is withheld from the report too: an encoding the
+        # redaction does not spell would otherwise ride the preview.
+        emit(False, forge, preview="(withheld: the answer carried a credential)",
+             skipped="the answer carries " + what + "; posting it would publish a credential, so nothing was posted",
+             summary="Nothing posted: the answer carried " + what + ".")
+
+
+    class Stay(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+
+
+    opener = urllib.request.build_opener(Stay)
+
+
+    def call(method, url, payload=None):
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with opener.open(req, timeout=30) as resp:
+                return resp.status, resp.read(4194304)
+        except urllib.error.HTTPError as err:
+            try:
+                raw = err.read(4096)
+            except Exception:
+                raw = b""
+            return err.code, raw
+
+
+    def excerpt(raw):
+        t = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        try:
+            doc = json.loads(t)
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict):
+            for k in ("message", "error", "error_description"):
+                if doc.get(k):
+                    t = doc[k] if isinstance(doc[k], str) else json.dumps(doc[k])
+                    break
+        return " ".join(t.split())[:300]
+
+
+    def parse(raw):
+        try:
+            return json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            return None
+
+
+    def note_url(n):
+        if forge == "gitlab":
+            return pr.split("#")[0] + "#note_" + str(n.get("id"))
+        u2 = n.get("html_url")
+        return u2 if isinstance(u2, str) else ""
+
+
+    def same_body(s):
+        return isinstance(s, str) and s.replace("\r", "").rstrip() == body.rstrip()
+
+
+    # Idempotency: a previous execution of this node may already have posted.
+    dedupe = ""
+    if raw_id:
+        try:
+            lstatus, lraw = call("GET", list_url)
+            doc = parse(lraw) if lstatus == 200 else None
+            notes = doc.get("notes") if isinstance(doc, dict) else doc
+            if isinstance(notes, list):
+                for n in notes:
+                    if isinstance(n, dict) and isinstance(n.get("id"), int) and same_body(n.get("body")):
+                        url0 = note_url(n)
+                        if url0.startswith(("http://", "https://")):
+                            emit(True, forge, reply_url=url0, preview=preview,
+                                 summary="This run's reply was already in the " + where + " (note " + str(n.get("id"))
+                                         + ", read by GET " + list_url + "): nothing posted again. " + url0)
+            else:
+                dedupe = " The duplicate check could not read the thread (HTTP " + str(lstatus) + ": " + excerpt(lraw) + ")."
+        except Exception as err:
+            dedupe = " The duplicate check could not read the thread (" + str(getattr(err, "reason", err)) + ")."
+
+    try:
+        status, raw = call("POST", post_url, {"body": body})
     except Exception as err:
-        last = str(getattr(err, 'reason', err))
-    if attempt == 1:
-        time.sleep(2)
-if not found:
-    emit(False, forge, preview=preview, skipped='the forge accepted the reply (note ' + str(nid) + ') but re-reading it failed: GET ' + read_url + str(nid) + ' answered ' + last + '; check the thread', summary='POST ' + post_url + ' -> HTTP ' + str(status) + ', note ' + str(nid) + '; VERIFY failed.')
-if forge == 'gitlab':
-    reply_url = pr.split('#')[0] + '#note_' + str(nid)
-else:
-    reply_url = found.get('html_url') or note.get('html_url') or ''
-if not isinstance(reply_url, str) or not reply_url.startswith(('http://', 'https://')):
-    emit(False, forge, preview=preview, skipped='note ' + str(nid) + ' was posted and re-read, but the forge gave no web URL for it; check the thread')
-summary = ('Posted the answer in the ' + where + ': POST ' + post_url + ' -> HTTP ' + str(status) + ', note ' + str(nid)
-           + '; re-read by id: GET ' + read_url + str(nid) + ' -> HTTP 200. ' + reply_url)
-if truncated:
-    summary += ' The answer was truncated to the forge comment limit.'
-emit(True, forge, reply_url=reply_url, preview=preview, summary=summary)
-"`
+        emit(False, forge, preview=preview, skipped="the forge did not answer the POST to " + post_url + " ("
+             + str(getattr(err, "reason", err)) + "); the reply may or may not have landed, check the thread")
+    if status not in (200, 201):
+        emit(False, forge, preview=preview, skipped="the forge refused the reply: POST " + post_url + " answered HTTP "
+             + str(status) + ": " + excerpt(raw))
+    note = parse(raw)
+    note = note if isinstance(note, dict) else {}
+    nid = note.get("id")
+    if not isinstance(nid, int) or isinstance(nid, bool):
+        emit(False, forge, preview=preview, skipped="POST " + post_url + " answered HTTP " + str(status)
+             + " with no note id; the reply may have landed, check the thread")
+
+    # VERIFY: the note exists, read back by its own id.
+    found, last = {}, ""
+    for attempt in (1, 2):
+        try:
+            vstatus, vraw = call("GET", read_url + str(nid))
+            vdoc = parse(vraw)
+            if vstatus == 200 and isinstance(vdoc, dict) and vdoc.get("id") == nid:
+                found = vdoc
+                break
+            last = "HTTP " + str(vstatus) + ": " + excerpt(vraw)
+        except Exception as err:
+            last = str(getattr(err, "reason", err))
+        if attempt == 1:
+            time.sleep(2)
+    if not found:
+        emit(False, forge, preview=preview, skipped="the forge accepted the reply (note " + str(nid) + ") but re-reading it failed: GET "
+             + read_url + str(nid) + " answered " + last + "; check the thread",
+             summary="POST " + post_url + " -> HTTP " + str(status) + ", note " + str(nid) + "; VERIFY failed." + dedupe)
+    reply_url = note_url(found) or note_url(note)
+    if not reply_url.startswith(("http://", "https://")):
+        emit(False, forge, preview=preview, skipped="note " + str(nid) + " was posted and re-read, but the forge gave no web URL for it; check the thread")
+    summary = ("Posted the answer in the " + where + ": POST " + post_url + " -> HTTP " + str(status) + ", note " + str(nid)
+               + "; re-read by id: GET " + read_url + str(nid) + " -> HTTP 200. " + reply_url + dedupe)
+    if truncated:
+        summary += " The answer was truncated to the forge comment limit."
+    emit(True, forge, reply_url=reply_url, preview=preview, summary=summary)
+  language: py
   input: publish_reply_input
   output: publish_reply_output
 

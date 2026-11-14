@@ -2,8 +2,10 @@ package bots
 
 import (
 	"bufio"
-	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,20 +23,17 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
-	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/forge"
-	"github.com/SocialGouv/iterion/pkg/runtime"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
-// publish_reply is revi-converse's only forge write: a deterministic node
-// that posts the agent's draft in the conversation's thread with the mounted
-// forge_token and re-reads the created note by its id. These tests run its
-// command as the engine renders it, against a fake forge serving the REST
-// shape each forge documents; the fake records every request, so "exactly
-// one write" is the forge's own count, not the node's claim.
+// publish_reply is revi-converse's only forge write: a deterministic python
+// script that posts the agent's draft in the conversation's thread with the
+// mounted forge_token and re-reads the created note by its id. These tests
+// run its script as the engine renders it, against a fake forge serving the
+// REST shape each forge documents; the fake records every request, so
+// "exactly one write" is the forge's own count, not the node's claim.
 
 const (
 	publishRunID  = "run-converse"
@@ -42,6 +42,10 @@ const (
 	publishNoteID = 9001
 	// The footer every post ends with (docs/agents/bots/run-link.md).
 	publishFooter = "\n\n---\n🤖 [iterion](https://iterion.cloud) · run [`run-converse`](https://iterion.example/studio/runs/run-converse)"
+	// The forge_token placeholder, and the form the engine rewrites it to
+	// where the secret is not granted (secretguard.DefuseUngranted).
+	tokenPlaceholder = "__ITERION_SECRET_forge_token__"
+	tokenDefused     = "__ITERION_SECRET_forge_token_redacted__"
 )
 
 // The answer's one model call is the agent's: posting it and judging the
@@ -49,7 +53,7 @@ const (
 // run out of tool steps. The workflow's nodes are exactly the drafting
 // agent and the two tools, chained in that order.
 func TestReviConversePublishesWithoutAModel(t *testing.T) {
-	wf := compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
+	wf := reviConverseWorkflow(t)
 	var ids []string
 	for id, n := range wf.Nodes {
 		switch n.(type) {
@@ -82,43 +86,44 @@ func TestReviConversePublishesWithoutAModel(t *testing.T) {
 	}
 }
 
-// renderReviConversePublish renders publish_reply's command with the engine's
-// renderer: the edge's input, the run's vars and the run namespace. A preview
-// rendering has no secret guard, so `{{secrets.forge_token.path}}` comes out
-// as the secret's placeholder; the run's guard renders the mounted path
-// there, and so does this helper (the chain test below renders through a
-// real guard). Every other reference must resolve.
-func renderReviConversePublish(t *testing.T, input, vars map[string]any, runURL, tokenPath string) string {
+func reviConverseWorkflow(t *testing.T) *ir.Workflow {
 	t.Helper()
-	wf := compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
-	tn, ok := wf.Nodes["publish_reply"].(*ir.ToolNode)
-	if !ok {
-		t.Fatalf("publish_reply is %T, want a deterministic *ir.ToolNode", wf.Nodes["publish_reply"])
-	}
-	shapes := model.WorkflowShapes(wf).WithInputSchema(wf.Schemas[tn.InputSchema])
-	td := &model.TemplateData{RunID: publishRunID, Run: map[string]any{"id": publishRunID, "url": runURL}}
-	var unresolved []string
-	command := model.RenderCommand(tn.Command, tn.CommandRefs, input, vars, td, publishRunID, shapes, func(ref string) {
-		unresolved = append(unresolved, ref)
-	})
-	if len(unresolved) != 0 {
-		t.Fatalf("publish_reply left %v unresolved — the case does not drive the input it names", unresolved)
-	}
-	ph := secretguard.PlaceholderForName("forge_token")
-	quoted := "'" + ph + "'"
-	switch {
-	case strings.Count(command, quoted) == 1:
-		command = strings.Replace(command, quoted, shellSingleQuote(tokenPath), 1)
-	case strings.Count(command, ph) == 1:
-		command = strings.Replace(command, ph, shellSingleQuote(tokenPath), 1)
-	default:
-		t.Fatalf("publish_reply renders the forge_token reference %d times, want once", strings.Count(command, ph))
-	}
-	return command
+	return compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
 }
 
-func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+// renderReviConversePublish renders publish_reply's script with the engine's
+// renderer: the edge's input, the run's vars (the ones a case leaves out at
+// their declared default) and the run namespace. A preview rendering has no
+// secret guard, so `{{secrets.forge_token.path}}` comes out as the secret's
+// placeholder; the run's guard renders the mounted path there, and so does
+// this helper (the chain tests render through a real guard). Every reference
+// must resolve but the ones a case names as left unresolved.
+func renderReviConversePublish(t *testing.T, input, vars map[string]any, runURL, tokenPath string, wantUnresolved ...string) string {
+	t.Helper()
+	wf := reviConverseWorkflow(t)
+	tn, ok := wf.Nodes["publish_reply"].(*ir.ToolNode)
+	if !ok || tn.Script == "" || tn.Language != "py" {
+		t.Fatalf("publish_reply is %T (language %q), want a python script tool node", wf.Nodes["publish_reply"], tn.Language)
+	}
+	all := map[string]any{"pr_url": "", "discussion_id": "", "forge_base_url": ""}
+	for k, v := range vars {
+		all[k] = v
+	}
+	td := &model.TemplateData{RunID: publishRunID, Run: map[string]any{"id": publishRunID, "url": runURL}}
+	var unresolved []string
+	script := model.RenderScript(tn.Script, tn.ScriptRefs, input, all, td, publishRunID, func(ref string) {
+		unresolved = append(unresolved, ref)
+	})
+	slices.Sort(unresolved)
+	if !slices.Equal(unresolved, wantUnresolved) {
+		t.Fatalf("publish_reply left %v unresolved, want %v — the case does not drive the input it names", unresolved, wantUnresolved)
+	}
+	line := `tok_path = "` + secretguard.PlaceholderForName("forge_token") + `"`
+	if strings.Count(script, line) != 1 {
+		t.Fatalf("publish_reply renders the forge_token path line %d times, want once", strings.Count(script, line))
+	}
+	path, _ := json.Marshal(tokenPath)
+	return strings.Replace(script, line, "tok_path = "+string(path), 1)
 }
 
 // noProxyEnv is this process's environment without its proxies: the fake
@@ -144,32 +149,48 @@ type publishOut struct {
 	Summary       string `json:"summary"`
 }
 
-// runPublish executes a rendered command under shell and decodes its output.
-// A command past 100000 bytes goes to the shell on stdin, as the executor
-// streams it (toolNodeCommand): one exec argument is capped at 128 KiB.
-func runPublish(t *testing.T, shell, command string, env []string) (publishOut, string) {
-	t.Helper()
-	cmd := exec.Command(shell, "-c", command)
-	if len(command) > 100_000 {
-		cmd = exec.Command(shell, "-s")
-		cmd.Stdin = strings.NewReader(command)
+// tokenForms are the spellings of the token the node must neither post nor
+// report: raw, base64 (standard and URL-safe, padded or not), hex in either
+// case.
+func tokenForms(tok string) []string {
+	raw := []byte(tok)
+	forms := []string{tok, hex.EncodeToString(raw), strings.ToUpper(hex.EncodeToString(raw))}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding} {
+		e := enc.EncodeToString(raw)
+		forms = append(forms, e, strings.TrimRight(e, "="))
 	}
+	return forms
+}
+
+// runPublish runs a rendered script the way the executor runs a `language:
+// py` body — `python3 -I` on a temp file — and decodes its output.
+func runPublish(t *testing.T, script string, env []string) (publishOut, string) {
+	t.Helper()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "publish_reply.py")
+	if err := os.WriteFile(file, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("python3", "-I", file)
+	cmd.Dir = dir
 	cmd.Env = env
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s: publish_reply failed: %v (out %q, stderr %q)", shell, err, out, stderr.String())
+		t.Fatalf("publish_reply failed: %v (out %q, stderr %q)", err, out, stderr.String())
 	}
 	var res publishOut
 	if err := json.Unmarshal(out, &res); err != nil {
-		t.Fatalf("%s: output is not publish_reply_output JSON: %v (%q, stderr %q)", shell, err, out, stderr.String())
+		t.Fatalf("output is not publish_reply_output JSON: %v (%q, stderr %q)", err, out, stderr.String())
 	}
 	if res.Posted == nil {
-		t.Fatalf("%s: output carries no posted field: %q", shell, out)
+		t.Fatalf("output carries no posted field: %q", out)
 	}
-	if strings.Contains(string(out), publishToken) {
-		t.Fatalf("%s: the forge token reached the node's output: %q", shell, out)
+	for _, form := range tokenForms(publishToken) {
+		if strings.Contains(string(out), form) {
+			t.Fatalf("the forge token (%s form) reached the node's output: %q", form, out)
+		}
 	}
 	return res, string(out)
 }
@@ -183,71 +204,77 @@ func writeToken(t *testing.T) string {
 	return p
 }
 
-// publishShells are the shells the command must run under: bash is the
-// executor's, sh proves the command stays POSIX.
-func publishShells(t *testing.T) []string {
+func requirePython(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	var shells []string
-	for _, sh := range []string{"bash", "sh"} {
-		if _, err := exec.LookPath(sh); err == nil {
-			shells = append(shells, sh)
-		}
-	}
-	if len(shells) == 0 {
-		t.Skip("no shell on PATH")
-	}
-	return shells
 }
 
 // forgeHit is one request the fake forge received.
 type forgeHit struct {
-	Method, Path, Auth, PrivateToken, Body string
+	Method, Path, Query, Auth, PrivateToken, Body string
 }
 
-// converseFakeForge creates a note on any POST and serves the last one on
-// any GET; the tests assert the paths. Its knobs refuse the POST, drop the
-// note's id, refuse the re-read, or redirect the POST.
+type fakeNote struct {
+	ID   int
+	Body string
+}
+
+// converseFakeForge holds a thread: a POST appends a note, a GET whose last
+// path segment is a number reads that note, any other GET lists the thread
+// (a GitLab discussion as {"id", "notes"}, everything else as an array). The
+// tests assert the paths. Its knobs refuse the POST, drop the created note's
+// id, refuse the re-read or answer it with another note, refuse the list, or
+// redirect the POST.
 type converseFakeForge struct {
 	srv *httptest.Server
 
-	htmlURL    string // the note's html_url ("" for GitLab, whose notes carry none)
-	postStatus int    // non-zero: answer the POST with this status and postAnswer
+	htmlFor    func(id int) string // the note's html_url; nil: notes carry none (GitLab)
+	postStatus int
 	postAnswer string
 	postNoID   bool
-	readStatus int    // non-zero: answer every GET with this status
-	readOther  bool   // answer every GET with another note than the one created
-	redirectTo string // non-empty: answer the POST with a 302 to it
+	readStatus int
+	readOther  bool
+	listStatus int
+	redirectTo string
 
-	mu   sync.Mutex
-	hits []forgeHit
-	last string
+	mu     sync.Mutex
+	hits   []forgeHit
+	notes  []fakeNote
+	nextID int
 }
 
 func newConverseFakeForge(t *testing.T) *converseFakeForge {
 	t.Helper()
-	f := &converseFakeForge{}
+	f := &converseFakeForge{nextID: publishNoteID}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
-func (f *converseFakeForge) note(body string) map[string]any {
-	n := map[string]any{"id": publishNoteID, "body": body}
-	if f.htmlURL != "" {
-		n["html_url"] = f.htmlURL
+// hold seeds the thread with a note an earlier execution left there.
+func (f *converseFakeForge) hold(id int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.notes = append(f.notes, fakeNote{ID: id, Body: body})
+}
+
+func (f *converseFakeForge) noteJSON(n fakeNote) map[string]any {
+	out := map[string]any{"id": n.ID, "body": n.Body}
+	if f.htmlFor != nil {
+		out["html_url"] = f.htmlFor(n.ID)
 	}
-	return n
+	return out
 }
 
 func (f *converseFakeForge) serve(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	path := r.URL.EscapedPath()
 	f.hits = append(f.hits, forgeHit{
-		Method: r.Method, Path: r.URL.EscapedPath(), Auth: r.Header.Get("Authorization"),
+		Method: r.Method, Path: path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"),
 		PrivateToken: r.Header.Get("PRIVATE-TOKEN"), Body: string(raw),
 	})
 	w.Header().Set("Content-Type", "application/json")
@@ -271,29 +298,51 @@ func (f *converseFakeForge) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `{"message":"body is missing"}`)
 			return
 		}
-		f.last = p.Body
-		n := f.note(p.Body)
+		n := fakeNote{ID: f.nextID, Body: p.Body}
+		f.nextID++
+		f.notes = append(f.notes, n)
+		out := f.noteJSON(n)
 		if f.postNoID {
-			delete(n, "id")
+			delete(out, "id")
 		}
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(n)
+		_ = json.NewEncoder(w).Encode(out)
 	case http.MethodGet:
-		if f.readStatus != 0 {
-			w.WriteHeader(f.readStatus)
-			_, _ = io.WriteString(w, `{"message":"404 Not found"}`)
-			return
-		}
-		if f.last == "" {
+		last := path[strings.LastIndex(path, "/")+1:]
+		if id, err := strconv.Atoi(last); err == nil {
+			if f.readStatus != 0 {
+				w.WriteHeader(f.readStatus)
+				_, _ = io.WriteString(w, `{"message":"404 Not found"}`)
+				return
+			}
+			for _, n := range f.notes {
+				if n.ID == id {
+					out := f.noteJSON(n)
+					if f.readOther {
+						out["id"] = id - 1
+					}
+					_ = json.NewEncoder(w).Encode(out)
+					return
+				}
+			}
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"404 Not found"}`)
 			return
 		}
-		n := f.note(f.last)
-		if f.readOther {
-			n["id"] = publishNoteID - 1
+		if f.listStatus != 0 {
+			w.WriteHeader(f.listStatus)
+			_, _ = io.WriteString(w, `{"message":"list refused"}`)
+			return
 		}
-		_ = json.NewEncoder(w).Encode(n)
+		list := []map[string]any{}
+		for _, n := range f.notes {
+			list = append(list, f.noteJSON(n))
+		}
+		if strings.Contains(path, "/discussions/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": last, "notes": list})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(list)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -314,6 +363,17 @@ func writes(hits []forgeHit) []forgeHit {
 		}
 	}
 	return w
+}
+
+// gets are the GET paths, in order.
+func gets(hits []forgeHit) []string {
+	var g []string
+	for _, h := range hits {
+		if h.Method == http.MethodGet {
+			g = append(g, h.Path)
+		}
+	}
+	return g
 }
 
 func postedBody(t *testing.T, h forgeHit) string {
@@ -340,16 +400,29 @@ type publishForgeCase struct {
 	name      string
 	prPath    string
 	disc      string
+	base      string // forge_base_url, appended to the fake's origin when set
 	wantForge string
+	wantList  string // the duplicate check's read of the thread, escaped
 	wantPost  string // the reply POST, escaped
 	wantRead  string // the re-read by id, escaped
 	wantAuth  string // the Authorization header
-	// htmlURL is the note's web URL as the forge names it, from the fake's
-	// origin and the PR URL; empty on GitLab, whose notes carry none.
-	htmlURL   func(origin, pr string) string
-	wantReply func(origin, pr string) string
+	// htmlURL names a note's web URL from the PR URL; nil on GitLab, whose
+	// notes carry none (reply_url is pr_url#note_<id> there).
+	htmlURL func(pr string, id int) string
 	// wantBody is the body before the footer.
 	wantBody string
+}
+
+func (c publishForgeCase) wantReply(pr string, id int) string {
+	if c.htmlURL == nil {
+		return fmt.Sprintf("%s#note_%d", pr, id)
+	}
+	return c.htmlURL(pr, id)
+}
+
+func issueComment(pr string, id int) string { return fmt.Sprintf("%s#issuecomment-%d", pr, id) }
+func reviewComment(pr string, id int) string {
+	return fmt.Sprintf("%s#discussion_r%d", pr, id)
 }
 
 func publishForgeCases() []publishForgeCase {
@@ -357,108 +430,178 @@ func publishForgeCases() []publishForgeCase {
 	return []publishForgeCase{
 		{
 			name: "github issue comment (the /revi <question> lane)", prPath: "/o/r/pull/42", wantForge: "github",
+			wantList: "/api/v3/repos/o/r/issues/42/comments",
 			wantPost: "/api/v3/repos/o/r/issues/42/comments", wantRead: "/api/v3/repos/o/r/issues/comments/9001",
-			wantAuth:  "Bearer " + publishToken,
-			htmlURL:   func(_, pr string) string { return pr + "#issuecomment-9001" },
-			wantReply: func(_, pr string) string { return pr + "#issuecomment-9001" },
-			wantBody:  publishAnswer,
+			wantAuth: "Bearer " + publishToken, htmlURL: issueComment, wantBody: publishAnswer,
 		},
 		{
 			name: "github review-thread reply", prPath: "/o/r/pull/42", disc: "4242", wantForge: "github",
+			wantList: "/api/v3/repos/o/r/pulls/42/comments",
 			wantPost: "/api/v3/repos/o/r/pulls/42/comments/4242/replies", wantRead: "/api/v3/repos/o/r/pulls/comments/9001",
-			wantAuth:  "Bearer " + publishToken,
-			htmlURL:   func(_, pr string) string { return pr + "#discussion_r9001" },
-			wantReply: func(_, pr string) string { return pr + "#discussion_r9001" },
-			wantBody:  publishAnswer,
+			wantAuth: "Bearer " + publishToken, htmlURL: reviewComment, wantBody: publishAnswer,
 		},
 		{
 			name: "gitlab discussion note", prPath: "/g/sub/p/-/merge_requests/7", disc: "6a1f0c", wantForge: "gitlab",
+			wantList: "/api/v4/projects/g%2Fsub%2Fp/merge_requests/7/discussions/6a1f0c",
 			wantPost: "/api/v4/projects/g%2Fsub%2Fp/merge_requests/7/discussions/6a1f0c/notes", wantRead: "/api/v4/projects/g%2Fsub%2Fp/merge_requests/7/notes/9001",
-			wantAuth:  "Bearer " + publishToken,
-			htmlURL:   func(string, string) string { return "" },
-			wantReply: func(_, pr string) string { return pr + "#note_9001" },
-			wantBody:  gitlabBody,
+			wantAuth: "Bearer " + publishToken, wantBody: gitlabBody,
 		},
 		{
 			name: "gitlab merge request note (no discussion id)", prPath: "/g/p/-/merge_requests/7", wantForge: "gitlab",
+			wantList: "/api/v4/projects/g%2Fp/merge_requests/7/notes",
 			wantPost: "/api/v4/projects/g%2Fp/merge_requests/7/notes", wantRead: "/api/v4/projects/g%2Fp/merge_requests/7/notes/9001",
-			wantAuth:  "Bearer " + publishToken,
-			htmlURL:   func(string, string) string { return "" },
-			wantReply: func(_, pr string) string { return pr + "#note_9001" },
-			wantBody:  gitlabBody,
+			wantAuth: "Bearer " + publishToken, wantBody: gitlabBody,
 		},
 		{
 			name: "forgejo issue comment", prPath: "/o/r/pulls/7", wantForge: "forgejo",
+			wantList: "/api/v1/repos/o/r/issues/7/comments",
 			wantPost: "/api/v1/repos/o/r/issues/7/comments", wantRead: "/api/v1/repos/o/r/issues/comments/9001",
-			wantAuth:  "token " + publishToken,
-			htmlURL:   func(_, pr string) string { return pr + "#issuecomment-9001" },
-			wantReply: func(_, pr string) string { return pr + "#issuecomment-9001" },
-			wantBody:  publishAnswer,
+			wantAuth: "token " + publishToken, htmlURL: issueComment, wantBody: publishAnswer,
+		},
+		{
+			name: "gitlab under a sub-path, the webhook's forge base", prPath: "/gitlab/g/p/-/merge_requests/5", disc: "abc123", base: "/gitlab", wantForge: "gitlab",
+			wantList: "/gitlab/api/v4/projects/g%2Fp/merge_requests/5/discussions/abc123",
+			wantPost: "/gitlab/api/v4/projects/g%2Fp/merge_requests/5/discussions/abc123/notes", wantRead: "/gitlab/api/v4/projects/g%2Fp/merge_requests/5/notes/9001",
+			wantAuth: "Bearer " + publishToken, wantBody: gitlabBody,
+		},
+		{
+			name: "forgejo under a sub-path, the webhook's forge base", prPath: "/forgejo/o/r/pulls/7", base: "/forgejo/", wantForge: "forgejo",
+			wantList: "/forgejo/api/v1/repos/o/r/issues/7/comments",
+			wantPost: "/forgejo/api/v1/repos/o/r/issues/7/comments", wantRead: "/forgejo/api/v1/repos/o/r/issues/comments/9001",
+			wantAuth: "token " + publishToken, htmlURL: issueComment, wantBody: publishAnswer,
+		},
+		{
+			name: "github enterprise, the webhook's forge base", prPath: "/o/r/pull/42", base: "/", wantForge: "github",
+			wantList: "/api/v3/repos/o/r/issues/42/comments",
+			wantPost: "/api/v3/repos/o/r/issues/42/comments", wantRead: "/api/v3/repos/o/r/issues/comments/9001",
+			wantAuth: "Bearer " + publishToken, htmlURL: issueComment, wantBody: publishAnswer,
 		},
 	}
 }
 
-// Each forge's lane: exactly one write, at the reply endpoint the forge
-// documents, with that forge's auth header, carrying the answer and the run
-// footer; then the re-read of the created note by its id, and reply_url the
-// note's web URL on the PR's host. On GitLab the `/approve` the answer
-// quotes reaches the forge inert (the server's own predicate reads the
-// posted body); elsewhere the body is the answer byte for byte.
+// publishVars are the vars a forge case runs with.
+func publishVars(c publishForgeCase, origin, pr string) map[string]any {
+	vars := map[string]any{"pr_url": pr, "discussion_id": c.disc}
+	if c.base != "" {
+		vars["forge_base_url"] = origin + c.base
+	}
+	return vars
+}
+
+func newCaseForge(t *testing.T, c publishForgeCase) (*converseFakeForge, string) {
+	t.Helper()
+	f := newConverseFakeForge(t)
+	pr := f.srv.URL + c.prPath
+	if c.htmlURL != nil {
+		f.htmlFor = func(id int) string { return c.htmlURL(pr, id) }
+	}
+	return f, pr
+}
+
+// Each forge's lane: one bounded read of the thread (the duplicate check),
+// exactly one write, at the reply endpoint the forge documents, with that
+// forge's auth header, carrying the answer and the run footer; then the
+// re-read of the created note by its id, and reply_url the note's web URL on
+// the PR's host. Under the webhook's forge base the API is the base's, so a
+// GitLab or a Forgejo served under a sub-path is reached where it lives. On
+// GitLab the `/approve` the answer quotes reaches the forge inert (the
+// server's own predicate reads the posted body); elsewhere the body is the
+// answer byte for byte.
 func TestReviConversePublishReplyPostsOnEachForge(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	for _, tc := range publishForgeCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				pr := f.srv.URL + tc.prPath
-				f.htmlURL = tc.htmlURL(f.srv.URL, pr)
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
-					map[string]any{"pr_url": pr, "discussion_id": tc.disc},
-					publishRunURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
+			f, pr := newCaseForge(t, tc)
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				publishVars(tc, f.srv.URL, pr), publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
 
-				if !*res.Posted || res.SkippedReason != "" {
-					t.Fatalf("%s: posted = %v, skipped_reason %q, want a posted reply (%s)", shell, *res.Posted, res.SkippedReason, raw)
+			if !*res.Posted || res.SkippedReason != "" {
+				t.Fatalf("posted = %v, skipped_reason %q, want a posted reply (%s)", *res.Posted, res.SkippedReason, raw)
+			}
+			if res.Forge != tc.wantForge {
+				t.Errorf("forge = %q, want %q", res.Forge, tc.wantForge)
+			}
+			if want := tc.wantReply(pr, publishNoteID); res.ReplyURL != want {
+				t.Errorf("reply_url = %q, want the forge's note %q", res.ReplyURL, want)
+			}
+			hits := f.seen()
+			w := writes(hits)
+			if len(w) != 1 {
+				t.Fatalf("the forge saw %d writes, want exactly one: %+v", len(w), hits)
+			}
+			if w[0].Method != http.MethodPost || w[0].Path != tc.wantPost {
+				t.Errorf("the write was %s %s, want POST %s", w[0].Method, w[0].Path, tc.wantPost)
+			}
+			for _, h := range hits {
+				if h.Auth != tc.wantAuth || h.PrivateToken != "" {
+					t.Errorf("%s %s authenticated with Authorization %q / PRIVATE-TOKEN %q, want Authorization %q", h.Method, h.Path, h.Auth, h.PrivateToken, tc.wantAuth)
 				}
-				if res.Forge != tc.wantForge {
-					t.Errorf("%s: forge = %q, want %q", shell, res.Forge, tc.wantForge)
-				}
-				if want := tc.wantReply(f.srv.URL, pr); res.ReplyURL != want {
-					t.Errorf("%s: reply_url = %q, want the forge's note %q", shell, res.ReplyURL, want)
-				}
-				hits := f.seen()
-				w := writes(hits)
-				if len(w) != 1 {
-					t.Fatalf("%s: the forge saw %d writes, want exactly one: %+v", shell, len(w), hits)
-				}
-				if w[0].Method != http.MethodPost || w[0].Path != tc.wantPost {
-					t.Errorf("%s: the write was %s %s, want POST %s", shell, w[0].Method, w[0].Path, tc.wantPost)
-				}
-				for _, h := range hits {
-					if h.Auth != tc.wantAuth || h.PrivateToken != "" {
-						t.Errorf("%s: %s %s authenticated with Authorization %q / PRIVATE-TOKEN %q, want Authorization %q", shell, h.Method, h.Path, h.Auth, h.PrivateToken, tc.wantAuth)
+			}
+			if got, want := gets(hits), []string{tc.wantList, tc.wantRead}; !slices.Equal(got, want) {
+				t.Errorf("the reads were %v, want the thread %s then the note %s", got, tc.wantList, tc.wantRead)
+			}
+			body := postedBody(t, w[0])
+			if want := tc.wantBody + publishFooter; body != want {
+				t.Errorf("posted body =\n%q\nwant\n%q", body, want)
+			}
+			if tc.wantForge == "gitlab" && forge.GitLabRunsQuickActionLine(body) {
+				t.Errorf("the GitLab body still holds a line GitLab runs as a quick action: %q", body)
+			}
+			if cmd, _ := webhooks.ParseSlashCommand(body); cmd != "" {
+				t.Errorf("the posted body reads as the command /%s", cmd)
+			}
+		})
+	}
+}
+
+// publish_reply is safe to execute twice: a resume that re-runs the node
+// after its POST landed finds the note this run already wrote — an exact
+// copy of the body it would post, whose footer names the run — and reports
+// it as posted, with that note's URL, writing nothing. A note that only
+// borrows this run's footer is not this run's reply, and a thread the check
+// cannot read does not stop the post.
+func TestReviConversePublishReplyDoesNotPostTwice(t *testing.T) {
+	requirePython(t)
+	const heldID = 7001
+	for _, tc := range publishForgeCases()[:5] {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, c := range []struct {
+				name       string
+				held       string
+				listStatus int
+				wantWrites int
+				wantReply  func(pr string) string
+				wantNote   string
+			}{
+				{name: "already answered", held: tc.wantBody + publishFooter, wantWrites: 0, wantReply: func(pr string) string { return tc.wantReply(pr, heldID) }},
+				{name: "a stranger's note under this run's footer", held: "LGTM, nothing to see here." + publishFooter, wantWrites: 1, wantReply: func(pr string) string { return tc.wantReply(pr, publishNoteID) }},
+				{name: "the thread cannot be read", listStatus: http.StatusBadGateway, wantWrites: 1, wantReply: func(pr string) string { return tc.wantReply(pr, publishNoteID) }, wantNote: "duplicate check could not read the thread"},
+			} {
+				t.Run(c.name, func(t *testing.T) {
+					f, pr := newCaseForge(t, tc)
+					f.listStatus = c.listStatus
+					if c.held != "" {
+						f.hold(heldID, c.held)
 					}
-				}
-				var reads []string
-				for _, h := range hits {
-					if h.Method == http.MethodGet {
-						reads = append(reads, h.Path)
+					script := renderReviConversePublish(t,
+						map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+						publishVars(tc, f.srv.URL, pr), publishRunURL, writeToken(t))
+					res, raw := runPublish(t, script, noProxyEnv())
+					if !*res.Posted {
+						t.Fatalf("posted = false (%s)", raw)
 					}
-				}
-				if !slices.Equal(reads, []string{tc.wantRead}) {
-					t.Errorf("%s: the re-reads were %v, want one GET %s", shell, reads, tc.wantRead)
-				}
-				body := postedBody(t, w[0])
-				if want := tc.wantBody + publishFooter; body != want {
-					t.Errorf("%s: posted body =\n%q\nwant\n%q", shell, body, want)
-				}
-				if tc.wantForge == "gitlab" && forge.GitLabRunsQuickActionLine(body) {
-					t.Errorf("%s: the GitLab body still holds a line GitLab runs as a quick action: %q", shell, body)
-				}
-				if cmd, _ := webhooks.ParseSlashCommand(body); cmd != "" {
-					t.Errorf("%s: the posted body reads as the command /%s", shell, cmd)
-				}
+					if w := writes(f.seen()); len(w) != c.wantWrites {
+						t.Errorf("the forge saw %d writes, want %d: %+v", len(w), c.wantWrites, w)
+					}
+					if want := c.wantReply(pr); res.ReplyURL != want {
+						t.Errorf("reply_url = %q, want %q", res.ReplyURL, want)
+					}
+					if c.wantNote != "" && !strings.Contains(res.Summary, c.wantNote) {
+						t.Errorf("summary %q does not say %q", res.Summary, c.wantNote)
+					}
+				})
 			}
 		})
 	}
@@ -469,130 +612,244 @@ func TestReviConversePublishReplyPostsOnEachForge(t *testing.T) {
 // trims) is posted with that slash escaped, on every forge. The webhook's
 // own grammar (webhooks.ParseSlashCommand) reads the posted body.
 func TestReviConversePublishReplyNeverPostsACommand(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	answers := map[string]string{
 		"leading command":        "/revi run it again please",
 		"after blank lines":      "\n\n  \n/revi run it again",
 		"after a quote":          "> /revi earlier\n\n/approve this",
 		"indented":               "   /revi again",
-		"after a no-break space": " /revi again",
+		"after a no-break space": " /revi again",
 		"a bare slash":           "/ and then prose",
 	}
 	for name, answer := range answers {
 		for _, prPath := range []string{"/o/r/pull/1", "/g/p/-/merge_requests/1", "/o/r/pulls/1"} {
 			t.Run(name+" "+prPath, func(t *testing.T) {
-				for _, shell := range shells {
-					f := newConverseFakeForge(t)
-					pr := f.srv.URL + prPath
-					f.htmlURL = pr + "#issuecomment-9001"
-					cmd := renderReviConversePublish(t,
-						map[string]any{"answer": answer, "skipped_reason": ""},
-						map[string]any{"pr_url": pr, "discussion_id": ""},
-						publishRunURL, writeToken(t))
-					res, raw := runPublish(t, shell, cmd, noProxyEnv())
-					if !*res.Posted {
-						t.Fatalf("%s: nothing posted: %s", shell, raw)
-					}
-					w := writes(f.seen())
-					if len(w) != 1 {
-						t.Fatalf("%s: %d writes, want 1", shell, len(w))
-					}
-					body := postedBody(t, w[0])
-					if cmd, args := webhooks.ParseSlashCommand(body); cmd != "" {
-						t.Errorf("%s: the posted body %q reads as the command /%s %s — the bot's reply would re-fire a trigger", shell, body, cmd, args)
-					}
-					if !strings.HasSuffix(body, publishFooter) {
-						t.Errorf("%s: the posted body lost its run footer: %q", shell, body)
-					}
+				f := newConverseFakeForge(t)
+				pr := f.srv.URL + prPath
+				f.htmlFor = func(id int) string { return issueComment(pr, id) }
+				script := renderReviConversePublish(t,
+					map[string]any{"answer": answer, "skipped_reason": ""},
+					map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+				res, raw := runPublish(t, script, noProxyEnv())
+				if !*res.Posted {
+					t.Fatalf("nothing posted: %s", raw)
+				}
+				w := writes(f.seen())
+				if len(w) != 1 {
+					t.Fatalf("%d writes, want 1", len(w))
+				}
+				body := postedBody(t, w[0])
+				if cmd, args := webhooks.ParseSlashCommand(body); cmd != "" {
+					t.Errorf("the posted body %q reads as the command /%s %s — the bot's reply would re-fire a trigger", body, cmd, args)
+				}
+				if !strings.HasSuffix(body, publishFooter) {
+					t.Errorf("the posted body lost its run footer: %q", body)
 				}
 			})
 		}
 	}
 }
 
-// Nothing to post, nothing written: an empty answer, the agent's own
-// skipped_reason, no mounted token, a pr_url this step cannot reply on, a
-// discussion id that is not one, an answer the edge never delivered. Each
-// is posted=false with a reason converse_health shows, and the forge sees
-// no request at all.
+// A drafted answer is posted whatever the skipped_reason beside it says: the
+// schema requires the field, and a model at its step limit fills it ("N/A",
+// "none", a half-reason). Only an empty draft is not posted.
+func TestReviConversePublishReplyPostsADraftWhateverItsSkippedReasonSays(t *testing.T) {
+	requirePython(t)
+	for _, skipped := range []string{"N/A", "none", "not skipped", "the diff could not be read in full"} {
+		t.Run(skipped, func(t *testing.T) {
+			f := newConverseFakeForge(t)
+			pr := f.srv.URL + "/o/r/pull/42"
+			f.htmlFor = func(id int) string { return issueComment(pr, id) }
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": skipped},
+				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if !*res.Posted || res.SkippedReason != "" {
+				t.Fatalf("posted = %v, skipped_reason %q — a drafted answer was dropped for its skipped_reason (%s)", *res.Posted, res.SkippedReason, raw)
+			}
+			if w := writes(f.seen()); len(w) != 1 || postedBody(t, w[0]) != publishAnswer+publishFooter {
+				t.Errorf("the forge saw %+v, want the one POST of the draft", w)
+			}
+		})
+	}
+}
+
+// Whatever bytes the draft holds, the node runs and decides: a NUL (which no
+// exec argument can carry) is dropped from what is posted, an answer that
+// opens on a template delimiter is an answer like any other, and a
+// skipped_reason past the size of an environment entry is reported, capped
+// — it rides converse_health's environment next.
+func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
+	requirePython(t)
+	t.Run("a NUL in the answer", func(t *testing.T) {
+		f := newConverseFakeForge(t)
+		pr := f.srv.URL + "/o/r/pull/42"
+		f.htmlFor = func(id int) string { return issueComment(pr, id) }
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": "Re: op\n\nA NUL\x00 sits here (app.go:3).", "skipped_reason": ""},
+			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if !*res.Posted {
+			t.Fatalf("nothing posted: %s", raw)
+		}
+		w := writes(f.seen())
+		if len(w) != 1 || postedBody(t, w[0]) != "Re: op\n\nA NUL sits here (app.go:3)."+publishFooter {
+			t.Errorf("the forge saw %+v, want the answer without its NUL", w)
+		}
+	})
+	t.Run("an answer opening on a template delimiter", func(t *testing.T) {
+		f := newConverseFakeForge(t)
+		pr := f.srv.URL + "/o/r/pull/42"
+		f.htmlFor = func(id int) string { return issueComment(pr, id) }
+		answer := "{{ .Values.image }} is read from values.yaml (chart.yaml:3)."
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": answer, "skipped_reason": ""},
+			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if !*res.Posted {
+			t.Fatalf("an answer opening on {{ was refused: %s", raw)
+		}
+		if w := writes(f.seen()); len(w) != 1 || postedBody(t, w[0]) != answer+publishFooter {
+			t.Errorf("the forge saw %+v, want the answer as written", w)
+		}
+	})
+	t.Run("a skipped_reason past an environment entry", func(t *testing.T) {
+		f := newConverseFakeForge(t)
+		pr := f.srv.URL + "/o/r/pull/42"
+		reason := strings.Repeat("the diff could not be read; ", 5000)
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": "", "skipped_reason": reason},
+			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if *res.Posted || !strings.HasPrefix(res.SkippedReason, "the diff could not be read") {
+			t.Fatalf("posted = %v, skipped_reason %.80q (%d bytes of output)", *res.Posted, res.SkippedReason, len(raw))
+		}
+		if n := len(res.SkippedReason); n > 2100 {
+			t.Errorf("skipped_reason is %d bytes, want it capped near 2000 — converse_health reads it from its environment", n)
+		}
+		if hits := f.seen(); len(hits) != 0 {
+			t.Errorf("the forge saw %+v, want no request", hits)
+		}
+	})
+}
+
+// Nothing to post, nothing sent: an empty draft (the agent's own reason,
+// when it gave one, is the reason), no mounted token, a pr_url this step
+// cannot reply on or that is not on the webhook's forge, a discussion id that
+// is not one, an answer the edge never delivered. Each is posted=false with a
+// reason converse_health shows, and the forge sees no request at all.
 func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	type tc struct {
 		name       string
 		input      map[string]any
 		prPath     string // appended to the fake's origin; a full URL when it has a scheme
 		disc       string
+		base       string // forge_base_url, appended to the fake's origin; a full URL when it has a scheme
 		noToken    bool
+		unmapped   bool
 		wantReason string
 	}
 	answer := map[string]any{"answer": publishAnswer, "skipped_reason": ""}
 	for _, c := range []tc{
 		{name: "empty answer", input: map[string]any{"answer": "", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
-		{name: "blank answer", input: map[string]any{"answer": " \n\t", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
+		{name: "blank answer", input: map[string]any{"answer": " \n\t\x00", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
 		{name: "the agent skipped", input: map[string]any{"answer": "", "skipped_reason": "no question in the note"}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
-		{name: "the agent skipped beside a draft", input: map[string]any{"answer": publishAnswer, "skipped_reason": "the diff could not be read"}, prPath: "/o/r/pull/1", wantReason: "the diff could not be read"},
 		{name: "no token mounted", input: answer, prPath: "/o/r/pull/1", noToken: true, wantReason: "forge_token is not mounted"},
 		{name: "pr_url empty", input: answer, prPath: "", wantReason: "pr_url is empty"},
 		{name: "pr_url an issue", input: answer, prPath: "/o/r/issues/1", wantReason: "not a pull request URL"},
 		{name: "pr_url a dot segment", input: answer, prPath: "/o/../pull/1", wantReason: "not a pull request URL"},
 		{name: "pr_url not http", input: answer, prPath: "ftp://forge.example/o/r/pull/1", wantReason: "not an http(s) URL"},
 		{name: "pr_url with userinfo", input: answer, prPath: "https://user:pw@forge.example/o/r/pull/1", wantReason: "userinfo"},
+		{name: "pr_url off the webhook's forge", input: answer, prPath: "/o/r/pull/1", base: "https://forge.example", wantReason: "is not the configured forge"},
+		{name: "pr_url outside the forge base's path", input: answer, prPath: "/other/g/p/-/merge_requests/1", base: "/gitlab", wantReason: "not under the configured forge base"},
 		{name: "github discussion id not a comment id", input: answer, prPath: "/o/r/pull/1", disc: "../../x", wantReason: "not a GitHub review-comment id"},
 		{name: "gitlab discussion id not one", input: answer, prPath: "/g/p/-/merge_requests/1", disc: "a/b", wantReason: "not a GitLab discussion id"},
-		{name: "the answer never reached the node", input: map[string]any{"skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "input is unmapped"},
+		{name: "the answer never reached the node", input: map[string]any{"skipped_reason": ""}, prPath: "/o/r/pull/1", unmapped: true, wantReason: "input is unmapped"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				pr := c.prPath
-				if pr != "" && !strings.Contains(pr, "://") {
-					pr = f.srv.URL + pr
+			f := newConverseFakeForge(t)
+			pr := c.prPath
+			if pr != "" && !strings.Contains(pr, "://") {
+				pr = f.srv.URL + pr
+			}
+			vars := map[string]any{"pr_url": pr, "discussion_id": c.disc}
+			if c.base != "" {
+				vars["forge_base_url"] = c.base
+				if !strings.Contains(c.base, "://") {
+					vars["forge_base_url"] = f.srv.URL + c.base
 				}
-				tokenPath := writeToken(t)
-				if c.noToken {
-					tokenPath = filepath.Join(t.TempDir(), "absent", "forge_token")
-				}
-				var cmd string
-				if _, has := c.input["answer"]; has {
-					cmd = renderReviConversePublish(t, c.input, map[string]any{"pr_url": pr, "discussion_id": c.disc}, publishRunURL, tokenPath)
-				} else {
-					cmd = renderPublishLeavingAnswer(t, c.input, map[string]any{"pr_url": pr, "discussion_id": c.disc}, tokenPath)
-				}
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
-				if *res.Posted || res.ReplyURL != "" {
-					t.Errorf("%s: posted = %v, reply_url %q — want nothing posted (%s)", shell, *res.Posted, res.ReplyURL, raw)
-				}
-				if !strings.Contains(res.SkippedReason, c.wantReason) {
-					t.Errorf("%s: skipped_reason %q does not name %q", shell, res.SkippedReason, c.wantReason)
-				}
-				if hits := f.seen(); len(hits) != 0 {
-					t.Errorf("%s: the forge saw %+v, want no request", shell, hits)
-				}
+			}
+			tokenPath := writeToken(t)
+			if c.noToken {
+				tokenPath = filepath.Join(t.TempDir(), "absent", "forge_token")
+			}
+			var unresolved []string
+			if c.unmapped {
+				unresolved = []string{"input.answer"}
+			}
+			script := renderReviConversePublish(t, c.input, vars, publishRunURL, tokenPath, unresolved...)
+			res, raw := runPublish(t, script, noProxyEnv())
+			if *res.Posted || res.ReplyURL != "" {
+				t.Errorf("posted = %v, reply_url %q — want nothing posted (%s)", *res.Posted, res.ReplyURL, raw)
+			}
+			if !strings.Contains(res.SkippedReason, c.wantReason) {
+				t.Errorf("skipped_reason %q does not name %q", res.SkippedReason, c.wantReason)
+			}
+			if hits := f.seen(); len(hits) != 0 {
+				t.Errorf("the forge saw %+v, want no request", hits)
 			}
 		})
 	}
 }
 
-// renderPublishLeavingAnswer renders the command with `answer` absent from
-// the input, as an unmapped edge leaves it: the reference stays as written.
-func renderPublishLeavingAnswer(t *testing.T, input, vars map[string]any, tokenPath string) string {
-	t.Helper()
-	wf := compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
-	tn := wf.Nodes["publish_reply"].(*ir.ToolNode)
-	shapes := model.WorkflowShapes(wf).WithInputSchema(wf.Schemas[tn.InputSchema])
-	td := &model.TemplateData{RunID: publishRunID, Run: map[string]any{"id": publishRunID, "url": publishRunURL}}
-	var unresolved []string
-	command := model.RenderCommand(tn.Command, tn.CommandRefs, input, vars, td, publishRunID, shapes, func(ref string) {
-		unresolved = append(unresolved, ref)
-	})
-	if !slices.Equal(unresolved, []string{"input.answer"}) {
-		t.Fatalf("unresolved = %v, want only input.answer", unresolved)
+// The forge token never leaves in a body, whatever put it in the draft — a
+// prompt-injected agent that read the mounted file, a placeholder the engine
+// left as written. The script itself refuses a text carrying the token
+// raw or encoded (percent, base64, hex, its characters spread apart) or the
+// token's placeholder raw or defused: nothing is sent, not even the
+// duplicate check's read, and the reason names what the answer carried
+// without carrying it. This is the body's own guard, rendered here with no
+// engine guard in front of it.
+func TestReviConversePublishReplyRefusesToPostTheForgeToken(t *testing.T) {
+	requirePython(t)
+	raw := []byte(publishToken)
+	spread := strings.Join(strings.Split(publishToken, ""), " ")
+	for _, c := range []struct {
+		name, carried, wantWhat string
+	}{
+		{name: "raw", carried: "the key is " + publishToken, wantWhat: "the forge token"},
+		{name: "single-quoted", carried: "the key is '" + publishToken + "'", wantWhat: "the forge token"},
+		{name: "base64", carried: "base64: " + base64.StdEncoding.EncodeToString(raw), wantWhat: "the forge token"},
+		{name: "base64 url-safe unpadded", carried: "b64: " + strings.TrimRight(base64.URLEncoding.EncodeToString(raw), "="), wantWhat: "the forge token"},
+		{name: "hex", carried: "hex " + hex.EncodeToString(raw), wantWhat: "the forge token"},
+		{name: "hex upper", carried: "HEX " + strings.ToUpper(hex.EncodeToString(raw)), wantWhat: "the forge token"},
+		{name: "spread apart", carried: "spelled out: " + spread, wantWhat: "the forge token, spread apart"},
+		{name: "zero-width joined", carried: "split: " + strings.Join(strings.Split(publishToken, ""), "\u200b"), wantWhat: "the forge token, spread apart"},
+		{name: "the placeholder", carried: "the key is " + tokenPlaceholder, wantWhat: "the forge token's placeholder"},
+		{name: "the defused placeholder", carried: "the key is " + tokenDefused, wantWhat: "the forge token's placeholder"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newConverseFakeForge(t)
+			pr := f.srv.URL + "/g/p/-/merge_requests/7"
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": "Re: op — « what is the key? »\n\n" + c.carried + " (app.go:3).", "skipped_reason": ""},
+				map[string]any{"pr_url": pr, "discussion_id": "6a1f0c"}, publishRunURL, writeToken(t))
+			res, out := runPublish(t, script, noProxyEnv())
+			if *res.Posted || res.ReplyURL != "" {
+				t.Fatalf("posted = %v, reply_url %q — an answer carrying %s was posted (%s)", *res.Posted, res.ReplyURL, c.wantWhat, out)
+			}
+			if want := "the answer carries " + c.wantWhat + ";"; !strings.Contains(res.SkippedReason, want) {
+				t.Errorf("skipped_reason %q does not say %q", res.SkippedReason, want)
+			}
+			if hits := f.seen(); len(hits) != 0 {
+				t.Errorf("the forge saw %+v, want no request at all", hits)
+			}
+			if strings.Contains(out, spread) {
+				t.Errorf("the token, spread apart, reached the node's output: %s", out)
+			}
+		})
 	}
-	ph := "'" + secretguard.PlaceholderForName("forge_token") + "'"
-	if strings.Count(command, ph) != 1 {
-		t.Fatalf("the forge_token reference renders %d times", strings.Count(command, ph))
-	}
-	return strings.Replace(command, ph, shellSingleQuote(tokenPath), 1)
 }
 
 // The forge's refusal is the reason: a 4xx or 5xx on the POST, or a
@@ -600,7 +857,7 @@ func renderPublishLeavingAnswer(t *testing.T, input, vars map[string]any, tokenP
 // leaves posted=false with the status and the forge's message, after the
 // one write, with no re-read. The token never reaches the reason.
 func TestReviConversePublishReplyReportsTheForgesRefusal(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	for _, c := range []struct {
 		name       string
 		status     int
@@ -615,34 +872,34 @@ func TestReviConversePublishReplyReportsTheForgesRefusal(t *testing.T) {
 		{name: "a redirect", redirect: true, wantReason: []string{"HTTP 302"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				other := newConverseFakeForge(t)
-				f.postStatus, f.postAnswer = c.status, c.answer
-				if c.redirect {
-					f.redirectTo = other.srv.URL + "/stolen"
+			f := newConverseFakeForge(t)
+			other := newConverseFakeForge(t)
+			f.postStatus, f.postAnswer = c.status, c.answer
+			if c.redirect {
+				f.redirectTo = other.srv.URL + "/stolen"
+			}
+			pr := f.srv.URL + "/g/p/-/merge_requests/7"
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"pr_url": pr, "discussion_id": "6a1f0c"}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if *res.Posted || res.ReplyURL != "" {
+				t.Errorf("posted = %v, reply_url %q, want nothing posted (%s)", *res.Posted, res.ReplyURL, raw)
+			}
+			for _, want := range c.wantReason {
+				if !strings.Contains(res.SkippedReason, want) {
+					t.Errorf("skipped_reason %q does not name %q", res.SkippedReason, want)
 				}
-				pr := f.srv.URL + "/g/p/-/merge_requests/7"
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
-					map[string]any{"pr_url": pr, "discussion_id": "6a1f0c"},
-					publishRunURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
-				if *res.Posted || res.ReplyURL != "" {
-					t.Errorf("%s: posted = %v, reply_url %q, want nothing posted (%s)", shell, *res.Posted, res.ReplyURL, raw)
-				}
-				for _, want := range c.wantReason {
-					if !strings.Contains(res.SkippedReason, want) {
-						t.Errorf("%s: skipped_reason %q does not name %q", shell, res.SkippedReason, want)
-					}
-				}
-				hits := f.seen()
-				if len(hits) != 1 || hits[0].Method != http.MethodPost {
-					t.Errorf("%s: the forge saw %+v, want the one POST and no re-read", shell, hits)
-				}
-				if got := other.seen(); len(got) != 0 {
-					t.Errorf("%s: the redirect target saw %+v — the token followed a redirect", shell, got)
-				}
+			}
+			hits := f.seen()
+			if w := writes(hits); len(w) != 1 || w[0].Method != http.MethodPost {
+				t.Errorf("the forge saw writes %+v, want the one POST", w)
+			}
+			if g := gets(hits); !slices.Equal(g, []string{"/api/v4/projects/g%2Fp/merge_requests/7/discussions/6a1f0c"}) {
+				t.Errorf("the reads were %v, want the duplicate check alone and no re-read", g)
+			}
+			if got := other.seen(); len(got) != 0 {
+				t.Errorf("the redirect target saw %+v — the token followed a redirect", got)
 			}
 		})
 	}
@@ -653,7 +910,7 @@ func TestReviConversePublishReplyReportsTheForgesRefusal(t *testing.T) {
 // same for a re-read that answers with another note, and for a created note
 // that came back with no id to read it by. Still exactly one write.
 func TestReviConversePublishReplyNeedsTheReReadToFindTheNote(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	for _, c := range []struct {
 		name       string
 		noID       bool
@@ -661,37 +918,34 @@ func TestReviConversePublishReplyNeedsTheReReadToFindTheNote(t *testing.T) {
 		wantReason string
 		wantReads  int
 	}{
-		{name: "the re-read misses", wantReason: "re-reading it failed: GET", wantReads: 2},
-		{name: "the re-read finds another note", other: true, wantReason: "re-reading it failed: GET", wantReads: 2},
-		{name: "no note id", noID: true, wantReason: "with no note id", wantReads: 0},
+		{name: "the re-read misses", wantReason: "re-reading it failed: GET", wantReads: 3},
+		{name: "the re-read finds another note", other: true, wantReason: "re-reading it failed: GET", wantReads: 3},
+		{name: "no note id", noID: true, wantReason: "with no note id", wantReads: 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				f.postNoID, f.readOther = c.noID, c.other
-				if !c.noID && !c.other {
-					f.readStatus = http.StatusNotFound
-				}
-				pr := f.srv.URL + "/o/r/pull/42"
-				f.htmlURL = pr + "#issuecomment-9001"
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
-					map[string]any{"pr_url": pr, "discussion_id": ""},
-					publishRunURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
-				if *res.Posted || res.ReplyURL != "" {
-					t.Errorf("%s: posted = %v, reply_url %q — a note the re-read did not find is not posted (%s)", shell, *res.Posted, res.ReplyURL, raw)
-				}
-				if !strings.Contains(res.SkippedReason, c.wantReason) {
-					t.Errorf("%s: skipped_reason %q does not name %q", shell, res.SkippedReason, c.wantReason)
-				}
-				hits := f.seen()
-				if w := writes(hits); len(w) != 1 {
-					t.Errorf("%s: %d writes, want exactly one", shell, len(w))
-				}
-				if reads := len(hits) - len(writes(hits)); reads != c.wantReads {
-					t.Errorf("%s: %d re-reads, want %d", shell, reads, c.wantReads)
-				}
+			f := newConverseFakeForge(t)
+			f.postNoID, f.readOther = c.noID, c.other
+			if !c.noID && !c.other {
+				f.readStatus = http.StatusNotFound
+			}
+			pr := f.srv.URL + "/o/r/pull/42"
+			f.htmlFor = func(id int) string { return issueComment(pr, id) }
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if *res.Posted || res.ReplyURL != "" {
+				t.Errorf("posted = %v, reply_url %q — a note the re-read did not find is not posted (%s)", *res.Posted, res.ReplyURL, raw)
+			}
+			if !strings.Contains(res.SkippedReason, c.wantReason) {
+				t.Errorf("skipped_reason %q does not name %q", res.SkippedReason, c.wantReason)
+			}
+			hits := f.seen()
+			if w := writes(hits); len(w) != 1 {
+				t.Errorf("%d writes, want exactly one", len(w))
+			}
+			if reads := len(gets(hits)); reads != c.wantReads {
+				t.Errorf("%d reads, want %d (the duplicate check, then the re-reads)", reads, c.wantReads)
 			}
 		})
 	}
@@ -705,7 +959,7 @@ func utf16Units(s string) int { return len(utf16.Encode([]rune(s))) }
 // An answer that leaves a fence open untruncated is closed too, so the
 // footer renders as a link and not as code.
 func TestReviConversePublishReplyTruncationKeepsTheRunLink(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	fence := "```"
 	for _, c := range []struct {
 		name          string
@@ -718,42 +972,39 @@ func TestReviConversePublishReplyTruncationKeepsTheRunLink(t *testing.T) {
 		{name: "an unclosed fence, short", answer: "Re: op\n\n" + fence + "go\nx := 1", wantTruncated: false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				pr := f.srv.URL + "/o/r/pull/42"
-				f.htmlURL = pr + "#issuecomment-9001"
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": c.answer, "skipped_reason": ""},
-					map[string]any{"pr_url": pr, "discussion_id": ""},
-					publishRunURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
-				if !*res.Posted {
-					t.Fatalf("%s: nothing posted: %s", shell, raw)
+			f := newConverseFakeForge(t)
+			pr := f.srv.URL + "/o/r/pull/42"
+			f.htmlFor = func(id int) string { return issueComment(pr, id) }
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": c.answer, "skipped_reason": ""},
+				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if !*res.Posted {
+				t.Fatalf("nothing posted: %.300s", raw)
+			}
+			w := writes(f.seen())
+			if len(w) != 1 {
+				t.Fatalf("%d writes, want 1", len(w))
+			}
+			body := postedBody(t, w[0])
+			if !strings.HasSuffix(body, publishFooter) {
+				t.Errorf("the posted body does not end with the run footer: …%q", body[max(0, len(body)-200):])
+			}
+			if n := utf16Units(body); n > 65536 {
+				t.Errorf("the posted body is %d UTF-16 units, past GitHub's 65536", n)
+			}
+			marked := strings.Contains(body, "answer truncated to fit the forge comment limit")
+			if marked != c.wantTruncated || strings.Contains(res.Summary, "truncated") != c.wantTruncated {
+				t.Errorf("truncation marker in body %v, in summary %v, want %v", marked, strings.Contains(res.Summary, "truncated"), c.wantTruncated)
+			}
+			opens := 0
+			for _, line := range strings.Split(strings.TrimSuffix(body, publishFooter), "\n") {
+				if strings.HasPrefix(line, fence) {
+					opens++
 				}
-				w := writes(f.seen())
-				if len(w) != 1 {
-					t.Fatalf("%s: %d writes, want 1", shell, len(w))
-				}
-				body := postedBody(t, w[0])
-				if !strings.HasSuffix(body, publishFooter) {
-					t.Errorf("%s: the posted body does not end with the run footer: …%q", shell, body[max(0, len(body)-200):])
-				}
-				if n := utf16Units(body); n > 65536 {
-					t.Errorf("%s: the posted body is %d UTF-16 units, past GitHub's 65536", shell, n)
-				}
-				marked := strings.Contains(body, "answer truncated to fit the forge comment limit")
-				if marked != c.wantTruncated || strings.Contains(res.Summary, "truncated") != c.wantTruncated {
-					t.Errorf("%s: truncation marker in body %v, in summary %v, want %v", shell, marked, strings.Contains(res.Summary, "truncated"), c.wantTruncated)
-				}
-				opens := 0
-				for _, line := range strings.Split(strings.TrimSuffix(body, publishFooter), "\n") {
-					if strings.HasPrefix(line, fence) {
-						opens++
-					}
-				}
-				if opens%2 != 0 {
-					t.Errorf("%s: the body leaves a code fence open before the footer (%d fence lines)", shell, opens)
-				}
+			}
+			if opens%2 != 0 {
+				t.Errorf("the body leaves a code fence open before the footer (%d fence lines)", opens)
 			}
 		})
 	}
@@ -763,7 +1014,7 @@ func TestReviConversePublishReplyTruncationKeepsTheRunLink(t *testing.T) {
 // it: no address prints the id alone, never a host; a run id that is not
 // plain is never pasted into a link label.
 func TestReviConversePublishReplyFooterFollowsTheRunLinkRules(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	for _, c := range []struct {
 		name, runURL, wantTail string
 	}{
@@ -772,26 +1023,23 @@ func TestReviConversePublishReplyFooterFollowsTheRunLinkRules(t *testing.T) {
 		{name: "an engine predating run.url", runURL: "{{run.url}}", wantTail: "\n\n---\n🤖 [iterion](https://iterion.cloud) · run `run-converse`"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, shell := range shells {
-				f := newConverseFakeForge(t)
-				pr := f.srv.URL + "/o/r/pull/42"
-				f.htmlURL = pr + "#issuecomment-9001"
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
-					map[string]any{"pr_url": pr, "discussion_id": ""},
-					c.runURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv())
-				if !*res.Posted {
-					t.Fatalf("%s: nothing posted: %s", shell, raw)
-				}
-				w := writes(f.seen())
-				if len(w) != 1 {
-					t.Fatalf("%s: %d writes, want 1", shell, len(w))
-				}
-				body := postedBody(t, w[0])
-				if !strings.HasSuffix(body, c.wantTail) {
-					t.Errorf("%s: the body ends %q, want the footer %q", shell, body[max(0, len(body)-len(c.wantTail)-40):], c.wantTail)
-				}
+			f := newConverseFakeForge(t)
+			pr := f.srv.URL + "/o/r/pull/42"
+			f.htmlFor = func(id int) string { return issueComment(pr, id) }
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"pr_url": pr}, c.runURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if !*res.Posted {
+				t.Fatalf("nothing posted: %s", raw)
+			}
+			w := writes(f.seen())
+			if len(w) != 1 {
+				t.Fatalf("%d writes, want 1", len(w))
+			}
+			body := postedBody(t, w[0])
+			if !strings.HasSuffix(body, c.wantTail) {
+				t.Errorf("the body ends %q, want the footer %q", body[max(0, len(body)-len(c.wantTail)-40):], c.wantTail)
 			}
 		})
 	}
@@ -835,10 +1083,10 @@ func connectLogger(t *testing.T) (string, func() []string) {
 // The production derivation, on real host names and no network: github.com
 // posts to api.github.com, a GitHub Enterprise host to its own /api/v3, a
 // GitLab host to /api/v4, a Forgejo host to /api/v1. An HTTPS proxy that
-// logs the CONNECT and refuses it shows where the request was going; the
-// reason names the URL it was going to.
+// logs the CONNECT and refuses it shows where the requests were going; the
+// reason names the URL the POST was going to.
 func TestReviConversePublishReplyDerivesTheProductionAPIBase(t *testing.T) {
-	shells := publishShells(t)
+	requirePython(t)
 	for _, c := range []struct {
 		pr, disc, wantConnect, wantURL string
 	}{
@@ -849,173 +1097,25 @@ func TestReviConversePublishReplyDerivesTheProductionAPIBase(t *testing.T) {
 		{pr: "https://codeberg.example/o/r/pulls/7", wantConnect: "CONNECT codeberg.example:443", wantURL: "https://codeberg.example/api/v1/repos/o/r/issues/7/comments"},
 	} {
 		t.Run(c.wantURL, func(t *testing.T) {
-			for _, shell := range shells {
-				proxy, seen := connectLogger(t)
-				cmd := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
-					map[string]any{"pr_url": c.pr, "discussion_id": c.disc},
-					publishRunURL, writeToken(t))
-				res, raw := runPublish(t, shell, cmd, noProxyEnv("HTTPS_PROXY="+proxy, "https_proxy="+proxy))
-				if *res.Posted {
-					t.Fatalf("%s: posted through a proxy that refuses every tunnel: %s", shell, raw)
+			proxy, seen := connectLogger(t)
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"pr_url": c.pr, "discussion_id": c.disc}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv("HTTPS_PROXY="+proxy, "https_proxy="+proxy))
+			if *res.Posted {
+				t.Fatalf("posted through a proxy that refuses every tunnel: %s", raw)
+			}
+			got := seen()
+			if len(got) == 0 {
+				t.Fatalf("the proxy saw no CONNECT, want %s", c.wantConnect)
+			}
+			for _, line := range got {
+				if line != c.wantConnect+" HTTP/1.1" && line != c.wantConnect+" HTTP/1.0" {
+					t.Errorf("the proxy saw %q, want only %s", line, c.wantConnect)
 				}
-				if got := seen(); !slices.Contains(got, c.wantConnect+" HTTP/1.1") && !slices.Contains(got, c.wantConnect+" HTTP/1.0") {
-					t.Errorf("%s: the proxy saw %v, want %s", shell, got, c.wantConnect)
-				}
-				if !strings.Contains(res.SkippedReason, c.wantURL) {
-					t.Errorf("%s: skipped_reason %q does not name %s", shell, res.SkippedReason, c.wantURL)
-				}
 			}
-		})
-	}
-}
-
-// converseChainExec answers converse_agent with a draft shaped by the
-// converse_output schema and runs every other node — publish_reply and
-// converse_health — on a real ClawExecutor, under the run's secret guard.
-type converseChainExec struct {
-	real  *model.ClawExecutor
-	agent map[string]any
-
-	mu   sync.Mutex
-	outs map[string]map[string]any
-}
-
-func (c *converseChainExec) SetVars(v map[string]any) { c.real.SetVars(v) }
-
-func (c *converseChainExec) Execute(ctx context.Context, n ir.Node, input map[string]any) (map[string]any, error) {
-	var out map[string]any
-	var err error
-	if n.NodeID() == "converse_agent" {
-		out = map[string]any{}
-		for k, v := range c.agent {
-			out[k] = v
-		}
-	} else {
-		out, err = c.real.Execute(ctx, n, input)
-	}
-	c.mu.Lock()
-	if c.outs == nil {
-		c.outs = map[string]map[string]any{}
-	}
-	c.outs[n.NodeID()] = out
-	c.mu.Unlock()
-	return out, err
-}
-
-func (c *converseChainExec) output(id string) map[string]any {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.outs[id]
-}
-
-// The chain as the engine runs it: the agent's draft, in the shape of its
-// real schema, crosses the edge into publish_reply, which posts it with the
-// token the run's guard mounts and the run's own link; its result crosses
-// the edge into converse_health, which reads OK on a posted reply and
-// degraded on every way it can fall short.
-func TestReviConverseChainPostsTheDraftAndGatesIt(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not on PATH")
-	}
-	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-		t.Setenv(name, "")
-	}
-	t.Setenv("NO_PROXY", "127.0.0.1,localhost")
-	t.Setenv("no_proxy", "127.0.0.1,localhost")
-	t.Setenv(deeplink.PublicBaseEnv, "https://iterion.example")
-
-	wf := compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
-	var fields []string
-	for _, f := range wf.Schemas["converse_output"].Fields {
-		fields = append(fields, f.Name)
-	}
-	slices.Sort(fields)
-	if want := []string{"answer", "forge", "skipped_reason", "summary"}; !slices.Equal(fields, want) {
-		t.Fatalf("converse_output fields = %v, want %v — the agent drafts; posting is publish_reply's", fields, want)
-	}
-	draft := func(answer, skipped string) map[string]any {
-		return map[string]any{"answer": answer, "forge": "gitlab", "skipped_reason": skipped, "summary": "Question: why does A return 2?"}
-	}
-
-	for _, c := range []struct {
-		name         string
-		agent        map[string]any
-		noToken      bool
-		refuse       int
-		missRead     bool
-		wantWrites   int
-		wantDegraded bool
-		wantBanner   string
-	}{
-		{name: "posted", agent: draft(publishAnswer, ""), wantWrites: 1, wantBanner: "forge reply OK: "},
-		{name: "the agent skipped", agent: draft("", "no question in the note"), wantDegraded: true, wantBanner: "forge reply skipped: no question in the note"},
-		{name: "an empty draft", agent: draft("", ""), wantDegraded: true, wantBanner: "forge reply skipped: the agent returned an empty answer"},
-		{name: "no token", agent: draft(publishAnswer, ""), noToken: true, wantDegraded: true, wantBanner: "forge reply skipped: forge_token is not mounted"},
-		{name: "the forge refuses", agent: draft(publishAnswer, ""), refuse: http.StatusForbidden, wantWrites: 1, wantDegraded: true, wantBanner: "HTTP 403"},
-		{name: "the re-read misses", agent: draft(publishAnswer, ""), missRead: true, wantWrites: 1, wantDegraded: true, wantBanner: "re-reading it failed"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			f := newConverseFakeForge(t)
-			f.postStatus, f.postAnswer = c.refuse, `{"message":"403 Forbidden"}`
-			if c.missRead {
-				f.readStatus = http.StatusNotFound
-			}
-			pr := f.srv.URL + "/g/p/-/merge_requests/7"
-			var secrets []secretguard.Secret
-			if !c.noToken {
-				secrets = append(secrets, secretguard.Secret{Name: "forge_token", Value: publishToken, FilePath: writeToken(t)})
-			}
-			guard := secretguard.New(secrets, secretguard.DefaultConfig())
-			ex := &converseChainExec{
-				real:  model.NewClawExecutor(model.NewRegistry(), wf, model.WithWorkDir(t.TempDir()), model.WithSecretGuard(guard)),
-				agent: c.agent,
-			}
-			st, err := store.New(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			const runID = "chain-run-1"
-			vars := map[string]any{
-				"workspace_dir": t.TempDir(), "base_ref": "main", "pr_url": pr, "discussion_id": "6a1f0c",
-				"trigger_note": "/revi why does A return 2?", "converse_question": "why does A return 2?",
-				"thread_context": "", "replier": "op",
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if err := runtime.New(wf, st, ex).Run(ctx, runID, vars); err != nil {
-				t.Fatalf("the run failed: %v — publish_reply and converse_health inform, they never fail it", err)
-			}
-			health := ex.output("converse_health")
-			if health == nil {
-				t.Fatal("converse_health never ran")
-			}
-			if health["degraded"] != c.wantDegraded {
-				t.Errorf("degraded = %v, want %v (banner %q, publish_reply %v)", health["degraded"], c.wantDegraded, health["banner"], ex.output("publish_reply"))
-			}
-			banner, _ := health["banner"].(string)
-			if !strings.Contains(banner, c.wantBanner) {
-				t.Errorf("banner %q does not name %q", banner, c.wantBanner)
-			}
-			hits := f.seen()
-			w := writes(hits)
-			if len(w) != c.wantWrites {
-				t.Fatalf("the forge saw %d writes, want %d: %+v", len(w), c.wantWrites, hits)
-			}
-			if c.wantWrites == 0 {
-				return
-			}
-			if w[0].Auth != "Bearer "+publishToken {
-				t.Errorf("the POST authenticated with %q — the guard's mounted token did not reach it", w[0].Auth)
-			}
-			wantFooter := "\n\n---\n🤖 [iterion](https://iterion.cloud) · run [`" + runID + "`](" + deeplink.Run("https://iterion.example", runID) + ")"
-			if body, want := postedBody(t, w[0]), forge.InertGitLabQuickActions(publishAnswer)+wantFooter; body != want {
-				t.Errorf("the posted body is not the agent's draft, guarded, then this run's link:\n%q\nwant\n%q", body, want)
-			}
-			if !c.wantDegraded {
-				if want := "forge reply OK: " + pr + "#note_9001"; banner != want {
-					t.Errorf("banner = %q, want %q", banner, want)
-				}
+			if !strings.Contains(res.SkippedReason, c.wantURL) {
+				t.Errorf("skipped_reason %q does not name %s", res.SkippedReason, c.wantURL)
 			}
 		})
 	}

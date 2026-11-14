@@ -141,7 +141,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		pr = &resolved
 		repoRef = resolved.SourceBranch
 	}
-	vars := applyWebhookVarLayers(buildPRForgeCommandVars(p, pr, route, cmdArgs, nil), cfg, store.RunTrustDefault)
+	vars := applyWebhookVarLayers(withForgeBaseURL(buildPRForgeCommandVars(p, pr, route, cmdArgs, nil), cfg), cfg, store.RunTrustDefault)
 	if pr != nil {
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, pr.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
@@ -564,7 +564,7 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	if s.logger != nil {
 		s.logger.Debug("webhooks: %s review-thread reply %s#%d by %s authorized (%s)", provider, p.ProjectPath, p.PRNumber, p.AuthorLogin, reason)
 	}
-	vars := applyWebhookVarLayers(buildPRForgeReviewReplyVars(p, threadContext, nil), cfg, store.RunTrustDefault)
+	vars := applyWebhookVarLayers(withForgeBaseURL(buildPRForgeReviewReplyVars(p, threadContext, nil), cfg), cfg, store.RunTrustDefault)
 	// Idempotency: one launch per reply comment; "rc|" keeps the key space
 	// disjoint from the pr|/cmd| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("rc|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.RepoID, p.SubjectID())))

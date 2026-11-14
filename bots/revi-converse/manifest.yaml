@@ -12,7 +12,19 @@ version: 0.1.8
 ## steps the model spent reading: on VAO !48 a reply that took 61 steps was
 ## drafted and never posted, the POST being the agent's last step. The
 ## forge-reply skill is folded into the prompt as reading and answer-shape
-## guidance. And the run's duration budget follows the agent's tool loop:
+## guidance. publish_reply is a python `script:`, so a draft of any size or
+## byte content reaches it (a NUL is dropped before posting), and it is safe
+## to execute twice: one bounded read of the thread finds a note that is an
+## exact copy of this run's reply and reports it instead of posting again. A
+## drafted answer is posted whatever its skipped_reason says ("N/A" from a
+## step-limited model); the reason speaks only for an empty draft. The forge
+## token never leaves in a body: forge_token is granted the `file` sink only
+## (a placeholder the answer quotes is defused before the body runs, never
+## materialised), and the body refuses a text carrying the token, encoded or
+## not, or its placeholder (requires.iterion rises to 4.7.0, the release that
+## reads the grant). The webhook's pinned forge base reaches the run as
+## forge_base_url (hidden), so a GitLab or Forgejo under a sub-path is reached
+## where it lives. And the run's duration budget follows the agent's tool loop:
 ## 30 minutes, not 10 — with tool_max_steps 60 (0.1.7) a step on the team
 ## gateway's deepseek takes ~10-15 s, and a question that needed ~50 steps
 ## died on its 10-minute budget before it posted (VAO !48).
@@ -95,10 +107,12 @@ invocations:
 ## out of the form (still settable via --var / bot_args).
 launch:
   primary: [converse_question, pr_url]
-  hidden: [discussion_id, trigger_note, thread_context, replier]
+  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url]
 
-## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
-## release that reads the profile would refuse the header as an unknown
-## declaration — the floor keeps such a runner from admitting the bundle.
+## Profile 2 (`dsl: 2` at the head of main.bot) needs 3.225.0, and the
+## `sinks:` grant on forge_token needs 4.7.0, the release that reads it (the
+## grant is what keeps a quoted placeholder from being materialised in
+## publish_reply's body): the floor keeps an older runner from admitting the
+## bundle.
 requires:
-  iterion: ">= 3.225.0"
+  iterion: ">= 4.7.0"

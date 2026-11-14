@@ -36,9 +36,11 @@ converse_agent  (agent, claude_code, session: fresh)
   → reads the operator's question + `git diff $(git merge-base base_ref HEAD)`
     (and the thread, read-only, when the transcript is missing), drafts the
     answer and hands it back in `converse_output.answer` — it never posts
-publish_reply   (tool, deterministic — no LLM)
-  → posts the draft with the forge_token, then re-reads the created note by
-    its id; emits posted, reply_url and a skipped_reason saying why not
+publish_reply   (tool, deterministic python script — no LLM)
+  → reads the thread once (a note that is an exact copy of this run's reply
+    means it already posted), posts the draft with the forge_token, then
+    re-reads the created note by its id; emits posted, reply_url and a
+    skipped_reason saying why not
 converse_health (tool, deterministic — no LLM)
   → asserts the invariant: degraded=true unless posted=true with an http(s)
     reply_url on the host of `pr_url`, plus a banner (UNVERIFIED, the
@@ -48,9 +50,12 @@ done
 
 The agent's model is `${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}` and its
 effort `${ITERION_VIBE_EFFORT_CONVERSE:-medium}`. Its tool loop only reads:
-a question that runs out of steps still hands back its draft, and the draft
-is still posted — posting no longer depends on how many steps the model spent
-reading (VAO !48: a reply that took 61 steps was drafted and never posted).
+a question that runs out of steps still hands back its draft (claw's recovery
+pass), and the draft is still posted — posting no longer depends on how many
+steps the model spent reading (VAO !48: a reply that took 61 steps was
+drafted and never posted). A drafted answer is posted whatever the agent's
+`skipped_reason` says: the field is required, and a step-limited model fills
+it ("N/A"); the reason is the banner only when the draft is empty.
 
 `publish_reply` reads the forge from `pr_url`'s path and posts where each
 forge's REST API takes a reply:
@@ -63,10 +68,15 @@ forge's REST API takes a reply:
 | GitLab | empty | `POST /projects/<project>/merge_requests/<iid>/notes` |
 | Forgejo `…/<o>/<r>/pulls/<n>` | ignored | `POST /repos/<o>/<r>/issues/<n>/comments` |
 
-The API base is `https://api.github.com` for github.com, `<origin>/api/v3`
-for a GitHub Enterprise host, `<origin>/api/v4` on GitLab, `<origin>/api/v1`
-on Forgejo. Auth is `Authorization: Bearer` (GitHub, GitLab) or `token`
-(Forgejo); redirects are not followed. Before posting, the body loses its
+The API base is `https://api.github.com` for github.com, `<base>/api/v3`
+for a GitHub Enterprise host, `<base>/api/v4` on GitLab, `<base>/api/v1`
+on Forgejo, where `<base>` is `forge_base_url` when the webhook pinned one —
+`pr_url` must then sit on its host and under its path, the only way to reach
+a GitLab or Forgejo served under a sub-path — and `pr_url`'s origin
+otherwise. Auth is `Authorization: Bearer` (GitHub, GitLab) or `token`
+(Forgejo); redirects are not followed. The script receives every value as a
+JSON literal in its temp file, so no size or byte (a NUL is dropped before
+posting) keeps it from running. Before posting, the body loses its
 carriage returns; on GitLab, a line opening on `/` then a letter gets a
 backslash (the quick-action guard, #2422); on every forge, the first line
 the webhook's command grammar reads gets one too when it opens on `/`, so the
@@ -74,7 +84,16 @@ bot's reply never re-fires `/revi`. An unclosed code fence is closed, an
 answer past 60000 UTF-16 units is cut with a visible marker, and the run
 footer ([run-link](../../docs/agents/bots/run-link.md)) is appended — never
 cut. Every failure (no token, an unusable `pr_url`, the forge's status and
-message, a re-read that misses) is `posted=false` with its reason, exit 0.
+message, a re-read that misses) is `posted=false` with its reason (capped at
+2000 characters), exit 0.
+
+**The forge token never leaves in a body.** Two guards, each enough alone:
+`forge_token` is granted the `file` sink only, so a
+`__ITERION_SECRET_forge_token__` the agent quotes — planted in a public
+thread, a diff or a question — is defused by the engine before the script
+runs and never materialised; and the script refuses to post a text carrying
+the token (raw, percent-encoded, base64, hex, its characters spread apart)
+or its placeholder, and withholds the draft from its report.
 
 ## Configuration
 
@@ -84,14 +103,16 @@ message, a re-read that misses) is `posted=false` with its reason, exit 0.
 | `base_ref` | string | `main` | Branch comparison base; the agent diffs `merge-base base_ref HEAD`. The webhook handler overrides it from the PR's target branch. |
 | `pr_url` | string | `""` | The PR/MR URL the conversation lives on; `publish_reply` derives the forge, its API base, the project and the number from it, and `converse_health` counts a `reply_url` only on its host. Manual runs MUST pass it. |
 | `discussion_id` | string | `""` | The thread id to reply in. Empty posts a new PR comment (GitLab: an MR note) instead. |
+| `forge_base_url` | string | `""` | The webhook's pinned forge web base, stamped by the webhook lanes when the config names one. `publish_reply` derives the API from it; empty derives it from `pr_url`'s origin. |
 | `trigger_note` | string | `""` | The operator's raw note body, including the leading slash-command. |
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then reads the thread itself (a GET). |
 | `replier` | string | `""` | Forge username of the operator who asked, used to address the answer. |
 
 The studio launch form renders `converse_question` and `pr_url` top-level;
-`discussion_id`, `trigger_note`, `thread_context` and `replier` are webhook
-plumbing hidden from the form (still settable via `--var`).
+`discussion_id`, `trigger_note`, `thread_context`, `replier` and
+`forge_base_url` are webhook plumbing hidden from the form (still settable
+via `--var`).
 
 ## Invocation
 
@@ -120,10 +141,11 @@ Omitting `discussion_id` posts a new PR comment instead of a thread reply.
 
 ## Notable
 
-- **Secret**: `forge_token`, mounted `as: file` and `optional: true`.
-  `publish_reply` reads it by the path its command renders
-  (`{{secrets.forge_token.path}}`); the agent reads it only for the
-  read-only thread GET — never into a prompt. Same binding name as
+- **Secret**: `forge_token`, mounted `as: file`, `optional: true`,
+  `sinks: [file]` (ADR-146; `requires.iterion >= 4.7.0` reads the grant).
+  `publish_reply` reads it by the path its script renders
+  (`{{secrets.forge_token.path}}`); the agent reads the same file only for
+  the read-only thread GET — never into a prompt. Same binding name as
   `review-pr`, so one org-level binding resolves both, and the same forge
   identity the webhook's loop guard recognises. Missing token ⇒
   `posted=false` with a `skipped_reason`. Requested scopes:
