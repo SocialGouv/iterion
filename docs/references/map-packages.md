@@ -61,7 +61,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
-| `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
+| `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
 | `internal/yamlx` | centralizes the repository's yaml.v3 entry points so the canonical style lives in one place: strict unmarshaling (unknown fields rejected) and… | — |
