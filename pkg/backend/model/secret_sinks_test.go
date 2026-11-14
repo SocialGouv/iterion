@@ -63,7 +63,7 @@ func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T
 					return out + " " + strings.Join(mapValues(env), " ")
 				}(),
 				"script": func() string {
-					out, err := script.scriptFor(script.shown())
+					out, err := script.scriptFor(script.shown(), "js")
 					if err != nil {
 						t.Fatal(err)
 					}

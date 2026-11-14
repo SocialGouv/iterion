@@ -281,9 +281,12 @@ body does.
   is not enough even after every data value is defused: two raw
   `{{!…}}` values join into one, the author's text abuts a value that
   completes it, an escape decodes into one. Measured: the mutant that
-  defuses every data value and keeps the scanning materialiser still hands
-  the body the value — into its argv — where two raw values join into the
-  placeholder and where the author's own text opens it.
+  defuses every placeholder a data value holds whole and keeps the
+  scanning materialisers hands the body the value in 27 runs — every grant
+  that resolves a value (no `sinks:`, `sinks:` with and without `agent`) ×
+  every body (command, postcondition, script) × the three forms where the
+  placeholder only forms in the rendered text: two raw values joined, the
+  author's text opening it, the author's text closing it.
 - **One doctrine for the authored bodies.** This is the design `params:`
   already had (`authoredSecrets`, `action_secret_refs.go`): the `command`
   sink now reads provenance the way the `params` sink does.
@@ -291,18 +294,49 @@ body does.
   through its environment (`"$__ITERION_SECRET_X__"` in the argv, the
   value in envp); the env-only class still resolves only in that form; the
   raw `{{!secrets.NAME}}` still inlines the value where the author put it.
-  Hooks, events, the run log and the self-repair prompt carry the
-  placeholder form: a marker never leaves the executor, and the next
-  rendering draws others.
+  Hooks, events and the run log carry the placeholder form: a marker never
+  leaves the executor, and the next rendering draws others.
+- **A script receives a value as its language's string literal.** In a
+  `script:` the author's `{{secrets.NAME}}` renders a JSON string literal
+  holding its marker, and the value takes the whole literal's place
+  written in the script's language — a JSON string for js and py, whose
+  string syntax JSON's is a subset of, a double-quoted word with `\`, `"`,
+  `$` and the backquote escaped for sh and bash — so every byte arrives as
+  written and none reads as code. The materialiser used to splice the
+  value inside the literal with the shell's single-quote escape, which
+  corrupted a quote in python and node and let a value close the literal:
+  whoever sets a secret's binding — a tenant, not the bot's author — could
+  run code in the script. The raw form stays the author's own text:
+  verbatim in js and py, escaped for a single-quoted word in a shell, as
+  in a command.
+- **A placeholder typed as text is inert, and said so.** Since the bodies
+  resolve only the author's references, a placeholder an author typed
+  outside `{{…}}` reaches the process as written; `C340` warns on it at
+  authoring time (an environment read in a shell body, and a minted
+  credential's variable named in a script, are not reported).
 - **The `agent` sink is another path, unchanged.** A placeholder a model
   emits in its own tool input — claw's tool loop, claude_code's
   `PreToolUse` hook, the command the self-repair rung asks a model for —
   still materialises under the `agent` grant. A "model writes, tool runs"
   flow therefore goes through an agent node: the model's own tool call is
-  the sink that grants it; no authored body runs a model's placeholder.
-  Should a real bot ever need a deterministic node to run one, the
-  extension is an explicit, greppable per-node opt-in on that node's
-  declaration — never a change of this default. None exists today.
+  the sink that grants it. Should a real bot ever need a deterministic node
+  to run a placeholder a model wrote, the extension is an explicit,
+  greppable per-node opt-in on that node's declaration — never a change of
+  this default. None exists today.
+- **The recovery rungs show their model no live placeholder that is not a
+  reference.** The self-repair rung and the recovery agent are model calls
+  whose output runs through the agent sink, so what they are shown of the
+  node is where a data placeholder would get its value back: shown as the
+  logged body, it reads exactly like the author's reference, and a repair
+  model that keeps the failed command echoes it. So the self-repair model
+  reads the recipe's repair form — the marked body with every remaining
+  placeholder (data's, or one the author typed) defused to its
+  redact-only form, then the markers shown — and the output the recipe
+  printed with its placeholder text defused before its values go back to
+  placeholders; the recovery agent receives the node's input and the
+  recipe's text defused the same way (`Guard.DefuseAll`). The author's own
+  references are shown live, so a repaired command still reaches what the
+  recipe reached.
 - **The agent sink's defuse of data stays, for what a body sends on.** A
   secret kept off the agent still has its placeholder rewritten in data
   to the redact-only form (`DefuseUngranted`): the egress proxy
@@ -320,4 +354,9 @@ body does.
   (whole, single-quoted, raw, split across two raw values, completed by
   the author's text on either side), the author's reference beside it;
   `TestAPlantedPlaceholderIsPostedAsTextNeverAsTheToken` (`bots/`) runs
-  the publish chain on the real engine against a fake forge.
+  the publish chain on the real engine against a fake forge;
+  `TestASelfRepairCannotMaterialiseADataPlaceholder` and
+  `TestTheRecoveryAgentReceivesDataPlaceholdersDefused` drive the recovery
+  rungs with a model that echoes what it read;
+  `TestAScriptReceivesASecretValueByteExactAndRunsNothing` runs hostile
+  values through sh, bash, python and node.

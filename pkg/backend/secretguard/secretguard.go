@@ -667,6 +667,69 @@ func (g *Guard) DefuseUngranted(sink, s string) string {
 	return s
 }
 
+// DefuseAll rewrites, in s, the placeholder of every secret that resolves
+// anywhere — a declared value secret's, an env-only credential's — into its
+// redact-only form, whatever the grants. It is the answer for text a MODEL
+// will read and may hand back to a materialiser: the failed body a recovery
+// rung shows its model, the node input its recovery agent receives. Every
+// placeholder in such text arrived through data or was typed by the author
+// as text — the author's own references are marked, not placeholders, until
+// they are shown — and none is a reference: echoed back by the model, it
+// must resolve nowhere. Nil-safe.
+func (g *Guard) DefuseAll(s string) string {
+	st := g.load()
+	if st == nil || s == "" {
+		return s
+	}
+	for _, phs := range []map[string]string{st.placeholderValue, st.envOnlyValue} {
+		for ph := range phs {
+			if strings.Contains(s, ph) {
+				s = strings.ReplaceAll(s, ph, redactOnlyPlaceholder(ph))
+			}
+		}
+	}
+	return s
+}
+
+// DefuseAllValue is DefuseAll over every string leaf of v, in a deep copy
+// of the shapes structured payloads use (RedactValue's); v itself is never
+// mutated. Nil-safe.
+func (g *Guard) DefuseAllValue(v any) any {
+	if g == nil {
+		return v
+	}
+	switch t := v.(type) {
+	case string:
+		return g.DefuseAll(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			out[k] = g.DefuseAllValue(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAllValue(vv)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, vv := range t {
+			out[i], _ = g.DefuseAllValue(vv).(map[string]any)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAll(vv)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // resolvesAt reports whether the secret behind ph is granted sink: every
 // sink when its declaration named none (the ALL default of ADR-146), the
 // named ones otherwise.

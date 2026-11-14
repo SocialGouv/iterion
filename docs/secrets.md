@@ -238,7 +238,12 @@ form in every hook/log:
   the author wrote renders to a marker of that one rendering, which no data
   can spell, and only the markers resolve — a placeholder that arrives through
   data stays text whatever its secret grants ([ADR-146, amendment of
-  2026-11-14](adr/146-secret-boundary-v2-grants-and-sinks.md)). An HTTP
+  2026-11-14](adr/146-secret-boundary-v2-grants-and-sinks.md)); one the
+  author typed as text is inert too, and `C340` says so. In a `script:` the
+  value takes the place of the string literal the reference renders,
+  written in the script's language — a JSON string for js and py, a
+  double-quoted word with its expansions escaped for sh and bash — so no
+  byte of it reads as code. An HTTP
   action's `params:` resolves the same way, through the `params` sink
   (a native `board.*` action keeps the placeholder: the store files the
   card and shows it, as with the board MCP tools below), and the in-process
@@ -524,7 +529,12 @@ defused in the rendered text (`DefuseUngranted`), so what the body sends on
 carries a token the inspecting proxy does not substitute; with the default
 grant the proxy substitutes it toward the secret's hosts, as it would the
 agent's own call. A "model writes, tool runs" flow goes through an agent
-node, whose own tool call is the `agent` sink. `sinks: []` reads as no list — every
+node, whose own tool call is the `agent` sink. The recovery rungs of a
+verified tool node are such model calls, so a data placeholder never
+reaches them live: the self-repair model reads the failed command and its
+output with every placeholder that is no reference defused, and the recovery
+agent receives the node's input the same way — echoed back, it resolves
+nothing, while the author's own references, shown live, still do. `sinks: []` reads as no list — every
 sink — since the printers and the JSON transport drop an empty list, and a
 meaning they could not keep would change on the way.
 

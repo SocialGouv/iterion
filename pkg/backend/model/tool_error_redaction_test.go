@@ -203,9 +203,17 @@ func nodeErrGuard() *secretguard.Guard {
 // persists (run.json), logs and posts carries the placeholder.
 func TestAFailingShellToolNodesErrorCarriesNoSecret(t *testing.T) {
 	exec := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(t.TempDir()), WithSecretGuard(nodeErrGuard()))
+	// The author's reference: the command prints the value itself, which a
+	// placeholder typed as text no longer resolves to.
+	const command = "echo auth={{secrets.TOK}}; echo err={{secrets.TOK}} >&2; exit 3"
+	refs, rerr := ir.ParseRefs(command)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	node := &ir.ToolNode{
-		BaseNode: ir.BaseNode{ID: "leak"},
-		Command:  "echo auth=__ITERION_SECRET_TOK__; echo err=__ITERION_SECRET_TOK__ >&2; exit 3",
+		BaseNode:    ir.BaseNode{ID: "leak"},
+		Command:     command,
+		CommandRefs: refs,
 	}
 	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "exit status 3") {
@@ -264,9 +272,17 @@ func TestTheSelfRepairPromptCarriesNoSecret(t *testing.T) {
 	mock := newMockClient(toolUseEvents("t1", "structured_output", `{"corrected_command":"true"}`, 50, 10))
 	reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })
 	exec := newTestClawExecutor(reg, &ir.Workflow{}, WithWorkDir(t.TempDir()), WithSecretGuard(nodeErrGuard()))
+	// The author's reference: the command receives the value and prints it,
+	// which a placeholder typed as text no longer resolves to.
+	const command = "curl_like() { echo \"token=$1\"; echo \"> Authorization: Bearer $1\" >&2; return 22; }; curl_like {{secrets.TOK}}"
+	refs, rerr := ir.ParseRefs(command)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	node := &ir.ToolNode{
 		BaseNode:      ir.BaseNode{ID: "va"},
-		Command:       "curl_like() { echo \"token=$1\"; echo \"> Authorization: Bearer $1\" >&2; return 22; }; curl_like __ITERION_SECRET_TOK__",
+		Command:       command,
+		CommandRefs:   refs,
 		Goal:          "call the API",
 		Postcondition: "false",
 		Policy:        ir.PolicyRecover,

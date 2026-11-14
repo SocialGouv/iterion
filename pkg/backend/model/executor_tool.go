@@ -396,7 +396,12 @@ type recipeResult struct {
 	stdout   string
 	stderr   string
 	resolved string
-	runErr   error
+	// repair is the recipe's body as a recovery model may read it
+	// (authoredBody.repair): resolved with every placeholder that is not the
+	// author's reference defused. Set by the command and script recipes,
+	// the two the self-repair rung corrects.
+	repair string
+	runErr error
 	// deliveryErr is the verdict of handing over the files the output
 	// declared: non-nil only when a `required=true` directive lost its
 	// file (#2668). It is NOT a recipe failure — the recipe exited 0 —
@@ -412,6 +417,9 @@ type recipeResult struct {
 type toolCommand struct {
 	cmd        *exec.Cmd
 	completion *sandbox.Completion
+	// repair is the body this command runs as a recovery model may read it
+	// (authoredBody.repair), "" for a command no recovery rung corrects.
+	repair string
 }
 
 // runToolNodeCore is the shared recipe-execution skeleton: policy check,
@@ -455,7 +463,7 @@ func (e *ClawExecutor) runToolNodeCore(
 		defer cleanup()
 	}
 	if err != nil {
-		return recipeResult{resolved: resolved}, err
+		return recipeResult{resolved: resolved, repair: tc.repair}, err
 	}
 
 	e.emitToolNodeStarted(node.ID, toolName, len(resolved))
@@ -532,6 +540,7 @@ func (e *ClawExecutor) runToolNodeCore(
 		stdout:      outputStr,
 		stderr:      stderrStr,
 		resolved:    resolved,
+		repair:      tc.repair,
 		runErr:      runErr,
 		deliveryErr: deliveryErr,
 	}, nil
@@ -599,7 +608,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 					// A command naming no secret holds no marker: the
 					// rewrite is the whole body.
 					resolved = rewritten
-					body = authoredBody{text: rewritten}
+					body = authoredBody{text: rewritten, secrets: newBodySecrets(e.secretGuard)}
 				}
 			}
 			return resolved
@@ -622,7 +631,9 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}
-			return e.toolNodeCommand(ctx, materialized, env), nil, nil
+			tc := e.toolNodeCommand(ctx, materialized, env)
+			tc.repair = body.repair()
+			return tc, nil, nil
 		}
 }
 
@@ -958,7 +969,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// body only. `resolved` (placeholder form) stays the value passed
 			// to hooks/logs, so the real secret never reaches the event
 			// stream; a placeholder that arrived through data stays text.
-			script, err := body.scriptFor(resolved)
+			script, err := body.scriptFor(resolved, node.Language)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}
@@ -1042,7 +1053,9 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			}
 			// In the workspace, just the basename (the bind mount uses the same
 			// relative path); out of it, the absolute scratch path.
-			return e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv), cleanup, nil
+			tc := e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv)
+			tc.repair = body.repair()
+			return tc, cleanup, nil
 		}
 }
 

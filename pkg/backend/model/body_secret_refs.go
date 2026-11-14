@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // bodySecrets is one rendering's table of the secret references the AUTHOR
@@ -27,8 +28,12 @@ import (
 //
 // A marker never leaves the executor: shown turns each back into its
 // reference's text — the placeholder — for every surface that persists or
-// shows the body (hooks, events, the run log, the self-repair prompt), and
-// the next rendering draws others. A reference nothing materialises — a file
+// shows the body (hooks, events, the run log), and the next rendering draws
+// others. A recovery model reads the body's repair form instead
+// (authoredBody.repair), where every placeholder that is not a marker is
+// defused first: shown alone, a data placeholder would look exactly like the
+// author's reference, and the model's echo of it would be materialised by
+// the agent sink. A reference nothing materialises — a file
 // secret's mounted path, an undeclared name, a value under the placeholder
 // kill switch — renders its text as before: there is nothing to resolve.
 //
@@ -78,25 +83,26 @@ func (b *bodySecrets) mark(text string) string {
 	return m
 }
 
-// replace rewrites s in one pass, each marker by what read answers for it —
-// the occurrence it reads (the marker, or the marker single-quoted) and its
-// replacement. One pass: what a marker resolves to is never read again.
-func (b *bodySecrets) replace(s string, read func(m string) (from, to string)) string {
+// replace rewrites s in one pass, each marker by what read answers for it:
+// old/new pairs, each old an occurrence of the marker (bare, single-quoted,
+// in a JSON literal). One pass: what a marker resolves to is never read
+// again. Where two olds start at one position the one read answers first
+// wins, so a longer form (`"M"`) is answered before the bare marker.
+func (b *bodySecrets) replace(s string, read func(m string) []string) string {
 	if b == nil || len(b.order) == 0 {
 		return s
 	}
 	pairs := make([]string, 0, 2*len(b.order))
 	for _, m := range b.order {
-		from, to := read(m)
-		pairs = append(pairs, from, to)
+		pairs = append(pairs, read(m)...)
 	}
 	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 // shown is s with each marker as its reference's text: the form hooks,
-// events, logs and prompts carry.
+// events and logs carry.
 func (b *bodySecrets) shown(s string) string {
-	return b.replace(s, func(m string) (string, string) { return m, b.text[m] })
+	return b.replace(s, func(m string) []string { return []string{m, b.text[m]} })
 }
 
 // shellEnv resolves the markers of a shell body the way the guard resolves an
@@ -111,7 +117,7 @@ func (b *bodySecrets) shown(s string) string {
 // does not grant `command` keeps its text.
 func (b *bodySecrets) shellEnv(s string) (string, map[string]string) {
 	var env map[string]string
-	out := b.replace(s, func(m string) (string, string) {
+	out := b.replace(s, func(m string) []string {
 		text := b.text[m]
 		from, form := m, text
 		quoted := "'" + m + "'"
@@ -125,16 +131,59 @@ func (b *bodySecrets) shellEnv(s string) (string, map[string]string) {
 			}
 			env[name] = value
 		}
-		return from, to
+		return []string{from, to}
 	})
 	return out, env
 }
 
-// script resolves the markers of a `script:` body: each marker by the
-// guard's reading of its text in a script (MaterializeShell) — the value of
-// a secret granting `command`, its text otherwise.
-func (b *bodySecrets) script(s string) string {
-	return b.replace(s, func(m string) (string, string) { return m, b.guard.MaterializeShell(b.text[m]) })
+// script resolves the markers of a `script:` body written in language. Its
+// value is the secret's when it grants `command` (MaterializeFor), its text
+// otherwise, and it is written in the syntax the marker stands in:
+//
+//   - The default form renders as a JSON string literal holding the marker
+//     (`"M"`, renderScript's jsonLiteralValue) — and so does an author's raw
+//     reference they quoted themselves. The whole literal becomes the value
+//     as the language's own string literal (scriptStringLiteral): every
+//     byte arrives as written, none is read as code.
+//   - The raw form `{{!secrets.NAME}}`, bare, is the author's own text:
+//     escaped for a single-quoted word in a shell script, as in a command
+//     (MaterializeShell), and verbatim in js and py, where the author's
+//     quoting decides.
+func (b *bodySecrets) script(s, language string) string {
+	shell := scriptRunsInAShell(language)
+	return b.replace(s, func(m string) []string {
+		text := b.text[m]
+		value := b.guard.MaterializeFor(secretsink.Command, text)
+		raw := value
+		if shell {
+			raw = b.guard.MaterializeShell(text)
+		}
+		return []string{`"` + m + `"`, scriptStringLiteral(language, value), m, raw}
+	})
+}
+
+// scriptRunsInAShell reports whether a `script:` in language is a shell
+// program — asked of scriptInterpreter, the one reading of the languages.
+func scriptRunsInAShell(language string) bool {
+	argv, _ := scriptInterpreter(language)
+	return len(argv) > 0 && (argv[0] == "sh" || argv[0] == "bash")
+}
+
+// shellDoubleQuoted escapes the four characters a double-quoted shell word
+// interprets — `\`, `"`, `$` and the backquote; a newline inside the quotes
+// is itself.
+var shellDoubleQuoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+
+// scriptStringLiteral is v as a string literal of a script in language: a
+// double-quoted word for a shell, whose expansions are escaped; a JSON
+// string literal for js and py, whose string syntax JSON's is a subset of
+// (an escape JSON writes — `\"`, `\\`, `\n`, `\u003c` — reads the same in
+// both).
+func scriptStringLiteral(language, v string) string {
+	if scriptRunsInAShell(language) {
+		return `"` + shellDoubleQuoted.Replace(v) + `"`
+	}
+	return jsonLiteralValue(v, ShapeUndeclared)
 }
 
 // authoredBody is one run's rendering of an authored tool body: its text,
@@ -145,9 +194,23 @@ type authoredBody struct {
 	secrets *bodySecrets
 }
 
-// shown is the body as hooks, events, logs and the self-repair prompt carry
-// it: each marker as its reference's text, the placeholder.
+// shown is the body as hooks, events and logs carry it: each marker as its
+// reference's text, the placeholder.
 func (b authoredBody) shown() string { return b.secrets.shown(b.text) }
+
+// repair is the body as a recovery model reads it: shown, after every
+// placeholder that is not one of the author's markers — data's, or one the
+// author typed as text — is defused (Guard.DefuseAll). Shown alone, such a
+// placeholder would read exactly like the author's reference, and a model
+// that echoes the command it was shown would have the agent sink
+// materialise it. The author's own references stay live: the repaired
+// command still reaches what the recipe reached.
+func (b authoredBody) repair() string {
+	if b.secrets == nil {
+		return b.text
+	}
+	return b.secrets.shown(b.secrets.guard.DefuseAll(b.text))
+}
 
 // errBodyDiverged refuses to run a body other than the one the recipe
 // reported: the recipe's resolve hands its shown form to the hooks, and
@@ -165,11 +228,11 @@ func (b authoredBody) shellFor(resolved string) (string, map[string]string, erro
 	return out, env, nil
 }
 
-// scriptFor is the script body written for resolved, the recipe's report of
-// b: b's markers resolved (bodySecrets.script).
-func (b authoredBody) scriptFor(resolved string) (string, error) {
+// scriptFor is the script body in language written for resolved, the
+// recipe's report of b: b's markers resolved (bodySecrets.script).
+func (b authoredBody) scriptFor(resolved, language string) (string, error) {
 	if resolved != b.shown() {
 		return "", errBodyDiverged
 	}
-	return b.secrets.script(b.text), nil
+	return b.secrets.script(b.text, language), nil
 }
