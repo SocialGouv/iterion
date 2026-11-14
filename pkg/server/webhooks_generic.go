@@ -48,7 +48,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	// over the raw body before any side effect. Token-mode webhooks
 	// were already verified by the middleware.
 	if cfg.SignMode == webhooks.SignModeHMAC {
-		if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, r.Header.Get("X-Iterion-Webhook-Signature")) {
+		if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, webhookHMACSignature(webhooks.ProviderGeneric, r)) {
 			if s.logger != nil {
 				s.logger.Warn("webhooks: generic bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
 			}

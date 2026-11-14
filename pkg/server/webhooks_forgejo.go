@@ -49,7 +49,7 @@ func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "webhook context missing")
 		return
 	}
-	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "forgejo", forgejoSignatureHeader(r))
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "forgejo", webhookHMACSignature(webhooks.ProviderForgejo, r))
 	if !ok {
 		return
 	}

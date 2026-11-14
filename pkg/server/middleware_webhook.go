@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -60,15 +62,34 @@ func extractWebhookToken(r *http.Request, provider webhooks.Provider) string {
 	return r.Header.Get("X-Iterion-Webhook-Token")
 }
 
+// webhookHMACSignature returns the body signature an hmac-mode provider
+// presents, read from that provider's header. The one place the header
+// names live: the middleware and the provider handlers verify the same
+// value. Empty for a provider that never signs its body, which no
+// signature verifies.
+func webhookHMACSignature(provider webhooks.Provider, r *http.Request) string {
+	switch provider {
+	case webhooks.ProviderGitHub:
+		return r.Header.Get("X-Hub-Signature-256")
+	case webhooks.ProviderForgejo:
+		return forgejoSignatureHeader(r)
+	case webhooks.ProviderGeneric:
+		return r.Header.Get("X-Iterion-Webhook-Signature")
+	default:
+		return ""
+	}
+}
+
 // webhookAuth is the inbound-webhook authentication + admission
 // middleware. It is NOT chained from requireAuth — /api/webhooks/* is
 // public to the JWT layer (see isPublicPath) and authenticates itself.
 //
 // Order (everything before the handler does any work): resolve config by
-// URL id → constant-time token check → enabled → per-webhook rate limit
-// → per-org monthly quota → org not suspended → stamp tenant identity +
-// the config on ctx. A failure at any step short-circuits with the right
-// status and never reaches the provider handler.
+// URL id → authenticate (the constant-time token check, or the HMAC over
+// the bounded body) → enabled → per-webhook rate limit → per-org monthly
+// quota → org not suspended → stamp tenant identity + the config on ctx.
+// A failure at any step short-circuits with the right status and never
+// reaches the provider handler.
 func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.webhookConfigs == nil {
@@ -88,23 +109,36 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 			httpError(w, http.StatusUnauthorized, "invalid webhook")
 			return
 		}
+		// Authentication comes before every admission step below: the
+		// rate bucket and the monthly quota are the tenant's, and a step
+		// that charges them before the sender is proven lets anyone
+		// holding the hook's URL spend them.
+		//
 		// SignModeHMAC providers (GitHub, Forgejo, optionally generic)
-		// authenticate the BODY, not a header. The middleware MUST NOT
-		// read the body here (we'd consume the bytes the provider
-		// handler needs for signature recomputation) and MUST NOT
-		// reject the request just because the token header is absent.
-		// The provider handler is responsible for VerifyHMACSignature
-		// over the raw body BEFORE any side effect — otherwise the
-		// admission gate above gives the caller a free run-launch with
-		// no proof of identity.
-		if cfg.SignMode != webhooks.SignModeHMAC {
-			if !webhooks.VerifyToken(extractWebhookToken(r, provider), cfg.TokenHash) {
-				if s.logger != nil {
-					s.logger.Warn("webhooks: bad token for %s from %s", cfg.ID, s.clientIP(r))
-				}
-				httpError(w, http.StatusUnauthorized, "invalid webhook token")
+		// authenticate the BODY, not a header: the bounded body is read
+		// and verified here, then restored for the provider handler,
+		// which verifies it again — a handler never trusts that it was
+		// reached through this middleware.
+		if cfg.SignMode == webhooks.SignModeHMAC {
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
+			if err != nil {
+				httpError(w, http.StatusBadRequest, "read body: %v", err)
 				return
 			}
+			if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, webhookHMACSignature(provider, r)) {
+				if s.logger != nil {
+					s.logger.Warn("webhooks: %s bad HMAC for %s from %s", provider, cfg.ID, s.clientIP(r))
+				}
+				httpError(w, http.StatusUnauthorized, "invalid signature")
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		} else if !webhooks.VerifyToken(extractWebhookToken(r, provider), cfg.TokenHash) {
+			if s.logger != nil {
+				s.logger.Warn("webhooks: bad token for %s from %s", cfg.ID, s.clientIP(r))
+			}
+			httpError(w, http.StatusUnauthorized, "invalid webhook token")
+			return
 		}
 		if !cfg.Enabled {
 			httpError(w, http.StatusGone, "webhook disabled")

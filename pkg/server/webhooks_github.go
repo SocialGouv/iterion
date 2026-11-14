@@ -39,7 +39,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Signature gate FIRST — never write an audit row or call gateLaunch
 	// for an unauthenticated request (would leak quota signal to a
 	// random poker on the open route).
-	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", r.Header.Get("X-Hub-Signature-256"))
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", webhookHMACSignature(webhooks.ProviderGitHub, r))
 	if !ok {
 		return
 	}
