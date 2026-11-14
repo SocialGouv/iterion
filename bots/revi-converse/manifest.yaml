@@ -2,10 +2,20 @@ name: revi-converse
 display_name: Revi (converse)
 icon: 💬
 version: 0.1.8
-## 0.1.8 — the run's duration budget follows the agent's tool loop: 30
-## minutes, not 10. With tool_max_steps 60 (0.1.7) a step on the team
+## 0.1.8 — the agent drafts, a deterministic node posts. converse_agent
+## hands its answer back in converse_output.answer and never writes on the
+## forge; publish_reply (no LLM) posts it in the thread with the forge_token
+## — a GitHub review-thread reply or PR comment, a GitLab discussion note or
+## MR note, a Forgejo PR comment — with the anti-trigger and GitLab
+## quick-action guards and the run footer, then re-reads the note by its id;
+## converse_health reads its result. Posting no longer depends on how many
+## steps the model spent reading: on VAO !48 a reply that took 61 steps was
+## drafted and never posted, the POST being the agent's last step. The
+## forge-reply skill is folded into the prompt as reading and answer-shape
+## guidance. And the run's duration budget follows the agent's tool loop:
+## 30 minutes, not 10 — with tool_max_steps 60 (0.1.7) a step on the team
 ## gateway's deepseek takes ~10-15 s, and a question that needed ~50 steps
-## died on its 10-minute budget before it posted its answer (VAO !48).
+## died on its 10-minute budget before it posted (VAO !48).
 ## 0.1.7 — the converse agent declares its tools (bash, read_file, glob,
 ## grep): a routing cell that moves it to claw (the team gateway lanes) gave
 ## it NO tool, so it could neither read the diff nor post and answered a

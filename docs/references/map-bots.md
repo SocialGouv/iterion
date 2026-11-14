@@ -164,7 +164,6 @@ The pair a model sees before it decides to open the file.
 | `product-docs` | `product-docs` | Operating playbook for Prody — writing functional, business-audience product documentation in a dedicated docs repository from… |
 | `product-docs` | `publish-static-site` | Build the product documentation into a static site (GitBook blocks → MkDocs Material) and package it as a non-root nginx… |
 | `product-docs` | `ton-et-style` | Default tone and style rules for published functional pages — person, tense, sentence shape, the sourced-or-[à confirmer]… |
-| `revi-converse` | `forge-reply` | How to POST a reply note in an EXISTING pull-request (merge-request on GitLab) discussion thread on GitHub, GitLab, or… |
 | `review-pr` | `ticket-context` | How to obtain the ticket(s) a PR claims to deliver — from an external tracker (Jira Cloud/DC) or, with no configuration, from… |
 | `rgaa-audit` | `adjudication-protocol` | How to rule on one batch of criteria the engine could not decide: reading a brief and an evidence file, the four verdicts and… |
 | `rgaa-audit` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |

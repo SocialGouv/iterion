@@ -433,15 +433,18 @@ applies; when the guard rewrites a finding's own text, the suggestion fences
 that text opens at the top level become `text` blocks.
 
 Text a bot posts itself with its own forge token (a skill calling the GitLab
-API or `glab`) cannot cross this guard, so every skill that posts to GitLab —
-the `forge-mr-create` copies, revi-converse's `forge-reply`, the supply-shield
-`forge-report`s, dep-update-guard's note — applies the same rewrite to its
-bodies before posting (#2422), pinned and witnessed by
+API or `glab`, or a deterministic node of the bot) cannot cross this guard, so
+every skill that posts to GitLab — the `forge-mr-create` copies, the
+supply-shield `forge-report`s, dep-update-guard's note — applies the same
+rewrite to its bodies before posting (#2422), pinned and witnessed by
 `TestEveryGitLabPostingSkillCarriesTheQuickActionGuard` and
 `TestQuickActionGuardSedLeavesNothingGitLabRuns` in
-[bots/forge_quickactions_test.go](../bots/forge_quickactions_test.go). The
-skill-side sed escapes `/` after optional leading blanks too (a superset of
-the column-0 rule) and uses `[^[:print:]]`, not `[^[:ascii:]]`, for the
+[bots/forge_quickactions_test.go](../bots/forge_quickactions_test.go).
+revi-converse's `publish_reply` node applies it in python to the answer it
+posts, witnessed by the server's own predicate in
+[bots/revi_converse_publish_test.go](../bots/revi_converse_publish_test.go).
+The skill-side sed escapes `/` after optional leading blanks too (a superset
+of the column-0 rule) and uses `[^[:print:]]`, not `[^[:ascii:]]`, for the
 non-ASCII letters Onigmo folds onto command names: GNU sed rejects
 `[:ascii:]`.
 

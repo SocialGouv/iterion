@@ -59,8 +59,9 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 	case gitlab.EventHeaderMergeRequest:
 		s.handleGitLabMergeRequestEvent(ctx, w, r, cfg, body, payloadHash, srcIP)
 	case gitlab.EventHeaderNote:
-		// Conversational layer: a /revi command (or, later, a reply to
-		// the bot's thread). See docs/forge-conversations.md.
+		// Conversational layer: a slash command (`/revi` included), or a
+		// plain reply in a thread the bot is part of, which routes to the
+		// converse bot. See docs/forge-conversations.md.
 		s.handleGitLabNote(ctx, w, r, cfg, body, payloadHash, srcIP)
 	case gitlab.EventHeaderIssue:
 		// Issue lifecycle: adding a trigger label (e.g. "implement") launches

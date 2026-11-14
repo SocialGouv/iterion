@@ -589,8 +589,8 @@ func prforgeReviewCommentMeta(p prforge.ParsedReviewComment) webhookEventMeta {
 // buildPRForgeReviewReplyVars composes the converse launch vars for a
 // review-thread reply: the PR context (reviewPRVars) + the conversation vars
 // the converse bot declares. discussion_id is the THREAD ROOT comment id —
-// exactly what GitHub's /pulls/{n}/comments/{id}/replies endpoint wants (see
-// bots/revi-converse/skills/forge-reply.md §4). No re_review flag: a reply
+// exactly what GitHub's /pulls/{n}/comments/{id}/replies endpoint wants
+// (revi-converse's publish_reply posts there). No re_review flag: a reply
 // is a question, never a fresh review.
 func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext string, launchVars map[string]string) map[string]string {
 	question := strings.TrimSpace(p.CommentBody)

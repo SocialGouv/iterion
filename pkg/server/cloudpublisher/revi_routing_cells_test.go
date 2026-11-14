@@ -447,14 +447,14 @@ func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T)
 // the full native toolset on a CLI backend and NO tool on claw (the
 // compiler's claw⇄CLI inversion, C176), so such a node keeps its work only if
 // it declares its list: revi-converse's converse_agent, moved off
-// claude_code, could neither read the diff nor post and answered a
-// placeholder until it did.
+// claude_code, could not read the diff and answered a placeholder until it
+// did.
 //
 // Declared is not enough, so the check asks for a surface the node can work
 // with on claw: a NON-EMPTY list (`tools: []` is declared and is the same
 // zero-tool surface), and a `tool_max_steps:` above claw's default bound
 // (model.DefaultClawToolMaxSteps), which a CLI backend never imposed — five
-// steps stopped converse_agent before its forge reply's VERIFY.
+// steps cut converse_agent's reads short of the answer.
 //
 // "Written for a CLI backend" is the launch's own reading, not the node's
 // text: the default view (no routing policy, the same frozen dials) decides

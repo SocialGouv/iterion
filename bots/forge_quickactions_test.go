@@ -30,9 +30,12 @@ const quickActionGuardSed = `s#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\
 
 // gitLabPostingSkills are the skills whose bot posts model-written text to
 // GitLab with its own token: the seven forge-mr-create copies (an MR
-// description), revi-converse's reply note, the two supply-shield report
-// posts, and dep-update-guard's note. Pinned so a renamed or split skill
-// reddens instead of quietly dropping out of the guard.
+// description), the two supply-shield report posts, and dep-update-guard's
+// note. Pinned so a renamed or split skill reddens instead of quietly
+// dropping out of the guard. revi-converse's reply note left the class with
+// its skill: a deterministic node posts it, carrying the same rewrite in
+// python (TestReviConversePublishReplyPostsOnEachForge's GitLab cases read
+// the posted body with the server's own predicate).
 var gitLabPostingSkills = []string{
 	"app-dev/skills/forge-mr-create.md",
 	"branch-improve-loop/skills/forge-mr-create.md",
@@ -41,7 +44,6 @@ var gitLabPostingSkills = []string{
 	"feature-dev/skills/forge-mr-create.md",
 	"instrument/skills/forge-mr-create.md",
 	"product-docs/skills/forge-mr-create.md",
-	"revi-converse/skills/forge-reply.md",
 	"supply-shield-cve/skills/forge-report.md",
 	"supply-shield/skills/forge-report.md",
 	"whole-improve-loop/skills/forge-mr-create.md",
@@ -127,7 +129,7 @@ func TestQuickActionGuardSedLeavesNothingGitLabRuns(t *testing.T) {
 		oracleBlind bool
 		want        string
 	}{
-		{"reply body (revi-converse)", "Answer: the diff reads:\n/approve\nwhich is the injected line.", false, ""},
+		{"reply note (dep-update-guard)", "Answer: the diff reads:\n/approve\nwhich is the injected line.", false, ""},
 		{"MR description (forge-mr-create)", "What changed: bump foo.\n/approve\n\n---\n🤖 [iterion](https://iterion.cloud) · run [`<run id>`](<run url>)", false, ""},
 		{"report note (supply-shield)", "2 new versions inspected\n/merge\n", false, ""},
 		{"command alone", "/merge", false, ""},

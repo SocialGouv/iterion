@@ -7,12 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,27 +29,26 @@ import (
 // reviConverseBundle is the shipped revi-converse bundle, from this package.
 const reviConverseBundle = "../../../bots/revi-converse"
 
-// TestReviConverseAnswersOnClawThroughItsDeclaredSurface proves the answer
+// TestReviConverseDraftsOnClawThroughItsDeclaredSurface proves the answer
 // path of revi-converse's converse_agent on claw, where a routing cell moves
 // it: the node as main.bot compiles it — its `tools:` list, its
-// `tool_max_steps:` — runs through ClawExecutor with a launch override onto
-// claw, and the real claw tools (bash, read_file) work a temp git workspace
-// holding a diff and the bundle's real forge-reply skill, mirrored where the
-// engine mirrors it. The model is scripted to do what the prompt and the
-// skill ask, one tool call per turn: name the changed files, read the diff,
-// read a changed source, read the skill, POST the answer with the token the
-// shell reads from its 0600 file, VERIFY by re-fetching the thread, and
-// report the note's URL from that response. A fake forge serves the GitHub
-// and the GitLab shape of the thread.
+// `tool_max_steps:`, its prompts, its output schema — runs through
+// ClawExecutor with a launch override onto claw, and the real claw tools
+// (bash, read_file) work a temp git workspace holding a diff. The model is
+// scripted to do what the prompt asks, one tool call per turn: name the
+// changed files, read the diff, read a changed source, then hand back its
+// draft in the structured output.
 //
-// The witness is the forge's side, not the model's: exactly one reply POST
-// carrying the answer, then the VERIFY GET, and the node's output naming the
-// note the forge created, on the PR's host. A node holding no tool never
-// posts; one whose loop keeps claw's default bound
-// (DefaultClawToolMaxSteps) posts and never verifies.
-func TestReviConverseAnswersOnClawThroughItsDeclaredSurface(t *testing.T) {
+// The agent DRAFTS: a deterministic node after it posts (publish_reply,
+// bots/revi_converse_publish_test.go). So the witnesses are the draft and
+// the absence of any write: the node's output is the converse_output shape
+// the bundle declares — the answer in `answer`, no posted / reply_url claim
+// — the prompts claw hands the model ask for that draft and never for a
+// POST or a VERIFY, and a fake forge the shell can reach, at the PR URL the
+// prompts name, sees no request at all.
+func TestReviConverseDraftsOnClawThroughItsDeclaredSurface(t *testing.T) {
 	t.Parallel()
-	for _, bin := range []string{"bash", "git", "curl"} {
+	for _, bin := range []string{"bash", "git"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s not on PATH: the converse loop shells out to it", bin)
 		}
@@ -69,37 +66,25 @@ func TestReviConverseAnswersOnClawThroughItsDeclaredSurface(t *testing.T) {
 	if !ok {
 		t.Fatalf("converse_agent is %T, want *ir.AgentNode", wf.Nodes["converse_agent"])
 	}
-	skill, err := os.ReadFile(filepath.Join(reviConverseBundle, "skills", "forge-reply.md"))
-	if err != nil {
-		t.Fatalf("read the bundle's forge-reply skill: %v", err)
-	}
 
 	for _, shape := range []converseForgeShape{githubThread, gitlabThread} {
 		t.Run(shape.name, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
-			ws := converseWorkspace(t, home, skill)
-			token := "forge-token-" + shape.name
-			tokenFile := filepath.Join(t.TempDir(), "forge_token")
-			if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			forge := newConverseForge(t, shape, token)
+			ws := converseWorkspace(t, home)
+			forge := newConverseForge(t)
 			prURL := forge.srv.URL + shape.prPath
-			answer := "Re: op — \"why does A return 2 now?\"\n\n" +
+			answer := "Re: op — « why does A return 2 now? »\n\n" +
 				"`A` returns 2 because the change rewrites its body (app.go:3: `return 2`); " +
-				"nothing else in the diff touches it.\n\n---\n🤖 iterion · run `run-converse`"
+				"nothing else in the diff touches it."
 
-			mdl := &converseModel{
-				shape: shape, forgeURL: forge.srv.URL, prURL: prURL, ws: ws,
-				tokenFile: tokenFile, answer: answer,
-			}
+			mdl := &converseModel{ws: ws, answer: answer, forge: shape.name}
 			reg := NewRegistry()
 			reg.Register("anthropic", func(string) (api.APIClient, error) { return mdl, nil })
 			tools := tool.NewRegistry()
 			// The shell the agent gets: a HOME and a TMPDIR this test owns,
 			// and the fake forge reached directly, not through a proxy the
-			// environment may set.
+			// environment may set — a write the agent attempted would land.
 			shellEnv := []string{
 				"HOME=" + home, "TMPDIR=" + t.TempDir(),
 				"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost",
@@ -132,62 +117,62 @@ func TestReviConverseAnswersOnClawThroughItsDeclaredSurface(t *testing.T) {
 				t.Fatalf("converse_agent on claw: %v", err)
 			}
 
-			offered, results := mdl.observed()
+			seen := mdl.observed()
 			for _, want := range node.Tools {
-				if !slices.Contains(offered, want) {
-					t.Errorf("the loop's model was offered %v, which lacks the node's %q", offered, want)
+				if !slices.Contains(seen.offered, want) {
+					t.Errorf("the loop's model was offered %v, which lacks the node's %q", seen.offered, want)
 				}
 			}
 			for step, want := range map[string]string{
-				"names": "app.go",
-				"diff":  "+func A() int { return 2 }",
-				"skill": shape.skillCall,
+				"names":  "app.go",
+				"diff":   "+func A() int { return 2 }",
+				"source": "return 2",
 			} {
-				if !strings.Contains(results[step], want) {
-					t.Errorf("the %s step's tool result does not hold %q: %q", step, want, results[step])
+				if !strings.Contains(seen.results[step], want) {
+					t.Errorf("the %s step's tool result does not hold %q: %q", step, want, seen.results[step])
 				}
 			}
 
-			posts, log := forge.seen()
-			if want := []string{"POST reply", "GET thread"}; !slices.Equal(log, want) {
-				t.Errorf("the forge saw %v, want %v — one reply, then its VERIFY", log, want)
+			// The draft, in the shape the bundle declares.
+			if out["answer"] != answer {
+				t.Errorf("output answer = %q, want the drafted answer %q", out["answer"], answer)
 			}
-			if len(posts) != 1 || posts[0] != answer {
-				t.Errorf("the forge received reply bodies %q, want exactly the answer %q", posts, answer)
+			if out["skipped_reason"] != "" {
+				t.Errorf("output skipped_reason = %q, want empty beside an answer — a reason stops publish_reply", out["skipped_reason"])
 			}
-			for _, body := range posts {
-				if strings.HasPrefix(strings.TrimSpace(body), "/revi") {
-					t.Errorf("a reply body opens with /revi, which re-fires the trigger: %q", body)
+			for _, claim := range []string{"posted", "reply_url"} {
+				if _, has := out[claim]; has {
+					t.Errorf("the agent's output carries %q (%v): posting is publish_reply's, the agent only drafts", claim, out[claim])
+				}
+				if _, has := seen.schema[claim]; has {
+					t.Errorf("the output schema claw hands the model asks for %q: posting is publish_reply's", claim)
 				}
 			}
-			if out["posted"] != true {
-				t.Errorf("output posted = %v, want true (skipped_reason %q)", out["posted"], out["skipped_reason"])
+			if _, has := seen.schema["answer"]; !has {
+				t.Errorf("the output schema claw hands the model (%v) has no answer field: the draft has nowhere to go", seen.schema)
 			}
-			replyURL, _ := out["reply_url"].(string)
-			if want := forge.noteURL(prURL); replyURL != want {
-				t.Errorf("output reply_url = %q, want the forge's note %q", replyURL, want)
+
+			// What the bundle tells the model, as claw sends it.
+			if !strings.Contains(seen.system, "converse_output.answer") || !strings.Contains(seen.user, prURL) {
+				t.Errorf("the prompts claw sends do not ask for the draft in converse_output.answer about %s", prURL)
 			}
-			if got, pr := urlHost(t, replyURL), urlHost(t, prURL); !strings.EqualFold(got, pr) {
-				t.Errorf("output reply_url %q is on host %q, not the PR's %q", replyURL, got, pr)
+			for _, stale := range []string{"forge-reply.md", "POST it", "VERIFY by re-fetching", "Capture its URL as"} {
+				if strings.Contains(seen.system, stale) || strings.Contains(seen.user, stale) {
+					t.Errorf("the prompts claw sends still say %q: the agent is told to publish what a later node publishes", stale)
+				}
+			}
+
+			// No write: the forge the PR URL names saw nothing.
+			if hits := forge.seen(); len(hits) != 0 {
+				t.Errorf("the forge saw %v from the agent, want no request: the agent drafts, publish_reply posts", hits)
 			}
 		})
 	}
 }
 
-func urlHost(t *testing.T, raw string) string {
-	t.Helper()
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return u.Host
-}
-
 // converseWorkspace is a git checkout on a feature branch one commit past
-// main, with the bundle's skill mirrored under .claude/skills/ — where the
-// engine mirrors a bundle's skills and where the system prompt sends the
-// agent to read it.
-func converseWorkspace(t *testing.T, home string, skill []byte) string {
+// main.
+func converseWorkspace(t *testing.T, home string) string {
 	t.Helper()
 	ws := t.TempDir()
 	git := func(args ...string) {
@@ -219,154 +204,69 @@ func converseWorkspace(t *testing.T, home string, skill []byte) string {
 	git("checkout", "-q", "-b", "feat")
 	write("app.go", "package app\n\nfunc A() int { return 2 }\n")
 	git("commit", "-q", "-am", "change A")
-	write(filepath.Join(".claude", "skills", "forge-reply.md"), string(skill))
 	return ws
 }
 
-// converseForgeShape is one forge's reply thread: where the PR lives, the
-// reply call as forge-reply.md documents it, and the REST paths and token
-// header that call takes.
+// converseForgeShape is one forge's thread: where the PR lives and the
+// thread the operator's note opened.
 type converseForgeShape struct {
 	name       string
 	prPath     string // the PR's web path on the forge host
 	discussion string // the thread the operator's note opened
-	skillCall  string // the reply call, verbatim from the skill
-	authHeader string
-	authValue  func(token string) string
-	postPath   string // the reply POST, escaped
-	threadPath string // the VERIFY GET, escaped
 }
 
-var githubThread = converseForgeShape{
-	name:       "github",
-	prPath:     "/o/r/pull/42",
-	discussion: "4242",
-	skillCall:  "POST repos/:owner/:repo/pulls/:number/comments/:comment_id/replies",
-	authHeader: "Authorization",
-	authValue:  func(token string) string { return "Bearer " + token },
-	postPath:   "/repos/o/r/pulls/42/comments/4242/replies",
-	threadPath: "/repos/o/r/pulls/42/comments",
-}
+var githubThread = converseForgeShape{name: "github", prPath: "/o/r/pull/42", discussion: "4242"}
 
-var gitlabThread = converseForgeShape{
-	name:       "gitlab",
-	prPath:     "/g/p/-/merge_requests/7",
-	discussion: "6a1f0c",
-	skillCall:  "POST projects/:id/merge_requests/:iid/discussions/:discussion_id/notes",
-	authHeader: "PRIVATE-TOKEN",
-	authValue:  func(token string) string { return token },
-	postPath:   "/api/v4/projects/g%2Fp/merge_requests/7/discussions/6a1f0c/notes",
-	threadPath: "/api/v4/projects/g%2Fp/merge_requests/7/discussions/6a1f0c",
-}
+var gitlabThread = converseForgeShape{name: "gitlab", prPath: "/g/p/-/merge_requests/7", discussion: "6a1f0c"}
 
-// converseForge is the fake forge: it accepts a reply on the thread's POST
-// path, serves the thread on its GET path, and records every request in
-// arrival order.
+// converseForge is a fake forge that records every request in arrival order
+// and answers none of them: the agent must not call it at all.
 type converseForge struct {
-	shape converseForgeShape
-	token string
-	srv   *httptest.Server
+	srv *httptest.Server
 
-	mu    sync.Mutex
-	posts []string
-	log   []string
+	mu  sync.Mutex
+	log []string
 }
 
-const converseFirstNoteID = 9001
-
-func newConverseForge(t *testing.T, shape converseForgeShape, token string) *converseForge {
-	f := &converseForge{shape: shape, token: token}
-	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+func newConverseForge(t *testing.T) *converseForge {
+	f := &converseForge{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		f.mu.Lock()
+		f.log = append(f.log, r.Method+" "+r.URL.EscapedPath())
+		f.mu.Unlock()
+		http.NotFound(w, r)
+	}))
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
-func (f *converseForge) serve(w http.ResponseWriter, r *http.Request) {
+func (f *converseForge) seen() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	path := r.URL.EscapedPath()
-	if r.Header.Get(f.shape.authHeader) != f.shape.authValue(f.token) {
-		f.log = append(f.log, "UNAUTHORIZED "+r.Method+" "+path)
-		http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	switch {
-	case r.Method == http.MethodPost && path == f.shape.postPath:
-		var payload struct {
-			Body string `json:"body"`
-		}
-		raw, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(raw, &payload); err != nil || payload.Body == "" {
-			f.log = append(f.log, "BAD POST "+path)
-			http.Error(w, `{"message":"body is missing"}`, http.StatusBadRequest)
-			return
-		}
-		f.posts = append(f.posts, payload.Body)
-		f.log = append(f.log, "POST reply")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(f.noteLocked(len(f.posts)-1, payload.Body))
-	case r.Method == http.MethodGet && path == f.shape.threadPath:
-		f.log = append(f.log, "GET thread")
-		notes := []map[string]any{}
-		for i, body := range f.posts {
-			notes = append(notes, f.noteLocked(i, body))
-		}
-		if f.shape.name == "gitlab" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": f.shape.discussion, "notes": notes})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(notes)
-	default:
-		f.log = append(f.log, "UNEXPECTED "+r.Method+" "+path)
-		http.NotFound(w, r)
-	}
+	return slices.Clone(f.log)
 }
 
-// noteLocked is the forge's record of reply i: GitHub's review comment
-// carries its own html_url, GitLab's note an id the PR URL anchors.
-func (f *converseForge) noteLocked(i int, body string) map[string]any {
-	id := converseFirstNoteID + i
-	if f.shape.name == "gitlab" {
-		return map[string]any{"id": id, "body": body}
-	}
-	parent, _ := strconv.Atoi(f.shape.discussion)
-	return map[string]any{
-		"id": id, "in_reply_to_id": parent, "body": body,
-		"html_url": fmt.Sprintf("%s%s#discussion_r%d", f.srv.URL, f.shape.prPath, id),
-	}
-}
-
-// noteURL is the URL of the first reply, as the forge names it.
-func (f *converseForge) noteURL(prURL string) string {
-	if f.shape.name == "gitlab" {
-		return fmt.Sprintf("%s#note_%d", prURL, converseFirstNoteID)
-	}
-	return fmt.Sprintf("%s%s#discussion_r%d", f.srv.URL, f.shape.prPath, converseFirstNoteID)
-}
-
-func (f *converseForge) seen() (posts, log []string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.posts), slices.Clone(f.log)
-}
-
-// converseModel is the scripted converse agent: one tool call per turn, in
-// the order the system prompt and the skill give, then the structured
-// output. It reports what its tools actually returned — posted, and the
-// note's URL, only when its VERIFY read the reply back from the forge — so a
-// loop cut short, or a route with no tool, ends in an honest posted=false.
+// converseModel is the scripted converse agent: one read per turn, in the
+// order the system prompt gives, then the structured output carrying the
+// draft. It records what claw sent it — the tools, the tool results, the
+// prompts, the output schema — for the test to read.
 type converseModel struct {
-	shape     converseForgeShape
-	forgeURL  string
-	prURL     string
-	ws        string
-	tokenFile string
-	answer    string
+	ws     string
+	answer string
+	forge  string
 
-	mu      sync.Mutex
-	next    int
-	offered []string
-	results map[string]string
+	mu   sync.Mutex
+	next int
+	seen converseSeen
+}
+
+// converseSeen is what claw sent the scripted model.
+type converseSeen struct {
+	offered      []string
+	results      map[string]string
+	system, user string
+	schema       map[string]bool
 }
 
 // converseStep is one tool call of the loop, named for the result it reads.
@@ -377,39 +277,37 @@ type converseStep struct {
 
 func (m *converseModel) steps() []converseStep {
 	mergeBase := "$(git -C " + shellquote.Quote(m.ws) + " merge-base main HEAD)"
-	token := "$(cat " + shellquote.Quote(m.tokenFile) + ")"
-	payload, _ := json.Marshal(map[string]string{"body": m.answer})
 	return []converseStep{
 		{"names", "bash", map[string]any{"command": "git -C " + shellquote.Quote(m.ws) + " diff --name-only " + mergeBase}},
 		{"diff", "bash", map[string]any{"command": "git -C " + shellquote.Quote(m.ws) + " diff " + mergeBase}},
 		{"source", "read_file", map[string]any{"path": filepath.Join(m.ws, "app.go")}},
-		{"skill", "read_file", map[string]any{"path": filepath.Join(m.ws, ".claude", "skills", "forge-reply.md")}},
-		{"post", "bash", map[string]any{"command": "curl -sS -H " + m.authArg(token) +
-			" -H 'Content-Type: application/json' -X POST " + shellquote.Quote(m.forgeURL+m.shape.postPath) +
-			" -d @- <<'ITERION_ANSWER'\n" + string(payload) + "\nITERION_ANSWER"}},
-		{"verify", "bash", map[string]any{"command": "curl -sS -H " + m.authArg(token) + " " + shellquote.Quote(m.forgeURL+m.shape.threadPath)}},
 	}
-}
-
-// authArg is the forge's token header as one shell word, the token read by
-// the shell from its file — never written into the command itself.
-func (m *converseModel) authArg(tokenExpr string) string {
-	return `"` + m.shape.authHeader + ": " + m.shape.authValue(tokenExpr) + `"`
 }
 
 func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.results == nil {
-		m.results = map[string]string{}
+	if m.seen.results == nil {
+		m.seen.results = map[string]string{}
 	}
 	steps := m.steps()
 	byID := map[string]string{}
 	for i, s := range steps {
 		byID[fmt.Sprintf("converse_%d_%s", i, s.label)] = s.label
 	}
+	if m.seen.system == "" {
+		var sys strings.Builder
+		sys.WriteString(req.System)
+		for _, b := range req.SystemBlocks {
+			sys.WriteString(b.Text)
+		}
+		m.seen.system = sys.String()
+	}
 	for _, msg := range req.Messages {
 		for _, block := range msg.Content {
+			if msg.Role == "user" && block.Type == "text" && m.seen.user == "" {
+				m.seen.user = block.Text
+			}
 			if block.Type != "tool_result" {
 				continue
 			}
@@ -418,9 +316,12 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 				for _, c := range block.Content {
 					text.WriteString(c.Text)
 				}
-				m.results[label] = text.String()
+				m.seen.results[label] = text.String()
 			}
 		}
+	}
+	if m.seen.schema == nil {
+		m.seen.schema = outputSchemaFields(m.seen.user)
 	}
 	var names []string
 	for _, tl := range req.Tools {
@@ -429,17 +330,17 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 	var evs []api.StreamEvent
 	switch {
 	case slices.Contains(names, "bash") && m.next < len(steps):
-		if m.offered == nil {
-			m.offered = names
+		if m.seen.offered == nil {
+			m.seen.offered = names
 		}
 		s := steps[m.next]
 		in, _ := json.Marshal(s.input)
 		evs = toolUseEvents(fmt.Sprintf("converse_%d_%s", m.next, s.label), s.tool, string(in), 100, 20)
 		m.next++
 	case slices.Contains(names, "structured_output"):
-		evs = toolUseEvents("converse_output", "structured_output", m.outputLocked(slices.Contains(names, "bash") || m.next > 0), 100, 20)
+		evs = toolUseEvents("converse_output", "structured_output", m.outputLocked(), 100, 20)
 	default:
-		evs = textEvents(m.outputLocked(slices.Contains(names, "bash") || m.next > 0), 100, 20)
+		evs = textEvents(m.outputLocked(), 100, 20)
 	}
 	ch := make(chan api.StreamEvent, len(evs))
 	for _, ev := range evs {
@@ -449,71 +350,50 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 	return ch, nil
 }
 
-// outputLocked is converse_output from what the tools returned.
-func (m *converseModel) outputLocked(hadTools bool) string {
-	out := map[string]any{
-		"posted": false, "forge": m.shape.name, "reply_url": "", "answer_preview": "",
-		"summary": "Question: why does A return 2 now?",
-	}
-	switch reply, ok := m.verifiedReplyLocked(); {
-	case ok:
-		out["posted"], out["reply_url"], out["skipped_reason"] = true, reply, ""
-		out["answer_preview"] = m.answer[:min(len(m.answer), 200)]
-		out["summary"] = "Answered from the diff (app.go:3); POSTed in the thread and VERIFIED by re-fetching it: " + reply
-	case !hadTools:
-		out["skipped_reason"] = "no shell on this route: could neither read the diff nor post"
-	default:
-		out["skipped_reason"] = "the tool loop ended before the reply was verified"
+// outputLocked is converse_output from what the reads returned: the draft
+// when the diff was read, an honest skipped_reason when no tool ever ran.
+func (m *converseModel) outputLocked() string {
+	out := map[string]any{"answer": "", "forge": m.forge, "skipped_reason": "", "summary": "Question: why does A return 2 now?"}
+	if strings.Contains(m.seen.results["diff"], "return 2") {
+		out["answer"] = m.answer
+		out["summary"] = "Answered from the diff (app.go:3)."
+	} else {
+		out["skipped_reason"] = "no shell on this route: the diff could not be read"
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
 }
 
-// verifiedReplyLocked reads the VERIFY step's response the way the skill
-// says: the reply carrying the answer, its URL as the forge names it.
-func (m *converseModel) verifiedReplyLocked() (string, bool) {
-	raw, ok := m.results["verify"]
-	if !ok {
-		return "", false
+// outputSchemaFields reads the output schema claw hands a tool-loop node:
+// the JSON object its user message carries after "matching this schema:"
+// (claw_backend.go, the OUTPUT FORMAT instruction). Nil when there is none.
+func outputSchemaFields(user string) map[string]bool {
+	const lead = "matching this schema:"
+	i := strings.Index(user, lead)
+	if i < 0 {
+		return nil
 	}
-	type note struct {
-		ID          int    `json:"id"`
-		InReplyToID int    `json:"in_reply_to_id"`
-		Body        string `json:"body"`
-		HTMLURL     string `json:"html_url"`
+	var doc struct {
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
-	var notes []note
-	if m.shape.name == "gitlab" {
-		var thread struct {
-			Notes []note `json:"notes"`
-		}
-		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &thread) != nil {
-			return "", false
-		}
-		notes = thread.Notes
-	} else if json.Unmarshal([]byte(strings.TrimSpace(raw)), &notes) != nil {
-		return "", false
+	if err := json.NewDecoder(strings.NewReader(user[i+len(lead):])).Decode(&doc); err != nil {
+		return nil
 	}
-	for _, n := range notes {
-		if n.Body != m.answer {
-			continue
-		}
-		if m.shape.name == "gitlab" {
-			return fmt.Sprintf("%s#note_%d", m.prURL, n.ID), true
-		}
-		if strconv.Itoa(n.InReplyToID) == m.shape.discussion && n.HTMLURL != "" {
-			return n.HTMLURL, true
-		}
+	fields := map[string]bool{}
+	for f := range doc.Properties {
+		fields[f] = true
 	}
-	return "", false
+	return fields
 }
 
-func (m *converseModel) observed() (offered []string, results map[string]string) {
+func (m *converseModel) observed() converseSeen {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	results = make(map[string]string, len(m.results))
-	for k, v := range m.results {
-		results[k] = v
+	s := m.seen
+	s.offered = slices.Clone(m.seen.offered)
+	s.results = make(map[string]string, len(m.seen.results))
+	for k, v := range m.seen.results {
+		s.results[k] = v
 	}
-	return slices.Clone(m.offered), results
+	return s
 }
