@@ -252,7 +252,35 @@ iterion run bots/review-pr/main.bot \
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the
   body, never dropped), and a deterministic `publish_health` gate raises
-  a loud banner if findings existed but zero inline comments landed. An
+  a loud banner if findings existed but zero inline comments landed. The
+  endpoint's `fallback` travels structured to that gate. `summary` says
+  every finding is in the review body: the forge refused the anchors and
+  they were folded, the server folded them (`pr_review_mode: summary`), or
+  `publish_review` wrote them there because none had a diff anchor (no
+  file:line, or HEAD moved). `partial` says fewer landed than were sent:
+  GitLab folds the missing ones, GitHub and Forgejo do not (a re-fetch
+  shortfall), so with zero inline comments it is no fold; the endpoint
+  also answers `partial`, never `summary`, in any mode, once it dropped a
+  submitted comment as unanchorable (in neither the body nor inline). A published
+  review whose body landed with a `summary` fold reads `forge publish OK …
+  folded into the review body`, not degraded; a published review with no
+  fold (`partial` included) is `INLINE COMMENTS MISSING` (degraded); only a
+  review that did not publish keeps `FORGE PUBLISH FAILED` and its auth
+  advice. The gate counts what the review carries, not only converge's
+  own `total_findings`: `publish_review` reports `findings_in_review` (the
+  PR findings it put in the review, after the reviewer recovery, the merge
+  floor and the workspace-anomaly strip), `comments_sent` and
+  `findings_reclassified`, and a loss is judged against the larger count —
+  a converge count of 0 over findings the merge floor restored no longer
+  hides their loss. `INLINE COMMENTS MISSING` counts the inline comments
+  actually sent and names the findings that went into the body instead,
+  or, when none was sent, the merge step's count against what the review
+  carries; findings that all sit on uncommitted workspace entries read
+  `FINDINGS RECLASSIFIED` (degraded: the body lists them by title only);
+  and a `publish_output` with no findings count (another review-pr
+  version's, on a resume) reads `FINDINGS COUNT UNKNOWN` (degraded) when
+  nothing landed inline and nothing reports a fold — never as zero
+  findings. An
   HTTP 200 can also carry `body_missing=true` when inline comments landed
   but the summary note did not: this is `degraded=true`, with an explicit
   "review body did not land" banner and no claim that rejected anchors were
@@ -261,9 +289,10 @@ iterion run bots/review-pr/main.bot \
 - **Stale-review guard.** The inline findings anchor to `file:line`
   positions computed against the tree the reviewers judged — the worktree
   HEAD `diff_precheck` captured as `reviewed_sha`. `publish_review`
-  re-reads HEAD before posting and, if it has moved, **refuses to
-  publish** rather than landing comments on lines that have since shifted;
-  it emits a `skipped` reason telling you to re-run with the same `pr_url`
+  re-reads HEAD before posting and, if it has moved, **posts no inline
+  comment** rather than landing comments on lines that have since shifted:
+  every finding goes into the review body, unanchored (`fallback`
+  `summary`), under a warning telling you to re-run with the same `pr_url`
   for a fresh review. Within a single run Revi is read-only, so HEAD never
   drifts between the two nodes — the guard bites on a **resume** after the
   branch advanced (and any future mid-run mutation). Fail-open: it fires

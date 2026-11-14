@@ -248,6 +248,31 @@ schema publish_output:
   ## body_missing: inline comments landed but the summary body did not.
   ## Orthogonal to published and fallback: no folded content reached the PR.
   body_missing: bool
+  ## fallback: the publish step's account of the inline comments that did
+  ## not land (forge.ReviewResult.Fallback): "" for a clean inline post (and
+  ## on every exit that reached no forge); "summary" when every finding is in
+  ## the review body — the forge refused the anchors and they were folded,
+  ## the server folded them in summary mode, or publish_review wrote them
+  ## there because none had a diff anchor; "partial" when fewer landed than
+  ## were sent — GitLab folds the missing ones, GitHub and Forgejo do not
+  ## (a re-fetch shortfall) — and whenever the endpoint dropped a submitted
+  ## comment as unanchorable, in any mode. STRUCTURED, so publish_health can tell a review
+  ## that carries its findings in the body from one that lost them.
+  fallback: string
+  ## findings_in_review: the PR findings this node put in the review, inline
+  ## or in its body — after the reviewer recovery, the merge floor and the
+  ## workspace-anomaly strip, so it can exceed converge's own count. Carried
+  ## on every exit once the findings are read (0 before), published or not:
+  ## publish_health judges a loss against it.
+  findings_in_review: int
+  ## comments_sent: the inline comments in the request publish_review built
+  ## for the publish endpoint, whether or not the request went through (0 on
+  ## the exits before it builds one).
+  comments_sent: int
+  ## findings_reclassified: findings anchored on an uncommitted workspace
+  ## entry, moved out of the PR's findings into the body's anomaly section
+  ## by title only.
+  findings_reclassified: int
   ## skipped_reason: non-empty when nothing was published (e.g. unknown
   ## forge, CLI not authenticated, zero anchorable findings).
   skipped_reason: string
@@ -264,8 +289,26 @@ schema publish_output:
 schema publish_health_input:
   published: bool
   body_missing: bool
+  ## fallback: publish_output.fallback. "summary" on a published review
+  ## with a body says the findings are in that body: a fold, not a lost
+  ## publish. "partial" with zero inline comments is no fold (GitHub and
+  ## Forgejo: a re-fetch shortfall, the body as submitted).
+  fallback: string
   comments_posted: int
+  ## total_findings: converge's own count. A loss is judged against the
+  ## larger of it and what the review carries (findings_in_review plus
+  ## findings_reclassified): the merge floor restores findings converge
+  ## dropped, and its count of 0 must not hide their loss.
   total_findings: int
+  ## findings_in_review: unknown (absent, or an unresolved template from an
+  ## output of another review-pr version) is never read as 0: with no inline
+  ## comment landed and no fold, it is degraded, FINDINGS COUNT UNKNOWN.
+  findings_in_review: int
+  ## comments_sent: when nonzero, the count INLINE COMMENTS MISSING names;
+  ## at 0 that banner says no inline comment was sent and names the merge
+  ## step's count against what the review carries.
+  comments_sent: int
+  findings_reclassified: int
   skipped_reason: string
   review_url: string
   gate_requested: bool
@@ -273,9 +316,10 @@ schema publish_health_input:
   gate_skipped_reason: string
 
 ## Deterministic anti-façade gate: degraded=true covers findings with no
-## inline comment, a missing review body, or a required gate that did not
-## land. A loud banner informs rather than hard-failing the run: the board
-## and report already succeeded upstream.
+## inline comment that the publish step does not report folded into the
+## review body (fallback summary), a missing review body, or a required gate that did not land. A loud
+## banner informs rather than hard-failing the run: the board and report
+## already succeeded upstream.
 schema publish_health_output:
   degraded: bool
   banner: string

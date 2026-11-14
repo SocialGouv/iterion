@@ -36,8 +36,9 @@ converse_agent  (agent, claude_code, session: fresh)
     drafts the answer, POSTs it into `discussion_id` per skills/forge-reply.md,
     re-fetches the thread to VERIFY the note landed, emits `converse_output`
 converse_health (tool, deterministic — no LLM)
-  → asserts the invariant: posted=true with an empty reply_url ⇒ degraded=true
-    plus a loud banner; the run still succeeds
+  → asserts the invariant: degraded=true unless posted=true with an http(s)
+    reply_url on the host of `pr_url`, plus a banner (UNVERIFIED, the
+    skipped_reason, or MISSING); the run still succeeds
 done
 ```
 
@@ -55,8 +56,8 @@ comments).
 |---|---|---|---|
 | `workspace_dir` | string | `${PROJECT_DIR}` | The repo checkout the agent diffs and reads. |
 | `base_ref` | string | `main` | Branch comparison base; the agent diffs `merge-base base_ref HEAD`. The webhook handler overrides it from the PR's target branch. |
-| `pr_url` | string | `""` | The PR/MR URL the conversation lives on; the forge host, project and iid are derived from it. Manual runs MUST pass it. |
-| `discussion_id` | string | `""` | The thread id to reply in. Empty disables posting (the agent still composes an answer for the report). |
+| `pr_url` | string | `""` | The PR/MR URL the conversation lives on; the forge host, project and iid are derived from it, and `converse_health` counts a `reply_url` only on its host. Manual runs MUST pass it. |
+| `discussion_id` | string | `""` | The thread id to reply in. Empty disables posting (the agent still composes an answer for the report, and the run reads degraded). |
 | `trigger_note` | string | `""` | The operator's raw note body, including the leading slash-command. |
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then fetches the thread itself. |
@@ -86,7 +87,9 @@ iterion run bots/revi-converse/main.bot \
 ```
 
 Omit `discussion_id` (or run without the `forge_token`) to compose an answer
-without posting it; inspect it with `iterion report --run-id <id>`.
+without posting it; inspect it with `iterion report --run-id <id>`. Such a
+run reads degraded: nothing answered the question on the forge, and
+`converse_health`'s banner is the agent's `skipped_reason`.
 
 ## Notable
 

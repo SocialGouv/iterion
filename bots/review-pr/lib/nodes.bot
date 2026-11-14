@@ -534,16 +534,27 @@ def finding_id(f):
     # does not change.
     return 'R' + hashlib.sha256(key.encode('utf-8', 'surrogatepass')).hexdigest()[:6]
 
-def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason='', body_missing=False):
+def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason='', body_missing=False, fallback=''):
     # The gate travels STRUCTURED, not only folded into the summary string. A
     # required check that never lands blocks the pull request for good, so the
     # run must be able to say so with a predicate rather than with prose a
     # reader has to notice -- publish_health is what raises it.
+    # The fold travels the same way: fallback summary says every comment is in
+    # the review body (folded by the forge layer, by the server in summary
+    # mode, or by this node when no finding had a diff anchor); partial says
+    # fewer comments landed than were sent, which GitLab folds and GitHub and
+    # Forgejo do not. It is the empty string on every exit that reached no
+    # forge, so the field is always there.
+    # What the review carries travels with every exit too, read from the
+    # module counts below at the moment of the exit: publish_health judges a
+    # loss against it, never against the merge step's own count.
     # (No backticks in these comments: this block is a backtick-delimited
     # command: string, and one would terminate it. Same trap as below.)
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
                       'comments_posted': posted, 'suggestions_posted': sugg,
-                      'body_missing': bool(body_missing),
+                      'body_missing': bool(body_missing), 'fallback': str(fallback or ''),
+                      'findings_in_review': int(findings_in_review), 'comments_sent': int(comments_sent),
+                      'findings_reclassified': int(findings_reclassified),
                       'skipped_reason': skipped, 'summary': summary,
                       'gate_requested': bool(gate_requested), 'gate_posted': bool(gate_posted),
                       'gate_skipped_reason': gate_skipped_reason}))
@@ -562,6 +573,17 @@ gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 
 pr = os.environ.get('PR_URL', '').strip()
 mode = os.environ.get('MODE', '').strip() or 'inline'
 findings_parse_failed = False
+# What the review carries, for publish_health to judge a loss against. The
+# merge step's own count is not that: the reviewer recovery and the merge
+# floor add findings it dropped, and the anomaly strip moves findings out of
+# the PR into the body, by title only. findings_in_review counts the PR findings
+# this node puts in the review, inline or in its body; comments_sent the
+# inline comments in the request it built for the endpoint, whether or not the
+# request then went through; findings_reclassified the findings
+# the strip moved out. Set once known, so an earlier exit reports 0.
+findings_in_review = 0
+comments_sent = 0
+findings_reclassified = 0
 
 # Stale-review guard (#1): the findings' file:line anchors were computed
 # against the tree at REVIEWED_SHA. If the worktree HEAD has since moved (a
@@ -932,6 +954,8 @@ for t in tickets:
     else:
         kept_tickets.append(t)
 tickets = kept_tickets
+findings_in_review = sum(1 for f in findings if isinstance(f, dict))
+findings_reclassified = len(anomaly_findings)
 if not url or not tok:
     emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
@@ -1310,6 +1334,7 @@ if gate_enabled:
         extra = str(len(anomaly_findings)) + (' finding' if len(anomaly_findings) == 1 else ' findings') + ' reclassified as workspace anomaly (uncommitted edit outside the PR diff), not counted'
         note = payload['gate'].get('note') or ''
         payload['gate']['note'] = (note + '; ' + extra) if note else str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); ' + extra
+comments_sent = len(comments)
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
@@ -1330,11 +1355,23 @@ sugg = int(res.get('suggestions_posted') or 0)
 fallback = str(res.get('fallback') or '')
 verified = bool(res.get('verified'))
 body_missing = res.get('body_missing') is True
+# No finding had a diff anchor (no file or line, or HEAD moved since the
+# review): each was written into the summary above and no inline comment was
+# sent, so the endpoint saw nothing to fold and reports no fallback. The fold
+# is this node's own; publish_health reads it as one only when it is said.
+self_folded = (not fallback and not comments and bool(unanchored)
+               and bool(res.get('published')) and not body_missing)
+if self_folded:
+    fallback = 'summary'
 s = 'posted ' + str(posted) + ' inline comment(s), ' + str(sugg) + ' with one-click suggestions, via the iterion forge-publish endpoint (server-side live-token client); counts ' + ('re-fetched from the forge.' if verified else 'as submitted (forge re-fetch unavailable).')
 if body_missing:
     s = s + ' review body did not land; only the inline comments reported above can be confirmed.'
+elif self_folded:
+    s = s + ' fallback=summary: no finding had a diff anchor, all ' + str(len(unanchored)) + ' were written into the review summary body.'
+elif fallback == 'summary':
+    s = s + ' fallback=summary: every inline comment was folded into the review summary body, not dropped.'
 elif fallback:
-    s = s + ' fallback=' + fallback + ': rejected inline anchors were folded into the review summary body, not dropped.'
+    s = s + ' fallback=' + fallback + ': the forge holds fewer inline comments than were sent (GitLab folds the missing ones into its summary note, GitHub and Forgejo fold nothing).'
 if bool(res.get('gate_posted')):
     s = s + ' merge gate: ' + gate_ctx + '=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
 elif str(res.get('gate_error') or ''):
@@ -1342,7 +1379,8 @@ elif str(res.get('gate_error') or ''):
 emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
      review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s,
      gate_requested=gate_enabled, gate_posted=bool(res.get('gate_posted')),
-     gate_skipped_reason=str(res.get('gate_error') or ''), body_missing=body_missing)
+     gate_skipped_reason=str(res.get('gate_error') or ''), body_missing=body_missing,
+     fallback=fallback)
 "`
   input: publish_input
   output: publish_output
@@ -1350,12 +1388,37 @@ emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
 ## Deterministic anti-façade gate (no LLM): when findings existed but
 ## zero inline comments landed, or the review body did not land, emit a
 ## loud banner. The board + report already succeeded upstream, so this
-## informs (degraded=true) rather than hard-failing the run.
+## informs (degraded=true) rather than hard-failing the run. A review
+## reported folded (fallback summary, body landed) carries its findings in
+## its body: that is a publish, not a failure. fallback partial with zero
+## inline comments is not a fold: on GitHub and Forgejo it is the re-fetch
+## listing fewer comments than were sent, nothing folded. The findings it
+## counts are what the review carries (publish_review's own counts) as well
+## as the merge step's: the merge floor restores findings converge dropped,
+## and a converge count of 0 must not hide their loss.
 tool publish_health:
-  command: `TOTAL={{input.total_findings}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} BODY_MISSING={{input.body_missing}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -I -c "
+  command: `TOTAL={{input.total_findings}} IN_REVIEW={{input.findings_in_review}} SENT={{input.comments_sent}} RECLASSIFIED={{input.findings_reclassified}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} BODY_MISSING={{input.body_missing}} FALLBACK={{input.fallback}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -I -c "
 import os, json, sys
-total = int(os.environ.get('TOTAL', '0') or '0')
+converge_total = int(os.environ.get('TOTAL', '0') or '0')
 posted = int(os.environ.get('POSTED', '0') or '0')
+def count(name):
+    # A count publish_review did not emit (an unmapped input, which reaches
+    # this shell as its literal template, or an unparseable one) is unknown,
+    # -1, never zero findings: with nothing inline and no fold it is degraded
+    # under its own banner below, never read as a clean review.
+    try:
+        return int(str(os.environ.get(name, '')).strip())
+    except ValueError:
+        return -1
+in_review = count('IN_REVIEW')
+sent = count('SENT')
+reclassified = max(count('RECLASSIFIED'), 0)
+# A loss is judged against what the review carries as well as against the
+# merge step's own count, the larger winning: the reviewer recovery and the
+# merge floor add findings converge dropped (converge at 0 over two restored
+# findings that never landed read as a healthy publish), and the anomaly
+# strip moves findings out of the PR into the body.
+total = max(converge_total, max(in_review, 0) + reclassified)
 review_url = os.environ.get('REVIEW_URL', '')
 skipped = os.environ.get('SKIPPED', '')
 def flag(name):
@@ -1368,7 +1431,37 @@ body_missing = flag('BODY_MISSING')
 # nobody notices is a PR nobody can merge.
 gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
 placeholder_refused = skipped.startswith('placeholder-shape:')
-degraded = body_missing or (total > 0 and posted == 0) or gate_missing or placeholder_refused
+published = flag('PUBLISHED')
+anchors_lost = total > 0 and posted == 0
+fallback = os.environ.get('FALLBACK', '').strip()
+# Zero inline comments on a published review whose body landed is not a lost
+# publish when the publish step says every comment is in that body: fallback
+# summary - folded by the forge layer after it refused the anchors, by the
+# server in summary mode, or by publish_review when no finding had a diff
+# anchor. The findings reached the PR, as file:line entries in the review.
+# partial is no fold here: GitLab, which folds, reports summary when none
+# landed, so partial at zero is the GitHub and Forgejo re-fetch listing fewer
+# comments than were sent, with the body as submitted. A published review
+# that reports no fold has lost its comments somewhere nothing accounts for.
+folded = anchors_lost and published and not body_missing and fallback == 'summary'
+# Every finding was anchored on an uncommitted workspace edit outside the PR
+# diff and moved to the anomaly section, which lists them by title only: no
+# PR finding was lost and none can be re-posted, but no inline comment and no
+# detail carries them either. Degraded, under its own name.
+reclassified_only = (anchors_lost and in_review == 0 and reclassified > 0
+                     and converge_total <= reclassified)
+# publish_review reported no count of the findings it put in the review (an
+# output from another review-pr version, on a resume across versions): what
+# it carried is unknown, so 0 inline comments with no fold cannot be read as
+# nothing to post - the merge floor may have restored findings converge did
+# not count. A published summary fold still says the findings are in the body.
+count_unknown = in_review < 0 and posted == 0 and not (published and fallback == 'summary')
+degraded = body_missing or (anchors_lost and not folded) or count_unknown or gate_missing or placeholder_refused
+def unknown_banner():
+    landed = ('the review landed with 0 inline comments and nothing reports them folded' if published
+              else 'the review did not publish (reason: ' + (skipped or 'none given') + ')')
+    return (chr(9888) + ' FINDINGS COUNT UNKNOWN: publish_review reported no count of the findings it published (likely an output from another review-pr version); '
+            + landed + '; the merge step counted ' + str(converge_total) + ' finding(s), which may not be all the review carried. Check the review on the PR; the board + markdown report still succeeded.')
 banners = []
 if placeholder_refused:
     banners.append(chr(9888) + ' REVIEW REFUSED: ' + skipped + '. Re-run the reviewers before publishing a verdict.')
@@ -1378,8 +1471,33 @@ if gate_missing:
     banners.append(chr(9888) + ' MERGE GATE NOT POSTED: the required check did not land (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.')
 if banners:
     banner = ' '.join(banners)
-elif degraded:
+elif folded:
+    banner = 'forge publish OK: ' + str(in_review if in_review > 0 else total) + ' finding(s) folded into the review body (no inline comment landed); review: ' + (review_url or 'n/a')
+elif count_unknown and published:
+    banner = unknown_banner()
+elif reclassified_only and published:
+    banner = chr(9888) + ' FINDINGS RECLASSIFIED: all ' + str(reclassified) + ' finding(s) were anchored on uncommitted workspace edits outside the PR diff; the review lists them by title only, with no inline comment and no detail. Check the workspace drift the review names; re-run on a clean checkout to review them as PR findings.'
+elif anchors_lost and published:
+    reason = skipped or ('the forge holds fewer inline comments than were sent (fallback=partial)' if fallback == 'partial' else 'none given')
+    if sent > 0:
+        # The count is the inline comments actually sent; findings without a
+        # diff anchor went into the body instead and are named apart.
+        in_body = ''
+        if in_review > sent:
+            in_body = '; ' + str(in_review - sent) + ' more finding(s) without a diff anchor are in the review body'
+        banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but none of its ' + str(sent) + ' inline comment(s) did and nothing reports them folded (reason: ' + reason + in_body + '). Check the review on the PR; the board + markdown report still succeeded; re-run with the same pr_url to re-post the findings.'
+    else:
+        # Nothing was sent inline, so nothing can be re-posted: the merge step
+        # counted findings the review does not carry (a miscount, prose in its
+        # array, an unreadable answer with no reviewer to recover from).
+        carried = ''
+        if reclassified > 0:
+            carried = ' (' + str(reclassified) + ' reclassified as workspace anomaly, title only)'
+        banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but no inline comment was sent: the merge step counted ' + str(converge_total) + ' finding(s) and the review carries ' + str(max(in_review, 0)) + ' of them in its body' + carried + ' (reason: ' + reason + '). Check the merge step output and the review on the PR; the board + markdown report still succeeded.'
+elif anchors_lost:
     banner = chr(9888) + ' FORGE PUBLISH FAILED: ' + str(total) + ' finding(s) to post but 0 inline comments landed on the PR (reason: ' + (skipped or 'none given') + '). The board + markdown report still succeeded; fix the forge CLI auth and re-run with the same pr_url to publish.'
+elif count_unknown:
+    banner = unknown_banner()
 else:
     banner = 'forge publish OK: ' + str(posted) + ' inline comment(s) posted; review: ' + (review_url or 'n/a')
 sys.stderr.write(banner + chr(10))
