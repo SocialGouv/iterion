@@ -362,7 +362,7 @@ func TestABodyWithNoSecretRendersAndRunsAsWritten(t *testing.T) {
 				t.Errorf("%s, %s: rendered %q (shown %q), want %q", name, kind, rendered.text, rendered.shown(), want)
 			}
 			if kind == "script" {
-				if out, err := rendered.scriptFor(rendered.shown(), "sh"); err != nil || out != want {
+				if out, env, err := rendered.scriptFor(rendered.shown(), "sh"); err != nil || out != want || env != nil {
 					t.Errorf("%s, script: runs %q (%v), want %q", name, out, err, want)
 				}
 				continue
@@ -390,7 +390,7 @@ func TestABodyRefusesToRunTextItDidNotRender(t *testing.T) {
 	if _, _, err := rendered.shellFor(rendered.shown() + " extra"); err == nil {
 		t.Error("a shell body ran text it did not render")
 	}
-	if _, err := rendered.scriptFor("other", "sh"); err == nil {
+	if _, _, err := rendered.scriptFor("other", "sh"); err == nil {
 		t.Error("a script body wrote text it did not render")
 	}
 }

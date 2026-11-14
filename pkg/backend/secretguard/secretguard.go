@@ -32,9 +32,11 @@ package secretguard
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -217,9 +219,11 @@ func placeholderOf(s Secret) string {
 // redactOnlyPlaceholder distinguishes the placeholder of a value that
 // resolves nowhere from the identically-named one that resolves. It keeps the
 // __ITERION_SECRET_…__ shape every downstream scrubber already recognises
-// (pkg/errtrack, pkg/knowledge).
+// (pkg/errtrack, pkg/knowledge). No resolvable placeholder is spelled so: a
+// secret whose own placeholder would be is registered redact-only
+// (buildGuardState), and the compiler refuses its name (C341).
 func redactOnlyPlaceholder(ph string) string {
-	return strings.TrimSuffix(ph, "__") + "_redacted__"
+	return secretsink.RedactedFormOf(ph)
 }
 
 // New builds a Guard for the given secrets. Secrets whose value is
@@ -268,6 +272,19 @@ func buildGuardState(secrets []Secret, cfg Config) *guardState {
 	// after every whole value so they never take another secret's.
 	type literal struct{ enc, ph string }
 	var trimmed []literal
+	// A placeholder spelled as another's redact-only form is reserved: were
+	// it resolvable, the defuse that writes that form in the other's place
+	// would hand out this secret's value instead of a token that resolves
+	// nowhere. The compiler refuses such a name (C341); a registration that
+	// still carries one is scrubbed and never resolves.
+	reserved := make([]Secret, len(secrets))
+	for i, s := range secrets {
+		if !s.RedactOnly && secretsink.IsRedactedForm(placeholderOf(s)) {
+			s.RedactOnly, s.EnvOnly = true, false
+		}
+		reserved[i] = s
+	}
+	secrets = reserved
 	for _, s := range secrets {
 		if !s.RedactOnly && len([]rune(s.Value)) >= cfg.MinLen {
 			resolvable[placeholderOf(s)] = true
@@ -658,13 +675,34 @@ func (g *Guard) DefuseUngranted(sink, s string) string {
 	if st == nil || s == "" || len(st.placeholderSinks) == 0 {
 		return s
 	}
+	var phs []string
 	for ph := range st.placeholderValue {
-		if st.resolvesAt(ph, sink) || !strings.Contains(s, ph) {
-			continue
+		if !st.resolvesAt(ph, sink) {
+			phs = append(phs, ph)
 		}
-		s = strings.ReplaceAll(s, ph, redactOnlyPlaceholder(ph))
 	}
-	return s
+	return defuse(s, phs)
+}
+
+// defuse rewrites, in s, every occurrence of the placeholders phs into its
+// redact-only form, in ONE pass: what a rewrite writes is never read again,
+// so the answer does not depend on the order the placeholders are visited
+// in. The longer placeholder wins where two start at one position.
+func defuse(s string, phs []string) string {
+	if len(phs) == 0 || s == "" {
+		return s
+	}
+	slices.SortFunc(phs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(phs))
+	for _, ph := range phs {
+		pairs = append(pairs, ph, redactOnlyPlaceholder(ph))
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 // DefuseAll rewrites, in s, the placeholder of every secret that resolves
@@ -681,19 +719,24 @@ func (g *Guard) DefuseAll(s string) string {
 	if st == nil || s == "" {
 		return s
 	}
-	for _, phs := range []map[string]string{st.placeholderValue, st.envOnlyValue} {
-		for ph := range phs {
-			if strings.Contains(s, ph) {
-				s = strings.ReplaceAll(s, ph, redactOnlyPlaceholder(ph))
-			}
+	phs := make([]string, 0, len(st.placeholderValue)+len(st.envOnlyValue))
+	for ph := range st.placeholderValue {
+		phs = append(phs, ph)
+	}
+	for ph := range st.envOnlyValue {
+		if _, dup := st.placeholderValue[ph]; !dup {
+			phs = append(phs, ph)
 		}
 	}
-	return s
+	return defuse(s, phs)
 }
 
-// DefuseAllValue is DefuseAll over every string leaf of v, in a deep copy
-// of the shapes structured payloads use (RedactValue's); v itself is never
-// mutated. Nil-safe.
+// DefuseAllValue is DefuseAll over every string of v — leaves and map keys
+// alike, since a key is sent to a model as written — in a deep copy of the
+// shapes structured payloads use (RedactValue's); v itself is never mutated.
+// Keys are read in sorted order, so where two keys defuse to one (a live
+// placeholder beside its own redact-only form) the one that sorts last
+// holds the value, whatever the map's iteration order. Nil-safe.
 func (g *Guard) DefuseAllValue(v any) any {
 	if g == nil {
 		return v
@@ -703,8 +746,8 @@ func (g *Guard) DefuseAllValue(v any) any {
 		return g.DefuseAll(t)
 	case map[string]any:
 		out := make(map[string]any, len(t))
-		for k, vv := range t {
-			out[k] = g.DefuseAllValue(vv)
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			out[g.DefuseAll(k)] = g.DefuseAllValue(t[k])
 		}
 		return out
 	case []any:
@@ -790,6 +833,24 @@ func (g *Guard) Redact(s string) string {
 // placeholders. Safe on a nil Guard.
 func (g *Guard) Unmaterialize(s string) string {
 	return g.load().Unmaterialize(s)
+}
+
+// UnmaterializeEach is Unmaterialize with each known value written as what
+// to answers for its placeholder, instead of the placeholder itself: a
+// caller that must tell the placeholders it put back from the ones the text
+// already spelled — the self-repair prompt, which defuses the latter — maps
+// the values to marks of its own first. Safe on a nil Guard.
+func (g *Guard) UnmaterializeEach(s string, to func(ph string) string) string {
+	st := g.load()
+	if st == nil || s == "" || st.matcher == nil {
+		return s
+	}
+	return st.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		if ph, ok := st.literalPlaceholder[m]; ok {
+			return to(ph)
+		}
+		return m
+	})
 }
 
 // Unmaterialize is the state-level twin of Guard.Unmaterialize — nil-safe,

@@ -617,6 +617,11 @@ func (c *compiler) validateSecretSinks(name string, s *Secret) {
 // same placeholder (`tok` and `_tok` both become `__ITERION_SECRET_tok__`):
 // the guard would register one value under the token both references
 // render, and the grants of one would govern the other's placeholder.
+//
+// It refuses too a name whose placeholder spells another's redact-only form
+// (C341: `pw_redacted`): the guard writes that form in pw's
+// place where pw must resolve nowhere, and it would resolve to this
+// secret's value instead.
 func (c *compiler) validateSecretPlaceholders(w *Workflow) {
 	if w == nil || len(w.Secrets) == 0 {
 		return
@@ -629,6 +634,10 @@ func (c *compiler) validateSecretPlaceholders(w *Workflow) {
 	owner := map[string]string{}
 	for _, name := range names {
 		ph := secretsink.PlaceholderFor(name)
+		if secretsink.IsRedactedForm(ph) {
+			c.errorf(DiagSecretNameReserved,
+				"secret %q: its placeholder %s spells the redact-only form of another secret's placeholder — the token the engine writes where that secret must resolve nowhere — so it would resolve to this secret's value instead; rename it so it does not end in `_redacted`", name, ph)
+		}
 		if first, taken := owner[ph]; taken {
 			c.errorf(DiagDuplicateSecret,
 				"secrets %q and %q share the placeholder %s — rename one so each declaration renders its own token", first, name, ph)

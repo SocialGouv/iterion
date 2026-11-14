@@ -344,10 +344,10 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		// which the sink switch leaves on — and a value that never was a
 		// placeholder (a minted launch var) is redacted outright. A
 		// placeholder the output already carried as TEXT — data the command
-		// printed — is defused first: it is no reference, and echoed into
-		// the corrected command the agent sink would resolve it.
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(e.secretGuard.DefuseAll(stdout))), 4000),
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(e.secretGuard.DefuseAll(stderr))), 4000))
+		// printed — is defused: it is no reference, and echoed into the
+		// corrected command the agent sink would resolve it (repairOutput).
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stdout)), 4000),
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stderr)), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,

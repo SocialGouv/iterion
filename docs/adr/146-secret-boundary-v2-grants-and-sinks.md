@@ -296,19 +296,28 @@ body does.
   raw `{{!secrets.NAME}}` still inlines the value where the author put it.
   Hooks, events and the run log carry the placeholder form: a marker never
   leaves the executor, and the next rendering draws others.
-- **A script receives a value as its language's string literal.** In a
+- **A script receives a value no quoting can turn into code.** In a
   `script:` the author's `{{secrets.NAME}}` renders a JSON string literal
-  holding its marker, and the value takes the whole literal's place
-  written in the script's language — a JSON string for js and py, whose
-  string syntax JSON's is a subset of, a double-quoted word with `\`, `"`,
-  `$` and the backquote escaped for sh and bash — so every byte arrives as
-  written and none reads as code. The materialiser used to splice the
-  value inside the literal with the shell's single-quote escape, which
-  corrupted a quote in python and node and let a value close the literal:
-  whoever sets a secret's binding — a tenant, not the bot's author — could
-  run code in the script. The raw form stays the author's own text:
-  verbatim in js and py, escaped for a single-quoted word in a shell, as
-  in a command.
+  holding its marker, and the author may have wrapped it in quoting of
+  their own — a shell single-quoted word, a JSON document in single
+  quotes, a python or node string, an f-string, a template literal. The
+  value is written so that it closes and interpolates none of them. In sh
+  and bash it never enters the script's text: the literal becomes
+  `"$__ITERION_SECRET_NAME__"` and the value rides the interpreter's
+  environment, as a command's does. In js and py the literal is the
+  value's JSON string literal — JSON's string syntax is a subset of both —
+  with every character that closes or interpolates a string (`'`, the
+  backquote, `$`, `{`, `}`, `/`) written as a `\u` escape. As an
+  expression the value reads back byte for byte; inside the author's own
+  quotes it stays inert text. A value no form carries as written is
+  refused at the node, naming the reference and never the value: a NUL
+  byte in a shell script, invalid UTF-8 in a js or py literal (JSON would
+  rewrite it). The materialiser used to splice the value inside the
+  literal with the shell's single-quote escape, which corrupted a quote in
+  python and node and let a value close the literal: whoever sets a
+  secret's binding — a tenant, not the bot's author — could run code in
+  the script. The raw form stays the author's own text: verbatim in js and
+  py, escaped for a single-quoted word in a shell, as in a command.
 - **A placeholder typed as text is inert, and said so.** Since the bodies
   resolve only the author's references, a placeholder an author typed
   outside `{{…}}` reaches the process as written; `C340` warns on it at
@@ -323,8 +332,8 @@ body does.
   to run a placeholder a model wrote, the extension is an explicit,
   greppable per-node opt-in on that node's declaration — never a change of
   this default. None exists today.
-- **The recovery rungs show their model no live placeholder that is not a
-  reference.** The self-repair rung and the recovery agent are model calls
+- **The recovery rungs show their model no live placeholder that data or
+  typed text spelled.** The self-repair rung and the recovery agent are model calls
   whose output runs through the agent sink, so what they are shown of the
   node is where a data placeholder would get its value back: shown as the
   logged body, it reads exactly like the author's reference, and a repair
@@ -332,11 +341,22 @@ body does.
   reads the recipe's repair form — the marked body with every remaining
   placeholder (data's, or one the author typed) defused to its
   redact-only form, then the markers shown — and the output the recipe
-  printed with its placeholder text defused before its values go back to
-  placeholders; the recovery agent receives the node's input and the
-  recipe's text defused the same way (`Guard.DefuseAll`). The author's own
-  references are shown live, so a repaired command still reaches what the
-  recipe reached.
+  printed read the same way: its values go to markers of that one reading,
+  the placeholder text it spelled is defused, and only then do the markers
+  become placeholders, so a fragment printed against a value cannot borrow
+  the value's placeholder to spell another secret's. The recovery agent
+  receives the node's input — values and map keys, at every depth — and
+  the recipe's text defused the same way (`Guard.DefuseAll`). The author's
+  own references, and the values the recipe printed, are shown live, so a
+  repaired command still reaches what the recipe reached.
+- **The redact-only form is reserved, and the defuse reads once.** The
+  token a defuse writes, `__ITERION_SECRET_<name>_redacted__`, is spelled
+  like the placeholder of a secret named `<name>_redacted`, which would
+  resolve it to its own value: such a name is refused at compile time
+  (`C341`), and the guard never makes such a placeholder resolvable. The
+  defuse rewrites every placeholder in one pass, so what it writes is never
+  read again and its answer does not depend on the order it visits them
+  in.
 - **The agent sink's defuse of data stays, for what a body sends on.** A
   secret kept off the agent still has its placeholder rewritten in data
   to the redact-only form (`DefuseUngranted`): the egress proxy

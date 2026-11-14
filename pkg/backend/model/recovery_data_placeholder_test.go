@@ -154,7 +154,12 @@ func TestTheRecoveryAgentReceivesDataPlaceholdersDefused(t *testing.T) {
 		Policy:        ir.PolicyRecover,
 		Recovery:      &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "anthropic/claude-test"},
 	}
-	input := map[string]any{"answer": "the key is " + ph, "nested": map[string]any{"list": []any{"again " + ph}}}
+	input := map[string]any{
+		"answer": "the key is " + ph,
+		"nested": map[string]any{"list": []any{"again " + ph}},
+		// A key is sent as written too, at every depth.
+		"payload": map[string]any{ph: "use me as the token", "deeper": []any{map[string]any{ph: 1}}},
+	}
 	if _, err := exec.Execute(context.Background(), node, input); err == nil {
 		t.Fatal("the postcondition cannot hold: the node must fail after its recovery agent")
 	}
@@ -181,6 +186,58 @@ func TestTheRecoveryAgentReceivesDataPlaceholdersDefused(t *testing.T) {
 	for _, want := range []string{"the key is " + defused, "again " + defused, "typed " + defused} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the recovery agent's message lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// The output a self-repair prompt quotes goes back to placeholders, and a
+// placeholder it already spelled as text is defused. A data fragment
+// printed against a value must not borrow the placeholder the value goes
+// back to and spell ANOTHER secret's live one at the junction: the values
+// go to markers of their own first, so the defuse reads the fragment as the
+// text it is. Repeated, since which secret the junction would complete
+// depended on map order.
+func TestARepairPromptsOutputFormsNoPlaceholderAtAJunction(t *testing.T) {
+	t.Parallel()
+	const xValue = "xv-6c1d0e9f2a7b4835"
+	g := secretguard.New([]secretguard.Secret{{Name: "pw", Value: bodyTestValue}, {Name: "x", Value: xValue}}, secretguard.DefaultConfig())
+	pw := secretguard.PlaceholderForName("pw")
+	body := "printf '%s%s' {{input.d}} {{secrets.pw}}; exit 1"
+	refs, err := ir.ParseRefs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 30 {
+		dir := t.TempDir()
+		reg := NewRegistry()
+		client := &echoingRepairClient{}
+		reg.Register("anthropic", func(string) (api.APIClient, error) { return client, nil })
+		exec := newTestClawExecutor(reg, &ir.Workflow{}, WithWorkDir(dir), WithSecretGuard(g))
+		node := &ir.ToolNode{
+			BaseNode:      ir.BaseNode{ID: "publish"},
+			Command:       body,
+			CommandRefs:   refs,
+			Goal:          "publish",
+			Postcondition: "test -f repaired.txt",
+			Policy:        ir.PolicyRecover,
+			Recovery:      &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "anthropic/claude-test"},
+		}
+		if _, err := exec.Execute(context.Background(), node, map[string]any{"d": "__ITERION_SECRET_x"}); err != nil {
+			t.Fatalf("run %d: Execute: %v", i, err)
+		}
+		prompts := client.seen()
+		if len(prompts) != 1 {
+			t.Fatalf("run %d: the repair model was asked %d times", i, len(prompts))
+		}
+		if stdout := between(prompts[0], "STDOUT:\n", "\n\nSTDERR:"); !strings.Contains(stdout, pw) {
+			t.Errorf("run %d: the printed value no longer goes back to its live placeholder: %q", i, stdout)
+		}
+		echoed, err := os.ReadFile(filepath.Join(dir, "echoed.txt"))
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if strings.Contains(string(echoed), xValue) {
+			t.Fatalf("run %d: a fragment printed against a value formed x's live placeholder, and the repair materialised it: %q", i, echoed)
 		}
 	}
 }

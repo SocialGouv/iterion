@@ -506,4 +506,6 @@ const (
 	DiagCodemodeBackendUnsupported DiagCode = "C339" // `codemode: on` on a route whose backend serves no codemode tool — refused at dispatch (error)
 
 	DiagTypedSecretPlaceholder DiagCode = "C340" // a declared or server-minted secret's placeholder typed as text in a tool body — a body resolves only the author's references, so the text runs as written (warning)
+
+	DiagSecretNameReserved DiagCode = "C341" // a secret name whose placeholder spells another's redact-only form (`<name>_redacted`), which the guard writes where that secret must resolve nowhere (error)
 )

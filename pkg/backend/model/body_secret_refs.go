@@ -2,7 +2,9 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
@@ -136,30 +138,72 @@ func (b *bodySecrets) shellEnv(s string) (string, map[string]string) {
 	return out, env
 }
 
-// script resolves the markers of a `script:` body written in language. Its
-// value is the secret's when it grants `command` (MaterializeFor), its text
-// otherwise, and it is written in the syntax the marker stands in:
+// script resolves the markers of a `script:` body written in language, and
+// returns the environment the interpreter takes for them. A marker's value
+// is the secret's when it grants `command` (MaterializeFor); a reference
+// nothing resolves keeps its text, the placeholder, which reads alike in
+// every context. Where it resolves, the value is written for the syntax the
+// marker stands in — and for every context an author may have wrapped the
+// reference in:
 //
 //   - The default form renders as a JSON string literal holding the marker
-//     (`"M"`, renderScript's jsonLiteralValue) — and so does an author's raw
-//     reference they quoted themselves. The whole literal becomes the value
-//     as the language's own string literal (scriptStringLiteral): every
-//     byte arrives as written, none is read as code.
+//     (`"M"`, renderScript's jsonLiteralValue), and so does a raw reference
+//     the author double-quoted. In a shell script the literal becomes
+//     `"$<placeholder>"` and the value rides the interpreter's environment:
+//     it never enters the script's text, so no quoting the author put
+//     around the reference — single quotes, a JSON document in single
+//     quotes — can be closed by it. In js and py the literal is the value's
+//     JSON string literal with every character that closes or interpolates
+//     a string the author may have opened (`'`, the backquote, `$`, `{`,
+//     `}`, `/`) written as a `\u` escape (scriptStringLiteral): as an
+//     expression it reads back byte for byte, and inside the author's own
+//     quotes, an f-string or a template literal it can neither close nor
+//     interpolate them.
 //   - The raw form `{{!secrets.NAME}}`, bare, is the author's own text:
 //     escaped for a single-quoted word in a shell script, as in a command
 //     (MaterializeShell), and verbatim in js and py, where the author's
 //     quoting decides.
-func (b *bodySecrets) script(s, language string) string {
+//
+// A value no form carries as written is refused, naming the reference and
+// never the value: a NUL byte in a shell script, which neither an
+// environment variable nor the script's text can hold, and invalid UTF-8 in
+// a js or py literal, which JSON would silently rewrite.
+func (b *bodySecrets) script(s, language string) (string, map[string]string, error) {
+	if b == nil || len(b.order) == 0 {
+		return s, nil, nil
+	}
 	shell := scriptRunsInAShell(language)
-	return b.replace(s, func(m string) []string {
+	var env map[string]string
+	pairs := make([]string, 0, 4*len(b.order))
+	for _, m := range b.order {
 		text := b.text[m]
+		literal := `"` + m + `"`
+		quoted := strings.Contains(s, literal)
 		value := b.guard.MaterializeFor(secretsink.Command, text)
-		raw := value
-		if shell {
-			raw = b.guard.MaterializeShell(text)
+		lit, raw := scriptStringLiteral(language, text), text
+		switch {
+		case value == text:
+			// Nothing resolves: the reference's text in either form.
+		case shell:
+			if strings.ContainsRune(value, 0) {
+				return "", nil, fmt.Errorf("the value of the secret %s holds a NUL byte, which a shell script can carry neither in its environment nor in its text", text)
+			}
+			if quoted {
+				if env == nil {
+					env = make(map[string]string, len(b.order))
+				}
+				env[text] = value
+			}
+			lit, raw = `"$`+text+`"`, b.guard.MaterializeShell(text)
+		default:
+			if quoted && !utf8.ValidString(value) {
+				return "", nil, fmt.Errorf("the value of the secret %s is not valid UTF-8, which a %s string literal cannot carry byte for byte — write the raw {{!secrets.…}} form to splice the bytes as they are", text, language)
+			}
+			lit, raw = scriptStringLiteral(language, value), value
 		}
-		return []string{`"` + m + `"`, scriptStringLiteral(language, value), m, raw}
-	})
+		pairs = append(pairs, literal, lit, m, raw)
+	}
+	return strings.NewReplacer(pairs...).Replace(s), env, nil
 }
 
 // scriptRunsInAShell reports whether a `script:` in language is a shell
@@ -174,16 +218,42 @@ func scriptRunsInAShell(language string) bool {
 // is itself.
 var shellDoubleQuoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
 
+// scriptQuoteSafe writes, in a JSON string literal, each character a js or
+// py string context the author opened around it reads as syntax — a quote
+// that closes it, the backquote and `${` of a template literal, the braces
+// of an f-string, the slash of a regular expression — as a `\u` escape,
+// which both languages read back as the character. None of them is part of
+// any escape JSON writes, so the rewrite leaves those intact.
+var scriptQuoteSafe = strings.NewReplacer(
+	"'", `\u0027`, "`", `\u0060`, "$", `\u0024`, "{", `\u007b`, "}", `\u007d`, "/", `\u002f`)
+
 // scriptStringLiteral is v as a string literal of a script in language: a
-// double-quoted word for a shell, whose expansions are escaped; a JSON
-// string literal for js and py, whose string syntax JSON's is a subset of
-// (an escape JSON writes — `\"`, `\\`, `\n`, `\u003c` — reads the same in
-// both).
+// double-quoted word for a shell, whose expansions are escaped; for js and
+// py, a JSON string literal — JSON's string syntax is a subset of both, an
+// escape it writes (`\"`, `\\`, `\n`, `\u003c`) reads the same in both —
+// with the characters scriptQuoteSafe names escaped too.
 func scriptStringLiteral(language, v string) string {
 	if scriptRunsInAShell(language) {
 		return `"` + shellDoubleQuoted.Replace(v) + `"`
 	}
-	return jsonLiteralValue(v, ShapeUndeclared)
+	return scriptQuoteSafe.Replace(jsonLiteralValue(v, ShapeUndeclared))
+}
+
+// repairOutput is a recipe's output as the self-repair prompt quotes it:
+// every known value back to its placeholder, as on every surface a model
+// reads (Unmaterialize), and every placeholder the output already spelled
+// as TEXT — data the command printed, or one a printed fragment completes
+// beside a value — defused, since echoed into the corrected command the
+// agent sink would resolve it. The values go to markers of this one reading
+// first, so the defuse can tell the placeholders it must keep from the
+// ones it must not, and a fragment abutting a value cannot borrow a
+// placeholder's bytes to spell another's.
+func repairOutput(g *secretguard.Guard, out string) string {
+	t := newBodySecrets(g)
+	if t == nil {
+		return out
+	}
+	return t.shown(g.DefuseAll(g.UnmaterializeEach(out, t.mark)))
 }
 
 // authoredBody is one run's rendering of an authored tool body: its text,
@@ -229,10 +299,11 @@ func (b authoredBody) shellFor(resolved string) (string, map[string]string, erro
 }
 
 // scriptFor is the script body in language written for resolved, the
-// recipe's report of b: b's markers resolved (bodySecrets.script).
-func (b authoredBody) scriptFor(resolved, language string) (string, error) {
+// recipe's report of b — b's markers resolved (bodySecrets.script) — and the
+// environment its interpreter takes for them.
+func (b authoredBody) scriptFor(resolved, language string) (string, map[string]string, error) {
 	if resolved != b.shown() {
-		return "", errBodyDiverged
+		return "", nil, errBodyDiverged
 	}
-	return b.secrets.script(b.text, language), nil
+	return b.secrets.script(b.text, language)
 }

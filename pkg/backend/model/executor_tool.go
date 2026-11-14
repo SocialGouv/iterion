@@ -969,7 +969,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// body only. `resolved` (placeholder form) stays the value passed
 			// to hooks/logs, so the real secret never reaches the event
 			// stream; a placeholder that arrived through data stays text.
-			script, err := body.scriptFor(resolved, node.Language)
+			script, refEnv, err := body.scriptFor(resolved, node.Language)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}
@@ -1014,6 +1014,15 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// AUTHOR's text, before any value is rendered into it: a
 			// placeholder data carries names no variable.
 			scriptEnv := e.secretGuard.AuthoredEnvForBody(authored)
+			// And the values of the author's references the script reads
+			// from its environment (bodySecrets.script): a shell script
+			// names them as variables instead of holding them in its text.
+			for name, value := range refEnv {
+				if scriptEnv == nil {
+					scriptEnv = make(map[string]string, len(refEnv))
+				}
+				scriptEnv[name] = value
+			}
 			if _, werr := tmpFile.WriteString(script); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()

@@ -240,10 +240,17 @@ form in every hook/log:
   data stays text whatever its secret grants ([ADR-146, amendment of
   2026-11-14](adr/146-secret-boundary-v2-grants-and-sinks.md)); one the
   author typed as text is inert too, and `C340` says so. In a `script:` the
-  value takes the place of the string literal the reference renders,
-  written in the script's language — a JSON string for js and py, a
-  double-quoted word with its expansions escaped for sh and bash — so no
-  byte of it reads as code. An HTTP
+  value is written so that no quoting the author put around the reference
+  — a single-quoted shell word, a JSON document in single quotes, a python
+  or node string, an f-string, a template literal — can be closed or
+  interpolated by it: a shell script reads it from its environment
+  (`"$__ITERION_SECRET_X__"`, the value never in the script's text), and a
+  js or py script receives a JSON string literal with its quote,
+  backquote, `$`, brace and slash characters written as `\u` escapes. A
+  value that form cannot carry as written — a NUL byte in a shell script,
+  invalid UTF-8 in js or py — is refused at the node, naming the reference.
+  A secret name ending in `_redacted` is refused (`C341`): the engine
+  writes that spelling where another secret must resolve nowhere. An HTTP
   action's `params:` resolves the same way, through the `params` sink
   (a native `board.*` action keeps the placeholder: the store files the
   card and shows it, as with the board MCP tools below), and the in-process
@@ -533,8 +540,9 @@ node, whose own tool call is the `agent` sink. The recovery rungs of a
 verified tool node are such model calls, so a data placeholder never
 reaches them live: the self-repair model reads the failed command and its
 output with every placeholder that is no reference defused, and the recovery
-agent receives the node's input the same way — echoed back, it resolves
-nothing, while the author's own references, shown live, still do. `sinks: []` reads as no list — every
+agent receives the node's input — values and keys — the same way; echoed
+back, it resolves nothing, while the author's own references, shown live,
+still do. `sinks: []` reads as no list — every
 sink — since the printers and the JSON transport drop an empty list, and a
 meaning they could not keep would change on the way.
 

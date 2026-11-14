@@ -63,11 +63,11 @@ func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T
 					return out + " " + strings.Join(mapValues(env), " ")
 				}(),
 				"script": func() string {
-					out, err := script.scriptFor(script.shown(), "js")
+					out, env, err := script.scriptFor(script.shown(), "js")
 					if err != nil {
 						t.Fatal(err)
 					}
-					return out
+					return out + " " + strings.Join(mapValues(env), " ")
 				}(),
 				"param": func() string {
 					out, _, ok := authored.leafText(param)
