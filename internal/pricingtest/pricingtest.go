@@ -29,6 +29,23 @@ func Isolate() (restore func()) {
 	return modelspecs.SetDefault(modelspecs.NewSeeded(nil))
 }
 
+// Run isolates the process (Isolate) for the rest of its life and runs the
+// tests: the whole TestMain of a package with nothing else to set up is
+//
+//	func TestMain(m *testing.M) { os.Exit(pricingtest.Run(m.Run)) }
+//
+// It does not restore: a goroutine a test leaves running past m.Run would
+// otherwise rebuild the default registry from the environment, live.
+// Every package whose test binary links a live tier calls Isolate or Run from
+// its TestMain — save pricingtest itself and the two live-tier packages it
+// imports (cost, modelspecs), which isolate on their own, and pkg/claw's, under
+// testutil.IsolateLiveRegistry. TestEveryTestBinaryLinkingALivePricingTierIsIsolated
+// reads the dependency graph and refuses one that does not.
+func Run(run func() int) int {
+	Isolate()
+	return run()
+}
+
 // RequireIsolated fails the test unless this process prices from the static
 // table: it points claw's registry at a fresh cache that prices a model far
 // from the table, and demands the table's price. A package whose TestMain

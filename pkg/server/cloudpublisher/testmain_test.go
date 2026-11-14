@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 )
 
 // TestMain isolates ITERION_HOME across the whole cloudpublisher test suite.
@@ -25,4 +26,6 @@ import (
 // mode this package's tests already carried. A test that WANTS a populated
 // iterion home overrides the tempdir with its own t.Setenv, which the
 // contributions_dedup_test tests do to install a specific pack.
-func TestMain(m *testing.M) { os.Exit(hometest.Isolate(m.Run)) }
+func TestMain(m *testing.M) {
+	os.Exit(hometest.Isolate(func() int { return pricingtest.Run(m.Run) }))
+}

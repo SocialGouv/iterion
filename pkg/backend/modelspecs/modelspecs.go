@@ -156,6 +156,8 @@ type Registry struct {
 	ttl       time.Duration
 	client    *http.Client
 	enabled   bool
+	// seeded registries answer from their fixture alone: Refresh refuses.
+	seeded    bool
 	autoFetch bool
 	force     bool
 
@@ -216,11 +218,18 @@ func NewSeeded(flat map[string]Spec) *Registry {
 	defer r.mu.Unlock()
 	r.indexLocked(flat)
 	// Mark the table loaded and the disk read done: a seeded registry must
-	// answer from its fixture alone, never fall back to the host's cache.
+	// answer from its fixture alone, never fall back to the host's cache —
+	// nor to the network, which Refresh refuses (ErrSeededRegistryNeverFetches).
 	r.diskTried = true
 	r.loadedAt = time.Now()
+	r.seeded = true
 	return r
 }
+
+// ErrSeededRegistryNeverFetches is what Refresh returns on a NewSeeded
+// registry: its table is the fixture, and a forced refresh would replace it
+// with whatever the network says.
+var ErrSeededRegistryNeverFetches = errors.New("modelspecs: a seeded registry answers from its fixture alone and never fetches")
 
 // The knobs OptionsFromEnv reads, named so the class is greppable. They are
 // ONE class: each decides which table answers for EVERY model this registry
@@ -488,6 +497,9 @@ func (r *Registry) loadDiskCacheLocked() {
 func (r *Registry) Refresh(ctx context.Context) error {
 	if r == nil || !r.enabled {
 		return nil
+	}
+	if r.seeded {
+		return ErrSeededRegistryNeverFetches
 	}
 	r.mu.Lock()
 	start := !r.inFlight

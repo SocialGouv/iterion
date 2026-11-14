@@ -2,12 +2,12 @@ package cli_test
 
 import (
 	"github.com/SocialGouv/iterion/internal/detecttest"
-	"os"
-	"testing"
-
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/internal/proctest"
+	"os"
+	"testing"
 )
 
 // `iterion run` takes its workspace from the process cwd, so a run with
@@ -22,6 +22,7 @@ import (
 // resolve their stores from the iterion home, which hometest keeps off the
 // operator's.
 func TestMain(m *testing.M) {
+	pricingtest.Isolate() // for the rest of the process: no restore before os.Exit
 	restoreProviders := detecttest.IsolateProviders()
 	code := hometest.Isolate(func() int {
 		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })

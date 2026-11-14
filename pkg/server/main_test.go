@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 )
 
 // The servers these tests start resolve their run stores, installed plugins
@@ -14,7 +15,9 @@ import (
 // `sh -lc` and a run shell `$SHELL -l`, login shells that read their profile
 // from $HOME (#2231).
 func TestMain(m *testing.M) {
-	os.Exit(hometest.IsolateUserHome(func() int { return hometest.Isolate(m.Run) }))
+	os.Exit(hometest.IsolateUserHome(func() int {
+		return hometest.Isolate(func() int { return pricingtest.Run(m.Run) })
+	}))
 }
 
 // shutdownOnCleanup stops every background loop srv started — the assistant
