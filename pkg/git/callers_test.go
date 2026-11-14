@@ -1,18 +1,10 @@
 package git
 
 import (
-	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
-
-// gitExec matches a git subprocess being built anywhere in the tree. It spans
-// newlines: gofmt wraps a long call, and a line-oriented pattern would miss
-// `exec.CommandContext(ctx,\n\t"git", …)` — precisely the shape a new call site
-// is likely to take.
-var gitExec = regexp.MustCompile(`(?s)exec\.Command(?:Context)?\(\s*(?:[\w.]+(?:\([^()]*\))?\s*,\s*)?"git"`)
 
 // TestEveryGitCallerSanitizesEnv sweeps the tree for git subprocesses whose
 // environment is left inherited.
@@ -34,38 +26,20 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 	// added under cmd/ or e2e/, and a sweep that silently never looks there
 	// reads as coverage it does not have.
 	root := filepath.Join("..", "..")
-	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
+	// pkg/git assigns through gitEnv(), SanitizeEnv's own caller.
+	ownDir := filepath.Join(root, "pkg", "git") + string(filepath.Separator)
+	files := gitSitesInTree(t, root)
 
 	var offenders []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	resolved := 0
+	for _, path := range sortedGitFiles(files) {
+		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(path, ownDir) {
+			continue
 		}
-		if info.IsDir() {
-			// Hidden directories hold scratch clones of other people's code
-			// (.local, .works, .repos) — sweeping them reports on third-party
-			// source and costs half a minute. pkg/git assigns through
-			// gitEnv(), SanitizeEnv's own caller.
-			name := info.Name()
-			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) ||
-				path == filepath.Join("..", "..", "pkg", "git") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		body := string(src)
-		for _, loc := range gitExec.FindAllStringIndex(body, -1) {
-			// A call quoted inside a doc comment is prose, not a call site.
-			lineStart := strings.LastIndex(body[:loc[0]], "\n") + 1
-			if strings.Contains(body[lineStart:loc[0]], "//") {
-				continue
+		f := files[path]
+		for i, site := range f.sites {
+			if site.resolved {
+				resolved++
 			}
 			// The assignment may land well below the call: Dir, cancellation
 			// hardening and timeouts are commonly wired in between.
@@ -80,25 +54,32 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 			// bound the span is generous, since cancellation hardening,
 			// timeouts and their comments routinely sit in between (the
 			// runner's clone puts 706 characters of them there).
-			end := min(loc[0]+1600, len(body))
-			if next := gitExec.FindStringIndex(body[loc[1]:]); next != nil {
-				end = min(end, loc[1]+next[0])
+			end := min(site.start+1600, len(f.body))
+			if i+1 < len(f.sites) {
+				end = min(end, f.sites[i+1].start)
 			}
-			tail := body[loc[0]:end]
-			if strings.Contains(tail, "SanitizeEnv(") {
+			if strings.Contains(f.body[site.start:end], "SanitizeEnv(") {
 				continue
 			}
-			line := 1 + strings.Count(body[:loc[0]], "\n")
-			offenders = append(offenders, filepath.ToSlash(path)+":"+itoa(line)+"  "+strings.TrimSpace(body[loc[0]:min(loc[1]+40, len(body))]))
+			offenders = append(offenders, siteLabel(filepath.ToSlash(path), f.body, site))
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
 	}
+	requireResolvedSites(t, resolved, "pkg/claw's runGit and /diff and internal/clawfold")
 	if len(offenders) > 0 {
 		t.Errorf("git subprocess(es) built with the caller's environment inherited whole — GIT_DIR, GIT_COMMON_DIR, GIT_INDEX_FILE and friends override the repository each of these names for itself.\nSet cmd.Env = git.SanitizeEnv(os.Environ()) (plus whatever else the call needs):\n  %s",
 			strings.Join(offenders, "\n  "))
+	}
+}
+
+// requireResolvedSites fails a sweep that saw no git spawned by a value among
+// the files it judges. where names the sites the tree holds today: a zero
+// means the recognizer went blind to their shape, or, if every one was
+// really rewritten to the literal, that this sweep's check has outlived its
+// use.
+func requireResolvedSites(t *testing.T, resolved int, where string) {
+	t.Helper()
+	if resolved == 0 {
+		t.Fatalf("the sweep found no git spawned by a value, yet %s spawn one: the recognizer is blind to it — TestGitSpawnSitesRecognisesEveryResolvedSpelling says which shape. If none is left among the files this sweep judges, drop this sweep's check", where)
 	}
 }
 
@@ -112,6 +93,13 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// siteLabel renders a site for a guard's report: file, line, and the call up
+// to the expression naming git.
+func siteLabel(file, body string, site gitSite) string {
+	line := 1 + strings.Count(body[:site.start], "\n")
+	return file + ":" + itoa(line) + "  " + strings.TrimSpace(body[site.start:min(site.end+40, len(body))])
 }
 
 // runHooksExempt names the files whose git subprocesses may run the
@@ -139,53 +127,34 @@ var runHooksExempt = map[string]string{
 // argv, inside the call itself.
 func TestEveryGitCallerRunsNoRepositoryHook(t *testing.T) {
 	root := filepath.Join("..", "..")
-	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
+	files := gitSitesInTree(t, root)
 	var offenders []string
-	sites := 0
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			name := info.Name()
-			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
+	sites, resolved := 0, 0
+	for _, path := range sortedGitFiles(files) {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator)))
 		if _, ok := runHooksExempt[rel]; ok {
-			return nil
+			continue
 		}
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		body := string(src)
-		for _, loc := range gitExec.FindAllStringIndex(body, -1) {
-			lineStart := strings.LastIndex(body[:loc[0]], "\n") + 1
-			if strings.Contains(body[lineStart:loc[0]], "//") {
-				continue
-			}
+		f := files[path]
+		for _, site := range f.sites {
 			sites++
-			open := loc[0] + strings.Index(body[loc[0]:], "(")
-			if strings.Contains(body[loc[0]:callEnd(body, open)], "NoRunHooks(") {
+			if site.resolved {
+				resolved++
+			}
+			open := site.start + strings.Index(f.body[site.start:], "(")
+			if strings.Contains(f.body[site.start:callEnd(f.body, open)], "NoRunHooks(") {
 				continue
 			}
-			line := 1 + strings.Count(body[:loc[0]], "\n")
-			offenders = append(offenders, rel+":"+itoa(line)+"  "+strings.TrimSpace(body[loc[0]:min(loc[1]+40, len(body))]))
+			offenders = append(offenders, siteLabel(rel, f.body, site))
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
 	}
 	if sites == 0 {
 		t.Fatal("the sweep found no git subprocess at all: it is looking in the wrong place")
 	}
+	requireResolvedSites(t, resolved, "pkg/claw's runGit and /diff and internal/clawfold")
 	if len(offenders) > 0 {
 		t.Errorf("git subprocess(es) that run the repository's hooks — a run writes its repository's hooks directory and config, so each of these executes the run's code inside an iterion gesture.\nBuild the argv with git.NoRunHooks(...), or name the file in runHooksExempt with the reason its hooks are the user's:\n  %s",
 			strings.Join(offenders, "\n  "))

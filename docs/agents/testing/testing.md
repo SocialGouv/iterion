@@ -95,7 +95,11 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   `~/.gitconfig` otherwise decides whether a test passes (a global
   `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
   The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
-  sweeps `_test.go` and fails a new site that assembles its own argv.
+  sweeps `_test.go` and fails a new site that assembles its own argv — a git
+  named by a value (a `LookPath("git")` result, a constant) included, as in
+  the production sweeps beside it (#3255). A git passed as a parameter (a
+  generic runner's `run(t, dir, "git", …)`, a git helper's) is not followed:
+  route it through gittest.
 - **Run tests with devbox's pinned Git.** The assistant's attested authoring
   commits use guarded ref transactions, which need **Git ≥ 2.46**.
   `devbox.json` pins Git 2.55.0 and `devbox.lock` resolves it for each platform;

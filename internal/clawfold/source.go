@@ -81,8 +81,7 @@ func (g git) output(dir string, stdin io.Reader, args ...string) ([]byte, error)
 	// --no-replace-objects: a `refs/replace` entry (or GIT_REPLACE_REF_BASE)
 	// would make cat-file answer the requested id with another object's
 	// bytes, so the tree read would not be the pin it names.
-	argv := gitlib.NoRunHooks(append([]string{"--no-replace-objects"}, args...)...)
-	cmd := exec.Command(g.path, argv...) // #nosec G204 -- argv built by this package
+	cmd := exec.Command(g.path, gitlib.NoRunHooks(append([]string{"--no-replace-objects"}, args...)...)...) // #nosec G204 -- argv built by this package
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	cmd.Dir = dir
 	cmd.Stdin = stdin

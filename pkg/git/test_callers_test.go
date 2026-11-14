@@ -1,7 +1,6 @@
 package git
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,58 +25,37 @@ import (
 // passing through NoAutoMaintenance directly.
 func TestEveryTestGitCallerDisablesAutoMaintenance(t *testing.T) {
 	root := filepath.Join("..", "..")
-	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
+	// internal/gittest is the chokepoint itself: its Cmd applies the config.
+	// Its tests deliberately use bare read-only Git commands to distinguish
+	// Cmd's flags from InitRepo's persisted config.
+	chokepoint := filepath.Join(root, "internal", "gittest") + string(filepath.Separator)
+	files := gitSitesInTree(t, root)
 
 	var offenders []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	resolved := 0
+	for _, path := range sortedGitFiles(files) {
+		if !strings.HasSuffix(path, "_test.go") || strings.HasPrefix(path, chokepoint) {
+			continue
 		}
-		if info.IsDir() {
-			// Same exclusions as the production sweep: hidden directories hold
-			// scratch clones of other people's code (.local, .works, .repos).
-			name := info.Name()
-			// internal/gittest is the chokepoint itself: its Cmd applies the
-			// config. Its tests deliberately use bare read-only Git commands
-			// to distinguish Cmd's flags from InitRepo's persisted config.
-			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) ||
-				path == filepath.Join("..", "..", "internal", "gittest") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, rerr := os.ReadFile(path) // #nosec G304 -- walking this repository's own tree
-		if rerr != nil {
-			return rerr
-		}
-		body := string(src)
-		for _, loc := range gitExec.FindAllStringIndex(body, -1) {
-			// A call quoted inside a comment is prose, not a call site.
-			lineStart := strings.LastIndex(body[:loc[0]], "\n") + 1
-			if strings.Contains(body[lineStart:loc[0]], "//") {
-				continue
+		f := files[path]
+		for i, site := range f.sites {
+			if site.resolved {
+				resolved++
 			}
 			// Bounded by the NEXT call site so one site's config cannot vouch
 			// for its neighbour's — the failure mode the production sweep
 			// measured with a fixed window.
-			end := min(loc[0]+1600, len(body))
-			if next := gitExec.FindStringIndex(body[loc[1]:]); next != nil {
-				end = min(end, loc[1]+next[0])
+			end := min(site.start+1600, len(f.body))
+			if i+1 < len(f.sites) {
+				end = min(end, f.sites[i+1].start)
 			}
-			if strings.Contains(body[loc[0]:end], "NoAutoMaintenance(") {
+			if strings.Contains(f.body[site.start:end], "NoAutoMaintenance(") {
 				continue
 			}
-			line := 1 + strings.Count(body[:loc[0]], "\n")
-			offenders = append(offenders, filepath.ToSlash(path)+":"+itoa(line)+"  "+strings.TrimSpace(body[loc[0]:min(loc[1]+40, len(body))]))
+			offenders = append(offenders, siteLabel(filepath.ToSlash(path), f.body, site))
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
 	}
+	requireResolvedSites(t, resolved, "the ambient, pluginsource and plugin-sources route tests")
 	if len(offenders) > 0 {
 		t.Errorf("git subprocess(es) built in a test without refusing auto-maintenance — since git 2.48 a writing command detaches `git maintenance run --auto`, which keeps writing under .git/objects after the command returned and races t.TempDir()'s removal.\nRoute them through internal/gittest (gittest.Run / gittest.Try / gittest.Cmd), or pass git.NoAutoMaintenance(args...) when the package cannot import it:\n  %s",
 			strings.Join(offenders, "\n  "))

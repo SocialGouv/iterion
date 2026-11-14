@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // piTree lays out pi's precedence cases: an agent dir, a directory above the
@@ -92,7 +93,7 @@ func TestPiAmbientFilesSkipANestedWorktreesMainCheckout(t *testing.T) {
 		{"-C", main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
 		{"-C", main, "worktree", "add", "-q", "--detach", wt},
 	} {
-		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+		if out, err := exec.Command(git, gitlib.NoAutoMaintenance(args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
