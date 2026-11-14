@@ -685,9 +685,19 @@ func (g *Guard) DefuseUngranted(sink, s string) string {
 }
 
 // defuse rewrites, in s, every occurrence of the placeholders phs into its
-// redact-only form, in ONE pass: what a rewrite writes is never read again,
-// so the answer does not depend on the order the placeholders are visited
-// in. The longer placeholder wins where two start at one position.
+// redact-only form, all placeholders at once in each pass, so the answer
+// does not depend on the order they are visited in; the longer placeholder
+// wins where two start at one position.
+//
+// One pass is not enough. A pass reads left to right without overlap, and
+// a redact-only form ends in the same `__` the next placeholder may start
+// with: in `__ITERION_SECRET_x__ITERION_SECRET_y__` the pass rewrites x
+// and skips y, which shared x's closing `__`, and y stands whole again
+// after x's form. So the pass repeats until the text no longer changes.
+// It ends: a pass that changes the text closes at least one `__` with
+// `_redacted__`, which no live placeholder ends with (the spelling is
+// reserved), and a rewrite adds no `__` — so there are at most as many
+// changing passes as the text holds `__`.
 func defuse(s string, phs []string) string {
 	if len(phs) == 0 || s == "" {
 		return s
@@ -702,7 +712,15 @@ func defuse(s string, phs []string) string {
 	for _, ph := range phs {
 		pairs = append(pairs, ph, redactOnlyPlaceholder(ph))
 	}
-	return strings.NewReplacer(pairs...).Replace(s)
+	r := strings.NewReplacer(pairs...)
+	for range strings.Count(s, "__") + 1 {
+		next := r.Replace(s)
+		if next == s {
+			break
+		}
+		s = next
+	}
+	return s
 }
 
 // DefuseAll rewrites, in s, the placeholder of every secret that resolves

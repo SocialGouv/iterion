@@ -508,4 +508,6 @@ const (
 	DiagTypedSecretPlaceholder DiagCode = "C340" // a declared or server-minted secret's placeholder typed as text in a tool body — a body resolves only the author's references, so the text runs as written (warning)
 
 	DiagSecretNameReserved DiagCode = "C341" // a secret name whose placeholder spells another's redact-only form (`<name>_redacted`), which the guard writes where that secret must resolve nowhere (error)
+
+	DiagSecretInShellLiteral DiagCode = "C342" // a value secret's default-form reference in a shell script where the shell expands nothing (single quotes, a quoted heredoc) — the script reads the variable's name, not the value (warning)
 )

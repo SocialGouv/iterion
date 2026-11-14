@@ -233,3 +233,113 @@ func TestAScriptRefusesAValueItCannotCarryAsWritten(t *testing.T) {
 		})
 	}
 }
+
+// runSecretScript runs body as a `script:` in language under a guard holding
+// pw = value, with input, and returns what the script wrote to out.txt and
+// whether it created pwned.txt.
+func runSecretScript(t *testing.T, language, body, value string, input map[string]any) (string, bool) {
+	t.Helper()
+	requireInterpreter(t, language)
+	g := secretguard.New([]secretguard.Secret{{Name: "pw", Value: value}}, secretguard.DefaultConfig())
+	refs, err := ir.ParseRefs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir), WithSecretGuard(g))
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "s"}, Script: body, ScriptRefs: refs, Language: language}
+	if _, err := e.Execute(context.Background(), node, input); err != nil {
+		t.Fatalf("the script failed: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "out.txt"))
+	if err != nil {
+		t.Fatalf("the script wrote nothing: %v", err)
+	}
+	_, perr := os.Stat(filepath.Join(dir, "pwned.txt"))
+	return string(got), perr == nil
+}
+
+// A shell script reads the value from a variable the engine names after the
+// rendering's marker, which no data can spell: data rendered into the same
+// script that names the reference's placeholder as a variable — directly,
+// braced, or through bash's indirection — reads nothing, while the author's
+// own reference still receives the value.
+func TestDataInAShellScriptCannotReadTheSecretsVariable(t *testing.T) {
+	t.Parallel()
+	const value = "pv-5b2e9c0d7f13a468"
+	ph := secretguard.PlaceholderForName("pw")
+	body := "printf '%s|%s' {{secrets.pw}} {{input.d}} > out.txt\n"
+	for name, c := range map[string]struct{ language, d string }{
+		"sh, the placeholder as a variable":   {"sh", "$" + ph},
+		"sh, braced":                          {"sh", "${" + ph + "}"},
+		"bash, the placeholder as a variable": {"bash", "$" + ph},
+		"bash, through indirection":           {"bash", "${x:=__ITERION_SECRET_pw}${y:=${x}__}${!y}"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := runSecretScript(t, c.language, body, value, map[string]any{"d": c.d})
+			own, data, _ := strings.Cut(got, "|")
+			if own != value {
+				t.Errorf("the author's reference received %q, want the value", own)
+			}
+			if strings.Contains(data, value) {
+				t.Errorf("data read the secret's variable: %q", data)
+			}
+		})
+	}
+}
+
+// Where the shell expands, a shell script's reference receives the value —
+// as an expression, in the author's double quotes, in a JSON document whose
+// single quotes the author closes around it, in an unquoted heredoc (which
+// keeps the reference's own quotes). Single quotes and a quoted heredoc
+// expand nothing; there the script reads the variable's name, and C342 says
+// so at authoring time (TestC342…).
+func TestAShellScriptReceivesTheValueWhereTheShellExpands(t *testing.T) {
+	t.Parallel()
+	const value = `tok-AbC123 x;y`
+	for _, language := range []string{"sh", "bash"} {
+		for name, c := range map[string]struct{ body, want string }{
+			"an expression":       {"printf '%s' {{secrets.pw}} > out.txt\n", value},
+			"double quotes":       {"printf '%s' \"{{secrets.pw}}\" > out.txt\n", value},
+			"a JSON document":     {"printf '%s' '{\"t\": \"'{{secrets.pw}}'\"}' > out.txt\n", `{"t": "` + value + `"}`},
+			"an unquoted heredoc": {"cat > out.txt <<EOF\n{\"t\": {{secrets.pw}}}\nEOF\n", `{"t": "` + value + `"}` + "\n"},
+		} {
+			t.Run(language+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				got, pwned := runSecretScript(t, language, c.body, value, map[string]any{})
+				if got != c.want || pwned {
+					t.Errorf("the script received %q (pwned %v), want %q", got, pwned, c.want)
+				}
+			})
+		}
+	}
+}
+
+// The author's double quotes around the default form — `"{{secrets.pw}}"`,
+// an f-string's or a template's — are the one literal the author meant: the
+// value fills it, byte for byte, and a crafted value runs as no code.
+func TestADoubleQuotedSecretIsOneLiteral(t *testing.T) {
+	t.Parallel()
+	pyPayload := `+str(open(chr(112)+chr(119)+chr(110)+chr(101)+chr(100)+chr(46)+chr(116)+chr(120)+chr(116),chr(119)).write(chr(49)))+`
+	jsPayload := `+require(String.fromCharCode(102,115)).writeFileSync(String.fromCharCode(112,119,110,101,100,46,116,120,116),String.fromCharCode(49))+`
+	for name, c := range map[string]struct{ language, body string }{
+		"py, double quotes": {"py", "open('out.txt', 'w', encoding='utf-8', newline='').write(\"{{secrets.pw}}\")\n"},
+		"py, an f-string":   {"py", "open('out.txt', 'w', encoding='utf-8', newline='').write(f\"{{secrets.pw}}\")\n"},
+		"js, double quotes": {"js", "require('fs').writeFileSync('out.txt', \"{{secrets.pw}}\")\n"},
+		"sh, double quotes": {"sh", "printf '%s' \"{{secrets.pw}}\" > out.txt\n"},
+	} {
+		for _, value := range []string{pyPayload, jsPayload, `it's "quoted" {x} ${y} \ok`, "a;touch pwned.txt"} {
+			t.Run(name+"/"+value[:5], func(t *testing.T) {
+				t.Parallel()
+				got, pwned := runSecretScript(t, c.language, c.body, value, map[string]any{})
+				if pwned {
+					t.Fatalf("value %q ran as code", value)
+				}
+				if got != value {
+					t.Errorf("the script received %q, want %q", got, value)
+				}
+			})
+		}
+	}
+}

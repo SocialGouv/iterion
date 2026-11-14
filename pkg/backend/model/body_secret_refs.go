@@ -28,10 +28,11 @@ import (
 // never on the body around it. A placeholder that arrives through data stays
 // the text it is, whatever its secret grants.
 //
-// A marker never leaves the executor: shown turns each back into its
-// reference's text — the placeholder — for every surface that persists or
-// shows the body (hooks, events, the run log), and the next rendering draws
-// others. A recovery model reads the body's repair form instead
+// A marker reaches no hook, event, log or model: shown turns each back into
+// its reference's text — the placeholder — for every surface that persists
+// or shows the body, and the next rendering draws others. The one place it
+// stands is the process the body runs in: a shell script names the
+// variable carrying a value after it (script). A recovery model reads the body's repair form instead
 // (authoredBody.repair), where every placeholder that is not a marker is
 // defused first: shown alone, a data placeholder would look exactly like the
 // author's reference, and the model's echo of it would be materialised by
@@ -143,22 +144,27 @@ func (b *bodySecrets) shellEnv(s string) (string, map[string]string) {
 // is the secret's when it grants `command` (MaterializeFor); a reference
 // nothing resolves keeps its text, the placeholder, which reads alike in
 // every context. Where it resolves, the value is written for the syntax the
-// marker stands in — and for every context an author may have wrapped the
-// reference in:
+// marker stands in:
 //
 //   - The default form renders as a JSON string literal holding the marker
 //     (`"M"`, renderScript's jsonLiteralValue), and so does a raw reference
-//     the author double-quoted. In a shell script the literal becomes
-//     `"$<placeholder>"` and the value rides the interpreter's environment:
-//     it never enters the script's text, so no quoting the author put
-//     around the reference — single quotes, a JSON document in single
-//     quotes — can be closed by it. In js and py the literal is the value's
-//     JSON string literal with every character that closes or interpolates
-//     a string the author may have opened (`'`, the backquote, `$`, `{`,
-//     `}`, `/`) written as a `\u` escape (scriptStringLiteral): as an
-//     expression it reads back byte for byte, and inside the author's own
-//     quotes, an f-string or a template literal it can neither close nor
-//     interpolate them.
+//     the author double-quoted; `"{{secrets.NAME}}"` renders `""M""`, read
+//     as the one literal it is. In a shell script the literal becomes
+//     `"$M"` — a variable named after the marker, which no data can spell —
+//     and the value rides the interpreter's environment, never the
+//     script's text. Where the shell expands nothing — single quotes, a
+//     heredoc whose delimiter is quoted — the script receives the
+//     variable's name and not the value: C342 warns on those positions at
+//     authoring time. In js and py the literal is the value's JSON string
+//     literal with every character that closes or interpolates a string
+//     (`'`, the backquote, `$`, `{`, `}`, `/`) written as a `\u` escape
+//     (scriptStringLiteral). In the expression position the value reads
+//     back byte for byte. Inside quoting of the author's own — single or
+//     double quotes, an f-string, a template literal — it can close or
+//     interpolate none of it and runs as no code, but the language cooks
+//     the literal once: an author who parses that text again (JSON in a
+//     string) reads what the value spells, structure included. Only the
+//     expression position is exact.
 //   - The raw form `{{!secrets.NAME}}`, bare, is the author's own text:
 //     escaped for a single-quoted word in a shell script, as in a command
 //     (MaterializeShell), and verbatim in js and py, where the author's
@@ -178,6 +184,10 @@ func (b *bodySecrets) script(s, language string) (string, map[string]string, err
 	for _, m := range b.order {
 		text := b.text[m]
 		literal := `"` + m + `"`
+		// The default form inside the author's own double quotes:
+		// `"{{secrets.NAME}}"` renders `""M""`, and the whole of it is the
+		// one literal the author meant.
+		doubled := `""` + m + `""`
 		quoted := strings.Contains(s, literal)
 		value := b.guard.MaterializeFor(secretsink.Command, text)
 		lit, raw := scriptStringLiteral(language, text), text
@@ -192,16 +202,16 @@ func (b *bodySecrets) script(s, language string) (string, map[string]string, err
 				if env == nil {
 					env = make(map[string]string, len(b.order))
 				}
-				env[text] = value
+				env[m] = value
 			}
-			lit, raw = `"$`+text+`"`, b.guard.MaterializeShell(text)
+			lit, raw = `"$`+m+`"`, b.guard.MaterializeShell(text)
 		default:
 			if quoted && !utf8.ValidString(value) {
 				return "", nil, fmt.Errorf("the value of the secret %s is not valid UTF-8, which a %s string literal cannot carry byte for byte — write the raw {{!secrets.…}} form to splice the bytes as they are", text, language)
 			}
 			lit, raw = scriptStringLiteral(language, value), value
 		}
-		pairs = append(pairs, literal, lit, m, raw)
+		pairs = append(pairs, doubled, lit, literal, lit, m, raw)
 	}
 	return strings.NewReplacer(pairs...).Replace(s), env, nil
 }

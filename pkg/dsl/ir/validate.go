@@ -81,6 +81,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateSandboxImagePresence(w)
 	c.validateTreeNoiseChannels(w)
 	c.validateTypedPlaceholders(w)
+	c.validateQuotedSecretInShellScripts(w)
 	c.validateBracedEnvBodies(w)
 	c.validateEnvDials(w)
 	c.validateSandboxOptOut(w)

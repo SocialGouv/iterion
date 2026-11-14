@@ -154,9 +154,14 @@ type treeNoiseQuote struct {
 // and, for the C188 braced-env lint, the names the body assigns and where
 // its unquoted and double-quoted positions open a braced `${` form.
 type shellScan struct {
-	hits    []treeNoiseQuote
-	quoted  [][2]int // [open, close) of every quoted span, close exclusive
-	data    [][2]int // heredoc bodies
+	hits   []treeNoiseQuote
+	quoted [][2]int // [open, close) of every quoted span, close exclusive
+	data   [][2]int // heredoc bodies
+	// single and literal are the regions the shell expands nothing in:
+	// single-quoted spans, and the bodies of heredocs whose delimiter is
+	// quoted (`<<'EOF'`, `<<"EOF"`) — C342 reads them.
+	single  [][2]int
+	literal [][2]int
 	assigns []shellAssign
 	// reads holds the offset of every `${` the SHELL reads — unquoted or
 	// double-quoted, so never one inside a comment, a single-quoted span
@@ -338,9 +343,10 @@ func scanShellBody(body string) shellScan {
 
 		arithDepth int // inside $(( … )) / (( … )): no word-splitting, no heredocs
 
-		heredocDelim string // pending: opens at the next newline
-		heredocStrip bool
-		heredocFrom  = -1 // active heredoc body's start offset
+		heredocDelim  string // pending: opens at the next newline
+		heredocStrip  bool
+		heredocQuoted bool // the pending delimiter was quoted: its body expands nothing
+		heredocFrom   = -1 // active heredoc body's start offset
 
 		// Per-command buffering for the ONE pipe rule: a span that passes
 		// every other check waits for its command's end; flushed at the
@@ -680,6 +686,9 @@ func scanShellBody(body string) shellScan {
 	// end (the pipe rule, see flushCmd).
 	closeSpan := func(close int) {
 		sc.quoted = append(sc.quoted, [2]int{spanStart, close + 1})
+		if quote == '\'' {
+			sc.single = append(sc.single, [2]int{spanStart, close + 1})
+		}
 		if hereWord {
 			// The operand of `<<<` is the command's stdin, never an argv
 			// word, and bash does not word-split it — neither clause of
@@ -722,7 +731,10 @@ func scanShellBody(body string) shellScan {
 			}
 			if cmp == heredocDelim {
 				sc.data = append(sc.data, [2]int{heredocFrom, i})
-				heredocFrom, heredocDelim = -1, ""
+				if heredocQuoted {
+					sc.literal = append(sc.literal, [2]int{heredocFrom, i})
+				}
+				heredocFrom, heredocDelim, heredocQuoted = -1, "", false
 			}
 			line++
 			i = next + 1 // past the newline (or len(body)+1, ending the loop)
@@ -905,6 +917,7 @@ func scanShellBody(body string) shellScan {
 				flushWord(i)
 				if delim, strip, n := parseHeredocDelim(body[i+2:]); delim != "" {
 					heredocDelim, heredocStrip = delim, strip
+					heredocQuoted = heredocDelimQuoted(body[i+2:])
 					i += 2 + n
 				} else {
 					i += 2
@@ -1019,6 +1032,15 @@ func isShellCommandModifier(w string) bool {
 		return true
 	}
 	return false
+}
+
+// heredocDelimQuoted reports whether the delimiter of a `<<` operator, s
+// being the text after it, is the quoted form parseHeredocDelim reads —
+// the form whose body the shell expands nothing in.
+func heredocDelimQuoted(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	s = strings.TrimLeft(s, " \t")
+	return s != "" && (s[0] == '\'' || s[0] == '"')
 }
 
 // parseHeredocDelim reads the delimiter of a `<<` operator: an optional `-`

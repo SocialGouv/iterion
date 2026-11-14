@@ -1,6 +1,8 @@
 package secretguard
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,24 +42,58 @@ func TestARedactOnlyFormIsNeverALivePlaceholder(t *testing.T) {
 	}
 }
 
-// A defuse reads its input once: what it writes is never read again, so the
-// answer does not depend on the order the placeholders are visited in — a
-// placeholder that begins another (`a` and `a__b`) is the case where the
-// order would show. Repeated, both defuses.
-func TestADefuseIsOnePassWhateverTheOrder(t *testing.T) {
+// A defuse leaves no live placeholder, whatever the order it visits them in
+// and however they overlap. Placeholders overlap on their shared `__`
+// (`…x__ITERION_SECRET_y__`), a redact-only form ends in the `__` the next
+// one starts with, and one placeholder may begin another (`a`, `a__b`): in
+// each, what comes out is resolved through every materialiser and must
+// carry no value. Repeated, both defuses.
+func TestADefuseLeavesNoLivePlaceholder(t *testing.T) {
 	t.Parallel()
-	g := New([]Secret{
-		{Name: "a", Value: "a-value-0123456789", Sinks: []string{secretsink.Command}},
-		{Name: "a__b", Value: "ab-value-0123456789", Sinks: []string{secretsink.Command}},
-	}, DefaultConfig())
-	in := "x " + PlaceholderForName("a__b") + " y " + PlaceholderForName("a") + " z"
-	want := "x " + redactOnlyPlaceholder(PlaceholderForName("a__b")) + " y " + redactOnlyPlaceholder(PlaceholderForName("a")) + " z"
-	for i := range 200 {
-		if got := g.DefuseAll(in); got != want {
-			t.Fatalf("call %d: DefuseAll = %q, want %q", i, got, want)
+	values := map[string]string{
+		"x":    "x-value-0123456789",
+		"y":    "y-value-0123456789",
+		"a":    "a-value-0123456789",
+		"a__b": "ab-value-0123456789",
+	}
+	var all, commandOnly []Secret
+	for name, v := range values {
+		all = append(all, Secret{Name: name, Value: v})
+		commandOnly = append(commandOnly, Secret{Name: name, Value: v, Sinks: []string{secretsink.Command, secretsink.Params}})
+	}
+	open, kept := New(all, DefaultConfig()), New(commandOnly, DefaultConfig())
+	x, y := PlaceholderForName("x"), PlaceholderForName("y")
+	inputs := []string{
+		x + y[2:],                        // x then y, sharing x's closing `__`
+		y + x[2:],                        // y then x
+		x + x[2:],                        // x then x
+		x + x[2:] + x[2:],                // three in a chain
+		redactOnlyPlaceholder(x) + y[2:], // a placeholder abutting a redact-only form
+		PlaceholderForName("a__b"),       // a placeholder that begins another
+		"k=" + PlaceholderForName("a") + "b__ " + y,
+	}
+	leaks := func(resolved ...string) bool {
+		for _, r := range resolved {
+			for _, v := range values {
+				if strings.Contains(r, v) {
+					return true
+				}
+			}
 		}
-		if got := g.DefuseUngranted(secretsink.Agent, in); got != want {
-			t.Fatalf("call %d: DefuseUngranted = %q, want %q", i, got, want)
+		return false
+	}
+	for i := range 200 {
+		for _, in := range inputs {
+			out := open.DefuseAll(in)
+			shell, env := open.MaterializeShellEnv(out)
+			if leaks(open.Materialize(out), shell, strings.Join(slices.Collect(maps.Values(env)), " "), open.MaterializeFor(secretsink.Command, out)) {
+				t.Fatalf("call %d: DefuseAll(%q) = %q still holds a live placeholder", i, in, out)
+			}
+			out = kept.DefuseUngranted(secretsink.Agent, in)
+			authored, aenv := kept.MaterializeAuthoredShellEnv(out)
+			if leaks(kept.MaterializeFor(secretsink.Command, out), kept.MaterializeShell(out), authored, strings.Join(slices.Collect(maps.Values(aenv)), " ")) {
+				t.Fatalf("call %d: DefuseUngranted(%q) = %q still holds a live placeholder", i, in, out)
+			}
 		}
 	}
 }

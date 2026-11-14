@@ -243,10 +243,18 @@ form in every hook/log:
   value is written so that no quoting the author put around the reference
   — a single-quoted shell word, a JSON document in single quotes, a python
   or node string, an f-string, a template literal — can be closed or
-  interpolated by it: a shell script reads it from its environment
-  (`"$__ITERION_SECRET_X__"`, the value never in the script's text), and a
-  js or py script receives a JSON string literal with its quote,
-  backquote, `$`, brace and slash characters written as `\u` escapes. A
+  interpolated by it, and it runs as no code. A shell script reads it from
+  a variable the engine names after that one rendering (the value never in
+  the script's text, its name spelled by no data), so it does not arrive
+  where the shell expands nothing — single quotes, a heredoc whose
+  delimiter is quoted: `C342` warns there, and the reference belongs
+  outside the quotes (`'{"t": "'{{secrets.X}}'"}'`), in an unquoted
+  heredoc, or in its raw form. A js or py script receives a JSON string
+  literal with its quote, backquote, `$`, brace and slash characters
+  written as `\u` escapes, the author's own double quotes read as that one
+  literal. Only the expression position is exact: inside the author's
+  quotes the language cooks the literal once, so an author who parses that
+  text again (JSON in a string) reads whatever structure the value spells. A
   value that form cannot carry as written — a NUL byte in a shell script,
   invalid UTF-8 in js or py — is refused at the node, naming the reference.
   A secret name ending in `_redacted` is refused (`C341`): the engine

@@ -294,22 +294,34 @@ body does.
   through its environment (`"$__ITERION_SECRET_X__"` in the argv, the
   value in envp); the env-only class still resolves only in that form; the
   raw `{{!secrets.NAME}}` still inlines the value where the author put it.
-  Hooks, events and the run log carry the placeholder form: a marker never
-  leaves the executor, and the next rendering draws others.
+  Hooks, events and the run log carry the placeholder form: a marker
+  reaches no hook, event, log or model, and the next rendering draws
+  others. The one place a marker stands is the process the body runs in,
+  where a shell script names the variable carrying a value after it.
 - **A script receives a value no quoting can turn into code.** In a
   `script:` the author's `{{secrets.NAME}}` renders a JSON string literal
   holding its marker, and the author may have wrapped it in quoting of
   their own — a shell single-quoted word, a JSON document in single
-  quotes, a python or node string, an f-string, a template literal. The
-  value is written so that it closes and interpolates none of them. In sh
-  and bash it never enters the script's text: the literal becomes
-  `"$__ITERION_SECRET_NAME__"` and the value rides the interpreter's
-  environment, as a command's does. In js and py the literal is the
-  value's JSON string literal — JSON's string syntax is a subset of both —
-  with every character that closes or interpolates a string (`'`, the
-  backquote, `$`, `{`, `}`, `/`) written as a `\u` escape. As an
-  expression the value reads back byte for byte; inside the author's own
-  quotes it stays inert text. A value no form carries as written is
+  quotes, a python or node string in single or double quotes, an
+  f-string, a template literal. The value is written so that it closes
+  and interpolates none of them, and runs as no code. In sh and bash it
+  never enters the script's text: the literal becomes a read of a variable
+  named after the rendering's marker (`"$__ITERION_AUTHORED_…__"`), which
+  no data rendered into the same script can spell, and the value rides
+  the interpreter's environment. Where the shell expands nothing — single
+  quotes, a heredoc whose delimiter is quoted — the script therefore reads
+  the variable's name and not the value; `C342` warns on those positions,
+  and the reference belongs outside the quotes, in an unquoted heredoc, or
+  in its raw form. In js and py the literal is the value's JSON string
+  literal — JSON's string syntax is a subset of both — with every
+  character that closes or interpolates a string (`'`, the backquote, `$`,
+  `{`, `}`, `/`) written as a `\u` escape, and the author's own double
+  quotes around the reference are read as that one literal. Only the
+  expression position is exact: there the value reads back byte for byte.
+  Inside the author's quotes it runs as no code, but the language cooks
+  the literal once, so an author who parses that text again — JSON in a
+  string, `json.loads('{"t": {{secrets.NAME}}}')` — reads whatever
+  structure the value spells. A value no form carries as written is
   refused at the node, naming the reference and never the value: a NUL
   byte in a shell script, invalid UTF-8 in a js or py literal (JSON would
   rewrite it). The materialiser used to splice the value inside the
@@ -349,14 +361,16 @@ body does.
   the recipe's text defused the same way (`Guard.DefuseAll`). The author's
   own references, and the values the recipe printed, are shown live, so a
   repaired command still reaches what the recipe reached.
-- **The redact-only form is reserved, and the defuse reads once.** The
-  token a defuse writes, `__ITERION_SECRET_<name>_redacted__`, is spelled
-  like the placeholder of a secret named `<name>_redacted`, which would
-  resolve it to its own value: such a name is refused at compile time
-  (`C341`), and the guard never makes such a placeholder resolvable. The
-  defuse rewrites every placeholder in one pass, so what it writes is never
-  read again and its answer does not depend on the order it visits them
-  in.
+- **The redact-only form is reserved, and the defuse leaves nothing live.**
+  The token a defuse writes, `__ITERION_SECRET_<name>_redacted__`, is
+  spelled like the placeholder of a secret named `<name>_redacted`, which
+  would resolve it to its own value: such a name is refused at compile
+  time (`C341`), and the guard never makes such a placeholder resolvable.
+  The defuse rewrites every placeholder at once, so its answer does not
+  depend on the order it visits them in, and it repeats the pass until
+  the text no longer changes: placeholders overlap on their shared `__`
+  (`…x__ITERION_SECRET_y__`), and a pass that rewrites the first leaves
+  the second whole again behind its redact-only form.
 - **The agent sink's defuse of data stays, for what a body sends on.** A
   secret kept off the agent still has its placeholder rewritten in data
   to the redact-only form (`DefuseUngranted`): the egress proxy

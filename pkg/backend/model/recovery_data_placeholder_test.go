@@ -159,6 +159,9 @@ func TestTheRecoveryAgentReceivesDataPlaceholdersDefused(t *testing.T) {
 		"nested": map[string]any{"list": []any{"again " + ph}},
 		// A key is sent as written too, at every depth.
 		"payload": map[string]any{ph: "use me as the token", "deeper": []any{map[string]any{ph: 1}}},
+		// Two placeholders overlapping on their shared `__`, as a value and
+		// as a key.
+		"overlap": map[string]any{ph + ph[2:]: ph + ph[2:]},
 	}
 	if _, err := exec.Execute(context.Background(), node, input); err == nil {
 		t.Fatal("the postcondition cannot hold: the node must fail after its recovery agent")
@@ -238,6 +241,56 @@ func TestARepairPromptsOutputFormsNoPlaceholderAtAJunction(t *testing.T) {
 		}
 		if strings.Contains(string(echoed), xValue) {
 			t.Fatalf("run %d: a fragment printed against a value formed x's live placeholder, and the repair materialised it: %q", i, echoed)
+		}
+	}
+}
+
+// Two placeholders overlap on their shared `__` — data spells
+// `__ITERION_SECRET_x__ITERION_SECRET_y__`, or one placeholder twice in a
+// chain — and the defuse that reads them for the self-repair model must
+// leave neither live: a model that echoes the failed command or its output
+// resolves nothing of them. 20 runs per form, since a one-pass defuse left
+// the second one live every time.
+func TestTheSelfRepairRungDefusesOverlappingPlaceholders(t *testing.T) {
+	t.Parallel()
+	values := map[string]string{"x": "xv-6c1d0e9f2a7b4835", "y": "yv-0b8e3d7c1f5a9264"}
+	g := secretguard.New([]secretguard.Secret{{Name: "x", Value: values["x"]}, {Name: "y", Value: values["y"]}}, secretguard.DefaultConfig())
+	x, y := secretguard.PlaceholderForName("x"), secretguard.PlaceholderForName("y")
+	body := "printf '%s' {{input.d}} > data.txt; printf '%s' {{input.d}}; exit 1"
+	refs, err := ir.ParseRefs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{x + y[2:], y + x[2:], x + x[2:]} {
+		for i := range 20 {
+			dir := t.TempDir()
+			reg := NewRegistry()
+			client := &echoingRepairClient{}
+			reg.Register("anthropic", func(string) (api.APIClient, error) { return client, nil })
+			exec := newTestClawExecutor(reg, &ir.Workflow{}, WithWorkDir(dir), WithSecretGuard(g))
+			node := &ir.ToolNode{
+				BaseNode:      ir.BaseNode{ID: "publish"},
+				Command:       body,
+				CommandRefs:   refs,
+				Goal:          "publish",
+				Postcondition: "test -f repaired.txt",
+				Policy:        ir.PolicyRecover,
+				Recovery:      &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "anthropic/claude-test"},
+			}
+			if _, err := exec.Execute(context.Background(), node, map[string]any{"d": d}); err != nil {
+				t.Fatalf("%q run %d: Execute: %v", d, i, err)
+			}
+			for _, name := range []string{"data.txt", "echoed.txt"} {
+				got, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil {
+					t.Fatalf("%q run %d: %v", d, i, err)
+				}
+				for secret, v := range values {
+					if strings.Contains(string(got), v) {
+						t.Fatalf("%q run %d: %s holds %s's value after the repair: %q", d, i, name, secret, got)
+					}
+				}
+			}
 		}
 	}
 }
