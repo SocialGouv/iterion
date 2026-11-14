@@ -91,20 +91,24 @@ func NewCredentialReadGuard(env func(string) string) *CredentialReadGuard {
 	for _, entry := range filepath.SplitList(env("KUBECONFIG")) {
 		g.addDerived(entry)
 	}
-	for _, v := range []string{"NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "AWS_SHARED_CREDENTIALS_FILE"} {
-		g.addDerived(env(v))
-	}
-	for _, pair := range [][2]string{
-		{"CODEX_HOME", "auth.json"},
-		{"DOCKER_CONFIG", "config.json"},
-		{"GH_CONFIG_DIR", "hosts.yml"},
-		{"CLAUDE_CONFIG_DIR", ".credentials.json"},
-	} {
-		if dir := strings.TrimSpace(env(pair[0])); dir != "" {
-			g.addDerived(filepath.Join(dir, pair[1]))
-		}
-	}
+	// Each name is spelled at its read: pkg/backend/model derives the env
+	// names claw's tools read from this source, and decides each one for a
+	// sandboxed node.
+	g.addDerived(env("NPM_CONFIG_USERCONFIG"))
+	g.addDerived(env("NPM_CONFIG_GLOBALCONFIG"))
+	g.addDerived(env("AWS_SHARED_CREDENTIALS_FILE"))
+	g.addDerivedIn(env("CODEX_HOME"), "auth.json")
+	g.addDerivedIn(env("DOCKER_CONFIG"), "config.json")
+	g.addDerivedIn(env("GH_CONFIG_DIR"), "hosts.yml")
+	g.addDerivedIn(env("CLAUDE_CONFIG_DIR"), ".credentials.json")
 	return g
+}
+
+// addDerivedIn records file inside dir, when dir names one.
+func (g *CredentialReadGuard) addDerivedIn(dir, file string) {
+	if dir := strings.TrimSpace(dir); dir != "" {
+		g.addDerived(filepath.Join(dir, file))
+	}
 }
 
 // addDerived records one real credential location in both spellings a

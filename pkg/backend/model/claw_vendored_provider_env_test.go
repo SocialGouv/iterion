@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -36,12 +35,17 @@ import (
 // would otherwise shrink this list in silence — the shape that makes a guard
 // look green over nothing.
 //
-// What it does not see, named rather than hidden: a name claw builds at run
-// time instead of spelling it (os.Environ, a name from a constant of its
-// own), and a name read OUTSIDE the provider packages the registry imports —
-// a shared claw package on the same path, or claw's tool packages, whose
-// twelve names are #2802's subject (the `web_search` five of them are
-// decided below, because this ticket decided them).
+// What it does not see, named rather than hidden: the environment handed
+// whole to a child (os.Environ), a reader a function receives from a caller
+// outside the walked packages without defaulting it itself, what a
+// dependency reads on its own (the default transport's HTTP proxy variables,
+// the AWS, Google and Azure SDKs' default credential chains behind bedrock,
+// vertex and foundry), and a name read
+// OUTSIDE the provider packages the registry imports — a shared claw package
+// on the same path, or claw's tool packages, whose names are #2802's subject
+// (the `web_search` five of them are decided below, because this ticket
+// decided them). A name built at run time, or a read form handed on as a
+// value, is refused by the walk (envReads).
 
 // The classes a vendored provider's env name can be in.
 const (
@@ -283,91 +287,6 @@ func importsOfDir(t *testing.T, dir string) []string {
 	for _, path := range nonTestGoFilesIn(t, dir) {
 		out = append(out, importsOfFile(t, path)...)
 	}
-	return out
-}
-
-// envReadForms are the calls that read an environment variable named by
-// their first argument — the forms internal/envtrust's routing census knows —
-// keyed by import path. claw is first-party code since the fold and may read
-// through envtrust as well as os.
-var envReadForms = map[string][]string{
-	"os": {"Getenv", "LookupEnv"},
-	"github.com/SocialGouv/iterion/internal/envtrust":     {"Inherited", "Planted"},
-	"github.com/SocialGouv/iterion/internal/isolationenv": {"Value"},
-}
-
-// namedEnvRead reports whether sel is one of envReadForms, under the name f
-// imports its package by.
-func namedEnvRead(f *ast.File, sel *ast.SelectorExpr) bool {
-	x, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	for _, spec := range f.Imports {
-		path, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			continue
-		}
-		name := filepath.Base(path)
-		if spec.Name != nil {
-			name = spec.Name.Name
-		}
-		if name == x.Name && slices.Contains(envReadForms[path], sel.Sel.Name) {
-			return true
-		}
-	}
-	return false
-}
-
-// envNamesReadIn returns, sorted and deduplicated, every env name the given
-// files and directories read. A read whose name is not a string literal is a
-// failure: the derivation cannot decide a name it cannot read.
-func envNamesReadIn(t *testing.T, paths []string) []string {
-	t.Helper()
-	found := map[string]bool{}
-	var files []string
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if info.IsDir() {
-			files = append(files, nonTestGoFilesIn(t, path)...)
-			continue
-		}
-		files = append(files, path)
-	}
-	for _, path := range files {
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) == 0 {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || !namedEnvRead(f, sel) {
-				return true
-			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				t.Errorf("%s reads an environment variable whose name is not a string literal: spell the name at the read, so this derivation can decide it", fset.Position(call.Pos()))
-				return true
-			}
-			if name, err := strconv.Unquote(lit.Value); err == nil && name != "" {
-				found[name] = true
-			}
-			return true
-		})
-	}
-	out := make([]string, 0, len(found))
-	for name := range found {
-		out = append(out, name)
-	}
-	sort.Strings(out)
 	return out
 }
 

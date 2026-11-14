@@ -23,10 +23,13 @@ import (
 // a removed tool package would otherwise shrink this list in silence.
 //
 // What it does not see, named rather than hidden (same shape as the provider
-// half): a name claw builds at run time instead of spelling it, and a name
-// read in a claw package OUTSIDE the two tool packages — internal/context's
-// SHELL, internal/api's credential reads — of which the provider walk covers
-// its own share.
+// half): a name read in a claw package OUTSIDE the two tool packages —
+// internal/context's SHELL, internal/api's credential reads — of which the
+// provider walk covers its own share; the environment handed whole to a
+// child (os.Environ); a reader a function receives from a caller outside
+// the walked packages without defaulting it itself; and what a dependency
+// reads on its own — the HTTP proxy variables of the default transport. A name built at run time,
+// or a read form handed on as a value, is refused by the walk (envReads).
 //
 // The classes a vendored tool's env name can be in.
 const (
@@ -49,7 +52,25 @@ const (
 	// lands, the name must NOT cross — the fail-closed reading of an open
 	// question.
 	toolClassUndecided = "undecided"
+	// toolClassRunnerOwn: the name is read from the environment of the
+	// process that runs the tool — the in-container runner for a sandboxed
+	// tool, the launcher for a launcher-placed one (todo_write) — and the
+	// launcher's value never crosses, whatever the placement: it names a
+	// location on the launcher's host. With a container driver the value is
+	// the container's own: HOME is the one the engine sets (clawRunnerHome);
+	// the others come from its environment — the image, a containerEnv key the
+	// sandbox's deny class lets through, a project .env overlay — never
+	// copied from the launcher's process by the engine (a containerEnv value
+	// written as ${localEnv:…} expands from it, by the operator's choice). The
+	// noop driver runs the runner on the host: HOME is still the engine's
+	// runner home and PWD the workspace; the other names are the host's own,
+	// the right ones there.
+	toolClassRunnerOwn = "runner-own"
 )
+
+// runnerOwnCredentialWhy is the reason shared by the locations claw's
+// credential read guard derives from the environment.
+const runnerOwnCredentialWhy = "the credential read guard (claw's NewCredentialReadGuard, built by pkg/backend/tool's read gate behind read_file, glob and grep) refuses reads of the credential file this names, in the process the tool runs in: the container's own locations are the ones to protect there, and the launcher's path would protect a file the container does not have"
 
 // vendoredToolEnvDecision carries, for every env name claw's tool packages
 // read, its class and why. A name the walk finds that is not here fails the
@@ -87,6 +108,25 @@ var vendoredToolEnvDecision = map[string]struct {
 	// computer_use — the tool that reads the pair — drives the LAUNCHER
 	// host's, so it stays PlacementRefused for a sandboxed node and the
 	// names cross nowhere.
+	// The environment of the process the tool runs in (#3256): the credential
+	// read guard's locations, and the directory lookups claw's tools make.
+	"HOME": {toolClassRunnerOwn, "read_file",
+		"the home every home-relative lookup starts from (the credential guard's ~/.kube/config and siblings, skill and image directories): in the container it is the runner home the engine sets (clawRunnerHome), never the launcher's"},
+	"KUBECONFIG":                  {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy},
+	"NPM_CONFIG_USERCONFIG":       {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy},
+	"NPM_CONFIG_GLOBALCONFIG":     {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy},
+	"AWS_SHARED_CREDENTIALS_FILE": {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy + " (bedrock's AWS SDK default chain reads it too, in the same process)"},
+	"DOCKER_CONFIG":               {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy},
+	"GH_CONFIG_DIR":               {toolClassRunnerOwn, "read_file", runnerOwnCredentialWhy},
+	"TMPDIR": {toolClassRunnerOwn, "todo_write",
+		"os.TempDir, the todo list's fallback base when no home resolves: a scratch location of the process that writes the list"},
+	"XDG_CACHE_HOME": {toolClassRunnerOwn, "/skills install",
+		"os.UserCacheDir, where claw's /skills install command (plugin_cmds, not a registered tool) caches the marketplace: a cache of the process that installs"},
+	"PATH": {toolClassRunnerOwn, "bash",
+		"the command search of every spawn and lookup claw's tools make (bash, repl, computer_use, skill install's git): the process that spawns searches its own PATH — for a sandboxed node, the container's; the launcher's lists directories of its own host"},
+	"PWD": {toolClassRunnerOwn, "read_file",
+		"the working-directory hint os.Getwd and filepath.Abs read (todo_write, the credential guard, the pdf and image tools): the process's own working directory"},
+
 	"DISPLAY": {toolClassLauncher, "computer_use",
 		"decided by #2802 (Q50=A): launcher-side for ever — computer_use drives the launcher host's display and a sandboxed node has none, so the name never crosses"},
 	"WAYLAND_DISPLAY": {toolClassLauncher, "computer_use",
@@ -139,6 +179,10 @@ func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
 			if !strings.Contains(got.why, "UNDECIDED") {
 				t.Errorf("%s is classified undecided without naming the question in its reason", name)
 			}
+		case toolClassRunnerOwn:
+			// No placement to assert: the read is in-process wherever the
+			// tool runs. What the class claims — the launcher's value never
+			// crosses — is TestSandboxedClawNodeToolEnvCrossing's to prove.
 		case toolClassUnreachable:
 			// The proof obligation is the entry's `why`: it must name the
 			// registration that keeps the reading tool out of every registry.
@@ -146,7 +190,7 @@ func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
 				t.Errorf("%s is classified unreachable without naming the registration that proves it", name)
 			}
 		default:
-			t.Errorf("%s has no class (%q): say unreachable, launcher, forwarded or undecided", name, got.class)
+			t.Errorf("%s has no class (%q): say unreachable, launcher, forwarded, runner-own or undecided", name, got.class)
 		}
 	}
 	for name := range vendoredToolEnvDecision {
@@ -179,6 +223,19 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	for _, name := range []string{"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"} {
 		launcherEnv[name] = "launcher-search-value"
 	}
+	// Every runner-own name, read from the classification so a name added
+	// there is asserted here too.
+	var runnerOwn []string
+	for name, decision := range vendoredToolEnvDecision {
+		if decision.class == toolClassRunnerOwn {
+			runnerOwn = append(runnerOwn, name)
+			launcherEnv[name] = "/launcher/" + strings.ToLower(name)
+		}
+	}
+	slices.Sort(runnerOwn)
+	if len(runnerOwn) == 0 {
+		t.Fatal("no runner-own name in the classification: the crossing below would assert nothing for the class")
+	}
 	ctx := withCarriedEnv(context.Background(), launcherEnv)
 
 	toolEnv := forwardableToolEnv(ctx)
@@ -191,10 +248,17 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	if got := toolEnv["CLAW_CONFIG_HOME"]; got != "/launcher/claw-config" {
 		t.Errorf("CLAW_CONFIG_HOME crossed as %q, want the launcher's value: the in-container skill lookup otherwise walks other roots than the host's, with nothing said", got)
 	}
-	for _, name := range []string{"CLAW_TODOS_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "DISPLAY", "WAYLAND_DISPLAY",
-		"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"} {
+	for _, name := range append([]string{"CLAW_TODOS_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "DISPLAY", "WAYLAND_DISPLAY",
+		"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"}, runnerOwn...) {
 		if got, ok := toolEnv[name]; ok {
 			t.Errorf("%s crossed through forwardableToolEnv as %q: its classification (%s) says it must not — decide it again, here and there", name, got, vendoredToolEnvDecision[name].class)
+		}
+	}
+	// Nor through the provider half of the crossing.
+	providerEnv := envFor(t, ctx)
+	for _, name := range runnerOwn {
+		if got, ok := providerEnv[name]; ok {
+			t.Errorf("%s crossed through forwardableProviderEnv as %q: it is runner-own — the container's process reads its own value, never the launcher's path", name, got)
 		}
 	}
 
