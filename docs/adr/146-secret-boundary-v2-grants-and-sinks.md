@@ -308,7 +308,11 @@ body does.
   never enters the script's text: the literal becomes a read of a variable
   named after the rendering's marker (`"$__ITERION_AUTHORED_…__"`), which
   no data rendered into the same script can spell, and the value rides
-  the interpreter's environment. Where the shell expands nothing — single
+  the interpreter's environment. Spelling is not reading: data rendered
+  into a sh or bash script is a double-quoted word the shell expands, so
+  it can still reach the environment — `$(env)`, or in bash a name
+  enumerated with `${!prefix@}` and read with `${!x}` — the pre-existing
+  data-in-a-shell-script class, open on its own ticket (#3291). Where the shell expands nothing — single
   quotes, a heredoc whose delimiter is quoted — the script therefore reads
   the variable's name and not the value; `C342` warns on those positions,
   and the reference belongs outside the quotes, in an unquoted heredoc, or
