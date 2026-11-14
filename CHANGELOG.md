@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.0.2](https://github.com/SocialGouv/iterion/compare/v6.0.1...v6.0.2) (2026-11-14)
+
+### Bug Fixes
+
+* **revi-converse:** the agent drafts, a deterministic node posts the reply in its thread — and never the forge token ([#3279](https://github.com/SocialGouv/iterion/issues/3279)) ([1c153b7](https://github.com/SocialGouv/iterion/commit/1c153b78770ef5b33d943c7137fa12eac79b3709)), references [#3268](https://github.com/SocialGouv/iterion/issues/3268)
+
+    <details><summary>why</summary>
+
+    v6.0.1 raised converse_agent's tool loop to 60 steps but kept the run's 10-minute budget. On the team gateway's deepseek a step takes ~10-15 s, so a question that needed ~50 steps died on its budget before it posted (VAO !48, run 01a1d92e, 2026-11-14: 55 LLM steps, BUDGET_EXCEEDED at 606 s, nothing on the merge request). max_duration is now 30m — the step bound at 30 s a step. revi-converse 0.1.8; reading golden and bot map re-pinned.
+
+    </details>
+
 ## [6.0.1](https://github.com/SocialGouv/iterion/compare/v6.0.0...v6.0.1) (2026-11-14)
 
 ### Bug Fixes
