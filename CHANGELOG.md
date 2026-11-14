@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.0.1](https://github.com/SocialGouv/iterion/compare/v6.0.0...v6.0.1) (2026-11-14)
+
+### Bug Fixes
+
+* **revi:** /revi <question> answers on claw, and review-pr's publish banner reads what the review carries ([#3266](https://github.com/SocialGouv/iterion/issues/3266)) ([e9a8786](https://github.com/SocialGouv/iterion/commit/e9a8786f6a0eae72eb716241edc712a33f85bb7b)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#4360](https://github.com/SocialGouv/iterion/issues/4360) [converse_agent#glm](https://github.com/converse_agent/issues/glm) [#5149](https://github.com/SocialGouv/iterion/issues/5149) [#5157](https://github.com/SocialGouv/iterion/issues/5157) [#7593](https://github.com/SocialGouv/iterion/issues/7593)
+
+    <details><summary>why</summary>
+
+    The team gateway routing cells (#2005) move converse_agent off claude_code onto claw. Its node declared no `tools:` list, which a CLI backend reads as the full native toolset and claw as NO tool: on every product, `/revi <question>` read no diff, posted nothing and answered "placeholder", and converse_health reported the run healthy (run 01a1d4f8 on DomiFa #4360).
+
+    </details>
+
 ## [6.0.0](https://github.com/SocialGouv/iterion/compare/v5.32.3...v6.0.0) (2026-11-13)
 
 ### ⚠ BREAKING CHANGES
