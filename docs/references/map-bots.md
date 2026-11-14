@@ -33,7 +33,7 @@ The bundles under `bots/`, then the skills they carry.
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.7.1 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (scheduled ticks, zero LLM in this slice — the compiled workflow contains no agent or… | 0.4.0 |
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.6.0 |
-| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.7 |
+| `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.8 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.22 |
 | `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.2.0 |
@@ -164,7 +164,6 @@ The pair a model sees before it decides to open the file.
 | `product-docs` | `product-docs` | Operating playbook for Prody — writing functional, business-audience product documentation in a dedicated docs repository from… |
 | `product-docs` | `publish-static-site` | Build the product documentation into a static site (GitBook blocks → MkDocs Material) and package it as a non-root nginx… |
 | `product-docs` | `ton-et-style` | Default tone and style rules for published functional pages — person, tense, sentence shape, the sourced-or-[à confirmer]… |
-| `revi-converse` | `forge-reply` | How to POST a reply note in an EXISTING pull-request (merge-request on GitLab) discussion thread on GitHub, GitLab, or… |
 | `review-pr` | `ticket-context` | How to obtain the ticket(s) a PR claims to deliver — from an external tracker (Jira Cloud/DC) or, with no configuration, from… |
 | `rgaa-audit` | `adjudication-protocol` | How to rule on one batch of criteria the engine could not decide: reading a brief and an evidence file, the four verdicts and… |
 | `rgaa-audit` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |

@@ -616,7 +616,7 @@ instead.
   board.
 - **Triggers**: revi-converse, ask, converse
 - **Tags**: code-review, conversational, read-only
-- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `pr_url` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `forge_base_url` (string), `pr_url` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
 - **Path**: `bots/revi-converse/main.bot`
 
 ### `review-pr` — Revi

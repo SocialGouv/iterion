@@ -246,6 +246,20 @@ func fillVarGaps(dst, src map[string]string) map[string]string {
 	return dst
 }
 
+// withForgeBaseURL stamps the webhook's pinned forge web base on a launch's
+// vars as forge_base_url when the config names one (cfg.ForgeBaseURL, the
+// instance the bot's token may call back to). A bot that calls its forge
+// with its own token — revi-converse's publish_reply — derives the API from
+// it instead of the PR URL's origin: the only way to reach a GitLab or a
+// Forgejo served under a sub-path. A bot that declares no such var drops it.
+// Stamped before the operator's layers, which keep the last word.
+func withForgeBaseURL(vars map[string]string, cfg webhooks.Config) map[string]string {
+	if base := strings.TrimSpace(cfg.ForgeBaseURL); base != "" {
+		vars["forge_base_url"] = base
+	}
+	return vars
+}
+
 // reviewPRVars composes the launch-vars map every forge-specific
 // review-PR path produces: the canonical {pr_url, base_ref, scope_notes,
 // post_to_board:"false", pr_review_mode:"summary"} base, an optional

@@ -25,10 +25,12 @@ beside the server), rendered as `<origin>/studio/runs/<id>`. It resolves in a
 prompt, a tool `command:` / `script:`, an expression and a data mapping alike
 ([the run namespace](../../dsl.md#the-run-namespace)).
 
-- **Deterministic node** (the body is python, the server publishes it): read
-  the member into the script — `RUN_URL={{run.url}} RUN_ID={{run.id}}` — and
-  append the footer where the body is assembled. `bots/dep-update-guard` and
-  `bots/branch-improve-loop` are the worked examples.
+- **Deterministic node** (the body is python; the server publishes it, or the
+  node posts it with the mounted forge token): read the member into the
+  script — `RUN_URL={{run.url}} RUN_ID={{run.id}}` — and append the footer
+  where the body is assembled. `bots/dep-update-guard` and
+  `bots/branch-improve-loop` are the worked examples; `bots/revi-converse`'s
+  `publish_reply` posts its agent's draft that way.
 - **Agent node** (the agent posts through the forge API itself, following
   `skills/forge-*.md`): the skill states the footer rule, the node's own user
   prompt renders both values. The rule without the address is unfulfillable
@@ -102,8 +104,8 @@ drop out quietly. Both halves of
 ## The guard
 
 `bots/forge_run_link_test.go` discovers the class from the bundles — a `.bot`
-naming `forge_publish_url`, or a bundle shipping a `skills/forge-*.md` — and
-pins its membership, so a bundle that *joins* must carry the link and one that
+naming `forge_publish_url` or `secrets.forge_token`, or a bundle shipping a
+`skills/forge-*.md` — and pins its membership, so a bundle that *joins* must carry the link and one that
 *leaves* reddens instead of dropping out of every check. The channel is read
 from the **compiled** workflow (a prompt's refs, a tool body's refs): a
 `{{run.url}}` sitting in a `##` comment is not a channel, and a guard that

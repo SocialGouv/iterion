@@ -12,8 +12,13 @@ Status: A1 (note parsing), A2 (handler + authz + loop-guard +
 reply-in-thread trigger), A3 (conversation vars incl. the fetched thread
 transcript as `thread_context`) and A5 (`revi-converse`) are shipped —
 on **GitLab** (notes) and on **GitHub** (review threads, below).
-A4 (`forge.reply` capability) is the remaining deferred step — the reply
-POST is skill-based (`curl`) until then.
+A4 (`forge.reply` capability) is the remaining deferred step. Until then
+the reply is posted by a deterministic node of the bot, never by its
+model: `converse_agent` drafts the answer, `publish_reply` posts it with
+the mounted `forge_token` and re-reads the created note by its id, and
+`converse_health` gates the result
+([bots/revi-converse](../bots/revi-converse/README.md)). Whether an answer
+lands no longer depends on how many tool steps the model spent reading.
 
 ## GitHub — replying inside a review thread
 
@@ -48,8 +53,8 @@ entries there:
   labelled, capped by the same 16k anchor+newest budget as the GitLab
   lane — `webhooks.CapTranscript`) and
   `discussion_id` = the **thread root** comment id — exactly what
-  GitHub's `/pulls/{n}/comments/{id}/replies` endpoint wants (the
-  bot's `forge-reply.md` §4). Idempotency: one launch per reply
+  GitHub's `/pulls/{n}/comments/{id}/replies` endpoint wants (where
+  the bot's `publish_reply` posts). Idempotency: one launch per reply
   comment (`rc|…` key space).
 - **`/revi <question>` as a plain PR comment** (`issue_comment`): no
   special-casing — the generic command registry routes it. The
@@ -165,8 +170,13 @@ Any bot becomes conversational with no per-bot plumbing — it just reads
 `{{conversation.*}}`.
 
 **Shipped (vars-level):** the handler injects `discussion_id`,
-`trigger_note`, `trigger_command`/`trigger_args`, `replier` and — on the
-converse route — `converse_question` plus `thread_context`, the discussion
+`trigger_note`, `trigger_command`/`trigger_args`, `replier`,
+`forge_base_url` when the webhook pins its forge (`cfg.ForgeBaseURL` — the
+base a bot calling back with its own token derives the API from; a webhook
+provisioned from a forge connection stores the connection's base URL, sub-path
+included, while a pin set through the webhook API is stored as
+scheme://host), and — on the converse route —
+`converse_question` plus `thread_context`, the discussion
 transcript fetched from the forge API (chronological, the bot's own notes
 labelled, capped at ~16k chars keeping the thread anchor + the newest
 notes; see `gitlab.FormatThreadTranscript`). The gate fetches the
@@ -192,10 +202,14 @@ because it is short and security-sensitive.)
 
 ## A5 — The conversational bot
 
-A `revi-converse` mode/bot (or a `reply` entry of `review-pr`): reads the
-thread (`{{conversation.*}}`) + the diff, answers the user's note (or
-re-reviews on `/revi`), and calls `forge_reply`. Reuses the
-`forge-pr-review` skill family.
+Shipped as the `revi-converse` bot: its agent reads the thread
+(`thread_context`) + the diff and drafts the answer to the user's note;
+a deterministic `publish_reply` node posts it in the thread — a reply
+in the GitHub review thread or the GitLab discussion, a PR comment or
+MR note when no thread id is set — with the anti-trigger and GitLab
+quick-action guards and the run footer, then re-reads it by id. A bare
+`/revi` still re-reviews (`review-pr`). The A4 capability would move
+that node's call into the server.
 
 ## Build order
 
