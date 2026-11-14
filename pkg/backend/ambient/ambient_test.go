@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 func TestParseAcceptsTheFourValuesOnly(t *testing.T) {
@@ -379,7 +381,7 @@ func TestNestedWorktreeMainFollowsGitsOwnLayout(t *testing.T) {
 	}
 	run := func(dir string, args ...string) {
 		t.Helper()
-		cmd := exec.Command(git, args...)
+		cmd := exec.Command(git, gitlib.NoAutoMaintenance(args...)...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {

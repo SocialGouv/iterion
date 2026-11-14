@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // The repo-root `**/.claude/` rule exists because claude_code
@@ -29,7 +31,7 @@ func TestGitignoreKeepsClaudeRuntimeJunkIgnored(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	root := filepath.Join("..") // bots/ -> repo root
-	if out, err := exec.Command(git, "-C", root, "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+	if out, err := exec.Command(git, gitlib.NoAutoMaintenance("-C", root, "rev-parse", "--is-inside-work-tree")...).Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
 		t.Skip("not a git work tree (vendored/exported checkout)")
 	}
 
@@ -49,7 +51,7 @@ func TestGitignoreKeepsClaudeRuntimeJunkIgnored(t *testing.T) {
 
 	for _, tc := range cases {
 		// `git check-ignore` matches patterns only — the path need not exist.
-		err := exec.Command(git, "-C", root, "check-ignore", "-q", "--", tc.path).Run()
+		err := exec.Command(git, gitlib.NoAutoMaintenance("-C", root, "check-ignore", "-q", "--", tc.path)...).Run()
 		ignored := err == nil
 		if ignored != tc.wantIgnored {
 			t.Errorf("%s: ignored=%v want %v — %s", tc.path, ignored, tc.wantIgnored, tc.why)
