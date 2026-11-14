@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.2.0](https://github.com/SocialGouv/iterion/compare/v6.1.1...v6.2.0) (2026-11-14)
+
+### Features
+
+* **store:** the run-admission ledger holds capacity subjects — ADR-167, [#3254](https://github.com/SocialGouv/iterion/issues/3254) T1 ([#3265](https://github.com/SocialGouv/iterion/issues/3265)) ([a235776](https://github.com/SocialGouv/iterion/commit/a235776b8f25e8184f2d4d1c7c9da9639bde8591))
+
+    <details><summary>why</summary>
+
+    Slice T1 of #3254 (no behaviour change: nothing stamps or reserves a subject yet). A burst of 22 Revi reviews on one LiteLLM gateway on 2026-11-13 slowed every call 50 s → 4-7 min and killed three runs on their 3 h budget; ADR-167 bounds the alive runs of a shared gateway through the existing cred-slot ledger, admitted before start (no pod, no budget) and held through the runner's redelivery.
+
+    </details>
+
 ## [6.1.1](https://github.com/SocialGouv/iterion/compare/v6.1.0...v6.1.1) (2026-11-14)
 
 ### Bug Fixes
