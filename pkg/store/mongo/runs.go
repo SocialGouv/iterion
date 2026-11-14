@@ -972,6 +972,14 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 	// A re-stamp is a fresh attempt: the previous one's model-idle marker
 	// is cleared.
 	unset := bson.M{"llm_idle_since": ""}
+	// No subject is an absent key, the shape a launch writes for a run that
+	// seals no gateway key: a stored empty list and an absent key mean the
+	// same thing to the holder filter (spendsCredentialFilter).
+	if len(stamp.CapacitySubjects) > 0 {
+		set["capacity_subjects"] = stamp.CapacitySubjects
+	} else {
+		unset["capacity_subjects"] = ""
+	}
 	if stamp.SkippedReopensAt != nil {
 		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
 	} else {
@@ -1170,9 +1178,10 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 }
 
 // CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
-// fingerprint, model-idle or not (see store.RunStore) — the query form of
-// store.Run.SpendsCredential. Deliberately NO tenant filter — a platform key
-// serves every tenant on one ceiling.
+// fingerprint — a credential's, or a capacity subject — model-idle or not
+// (see store.RunStore): the query form of store.Run.SpendsCredential.
+// Deliberately NO tenant filter — a platform key and a shared gateway serve
+// every tenant on one ceiling.
 func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
@@ -1185,10 +1194,12 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 }
 
 // spendsCredentialFilter selects the runs that spend the credential with this
-// fingerprint, excludeRunID aside: the query form of store.Run.SpendsCredential,
-// read by the alive-run count and, narrowed (credSlotAdoptableFilter), by the
-// slot ledger's adoption. No tenant filter — a platform key serves every
-// tenant on one cap.
+// fingerprint, or the capacity subject of that name, excludeRunID aside: the
+// query form of store.Run.SpendsCredential, read by the alive-run count and,
+// narrowed (credSlotAdoptableFilter), by the slot ledger's adoption. The two
+// arms of the $or are the predicate's two stamps; the namespaces are
+// disjoint, so a value matches one arm at most. No tenant filter — a
+// platform key and a shared gateway serve every tenant on one cap.
 func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
@@ -1197,8 +1208,11 @@ func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 		}
 	}
 	filter := notDeleted(bson.M{
-		"cred_fingerprints": fingerprint,
-		"status":            bson.M{"$in": holding},
+		"$or": bson.A{
+			bson.M{"cred_fingerprints": fingerprint},
+			bson.M{"capacity_subjects": fingerprint},
+		},
+		"status": bson.M{"$in": holding},
 	})
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}

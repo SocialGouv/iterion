@@ -1110,18 +1110,36 @@ type WatcherCursor struct {
 }
 
 // RunCredStamp is what one credential resolution leaves on the run
-// document: the audit identities of the credentials it sealed, and when the
-// earliest credential it passed over reopens. Written as a unit — at launch
-// on the in-memory document, at resume through RunStore.SetRunCredStamp —
-// so the two facts always describe the same resolution.
+// document: the audit identities of the credentials it sealed, the capacity
+// subjects those credentials draw on, and when the earliest credential it
+// passed over reopens. Written as a unit — at launch on the in-memory
+// document, at resume through RunStore.SetRunCredStamp — so the facts always
+// describe the same resolution.
 type RunCredStamp struct {
 	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
 	// clears it (a re-resolution that sealed nothing holds no slot).
 	Fingerprints []string
+	// CapacitySubjects replaces Run.CapacitySubjects wholesale, on the same
+	// terms: a re-resolution that sealed no gateway key holds no gateway
+	// slot.
+	CapacitySubjects []string
 	// Tiers replaces Run.CredentialTiers wholesale, on the same terms.
 	Tiers []string
 	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
 	SkippedReopensAt *time.Time
+}
+
+// Apply writes the stamp on an in-memory run document, every field of the
+// unit at once, and clears the model-idle marker (a re-stamp is a fresh
+// attempt). The launch path and the filesystem twin of SetRunCredStamp both
+// write through it, so a field added to the stamp reaches both or neither;
+// the Mongo twin writes the same fields as one update.
+func (s RunCredStamp) Apply(r *Run) {
+	r.CredFingerprints = s.Fingerprints
+	r.CapacitySubjects = s.CapacitySubjects
+	r.CredentialTiers = s.Tiers
+	r.SkippedCredReopensAt = s.SkippedReopensAt
+	r.LLMIdleSince = nil
 }
 
 // RunContentBoundary identifies the tenant gateway credential a run is
@@ -1211,6 +1229,21 @@ type Run struct {
 	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
 	// runs through this field.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// CapacitySubjects name the shared capacities the run's sealed
+	// credentials draw on, beyond each credential's own: `gw:<host>` for a
+	// gateway every team's key reaches (GatewayCapacitySubject). Written
+	// only through RunCredStamp, with CredFingerprints, as one unit, and
+	// counted by the same predicate (SpendsCredential), so the run-admission
+	// ledger (CredSlotStore) holds, adopts and evicts a subject's holders on
+	// the rules it applies to a key's. The ledger reads it as a set: the
+	// stores keep the order the stamp gives. No resolution stamps a subject
+	// yet (ADR-167 slice T2 does): until then the field is empty on every
+	// run and changes no count.
+	//
+	// A field of its own, never folded into CredFingerprints: the run
+	// snapshot, a usage wait's wall credentials and the credential walk
+	// read those as the identities of credentials, and a subject is none.
+	CapacitySubjects []string `json:"capacity_subjects,omitempty" bson:"capacity_subjects,omitempty"`
 	// CredentialTiers names which resolution tiers funded this run
 	// (CredentialTier* above), sorted and deduplicated. Stamped with
 	// CredFingerprints, as one unit, at launch and at every resume —

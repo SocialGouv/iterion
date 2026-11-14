@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +101,9 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
 	t.Run("CredSlotLedger", func(t *testing.T) { testCredSlotLedger(t, factory(t)) })
+	t.Run("CapacitySubjectHolder", func(t *testing.T) { testCapacitySubjectHolder(t, factory(t)) })
+	t.Run("CapacitySubjectIsNotAFingerprint", func(t *testing.T) { testCapacitySubjectIsNotAFingerprint(t, factory(t)) })
+	t.Run("CapacitySubjectStampRoundTrip", func(t *testing.T) { testCapacitySubjectStampRoundTrip(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
@@ -5066,5 +5070,215 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	}
 	if _, err := ledger.ReserveCredSlot(ctx, "", "slot_a", 1); err == nil {
 		t.Fatal("ReserveCredSlot with no fingerprint must refuse")
+	}
+}
+
+// capacityStampedRun creates a run in status and stamps it as a credential
+// resolution would (RunCredStamp): what the capacity-subject rows below start
+// from.
+func capacityStampedRun(t *testing.T, s store.RunStore, id string, status store.RunStatus, stamp store.RunCredStamp) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun %s: %v", id, err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	r.Status = status
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun %s: %v", id, err)
+	}
+	if err := s.SetRunCredStamp(ctx, id, stamp); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+}
+
+// testCapacitySubjectHolder exercises a capacity subject — a shared gateway's
+// `gw:<host>` (store.GatewayCapacitySubject), stamped on
+// Run.CapacitySubjects and on no credential fingerprint — as a holder of the
+// run-admission ledger: counted, adopted and kept by the one predicate a
+// fingerprint is (store.Run.SpendsCredential). Run on both twins, the rows
+// read the Mongo filter's subject arm on the production store and the
+// predicate's on the filesystem one, so each half has a witness of its own.
+func testCapacitySubjectHolder(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	ledger := store.AsCredSlotStore(s)
+	if ledger == nil {
+		t.Fatal("the store must host the run-admission ledger (store.CredSlotStore)")
+	}
+	subject := store.GatewayCapacitySubject("litellm.example")
+	onGateway := store.RunCredStamp{CapacitySubjects: []string{subject}}
+
+	capacityStampedRun(t, s, "gw_alive", store.RunStatusQueued, onGateway)
+	// Paused, the run spends nothing while it waits, and holds nothing.
+	capacityStampedRun(t, s, "gw_paused", store.RunStatusPausedOperator, onGateway)
+	// Another gateway's run is another subject's holder.
+	capacityStampedRun(t, s, "gw_elsewhere", store.RunStatusRunning,
+		store.RunCredStamp{CapacitySubjects: []string{store.GatewayCapacitySubject("other.example")}})
+
+	if n, err := s.CountAliveRunsWithCredFingerprint(ctx, subject, ""); err != nil || n != 1 {
+		t.Fatalf("alive(%s) = %d/%v, want 1 — the queued run stamped with the subject alone holds it; the paused one and the other gateway's do not", subject, n, err)
+	}
+	if n, err := s.CountAliveRunsWithCredFingerprint(ctx, subject, "gw_alive"); err != nil || n != 0 {
+		t.Fatalf("alive(%s, excluding gw_alive) = %d/%v, want 0", subject, n, err)
+	}
+	// The ledger matches a subject exactly, on both twins: the predicate and
+	// the Mongo filter agree on every other spelling holding nothing. Folding
+	// a host's spellings is GatewayCapacitySubject's job, done once, before a
+	// subject is stamped or asked for.
+	for _, other := range []string{"GW:LITELLM.EXAMPLE", "gw:LiteLLM.example", "litellm.example", "gw:", "gw:litellm.example."} {
+		if n, err := s.CountAliveRunsWithCredFingerprint(ctx, other, ""); err != nil || n != 0 {
+			t.Fatalf("alive(%q) = %d/%v, want 0 — only %q is the subject the run holds", other, n, err, subject)
+		}
+	}
+
+	// The admission of another run on a gateway of one place: the alive run,
+	// which no admission ever named, is adopted, so the newcomer is refused
+	// with it as the holder.
+	capacityStampedRun(t, s, "gw_newcomer", store.RunStatusPausedOperator, onGateway)
+	if adm, err := ledger.ReserveCredSlot(ctx, subject, "gw_newcomer", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer on a gateway one alive run holds: %+v %v, want refused with that one holder adopted", adm, err)
+	}
+	// The refusal's reconcile read the holder against its document and kept
+	// it: still spending the subject, it is re-admitted in place, and the
+	// newcomer is refused again. Judged stale, it would have been evicted and
+	// its place handed to the newcomer while it runs.
+	if adm, err := ledger.ReserveCredSlot(ctx, subject, "gw_alive", 1); err != nil || !adm.Granted || adm.Held != 1 || adm.At.IsZero() {
+		t.Fatalf("the adopted holder's re-admission: %+v %v, want granted in place, alone, on its entry's instant", adm, err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, subject, "gw_newcomer", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("the newcomer asked again: %+v %v, want refused while the holder still spends the subject", adm, err)
+	}
+	// The holder ends: the next refusal's reconcile evicts it, and the
+	// newcomer takes the place.
+	r, err := s.LoadRun(ctx, "gw_alive")
+	if err != nil {
+		t.Fatalf("LoadRun gw_alive: %v", err)
+	}
+	r.Status = store.RunStatusFinished
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun gw_alive: %v", err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, subject, "gw_newcomer", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the holder finished: %+v %v, want the newcomer admitted alone", adm, err)
+	}
+}
+
+// testCapacitySubjectIsNotAFingerprint pins that a capacity subject rides the
+// stamp beside the credential fingerprints and never among them: the run
+// snapshot, a usage wait's wall credentials and the credential walk read
+// Run.CredFingerprints as the identities of credentials, and `gw:<host>` is
+// none. Each stamp is counted under its own name.
+func testCapacitySubjectIsNotAFingerprint(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const (
+		id = "gw_keyed"
+		fp = "fp-team-gateway-key"
+	)
+	subject := store.GatewayCapacitySubject("litellm.example")
+	capacityStampedRun(t, s, id, store.RunStatusRunning,
+		store.RunCredStamp{Fingerprints: []string{fp}, CapacitySubjects: []string{subject}})
+
+	got, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	if !slices.Equal(got.CredFingerprints, []string{fp}) {
+		t.Fatalf("CredFingerprints = %v, want [%s] alone — a capacity subject is no credential's identity", got.CredFingerprints, fp)
+	}
+	if !slices.Equal(got.CapacitySubjects, []string{subject}) {
+		t.Fatalf("CapacitySubjects = %v, want [%s]", got.CapacitySubjects, subject)
+	}
+	for _, name := range []string{fp, subject} {
+		if n, err := s.CountAliveRunsWithCredFingerprint(ctx, name, ""); err != nil || n != 1 {
+			t.Fatalf("alive(%s) = %d/%v, want 1 — the run holds its key and its gateway, each once", name, n, err)
+		}
+	}
+
+	// The paid arming of a usage wait copies the credentials the attempt
+	// sealed into the wait (RunRetryState.WallCredentials): the credential
+	// window the sweeper probes. A subject there would name a window no
+	// provider has.
+	t.Run("WallCredentials", func(t *testing.T) {
+		retry := store.AsRunRetryStore(s)
+		if retry == nil {
+			t.Skip("backend arms no durable retry (store.RunRetryStore): no usage wait carries wall credentials")
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = store.RunStatusFailedResumable
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		wall := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
+		if scheduled, _, err := retry.ScheduleRunRetry(ctx, id, wall.Add(time.Minute), wall,
+			store.RetryReasonUsageWindow, string(store.FailureUsageLimitBlocked), 5); err != nil || !scheduled {
+			t.Fatalf("ScheduleRunRetry = (%v, %v), want armed", scheduled, err)
+		}
+		armed, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if armed.RetryState == nil || !slices.Equal(armed.RetryState.WallCredentials, []string{fp}) {
+			t.Fatalf("wall credentials = %+v, want [%s] alone — the wait's window is the key's, never the gateway subject's", armed.RetryState, fp)
+		}
+	})
+}
+
+// testCapacitySubjectStampRoundTrip pins both write paths a resolution's
+// subjects take: the launch's whole-document write (the stamp applied to the
+// in-memory run, then SaveRun) and the resume's granular re-stamp
+// (SetRunCredStamp), which replaces them wholesale — a resume whose key moved
+// to another gateway holds that gateway, not both — and clears them when the
+// re-resolution sealed no gateway key.
+func testCapacitySubjectStampRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const id = "gw_stamp"
+	first := store.GatewayCapacitySubject("a.example")
+	second := store.GatewayCapacitySubject("b.example")
+	moved := store.GatewayCapacitySubject("c.example")
+
+	if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+		t.Fatalf("CreateRun %s: %v", id, err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	store.RunCredStamp{Fingerprints: []string{"fp-launch"}, CapacitySubjects: []string{first, second}}.Apply(r)
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun %s: %v", id, err)
+	}
+	if got, err := s.LoadRun(ctx, id); err != nil || !slices.Equal(got.CapacitySubjects, []string{first, second}) {
+		t.Fatalf("after the launch's write: CapacitySubjects = %v (%v), want [%s %s]", got.CapacitySubjects, err, first, second)
+	}
+
+	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}, CapacitySubjects: []string{moved}}); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+	if got, err := s.LoadRun(ctx, id); err != nil || !slices.Equal(got.CapacitySubjects, []string{moved}) {
+		t.Fatalf("after the resume's re-stamp: CapacitySubjects = %v (%v), want [%s] alone — a re-stamp replaces, never appends", got.CapacitySubjects, err, moved)
+	}
+	for name, want := range map[string]int{first: 0, second: 0, moved: 1} {
+		if n, err := s.CountAliveRunsWithCredFingerprint(ctx, name, ""); err != nil || n != want {
+			t.Fatalf("alive(%s) after the re-stamp = %d/%v, want %d", name, n, err, want)
+		}
+	}
+
+	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}}); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+	if got, err := s.LoadRun(ctx, id); err != nil || len(got.CapacitySubjects) != 0 {
+		t.Fatalf("after a re-stamp that sealed no gateway key: CapacitySubjects = %v (%v), want none", got.CapacitySubjects, err)
+	}
+	if n, err := s.CountAliveRunsWithCredFingerprint(ctx, moved, ""); err != nil || n != 0 {
+		t.Fatalf("alive(%s) after the subjects were cleared = %d/%v, want 0", moved, n, err)
 	}
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -143,5 +144,157 @@ func TestCredSlotHolderStale(t *testing.T) {
 				t.Fatalf("stale=%v, want %v", got, c.stale)
 			}
 		})
+	}
+}
+
+// A gateway's capacity subject is one row whatever the spelling of the host
+// a team's key carries: hostnames compare without case, and two keys on one
+// gateway written `LiteLLM.example` and `litellm.example` must hold one
+// subject's places, not two. No host names no subject — never a bare `gw:`
+// row every unresolved gateway would share.
+func TestGatewayCapacitySubject(t *testing.T) {
+	for _, c := range []struct{ host, want string }{
+		{"litellm.example", "gw:litellm.example"},
+		{"LiteLLM.Example", "gw:litellm.example"},
+		// The absolute spelling dials the same name.
+		{"litellm.example.", "gw:litellm.example"},
+		{"LiteLLM.Example.", "gw:litellm.example"},
+		// An internationalised name and its punycode are one dial name.
+		{"bücher.example", "gw:xn--bcher-kva.example"},
+		{"xn--bcher-kva.example", "gw:xn--bcher-kva.example"},
+		{"BÜCHER.example", "gw:xn--bcher-kva.example"},
+		{"10.0.0.7", "gw:10.0.0.7"},
+		// Address literals fold to their canonical text.
+		{"2001:db8::1", "gw:2001:db8::1"},
+		{"2001:DB8:0:0:0:0:0:1", "gw:2001:db8::1"},
+		{"::ffff:10.0.0.7", "gw:10.0.0.7"},
+		// No dial name, no subject.
+		{"", ""},
+		{".", ""},
+		{"bü\u00a0cher.example", ""},
+	} {
+		if got := GatewayCapacitySubject(c.host); got != c.want {
+			t.Errorf("GatewayCapacitySubject(%q) = %q, want %q", c.host, got, c.want)
+		}
+	}
+}
+
+// Every field of RunCredStamp reaches the run document through Apply, the
+// writer the launch path and the filesystem twin of SetRunCredStamp share: a
+// field added to the stamp and forgotten there would stamp resumes on Mongo
+// and leave every launch unstamped. Each field is set alone and must land in
+// its own destination and nowhere else — measured against what Apply writes
+// for an empty stamp, so an unconditional write cannot hide a dropped field
+// and two crossed fields fail both rows.
+func TestRunCredStampApplyWritesEveryField(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	dest := map[string]string{
+		"Fingerprints":     "CredFingerprints",
+		"CapacitySubjects": "CapacitySubjects",
+		"Tiers":            "CredentialTiers",
+		"SkippedReopensAt": "SkippedCredReopensAt",
+	}
+	var base Run
+	RunCredStamp{}.Apply(&base)
+	typ := reflect.TypeOf(RunCredStamp{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		t.Run(f.Name, func(t *testing.T) {
+			to, ok := dest[f.Name]
+			if !ok {
+				t.Fatalf("RunCredStamp.%s has no destination in this guard — name the Run field Apply writes it to", f.Name)
+			}
+			var stamp RunCredStamp
+			v := reflect.ValueOf(&stamp).Elem().Field(i)
+			switch v.Interface().(type) {
+			case []string:
+				v.Set(reflect.ValueOf([]string{"value-" + f.Name}))
+			case *time.Time:
+				v.Set(reflect.ValueOf(&at))
+			default:
+				t.Fatalf("RunCredStamp.%s has type %s, which this guard does not fill — teach it", f.Name, f.Type)
+			}
+			var r Run
+			stamp.Apply(&r)
+			got := reflect.ValueOf(&r).Elem().FieldByName(to)
+			if !got.IsValid() {
+				t.Fatalf("RunCredStamp.%s: this guard names Run.%s, which does not exist — fix the destination", f.Name, to)
+			}
+			if !reflect.DeepEqual(got.Interface(), v.Interface()) {
+				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, want %v", f.Name, to, got.Interface(), v.Interface())
+			}
+			// Put the destination back to the empty stamp's value: anything
+			// left differing is a write the field should not have made.
+			got.Set(reflect.ValueOf(&base).Elem().FieldByName(to))
+			if !reflect.DeepEqual(r, base) {
+				t.Fatalf("RunCredStamp.%s reached a Run field other than %s", f.Name, to)
+			}
+		})
+	}
+	// A re-stamp is a fresh attempt: the model-idle marker goes.
+	r := Run{LLMIdleSince: &at}
+	RunCredStamp{}.Apply(&r)
+	if r.LLMIdleSince != nil {
+		t.Fatal("Apply kept LLMIdleSince — both twins clear it on a stamp")
+	}
+}
+
+// The stamp as a launch writes it — every field at once, several values each
+// — over a zero run and over a run that already carries another resolution's
+// stamp, then an empty stamp over that run. Field by field alone (above), a
+// write conditional on another field, an append, a truncation or a skipped
+// clear all pass; here each fails its own destination.
+func TestRunCredStampApplyReplacesAndClearsTheWholeUnit(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	old := time.Unix(1_600_000_000, 0).UTC()
+	dest := map[string]string{
+		"Fingerprints":     "CredFingerprints",
+		"CapacitySubjects": "CapacitySubjects",
+		"Tiers":            "CredentialTiers",
+		"SkippedReopensAt": "SkippedCredReopensAt",
+	}
+	full := RunCredStamp{
+		Fingerprints:     []string{"fp-a", "fp-b"},
+		CapacitySubjects: []string{"gw:a.example", "gw:b.example"},
+		Tiers:            []string{"tier-a", "tier-b"},
+		SkippedReopensAt: &at,
+	}
+	prev := Run{
+		CredFingerprints:     []string{"fp-old"},
+		CapacitySubjects:     []string{"gw:old.example"},
+		CredentialTiers:      []string{"tier-old"},
+		SkippedCredReopensAt: &old,
+		LLMIdleSince:         &old,
+	}
+	var empty Run
+	RunCredStamp{}.Apply(&empty)
+	for _, start := range []struct {
+		name string
+		run  Run
+	}{{"zero run", Run{}}, {"stamped run", prev}} {
+		r := start.run
+		full.Apply(&r)
+		sv := reflect.ValueOf(full)
+		for i := 0; i < sv.NumField(); i++ {
+			f := sv.Type().Field(i)
+			to, ok := dest[f.Name]
+			if !ok {
+				t.Fatalf("RunCredStamp.%s has no destination in this guard", f.Name)
+			}
+			got := reflect.ValueOf(r).FieldByName(to)
+			if !got.IsValid() {
+				t.Fatalf("this guard names Run.%s, which does not exist", to)
+			}
+			if !reflect.DeepEqual(got.Interface(), sv.Field(i).Interface()) {
+				t.Errorf("%s, whole stamp: Run.%s = %v, want %v", start.name, to, got.Interface(), sv.Field(i).Interface())
+			}
+		}
+		if r.LLMIdleSince != nil {
+			t.Errorf("%s, whole stamp: LLMIdleSince kept", start.name)
+		}
+		RunCredStamp{}.Apply(&r)
+		if !reflect.DeepEqual(r, empty) {
+			t.Errorf("%s: an empty stamp over a stamped run left %+v, want every destination cleared", start.name, r)
+		}
 	}
 }

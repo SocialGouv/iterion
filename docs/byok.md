@@ -139,7 +139,8 @@ the cap:
   is persisted or published, the publisher reserves one slot per capped key
   the run's stamp names on the **credential-slot ledger**
   (`store.CredSlotStore`: Mongo collection `cred_slots`, one row per
-  fingerprint listing the runs that hold a slot; an in-memory twin on the
+  fingerprint — or per shared capacity subject, a gateway's `gw:<host>`
+  (ADR-167) — listing the runs that hold a slot; an in-memory twin on the
   filesystem store). The reservation is one conditional write — add the run
   while the row has room — so of N concurrent admissions on a key with K
   free slots exactly K succeed, whatever replica each ran on. A pinned key,
