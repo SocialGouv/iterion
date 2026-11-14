@@ -2071,7 +2071,18 @@ never crosses either — decided launcher-side for ever by #2802:
 `computer_use` drives the launcher host's display, a sandboxed node has
 none, and the tool is refused for a sandboxed node rather than proxied
 ([claw_vendored_tool_env_test.go](../pkg/backend/model/claw_vendored_tool_env_test.go)
-derives and pins the classification). The retry budget the launcher
+derives and pins the classification). Nor do the names claw's tools read
+from the environment of the process they run in (#3256): the locations
+claw's credential read guard protects (`KUBECONFIG`, `DOCKER_CONFIG`,
+`GH_CONFIG_DIR`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_GLOBALCONFIG`,
+`AWS_SHARED_CREDENTIALS_FILE`), `TMPDIR`, `XDG_CACHE_HOME`, `PATH` and `PWD`.
+Each names a place on the host that sets it, so with a container driver the
+container's process reads its own — from its image, a `containerEnv` key, or a
+project `.env` overlay; the engine never copies the launcher's value (a
+`containerEnv` value written as `${localEnv:…}` expands from the launcher, by
+the operator's choice). `HOME` is the runner home below. The noop driver runs
+the runner on the host: `HOME` is still the runner home and `PWD` the
+workspace, the other names the host's own. The retry budget the launcher
 resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
 task envelope instead: it bounds billed attempts, so the container's own
 environment never sets it — a runner image older than that field keeps its built-in

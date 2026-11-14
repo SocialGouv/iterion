@@ -13,11 +13,13 @@ import (
 	"go/types"
 	"hash/fnv"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The in-container claw runner (`iterion __claw-runner`) is this same binary:
@@ -2141,4 +2144,129 @@ func funcLabelOf(info *types.Info, id *ast.Ident) string {
 		return funcLabel(fn)
 	}
 	return ""
+}
+
+// TestTheRunnerReceivesNoRunnerOwnNameFromTheLauncher holds the runner-own
+// class to the env map the sandbox driver is handed for the runner (opts.Env)
+// at the end of the full dispatch through executeViaSandboxRunner, on a
+// container driver — not to one of the maps it is assembled from: no
+// runner-own name may reach it, whatever its value (a copy of the
+// launcher's, or a location derived from its host — the launcher's HOME holds
+// real credential files, and the names point at files that exist), and HOME
+// is exactly the runner home the engine sets. Every name is set on the
+// launcher both ways an env road reads it: the process and the ctx-carried
+// env (PATH on the ctx alone — the dispatch itself spawns). The cases drive
+// the roads the dispatch branches on: a trusted and an untrusted task, the
+// host's codex forfait, the run's Claude forfait.
+func TestTheRunnerReceivesNoRunnerOwnNameFromTheLauncher(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		forfait       bool
+		untrusted     bool
+		claudeForfait bool
+	}{
+		{name: "plain"},
+		{name: "host codex forfait", forfait: true},
+		{name: "untrusted", untrusted: true},
+		{name: "run claude forfait", claudeForfait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operatorEnv(t)
+			launcher := carriedEnv{}
+			if tc.forfait {
+				launcher["CODEX_HOME"] = hostCodexHome(t, hostForfaitBlob)
+				for k, v := range map[string]string{"ITERION_OPENAI_USE_OAUTH": "1", "OPENAI_API_KEY": "sk-env", "OPENAI_BASE_URL": ""} {
+					t.Setenv(k, v)
+					launcher[k] = v
+				}
+			}
+			// Directories the test itself needs exist before TMPDIR and HOME move.
+			box := newDeliverySandbox(t)
+			workDir := t.TempDir()
+			home := t.TempDir()
+			real := map[string]string{"HOME": home, "TMPDIR": t.TempDir()}
+			// Real credential files, under HOME and where the names point: a
+			// road that only copies a location when the file exists fires.
+			files := t.TempDir()
+			for name, rel := range map[string]string{
+				"KUBECONFIG": "kubeconfig", "NPM_CONFIG_USERCONFIG": "npmrc", "NPM_CONFIG_GLOBALCONFIG": "npmrc-global",
+				"AWS_SHARED_CREDENTIALS_FILE": "aws-credentials", "DOCKER_CONFIG": "docker", "GH_CONFIG_DIR": "gh",
+				"XDG_CACHE_HOME": "cache", "PWD": "pwd",
+			} {
+				path := filepath.Join(files, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				real[name] = path
+			}
+			for _, rel := range []string{".kube/config", ".docker/config.json", ".config/gh/hosts.yml", ".npmrc", ".aws/credentials"} {
+				path := filepath.Join(home, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, decision := range vendoredToolEnvDecision {
+				if decision.class != toolClassRunnerOwn {
+					continue
+				}
+				value := "/launcher/" + strings.ToLower(name)
+				if dir, ok := real[name]; ok {
+					value = dir
+				}
+				launcher[name] = value
+				if name != "PATH" {
+					t.Setenv(name, value)
+				}
+			}
+			if _, ok := launcher["HOME"]; !ok {
+				t.Fatal("no runner-own HOME in the classification: the class lost its anchor")
+			}
+			ctx := withCarriedEnv(context.Background(), launcher)
+			task := delegate.Task{NodeID: "entry", Model: "openai/gpt-6", WorkDir: workDir, Sandbox: box}
+			if tc.untrusted {
+				task.WorkspaceTrust = store.RunTrustFork
+			}
+			if tc.claudeForfait {
+				ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+					OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
+				})
+				task.Model = "anthropic/claude-opus-5-5"
+			}
+			_, dispatchErr := newTestClawBackend().executeViaSandboxRunner(ctx, task)
+			if len(box.runEnvs) != 1 {
+				t.Fatalf("the dispatch started %d runners, want one (dispatch error: %v)", len(box.runEnvs), dispatchErr)
+			}
+			received := box.runEnvs[0]
+			if tc.forfait && received["CODEX_HOME"] == "" {
+				t.Fatal("no CODEX_HOME reached the runner: the forfait road this case drives was not taken")
+			}
+			if tc.claudeForfait && received["CLAUDE_CONFIG_DIR"] == "" {
+				t.Fatal("no CLAUDE_CONFIG_DIR reached the runner: the Claude forfait road this case drives was not taken")
+			}
+			if _, ok := RunTrustEnvEntry(task.WorkspaceTrust); ok != tc.untrusted {
+				t.Fatalf("task trust %q: the untrusted road this case drives is not the one taken", task.WorkspaceTrust)
+			}
+			for _, name := range slices.Sorted(maps.Keys(launcher)) {
+				if vendoredToolEnvDecision[name].class != toolClassRunnerOwn {
+					continue
+				}
+				got, ok := received[name]
+				if name == "HOME" {
+					if want := clawRunnerHome(ctx, task); got != want {
+						t.Errorf("the runner received HOME=%q, want the runner home %q (clawRunnerHome)", got, want)
+					}
+					continue
+				}
+				if ok {
+					t.Errorf("the runner received %s=%q: it is runner-own — the container's process must read its own", name, got)
+				}
+			}
+		})
+	}
 }
