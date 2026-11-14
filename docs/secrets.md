@@ -133,7 +133,8 @@ One narrowing of that class: the credential a server mints for a run
 (`forge_publish_token`) is **env-only**. A `{{vars.forge_publish_token}}` the
 workflow's AUTHOR wrote in a tool node's `command:` or `postcondition:`
 renders as the placeholder, and the bearer reaches the command through the
-child process's environment — never inlined into the command line, which any
+child process's environment — only for that reference: the same placeholder
+arriving through data stays text — never inlined into the command line, which any
 co-resident process reads from `/proc/<pid>/cmdline` for the whole life of the
 command and which Kubernetes copies into the `pods/exec` audit log. The
 distinction is provenance, not sink: a command a MODEL proposed (the
@@ -142,7 +143,8 @@ script body or an egress request. A `script:` body is a program in
 its own language, which iterion cannot rewrite a reference into a variable
 read for: there the AUTHOR names the variable — the placeholder doubles as the
 environment-variable name — and the engine hands the value to the interpreter
-of a body that names it, instead of writing the bearer into the script file
+of a body whose author's own text names it (a placeholder that data renders
+into the body names no variable), instead of writing the bearer into the script file
 (`pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")`,
 as `bots/dep-update-guard` reads it). A `{{vars.forge_publish_token}}` written
 in a `script:` body anyway is REFUSED at run time — before the script's temp
@@ -230,9 +232,34 @@ at the sinks the declaration grants ([sinks](#sinks--where-a-declared-secret-may
 Materialization happens immediately before exec, keeping the placeholder
 form in every hook/log:
 
-- **claw** `tool` nodes (shell + script) materialise the author's own body
-  through the `command` sink's materialisers (`MaterializeAuthoredShellEnv`,
-  `MaterializeShell`), an HTTP action's `params:` through the `params` sink
+- **claw** `tool` nodes (shell + script) materialise the author's own
+  references through the `command` sink's materialisers
+  (`MaterializeAuthoredShellEnv`, `MaterializeShell`): each `{{secrets.X}}`
+  the author wrote renders to a marker of that one rendering, which no data
+  can spell, and only the markers resolve — a placeholder that arrives through
+  data stays text whatever its secret grants ([ADR-146, amendment of
+  2026-11-14](adr/146-secret-boundary-v2-grants-and-sinks.md)); one the
+  author typed as text is inert too, and `C340` says so. In a `script:` the
+  value is written so that no quoting the author put around the reference
+  — a single-quoted shell word, a JSON document in single quotes, a python
+  or node string, an f-string, a template literal — can be closed or
+  interpolated by it, and it runs as no code. A shell script reads it from
+  a variable the engine names after that one rendering (the value never in
+  the script's text, its name spelled by no data), so it does not arrive
+  where the shell expands nothing — single quotes, a heredoc whose
+  delimiter is quoted: `C342` warns there, and the reference belongs
+  outside the quotes (`'{"t": "'{{secrets.X}}'"}'`), in an unquoted
+  heredoc, or in its raw form. A js or py script receives a JSON string
+  literal with its quote, backquote, `$`, brace and slash characters
+  written as `\u` escapes, the author's own double quotes read as that one
+  literal. Only the expression position is exact: inside the author's
+  quotes the language cooks the literal once, so an author who parses that
+  text again (JSON in a string) reads whatever structure the value spells. A
+  value that form cannot carry as written — a NUL byte in a shell script,
+  invalid UTF-8 in js or py — is refused at the node, naming the reference.
+  A secret name ending in `_redacted` is refused (`C341`): the engine
+  writes that spelling where another secret must resolve nowhere. An HTTP
+  action's `params:` resolves the same way, through the `params` sink
   (a native `board.*` action keeps the placeholder: the store files the
   card and shows it, as with the board MCP tools below), and the in-process
   tool loop (`executeToolsDirect`) calls `Guard.Materialize` — the `agent`
@@ -483,7 +510,7 @@ the boundary is the pair `(secret, sink)`, not the secret alone.
 |---|---|---|
 | `prompt` | a prompt body renders the reference as the placeholder: the model HOLDS the placeholder from then on | compile time, on the reference (C323) |
 | `agent` | the placeholder a model emits in its own tool input is materialised (claude_code's `PreToolUse` hook, claw's in-process tool loop, a self-repair command a model proposed) | run time, by the guard (`Materialize`) |
-| `command` | a tool node's authored `command:`, `postcondition:` or `script:` is materialised before exec | compile time, on the reference (C323); run time, by the guard |
+| `command` | a tool node's authored `command:`, `postcondition:` or `script:` is materialised before exec — the author's own references only: a placeholder that arrives through data stays text, whatever the grant | compile time, on the reference (C323); run time, by the guard |
 | `params` | a tool action's `params:` value is materialised before the vendor call; a native action (`board.*`) makes none and keeps the placeholder | compile time, on the reference (C323); run time, by the guard |
 | `file` | the secret is written as a file the run mounts (`as: file`) | compile time, on the declaration (C322) |
 | `egress` | the placeholder is substituted on the wire toward `hosts:` by the sandbox's inspecting proxy (Layer 2) | run time, by the egress rewriter |
@@ -507,12 +534,23 @@ container: the agent's `curl` carries the placeholder, the proxy substitutes
 it toward the approved host, and nothing in the workspace ever holds the
 value — a cloud run's clone credential needs the `file` sink and refuses the
 run without it, below. `sinks: [command]` keeps a password off the model's
-path entirely: the placeholder a model would emit is left as written, and
-one a model wrote into DATA — an output a prompt or an edge carries into a
-tool body through `{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused
-before the body's materialiser scans it (`DefuseUngranted`: the agent
-sink's, whatever body it lands in). Only the author's own `{{secrets.X}}`
-resolves under `command` and `params`. `sinks: []` reads as no list — every
+path entirely: the placeholder a model would emit is left as written. One a
+model wrote into DATA — an output a prompt or an edge carries into a tool body
+through `{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is resolved by no
+body's materialiser, whatever its secret grants: only the author's own
+`{{secrets.X}}` resolves under `command` and `params`, each rendered to a
+marker of that one rendering. For a secret kept off the agent it is also
+defused in the rendered text (`DefuseUngranted`), so what the body sends on
+carries a token the inspecting proxy does not substitute; with the default
+grant the proxy substitutes it toward the secret's hosts, as it would the
+agent's own call. A "model writes, tool runs" flow goes through an agent
+node, whose own tool call is the `agent` sink. The recovery rungs of a
+verified tool node are such model calls, so a data placeholder never
+reaches them live: the self-repair model reads the failed command and its
+output with every placeholder that is no reference defused, and the recovery
+agent receives the node's input — values and keys — the same way; echoed
+back, it resolves nothing, while the author's own references, shown live,
+still do. `sinks: []` reads as no list — every
 sink — since the printers and the JSON transport drop an empty list, and a
 meaning they could not keep would change on the way.
 

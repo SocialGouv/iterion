@@ -94,5 +94,34 @@ func PlaceholderFor(name string) string {
 	if clean == "" {
 		clean = "value"
 	}
-	return "__ITERION_SECRET_" + clean + "__"
+	return placeholderPrefix + clean + "__"
+}
+
+const placeholderPrefix = "__ITERION_SECRET_"
+
+// redactedSuffix closes the redact-only form of a placeholder — the token
+// that resolves nowhere, which the guard writes in a placeholder's place
+// where it must not resolve (secretguard.DefuseAll, DefuseUngranted).
+const redactedSuffix = "_redacted"
+
+// RedactedFormOf is the redact-only form of placeholder ph:
+// `__ITERION_SECRET_<name>_redacted__`, the shape every scrubber already
+// recognises.
+func RedactedFormOf(ph string) string {
+	return strings.TrimSuffix(ph, "__") + redactedSuffix + "__"
+}
+
+// IsRedactedForm reports whether ph spells the redact-only form of some
+// other placeholder — `__ITERION_SECRET_pw_redacted__` is pw's. A secret
+// whose own placeholder is spelled so is reserved: the guard's defuse would
+// write ITS live placeholder in pw's place, and the token meant to resolve
+// nowhere would resolve to its value. The compiler refuses such a name
+// (C341) and the guard never makes such a placeholder resolvable.
+func IsRedactedForm(ph string) bool {
+	core, ok := strings.CutPrefix(ph, placeholderPrefix)
+	if !ok {
+		return strings.HasSuffix(ph, redactedSuffix+"__")
+	}
+	core = strings.TrimSuffix(core, "__")
+	return strings.HasSuffix(core, redactedSuffix) && core != redactedSuffix
 }

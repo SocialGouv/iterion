@@ -32,9 +32,11 @@ package secretguard
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -76,8 +78,10 @@ import (
 // MaterializeShellEnv), `egress` gates the substitution on the wire
 // (MaterializeForHostWithin); `command` and `params` gate the authored
 // bodies the executor materialises (MaterializeShell,
-// MaterializeAuthoredShellEnv, MaterializeFor). A placeholder of a secret
-// that does not grant the sink is left as written — never resolved there.
+// MaterializeAuthoredShellEnv, MaterializeFor), each called on the text of
+// ONE reference the author wrote, never on a rendered body. A placeholder of
+// a secret that does not grant the sink is left as written — never resolved
+// there.
 type Secret struct {
 	Name        string
 	Value       string
@@ -215,9 +219,11 @@ func placeholderOf(s Secret) string {
 // redactOnlyPlaceholder distinguishes the placeholder of a value that
 // resolves nowhere from the identically-named one that resolves. It keeps the
 // __ITERION_SECRET_…__ shape every downstream scrubber already recognises
-// (pkg/errtrack, pkg/knowledge).
+// (pkg/errtrack, pkg/knowledge). No resolvable placeholder is spelled so: a
+// secret whose own placeholder would be is registered redact-only
+// (buildGuardState), and the compiler refuses its name (C341).
 func redactOnlyPlaceholder(ph string) string {
-	return strings.TrimSuffix(ph, "__") + "_redacted__"
+	return secretsink.RedactedFormOf(ph)
 }
 
 // New builds a Guard for the given secrets. Secrets whose value is
@@ -266,6 +272,19 @@ func buildGuardState(secrets []Secret, cfg Config) *guardState {
 	// after every whole value so they never take another secret's.
 	type literal struct{ enc, ph string }
 	var trimmed []literal
+	// A placeholder spelled as another's redact-only form is reserved: were
+	// it resolvable, the defuse that writes that form in the other's place
+	// would hand out this secret's value instead of a token that resolves
+	// nowhere. The compiler refuses such a name (C341); a registration that
+	// still carries one is scrubbed and never resolves.
+	reserved := make([]Secret, len(secrets))
+	for i, s := range secrets {
+		if !s.RedactOnly && secretsink.IsRedactedForm(placeholderOf(s)) {
+			s.RedactOnly, s.EnvOnly = true, false
+		}
+		reserved[i] = s
+	}
+	secrets = reserved
 	for _, s := range secrets {
 		if !s.RedactOnly && len([]rune(s.Value)) >= cfg.MinLen {
 			resolvable[placeholderOf(s)] = true
@@ -648,19 +667,128 @@ func (g *Guard) MaterializesFor(sink string) bool {
 // It is the guard's answer to a placeholder that arrives through DATA — a
 // model's output a prompt or an edge carried into a tool body — rather than
 // through the author's own `{{secrets.X}}`: the text is model-authored, so
-// it is the agent sink's, whatever body it lands in. Nil-safe.
+// it is the agent sink's beyond the body (a body's own materialiser never
+// resolves it: it resolves only the author's references), and the egress
+// proxy would substitute it in whatever the body sends. Nil-safe.
 func (g *Guard) DefuseUngranted(sink, s string) string {
 	st := g.load()
 	if st == nil || s == "" || len(st.placeholderSinks) == 0 {
 		return s
 	}
+	var phs []string
 	for ph := range st.placeholderValue {
-		if st.resolvesAt(ph, sink) || !strings.Contains(s, ph) {
-			continue
+		if !st.resolvesAt(ph, sink) {
+			phs = append(phs, ph)
 		}
-		s = strings.ReplaceAll(s, ph, redactOnlyPlaceholder(ph))
+	}
+	return defuse(s, phs)
+}
+
+// defuse rewrites, in s, every occurrence of the placeholders phs into its
+// redact-only form, all placeholders at once in each pass, so the answer
+// does not depend on the order they are visited in; the longer placeholder
+// wins where two start at one position.
+//
+// One pass is not enough. A pass reads left to right without overlap, and
+// a redact-only form ends in the same `__` the next placeholder may start
+// with: in `__ITERION_SECRET_x__ITERION_SECRET_y__` the pass rewrites x
+// and skips y, which shared x's closing `__`, and y stands whole again
+// after x's form. So the pass repeats until the text no longer changes.
+// It ends: a pass that changes the text closes at least one `__` with
+// `_redacted__`, which no live placeholder ends with (the spelling is
+// reserved), and a rewrite adds no `__` — so there are at most as many
+// changing passes as the text holds `__`.
+func defuse(s string, phs []string) string {
+	if len(phs) == 0 || s == "" {
+		return s
+	}
+	slices.SortFunc(phs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(phs))
+	for _, ph := range phs {
+		pairs = append(pairs, ph, redactOnlyPlaceholder(ph))
+	}
+	r := strings.NewReplacer(pairs...)
+	for range strings.Count(s, "__") + 1 {
+		next := r.Replace(s)
+		if next == s {
+			break
+		}
+		s = next
 	}
 	return s
+}
+
+// DefuseAll rewrites, in s, the placeholder of every secret that resolves
+// anywhere — a declared value secret's, an env-only credential's — into its
+// redact-only form, whatever the grants. It is the answer for text a MODEL
+// will read and may hand back to a materialiser: the failed body a recovery
+// rung shows its model, the node input its recovery agent receives. Every
+// placeholder in such text arrived through data or was typed by the author
+// as text — the author's own references are marked, not placeholders, until
+// they are shown — and none is a reference: echoed back by the model, it
+// must resolve nowhere. Nil-safe.
+func (g *Guard) DefuseAll(s string) string {
+	st := g.load()
+	if st == nil || s == "" {
+		return s
+	}
+	phs := make([]string, 0, len(st.placeholderValue)+len(st.envOnlyValue))
+	for ph := range st.placeholderValue {
+		phs = append(phs, ph)
+	}
+	for ph := range st.envOnlyValue {
+		if _, dup := st.placeholderValue[ph]; !dup {
+			phs = append(phs, ph)
+		}
+	}
+	return defuse(s, phs)
+}
+
+// DefuseAllValue is DefuseAll over every string of v — leaves and map keys
+// alike, since a key is sent to a model as written — in a deep copy of the
+// shapes structured payloads use (RedactValue's); v itself is never mutated.
+// Keys are read in sorted order, so where two keys defuse to one (a live
+// placeholder beside its own redact-only form) the one that sorts last
+// holds the value, whatever the map's iteration order. Nil-safe.
+func (g *Guard) DefuseAllValue(v any) any {
+	if g == nil {
+		return v
+	}
+	switch t := v.(type) {
+	case string:
+		return g.DefuseAll(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			out[g.DefuseAll(k)] = g.DefuseAllValue(t[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAllValue(vv)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, vv := range t {
+			out[i], _ = g.DefuseAllValue(vv).(map[string]any)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, vv := range t {
+			out[i] = g.DefuseAll(vv)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // resolvesAt reports whether the secret behind ph is granted sink: every
@@ -723,6 +851,24 @@ func (g *Guard) Redact(s string) string {
 // placeholders. Safe on a nil Guard.
 func (g *Guard) Unmaterialize(s string) string {
 	return g.load().Unmaterialize(s)
+}
+
+// UnmaterializeEach is Unmaterialize with each known value written as what
+// to answers for its placeholder, instead of the placeholder itself: a
+// caller that must tell the placeholders it put back from the ones the text
+// already spelled — the self-repair prompt, which defuses the latter — maps
+// the values to marks of its own first. Safe on a nil Guard.
+func (g *Guard) UnmaterializeEach(s string, to func(ph string) string) string {
+	st := g.load()
+	if st == nil || s == "" || st.matcher == nil {
+		return s
+	}
+	return st.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		if ph, ok := st.literalPlaceholder[m]; ok {
+			return to(ph)
+		}
+		return m
+	})
 }
 
 // Unmaterialize is the state-level twin of Guard.Unmaterialize — nil-safe,
@@ -960,9 +1106,11 @@ func (g *Guard) MaterializeFor(sink, s string) string {
 // Escape each value for inside-single-quote use (each single quote becomes
 // close-quote + backslash-quote + reopen-quote) so the surrounding quotes stay
 // balanced and the value can never be interpreted as shell syntax.
-// Use this at every shell/tool-node exec site of an AUTHORED body (a tool
-// node's script: the `command` sink); the (raw) Materialize is for a model's
-// own tool input (the `agent` sink).
+// Use this on the text of ONE reference the author wrote in a body (a tool
+// node's script: the `command` sink) — the executor resolves each authored
+// reference through it, never the rendered body, where data spells
+// placeholders as well as the author does; the (raw) Materialize is for a
+// model's own tool input (the `agent` sink).
 func (g *Guard) MaterializeShell(s string) string {
 	st := g.load()
 	if st == nil || s == "" || len(st.placeholderValue) == 0 {
@@ -1055,18 +1203,24 @@ func (g *Guard) materializeShellEnvAt(sink, s string) (string, map[string]string
 	return s, env
 }
 
-// MaterializeAuthoredShellEnv is MaterializeShellEnv for text the workflow's
-// AUTHOR wrote — a tool node's own `command:`, its postcondition. It resolves
-// everything MaterializeShellEnv resolves, plus the env-only class: a
-// credential the server minted for this run, which reaches the command
-// through the child process's environment and nowhere else.
+// MaterializeAuthoredShellEnv is MaterializeShellEnv for a reference the
+// workflow's AUTHOR wrote — in a tool node's own `command:`, its
+// postcondition. It resolves everything MaterializeShellEnv resolves, at the
+// `command` sink, plus the env-only class: a credential the server minted for
+// this run, which reaches the command through the child process's environment
+// and nowhere else.
 //
 // The distinction is PROVENANCE, not sink. A command a MODEL proposed (the
 // self-repair rung) goes through plain MaterializeShellEnv, where an env-only
 // placeholder resolves to nothing — so a model that writes one, or copies one
 // out of the failed command it was shown, gets the placeholder and not the
 // grant. The plain method is the safe default every new call site inherits;
-// this one is chosen explicitly, for text no model can author.
+// this one is chosen explicitly, for text no model can author — which a
+// rendered body is NOT: data an edge or a launch var carries into it spells
+// placeholders as well as the author does. So s is the text of ONE authored
+// reference, in the form it stands in the body (the placeholder, quoted or
+// bare); the executor marks each such reference in its rendering and resolves
+// the marks through here, one at a time (pkg/backend/model, bodySecrets).
 //
 // An env-only placeholder is converted ONLY in its single-quoted form, with
 // no inline fallback: the whole point is that its value never enters an argv.
@@ -1102,7 +1256,9 @@ func (g *Guard) MaterializeAuthoredShellEnv(s string) (string, map[string]string
 // placeholder is that name (it is a valid POSIX environment-variable name by
 // construction, which is what MaterializeShellEnv already relies on). Only a
 // body that names one receives it, so the value reaches the one node that
-// asked and not every tool process of the run. Nil-safe.
+// asked and not every tool process of the run. s is the author's text as
+// written, before any value is rendered into it: a placeholder data carries
+// names no variable. Nil-safe.
 func (g *Guard) AuthoredEnvForBody(s string) map[string]string {
 	st := g.load()
 	if st == nil || s == "" || len(st.envOnlyValue) == 0 {

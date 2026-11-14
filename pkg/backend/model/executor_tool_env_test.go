@@ -54,7 +54,7 @@ func TestExpansionStillPrecedesSubstitution(t *testing.T) {
 		}{
 			{"command", shell(), "echo '" + payload + "'"},
 			{"script", script(), `x = "` + payload + `"`},
-			{"postcondition", e.postconditionBody(ctx, node, input), "test '" + payload + "'"},
+			{"postcondition", e.postconditionBody(ctx, node, input).shown(), "test '" + payload + "'"},
 		} {
 			if tc.got != tc.want {
 				t.Errorf("the %s resolved to %q, want %q — a substituted value must reach the reader as inert text", tc.where, tc.got, tc.want)
@@ -163,7 +163,7 @@ func runBodies(t *testing.T, node *ir.ToolNode) map[string]string {
 	return map[string]string{
 		"command":       shell(),
 		"script":        script(),
-		"postcondition": e.postconditionBody(ctx, node, nil),
+		"postcondition": e.postconditionBody(ctx, node, nil).shown(),
 	}
 }
 

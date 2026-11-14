@@ -112,7 +112,11 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		// Rung 3 — self-repair (bounded). Only for command/script
 		// recipes: the predicate the launch walks read is this gate.
 		if ir.ToolRecoverySelfRepairRung(node) {
-			lastStdout, lastStderr, lastCmd := res.stdout, res.stderr, res.resolved
+			// The model reads the recipe's repair form, never its logged
+			// one: there a placeholder data carried reads exactly like the
+			// author's reference, and the corrected command the model
+			// returns runs through the agent sink.
+			lastStdout, lastStderr, lastCmd := res.stdout, res.stderr, res.repair
 			for i := 0; i < node.Recovery.MaxRepairAttempts; i++ {
 				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd)
 				if rerr != nil {
@@ -247,19 +251,28 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // `command:` is resolved: the same env expansion, the same escaper, the same
 // snapshot, and the same declared shapes — its refs are validated against the
 // same input schema, so a `json`-declared field holding a list must land as
-// one token here exactly as it does in the command itself.
-func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) string {
+// one token here exactly as it does in the command itself — and the same
+// marking of the author's own secret references (renderCommandBody).
+func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) authoredBody {
 	expanded, _ := ToolBodyEnv(node, node.Postcondition, lookupToolEnv)
 	td := TemplateDataFromContext(ctx)
-	return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+	return renderCommandBody(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
 }
 
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
-	resolve := func() string { return e.postconditionBody(ctx, node, input) }
+	var body authoredBody
+	resolve := func() string {
+		body = e.postconditionBody(ctx, node, input)
+		return body.shown()
+	}
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
-		// A postcondition is the AUTHOR's text, like the node's command: the
-		// env-only class resolves for it, by environment.
-		materialized, env := e.secretGuard.MaterializeAuthoredShellEnv(resolved)
+		// A postcondition is the AUTHOR's text, like the node's command: its
+		// own references resolve — the env-only class by environment — and
+		// a placeholder that arrived through data stays text.
+		materialized, env, err := body.shellFor(resolved)
+		if err != nil {
+			return toolCommand{}, nil, err
+		}
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, postcondToolName(node), resolve, buildCmd)
@@ -329,9 +342,12 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		strings.TrimSpace(node.Goal), e.secretGuard.Redact(e.secretGuard.RedactForModel(strings.TrimSpace(lastCmd))),
 		// A prompt: the command's output goes back to placeholders — Layer 1,
 		// which the sink switch leaves on — and a value that never was a
-		// placeholder (a minted launch var) is redacted outright.
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stdout)), 4000),
-		truncate(e.secretGuard.Redact(e.secretGuard.Unmaterialize(stderr)), 4000))
+		// placeholder (a minted launch var) is redacted outright. A
+		// placeholder the output already carried as TEXT — data the command
+		// printed — is defused: it is no reference, and echoed into the
+		// corrected command the agent sink would resolve it (repairOutput).
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stdout)), 4000),
+		truncate(e.secretGuard.Redact(repairOutput(e.secretGuard, stderr)), 4000))
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,
@@ -393,17 +409,21 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 	}
 	// The goal + failure context flow as the agent's user message (no output
 	// schema → buildUserMessage serialises this input map).
+	// The recovery agent is a model, and its tool calls are the agent sink:
+	// a placeholder in what it is handed — data the node's input carries,
+	// one the author typed as text in the recipe — is no reference, so it
+	// reaches the agent defused, and echoed back it resolves nowhere.
 	agentInput := map[string]any{
 		"instructions":    "Achieve the GOAL below using your tools. A prior deterministic attempt did not satisfy the postcondition.",
 		"goal":            node.Goal,
 		"last_rung":       lastRung,
-		"original_recipe": cmp.Or(node.Command, node.Script),
+		"original_recipe": e.secretGuard.DefuseAll(cmp.Or(node.Command, node.Script)),
 	}
 	for k, v := range input {
 		// Pass through the node's structured input so the agent has the same
 		// context the recipe had (workspace_dir, base_sha, file lists, …).
 		if _, clash := agentInput[k]; !clash {
-			agentInput[k] = v
+			agentInput[k] = e.secretGuard.DefuseAllValue(v)
 		}
 	}
 	if _, err := e.executeBackend(ctx, syn, agentInput); err != nil {

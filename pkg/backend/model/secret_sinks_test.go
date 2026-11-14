@@ -22,25 +22,26 @@ func sinkTestGuard(t *testing.T, sinks ...string) (*secretguard.Guard, string) {
 }
 
 // A placeholder that reaches a tool body through DATA — an input an edge
-// mapped from a model's output, an upstream output, a launch var — was
-// written by a model: it is the agent sink's, whatever body it lands in. A
-// secret kept off the agent (`sinks: [command]`) is defused in every
-// authored body (command, postcondition, script, params) before the body's
-// own materialiser scans the text; a secret that names no sinks resolves as
-// it always did.
+// mapped from a model's output, an upstream output, a launch var — is not the
+// author's: no body's materialiser resolves it, whatever its secret grants
+// (ADR-146, amendment of 2026-11-14), since each resolves only the markers of
+// its own rendering. It is still the agent sink's beyond the body: a secret
+// kept off the agent (`sinks: [command]`) is defused in the rendered text, so
+// what the body sends on — a request the egress proxy substitutes — carries
+// a token that resolves nowhere. The author's own reference keeps its grant.
 func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T) {
 	t.Parallel()
 	inputRef := &ir.Ref{Kind: ir.RefInput, Path: []string{"body"}, Raw: "{{input.body}}"}
 	outRef := &ir.Ref{Kind: ir.RefOutputs, Path: []string{"writer", "text"}, Raw: "{{outputs.writer.text}}"}
 	varRef := &ir.Ref{Kind: ir.RefVars, Path: []string{"note"}, Raw: "{{vars.note}}"}
 	for _, tc := range []struct {
-		name  string
-		sinks []string
-		leaks bool
+		name    string
+		sinks   []string
+		defused bool
 	}{
-		{"kept off the agent", []string{secretsink.Command}, false},
-		{"granted to the agent", []string{secretsink.Agent, secretsink.Command, secretsink.Params}, true},
-		{"no sinks at all", nil, true},
+		{"kept off the agent", []string{secretsink.Command}, true},
+		{"granted to the agent", []string{secretsink.Agent, secretsink.Command, secretsink.Params}, false},
+		{"no sinks at all", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -49,25 +50,40 @@ func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T
 			vars := map[string]any{"note": "var " + ph}
 			td := &TemplateData{Outputs: map[string]map[string]any{"writer": {"text": "out " + ph}}, Nodes: map[string]ir.Node{"writer": &ir.AgentNode{}}}
 			refs := []*ir.Ref{inputRef, outRef, varRef}
-			bodies := map[string]string{
-				"command": renderCommand("printf '%s %s %s' {{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, nil),
-				"script":  renderScript("publish({{input.body}}, {{outputs.writer.text}}, {{vars.note}})", refs, input, vars, td, "run", g, nil),
-				"param":   resolveTemplateWith("{{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, false, rawTemplateValue, true, nil, nil),
+			command := renderCommandBody("printf '%s %s %s' {{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil)
+			script := renderScriptBody("publish({{input.body}}, {{outputs.writer.text}}, {{vars.note}})", refs, input, vars, td, "run", g)
+			authored := newAuthoredSecrets(g, secretsMaterialized)
+			param := resolveTemplateWith("{{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, false, rawTemplateValue, true, nil, authored.marker)
+			resolved := map[string]string{
+				"command": func() string {
+					out, env, err := command.shellFor(command.shown())
+					if err != nil {
+						t.Fatal(err)
+					}
+					return out + " " + strings.Join(mapValues(env), " ")
+				}(),
+				"script": func() string {
+					out, env, err := script.scriptFor(script.shown(), "js")
+					if err != nil {
+						t.Fatal(err)
+					}
+					return out + " " + strings.Join(mapValues(env), " ")
+				}(),
+				"param": func() string {
+					out, _, ok := authored.leafText(param)
+					if !ok {
+						t.Fatal("the param refused data text")
+					}
+					return out
+				}(),
 			}
-			for body, rendered := range bodies {
-				resolved := map[string]string{
-					"command": func() string {
-						out, env := g.MaterializeAuthoredShellEnv(rendered)
-						return out + " " + strings.Join(mapValues(env), " ")
-					}(),
-					"script": g.MaterializeShell(rendered),
-					"param":  g.MaterializeFor(secretsink.Params, rendered),
-				}[body]
-				if tc.leaks != strings.Contains(resolved, sinkTestValue) {
-					t.Errorf("%s body: value present = %v, want %v\nrendered: %q\nresolved: %q", body, !tc.leaks, tc.leaks, rendered, resolved)
+			shown := map[string]string{"command": command.shown(), "script": script.shown(), "param": authored.shown(param)}
+			for body, out := range resolved {
+				if strings.Contains(out, sinkTestValue) {
+					t.Errorf("%s body: a placeholder carried by data was materialised: %q", body, out)
 				}
-				if !tc.leaks && strings.Count(rendered, ph) != 0 {
-					t.Errorf("%s body: a command-only secret's placeholder survived in model-carried data: %q", body, rendered)
+				if got := strings.Count(shown[body], ph) == 0; got != tc.defused {
+					t.Errorf("%s body: data placeholder defused = %v, want %v: %q", body, got, tc.defused, shown[body])
 				}
 			}
 		})
@@ -75,9 +91,9 @@ func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T
 	// The author's OWN reference keeps the command grant: `{{secrets.pw}}`
 	// in the command resolves under `command` whatever the data carries.
 	g, ph := sinkTestGuard(t, secretsink.Command)
-	own := renderCommand("printf '%s' {{secrets.pw}}", []*ir.Ref{{Kind: ir.RefSecrets, Path: []string{"pw"}, Raw: "{{secrets.pw}}"}}, nil, nil, nil, "run", g, nil, nil)
-	if _, env := g.MaterializeAuthoredShellEnv(own); env[ph] != sinkTestValue {
-		t.Fatalf("the author's own reference no longer resolves under the command grant: %q %v", own, env)
+	own := renderCommandBody("printf '%s' {{secrets.pw}} {{input.body}}", []*ir.Ref{{Kind: ir.RefSecrets, Path: []string{"pw"}, Raw: "{{secrets.pw}}"}, inputRef}, map[string]any{"body": ph}, nil, nil, "run", g, nil)
+	if _, env, err := own.shellFor(own.shown()); err != nil || env[ph] != sinkTestValue {
+		t.Fatalf("the author's own reference no longer resolves under the command grant: %q %v %v", own.shown(), env, err)
 	}
 }
 

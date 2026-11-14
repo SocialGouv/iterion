@@ -182,7 +182,9 @@ would have to opt out by construction, which annuls the rule.
   body renders (`{{outputs.x}}`, `{{input.x}}`) is the agent sink's whatever
   body it lands in: defused before the body's materialiser, so `sinks:
   [command]` keeps a secret off every model's path, not only off its
-  prompts. Witness: a bundle referencing a `sinks: [agent]` secret in a
+  prompts — and, since the amendment of 2026-11-14 below, no body's
+  materialiser resolves a placeholder that arrives through data at all,
+  whatever its secret grants. Witness: a bundle referencing a `sinks: [agent]` secret in a
   `command:` is refused at compile time; mutating the grant check reddens
   the test on its assertion.
 - **S2 — the model boundary**: the rendered prompt text goes through
@@ -239,3 +241,160 @@ would have to opt out by construction, which annuls the rule.
 - The path-rooted permission rules (iterion#1710) are the BELT, not the
   guarantee: a bot that reads untrusted input still gates its OUTPUT
   deterministically with a known-value scan, as `bots/prod-watch` does.
+
+## Amendment (2026-11-14) — provenance decides: a placeholder that arrives through data is text (iterion#3268)
+
+The S3 bullet above defused a placeholder a model wrote into data only for a
+secret kept off the `agent` sink. With the default grant — every sink, axis 2 —
+the placeholder stayed live, and the body's materialiser
+(`MaterializeAuthoredShellEnv` for a command or a postcondition,
+`MaterializeShell` for a script) scanned the whole RENDERED body, values
+included, and swapped it for the value. The adversarial review of
+revi-converse's deterministic `publish_reply` node rated it CRITICAL: an agent
+answer that merely quoted `__ITERION_SECRET_forge_token__` was posted to the
+forge with the token in clear, measured with a real executor and the real
+guard — and anyone who can comment on a public PR can plant that placeholder
+in the thread the agent reads. The env-only class had the same shape: its
+quoted placeholder was resolved wherever it stood in a command, and a script
+received the minted grant whenever its rendered body named it.
+
+### Decision
+
+Decided by the operator on 2026-11-14 (iterion#3268, option 1).
+
+**Provenance decides, not the placeholder's spelling.** In every authored
+body — `command:`, `postcondition:`, `script:` — only a reference the
+AUTHOR wrote materialises: `{{secrets.NAME}}`, `{{!secrets.NAME}}`, and the
+minted `{{vars.x}}` of the env-only class. Each renders to a marker drawn
+from `crypto/rand` for that one rendering, which no data can spell; the
+body's materialiser resolves those markers — each through the guard, on the
+reference's own text, never on the body around it — and nothing else
+(`pkg/backend/model/body_secret_refs.go`). A placeholder that arrives
+through data — a model's output an edge maps, an upstream output, a launch
+var a webhook fills — stays the text it is, whatever its secret grants. So
+does a placeholder the author types as text: the reference is
+`{{secrets.NAME}}`. A `script:` receives the env-only grant only when the
+author's own text names its variable, never because data rendered into the
+body does.
+
+- **Why a marker, not a cleaner placeholder.** A deterministic placeholder
+  is not enough even after every data value is defused: two raw
+  `{{!…}}` values join into one, the author's text abuts a value that
+  completes it, an escape decodes into one. Measured: the mutant that
+  defuses every placeholder a data value holds whole and keeps the
+  scanning materialisers hands the body the value in 27 runs — every grant
+  that resolves a value (no `sinks:`, `sinks:` with and without `agent`) ×
+  every body (command, postcondition, script) × the three forms where the
+  placeholder only forms in the rendered text: two raw values joined, the
+  author's text opening it, the author's text closing it.
+- **One doctrine for the authored bodies.** This is the design `params:`
+  already had (`authoredSecrets`, `action_secret_refs.go`): the `command`
+  sink now reads provenance the way the `params` sink does.
+- **What stays.** The author's quoted reference still reaches the child
+  through its environment (`"$__ITERION_SECRET_X__"` in the argv, the
+  value in envp); the env-only class still resolves only in that form; the
+  raw `{{!secrets.NAME}}` still inlines the value where the author put it.
+  Hooks, events and the run log carry the placeholder form: a marker
+  reaches no hook, event, log or model, and the next rendering draws
+  others. The one place a marker stands is the process the body runs in,
+  where a shell script names the variable carrying a value after it.
+- **A script receives a value no quoting can turn into code.** In a
+  `script:` the author's `{{secrets.NAME}}` renders a JSON string literal
+  holding its marker, and the author may have wrapped it in quoting of
+  their own — a shell single-quoted word, a JSON document in single
+  quotes, a python or node string in single or double quotes, an
+  f-string, a template literal. The value is written so that it closes
+  and interpolates none of them, and runs as no code. In sh and bash it
+  never enters the script's text: the literal becomes a read of a variable
+  named after the rendering's marker (`"$__ITERION_AUTHORED_…__"`), which
+  no data rendered into the same script can spell, and the value rides
+  the interpreter's environment. Spelling is not reading: data rendered
+  into a sh or bash script is a double-quoted word the shell expands, so
+  it can still reach the environment — `$(env)`, or in bash a name
+  enumerated with `${!prefix@}` and read with `${!x}` — the pre-existing
+  data-in-a-shell-script class, open on its own ticket (#3291). Where the shell expands nothing — single
+  quotes, a heredoc whose delimiter is quoted — the script therefore reads
+  the variable's name and not the value; `C342` warns on those positions,
+  and the reference belongs outside the quotes, in an unquoted heredoc, or
+  in its raw form. In js and py the literal is the value's JSON string
+  literal — JSON's string syntax is a subset of both — with every
+  character that closes or interpolates a string (`'`, the backquote, `$`,
+  `{`, `}`, `/`) written as a `\u` escape, and the author's own double
+  quotes around the reference are read as that one literal. Only the
+  expression position is exact: there the value reads back byte for byte.
+  Inside the author's quotes it runs as no code, but the language cooks
+  the literal once, so an author who parses that text again — JSON in a
+  string, `json.loads('{"t": {{secrets.NAME}}}')` — reads whatever
+  structure the value spells. A value no form carries as written is
+  refused at the node, naming the reference and never the value: a NUL
+  byte in a shell script, invalid UTF-8 in a js or py literal (JSON would
+  rewrite it). The materialiser used to splice the value inside the
+  literal with the shell's single-quote escape, which corrupted a quote in
+  python and node and let a value close the literal: whoever sets a
+  secret's binding — a tenant, not the bot's author — could run code in
+  the script. The raw form stays the author's own text: verbatim in js and
+  py, escaped for a single-quoted word in a shell, as in a command.
+- **A placeholder typed as text is inert, and said so.** Since the bodies
+  resolve only the author's references, a placeholder an author typed
+  outside `{{…}}` reaches the process as written; `C340` warns on it at
+  authoring time (an environment read in a shell body, and a minted
+  credential's variable named in a script, are not reported).
+- **The `agent` sink is another path, unchanged.** A placeholder a model
+  emits in its own tool input — claw's tool loop, claude_code's
+  `PreToolUse` hook, the command the self-repair rung asks a model for —
+  still materialises under the `agent` grant. A "model writes, tool runs"
+  flow therefore goes through an agent node: the model's own tool call is
+  the sink that grants it. Should a real bot ever need a deterministic node
+  to run a placeholder a model wrote, the extension is an explicit,
+  greppable per-node opt-in on that node's declaration — never a change of
+  this default. None exists today.
+- **The recovery rungs show their model no live placeholder that data or
+  typed text spelled.** The self-repair rung and the recovery agent are model calls
+  whose output runs through the agent sink, so what they are shown of the
+  node is where a data placeholder would get its value back: shown as the
+  logged body, it reads exactly like the author's reference, and a repair
+  model that keeps the failed command echoes it. So the self-repair model
+  reads the recipe's repair form — the marked body with every remaining
+  placeholder (data's, or one the author typed) defused to its
+  redact-only form, then the markers shown — and the output the recipe
+  printed read the same way: its values go to markers of that one reading,
+  the placeholder text it spelled is defused, and only then do the markers
+  become placeholders, so a fragment printed against a value cannot borrow
+  the value's placeholder to spell another secret's. The recovery agent
+  receives the node's input — values and map keys, at every depth — and
+  the recipe's text defused the same way (`Guard.DefuseAll`). The author's
+  own references, and the values the recipe printed, are shown live, so a
+  repaired command still reaches what the recipe reached.
+- **The redact-only form is reserved, and the defuse leaves nothing live.**
+  The token a defuse writes, `__ITERION_SECRET_<name>_redacted__`, is
+  spelled like the placeholder of a secret named `<name>_redacted`, which
+  would resolve it to its own value: such a name is refused at compile
+  time (`C341`), and the guard never makes such a placeholder resolvable.
+  The defuse rewrites every placeholder at once, so its answer does not
+  depend on the order it visits them in, and it repeats the pass until
+  the text no longer changes: placeholders overlap on their shared `__`
+  (`…x__ITERION_SECRET_y__`), and a pass that rewrites the first leaves
+  the second whole again behind its redact-only form.
+- **The agent sink's defuse of data stays, for what a body sends on.** A
+  secret kept off the agent still has its placeholder rewritten in data
+  to the redact-only form (`DefuseUngranted`): the egress proxy
+  substitutes a placeholder in whatever a sandboxed process sends toward
+  the secret's hosts, whoever spelled it, so a body that posts data must
+  not carry a resolvable one. That is the stated bound of this decision:
+  a data placeholder of a secret granted `egress` and `agent` — the
+  default — that a command sends toward one of its hosts through an
+  inspecting proxy is substituted on the wire, as the agent's own call
+  would be. A secret meant for the author's commands alone declares
+  `sinks:` without `agent`.
+- **Witnesses.** `TestADataPlaceholderIsTextInEveryAuthoredBodyWhateverItsSecretGrants`
+  runs a real shell for every grant (no `sinks:`, `sinks:` with and
+  without `agent`, the env-only class) × every body × every data form
+  (whole, single-quoted, raw, split across two raw values, completed by
+  the author's text on either side), the author's reference beside it;
+  `TestAPlantedPlaceholderIsPostedAsTextNeverAsTheToken` (`bots/`) runs
+  the publish chain on the real engine against a fake forge;
+  `TestASelfRepairCannotMaterialiseADataPlaceholder` and
+  `TestTheRecoveryAgentReceivesDataPlaceholdersDefused` drive the recovery
+  rungs with a model that echoes what it read;
+  `TestAScriptReceivesASecretValueByteExactAndRunsNothing` runs hostile
+  values through sh, bash, python and node.
