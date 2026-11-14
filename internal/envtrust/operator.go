@@ -56,6 +56,10 @@ var operatorInfraPrefixes = []string{
 	// Plugin configuration has its own audited surface, and a URL key
 	// carries the plugin's credential to whatever host it names.
 	"ITERION_PLUGIN_",
+	// The connector source machines' pacing and retention (pkg/connector/
+	// intake): server-side bounds on what an inbound delivery may cost and
+	// how long it is kept — the operator's, never a bot's.
+	"ITERION_CONNECTOR_INTAKE_", "ITERION_CONNECTOR_PAIR_",
 	// Processes and fleet rather than runs: the runner, the board
 	// dispatcher and its MCP capabilities, the studio's alerts, the instance
 	// registry, lifecycle and logs.
