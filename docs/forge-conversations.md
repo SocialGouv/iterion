@@ -172,8 +172,10 @@ Any bot becomes conversational with no per-bot plumbing — it just reads
 **Shipped (vars-level):** the handler injects `discussion_id`,
 `trigger_note`, `trigger_command`/`trigger_args`, `replier`,
 `forge_base_url` when the webhook pins its forge (`cfg.ForgeBaseURL` — the
-base a bot calling back with its own token derives the API from, so a forge
-under a sub-path is reached), and — on the converse route —
+base a bot calling back with its own token derives the API from; a webhook
+provisioned from a forge connection stores the connection's base URL, sub-path
+included, while a pin set through the webhook API is stored as
+scheme://host), and — on the converse route —
 `converse_question` plus `thread_context`, the discussion
 transcript fetched from the forge API (chronological, the bot's own notes
 labelled, capped at ~16k chars keeping the thread anchor + the newest

@@ -17,14 +17,19 @@ version: 0.1.8
 ## to execute twice: one bounded read of the thread finds a note that is an
 ## exact copy of this run's reply and reports it instead of posting again. A
 ## drafted answer is posted whatever its skipped_reason says ("N/A" from a
-## step-limited model); the reason speaks only for an empty draft. The forge
-## token never leaves in a body: forge_token is granted the `file` sink only
-## (a placeholder the answer quotes is defused before the body runs, never
-## materialised), and the body refuses a text carrying the token, encoded or
-## not, or its placeholder (requires.iterion rises to 4.7.0, the release that
-## reads the grant). The webhook's pinned forge base reaches the run as
-## forge_base_url (hidden), so a GitLab or Forgejo under a sub-path is reached
-## where it lives. And the run's duration budget follows the agent's tool loop:
+## step-limited model); the reason speaks for an empty draft, or a filler one
+## beside it ("N/A", "none", "-", no run of three letters), and rides into the
+## summary whenever given. The forge token is not posted in a body:
+## forge_token is granted the `file` sink only (a placeholder the answer
+## quotes is defused before the body runs, never materialised), and the body
+## refuses a text carrying the placeholder, the token, or its percent, base64
+## or hex encoding — as written or as a forge renders it, and run together
+## past any separator for a long token (requires.iterion rises to 4.7.0, the
+## release that reads the grant). Every field it reports drops NUL bytes, and
+## an unreadable token file is a reason, not a crash. The webhook's pinned
+## forge base reaches the run as forge_base_url (hidden): a forge connection's
+## base URL keeps its sub-path, so a GitLab or Forgejo under one is reached
+## where it lives (a pin set through the webhook API keeps scheme://host). And the run's duration budget follows the agent's tool loop:
 ## 30 minutes, not 10 — with tool_max_steps 60 (0.1.7) a step on the team
 ## gateway's deepseek takes ~10-15 s, and a question that needed ~50 steps
 ## died on its 10-minute budget before it posted (VAO !48).

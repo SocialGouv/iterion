@@ -55,7 +55,9 @@ pass), and the draft is still posted — posting no longer depends on how many
 steps the model spent reading (VAO !48: a reply that took 61 steps was
 drafted and never posted). A drafted answer is posted whatever the agent's
 `skipped_reason` says: the field is required, and a step-limited model fills
-it ("N/A"); the reason is the banner only when the draft is empty.
+it ("N/A"). The reason is the banner when the draft is empty — or, beside the
+reason, only filler ("N/A", "none", "-", "null", no run of three letters) —
+and it is carried into `publish_reply`'s summary whenever the agent gave one.
 
 `publish_reply` reads the forge from `pr_url`'s path and posts where each
 forge's REST API takes a reply:
@@ -71,9 +73,11 @@ forge's REST API takes a reply:
 The API base is `https://api.github.com` for github.com, `<base>/api/v3`
 for a GitHub Enterprise host, `<base>/api/v4` on GitLab, `<base>/api/v1`
 on Forgejo, where `<base>` is `forge_base_url` when the webhook pinned one —
-`pr_url` must then sit on its host and under its path, the only way to reach
-a GitLab or Forgejo served under a sub-path — and `pr_url`'s origin
-otherwise. Auth is `Authorization: Bearer` (GitHub, GitLab) or `token`
+`pr_url` must then sit on its host and under its path — and `pr_url`'s origin
+otherwise. A GitLab or Forgejo served under a sub-path is reached only
+through a webhook provisioned from a forge connection, whose base URL keeps
+the path: a base pinned through the webhook API is stored as scheme://host
+(`validateForgeBaseURL`), and reaches the run as the origin. Auth is `Authorization: Bearer` (GitHub, GitLab) or `token`
 (Forgejo); redirects are not followed. The script receives every value as a
 JSON literal in its temp file, so no size or byte (a NUL is dropped before
 posting) keeps it from running. Before posting, the body loses its
@@ -83,17 +87,24 @@ the webhook's command grammar reads gets one too when it opens on `/`, so the
 bot's reply never re-fires `/revi`. An unclosed code fence is closed, an
 answer past 60000 UTF-16 units is cut with a visible marker, and the run
 footer ([run-link](../../docs/agents/bots/run-link.md)) is appended — never
-cut. Every failure (no token, an unusable `pr_url`, the forge's status and
-message, a re-read that misses) is `posted=false` with its reason (capped at
-2000 characters), exit 0.
+cut. Every failure (no token or an unreadable one, an unusable `pr_url`, the
+forge's status and message, a re-read that misses) is `posted=false` with its
+reason (capped at 2000 characters, NUL bytes dropped from every field —
+they ride `converse_health`'s environment), exit 0.
 
-**The forge token never leaves in a body.** Two guards, each enough alone:
-`forge_token` is granted the `file` sink only, so a
-`__ITERION_SECRET_forge_token__` the agent quotes — planted in a public
-thread, a diff or a question — is defused by the engine before the script
-runs and never materialised; and the script refuses to post a text carrying
-the token (raw, percent-encoded, base64, hex, its characters spread apart)
-or its placeholder, and withholds the draft from its report.
+**The forge token is not posted in a body.** Two guards. `forge_token` is
+granted the `file` sink only, so a `__ITERION_SECRET_forge_token__` the agent
+quotes — planted in a public thread, a diff or a question — is defused by the
+engine before the script runs and never materialised: the placeholder path is
+closed whatever the script checks. And the script refuses a text carrying, as
+written or as a forge renders it (HTML comments and tags dropped, entities
+decoded): the token's placeholder, raw or defused; the token; its percent,
+base64 (standard or URL-safe, padded or not) or hex encoding; and, for a
+token of 16 letters and digits or more, the token, its base64 or its hex (any
+case) with anything but letters and digits between their characters. That
+list is what it refuses: an agent that read the token file and encodes it
+another way is not recognised. On a refusal the draft is withheld from the
+report.
 
 ## Configuration
 
@@ -103,7 +114,7 @@ or its placeholder, and withholds the draft from its report.
 | `base_ref` | string | `main` | Branch comparison base; the agent diffs `merge-base base_ref HEAD`. The webhook handler overrides it from the PR's target branch. |
 | `pr_url` | string | `""` | The PR/MR URL the conversation lives on; `publish_reply` derives the forge, its API base, the project and the number from it, and `converse_health` counts a `reply_url` only on its host. Manual runs MUST pass it. |
 | `discussion_id` | string | `""` | The thread id to reply in. Empty posts a new PR comment (GitLab: an MR note) instead. |
-| `forge_base_url` | string | `""` | The webhook's pinned forge web base, stamped by the webhook lanes when the config names one. `publish_reply` derives the API from it; empty derives it from `pr_url`'s origin. |
+| `forge_base_url` | string | `""` | The webhook's pinned forge web base, stamped by the webhook lanes when the config names one. `publish_reply` derives the API from it; empty derives it from `pr_url`'s origin. A sub-path survives only from a forge connection's base URL (a pin set through the webhook API keeps scheme://host). |
 | `trigger_note` | string | `""` | The operator's raw note body, including the leading slash-command. |
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then reads the thread itself (a GET). |

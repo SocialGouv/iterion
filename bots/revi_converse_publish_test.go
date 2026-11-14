@@ -653,6 +653,91 @@ func TestReviConversePublishReplyNeverPostsACommand(t *testing.T) {
 // A drafted answer is posted whatever the skipped_reason beside it says: the
 // schema requires the field, and a model at its step limit fills it ("N/A",
 // "none", a half-reason). Only an empty draft is not posted.
+func htmlEntities(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		fmt.Fprintf(&b, "&#%d;", r)
+	}
+	return b.String()
+}
+
+// interleave puts sep after every n characters of s.
+func interleave(s string, n int, sep string) string {
+	var b strings.Builder
+	for i, r := range []rune(s) {
+		if i > 0 && i%n == 0 {
+			b.WriteString(sep)
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// mixedCase upper-cases every other LETTER of s, so the result is neither
+// its lower nor its upper case.
+func mixedCase(s string) string {
+	var b strings.Builder
+	letters := 0
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' {
+			if letters%2 == 0 {
+				r -= 'a' - 'A'
+			}
+			letters++
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// Beside a skipped_reason, a filler draft is not an answer: "N/A", "none",
+// "-", "null", or text with no run of three letters is treated as empty, so
+// nothing is posted and the agent's reason is the banner. Without a reason
+// the same draft is posted (the agent said nothing else). A real draft
+// beside a reason is posted, and the reason travels into the summary.
+func TestReviConversePublishReplyTreatsAFillerDraftAsEmpty(t *testing.T) {
+	requirePython(t)
+	const reason = "the diff could not be read"
+	for _, c := range []struct {
+		name, answer, skipped string
+		wantPosted            bool
+	}{
+		{name: "N/A beside a reason", answer: "N/A", skipped: reason},
+		{name: "none beside a reason", answer: "none", skipped: reason},
+		{name: "a dash beside a reason", answer: "-", skipped: reason},
+		{name: "null beside a reason", answer: " Null. ", skipped: reason},
+		{name: "no run of three letters beside a reason", answer: "42 / ok", skipped: reason},
+		{name: "N/A with no reason", answer: "N/A", wantPosted: true},
+		{name: "a real draft beside a reason", answer: publishAnswer, skipped: reason, wantPosted: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newConverseFakeForge(t)
+			pr := f.srv.URL + "/o/r/pull/42"
+			f.htmlFor = func(id int) string { return issueComment(pr, id) }
+			script := renderReviConversePublish(t,
+				map[string]any{"answer": c.answer, "skipped_reason": c.skipped},
+				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+			res, raw := runPublish(t, script, noProxyEnv())
+			if *res.Posted != c.wantPosted {
+				t.Fatalf("posted = %v, want %v (%s)", *res.Posted, c.wantPosted, raw)
+			}
+			w := writes(f.seen())
+			switch {
+			case c.wantPosted && len(w) != 1:
+				t.Errorf("%d writes, want the one POST", len(w))
+			case !c.wantPosted && len(f.seen()) != 0:
+				t.Errorf("the forge saw %+v, want no request", f.seen())
+			}
+			if !c.wantPosted && res.SkippedReason != reason {
+				t.Errorf("skipped_reason = %q, want the agent's own %q", res.SkippedReason, reason)
+			}
+			if c.skipped != "" && !strings.Contains(res.Summary, c.skipped) {
+				t.Errorf("summary %q does not carry the agent's skipped_reason %q", res.Summary, c.skipped)
+			}
+		})
+	}
+}
+
 func TestReviConversePublishReplyPostsADraftWhateverItsSkippedReasonSays(t *testing.T) {
 	requirePython(t)
 	for _, skipped := range []string{"N/A", "none", "not skipped", "the diff could not be read in full"} {
@@ -713,6 +798,37 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 			t.Errorf("the forge saw %+v, want the answer as written", w)
 		}
 	})
+	// A NUL in what the node writes would stop converse_health at exec (no
+	// environment entry carries one): dropped from every field.
+	t.Run("a NUL in the agent's skipped_reason", func(t *testing.T) {
+		f := newConverseFakeForge(t)
+		pr := f.srv.URL + "/o/r/pull/42"
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": "", "skipped_reason": "no question\x00 in the note"},
+			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if *res.Posted || res.SkippedReason != "no question in the note" {
+			t.Errorf("posted = %v, skipped_reason %q — want the reason without its NUL", *res.Posted, res.SkippedReason)
+		}
+		if strings.Contains(raw, `\u0000`) {
+			t.Errorf("the output carries a NUL: %s", raw)
+		}
+	})
+	t.Run("a NUL in the forge's refusal", func(t *testing.T) {
+		f := newConverseFakeForge(t)
+		f.postStatus, f.postAnswer = http.StatusBadRequest, `{"message":"bad\u0000body"}`
+		pr := f.srv.URL + "/o/r/pull/42"
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if *res.Posted || !strings.Contains(res.SkippedReason, "badbody") {
+			t.Errorf("posted = %v, skipped_reason %q — want the forge's message without its NUL", *res.Posted, res.SkippedReason)
+		}
+		if strings.Contains(raw, `\u0000`) {
+			t.Errorf("the output carries a NUL: %s", raw)
+		}
+	})
 	t.Run("a skipped_reason past an environment entry", func(t *testing.T) {
 		f := newConverseFakeForge(t)
 		pr := f.srv.URL + "/o/r/pull/42"
@@ -747,6 +863,7 @@ func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
 		disc       string
 		base       string // forge_base_url, appended to the fake's origin; a full URL when it has a scheme
 		noToken    bool
+		unreadable bool
 		unmapped   bool
 		wantReason string
 	}
@@ -756,6 +873,7 @@ func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
 		{name: "blank answer", input: map[string]any{"answer": " \n\t\x00", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
 		{name: "the agent skipped", input: map[string]any{"answer": "", "skipped_reason": "no question in the note"}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
 		{name: "no token mounted", input: answer, prPath: "/o/r/pull/1", noToken: true, wantReason: "forge_token is not mounted"},
+		{name: "the token file unreadable", input: answer, prPath: "/o/r/pull/1", unreadable: true, wantReason: "forge_token is mounted but unreadable"},
 		{name: "pr_url empty", input: answer, prPath: "", wantReason: "pr_url is empty"},
 		{name: "pr_url an issue", input: answer, prPath: "/o/r/issues/1", wantReason: "not a pull request URL"},
 		{name: "pr_url a dot segment", input: answer, prPath: "/o/../pull/1", wantReason: "not a pull request URL"},
@@ -783,6 +901,14 @@ func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
 			tokenPath := writeToken(t)
 			if c.noToken {
 				tokenPath = filepath.Join(t.TempDir(), "absent", "forge_token")
+			}
+			if c.unreadable {
+				if os.Geteuid() == 0 {
+					t.Skip("root reads a mode-000 file")
+				}
+				if err := os.Chmod(tokenPath, 0); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var unresolved []string
 			if c.unmapped {
@@ -828,6 +954,18 @@ func TestReviConversePublishReplyRefusesToPostTheForgeToken(t *testing.T) {
 		{name: "zero-width joined", carried: "split: " + strings.Join(strings.Split(publishToken, ""), "\u200b"), wantWhat: "the forge token, spread apart"},
 		{name: "the placeholder", carried: "the key is " + tokenPlaceholder, wantWhat: "the forge token's placeholder"},
 		{name: "the defused placeholder", carried: "the key is " + tokenDefused, wantWhat: "the forge token's placeholder"},
+		// What a forge renders back to the token: HTML entities, tags and
+		// comments between its characters.
+		{name: "html decimal entities", carried: "key: " + htmlEntities(publishToken), wantWhat: "the forge token"},
+		{name: "html tags between characters", carried: "key: " + interleave(publishToken, 3, "<i></i>"), wantWhat: "the forge token"},
+		{name: "html comments between characters", carried: "key: " + interleave(publishToken, 4, "<!--a-->"), wantWhat: "the forge token"},
+		{name: "a tagged placeholder", carried: "key: " + interleave(tokenPlaceholder, 5, "<b></b>"), wantWhat: "the forge token's placeholder"},
+		// Encodings with separators between their characters.
+		{name: "base64 split by a newline", carried: "b64:\n" + base64.StdEncoding.EncodeToString(raw)[:10] + "\n" + base64.StdEncoding.EncodeToString(raw)[10:], wantWhat: "an encoding of the forge token"},
+		{name: "base64 split by a space", carried: "b64: " + base64.URLEncoding.EncodeToString(raw)[:12] + " " + base64.URLEncoding.EncodeToString(raw)[12:], wantWhat: "an encoding of the forge token"},
+		{name: "hex with colons", carried: "hex " + interleave(hex.EncodeToString(raw), 2, ":"), wantWhat: "an encoding of the forge token"},
+		{name: "hex in mixed case", carried: "hex " + mixedCase(hex.EncodeToString(raw)), wantWhat: "an encoding of the forge token"},
+		{name: "hex split by a newline", carried: "hex\n" + hex.EncodeToString(raw)[:20] + "\n" + hex.EncodeToString(raw)[20:], wantWhat: "an encoding of the forge token"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newConverseFakeForge(t)

@@ -13,34 +13,65 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
-// A webhook pinned to a forge instance (cfg.ForgeBaseURL) hands that base to
-// the run it launches as forge_base_url, on every lane that can launch the
-// converse bot: revi-converse's publish_reply derives its API from it, the
-// only way to reach a GitLab or a Forgejo served under a sub-path, where the
-// PR URL's origin names the wrong path. An unpinned webhook stamps nothing —
-// the bot derives the base from the PR URL as before.
+// A webhook pinned to a forge instance (cfg.ForgeBaseURL) hands the base
+// it STORES to the run it launches as forge_base_url, on every lane that can
+// launch the converse bot; revi-converse's publish_reply derives its API from
+// it. The stored value depends on where the pin came from, and the test reads
+// it from the real code of each source:
+//   - a webhook provisioned from a forge connection stores the connection's
+//     base URL, path included (forge.CanonicalBaseURL, Connection.BaseURL) —
+//     the source that reaches a GitLab or Forgejo under a sub-path;
+//   - a webhook pinned through the webhook API stores scheme://host only
+//     (validateForgeBaseURL drops the path), so a sub-path pinned there
+//     reaches the run as its origin.
+//
+// An unpinned webhook stamps nothing — the bot derives the base from the PR
+// URL.
 func TestConverseLanesCarryThePinnedForgeBase(t *testing.T) {
+	apiStored := func(t *testing.T, raw string) string {
+		t.Helper()
+		v, err := validateForgeBaseURL(raw)
+		if err != nil {
+			t.Fatalf("validateForgeBaseURL(%q): %v", raw, err)
+		}
+		return v
+	}
+	connStored := func(p forge.Provider, raw string) string {
+		c := forge.Connection{Provider: p, ForgeBaseURL: forge.CanonicalBaseURL(p, raw)}
+		return c.BaseURL()
+	}
+	if got := connStored(forge.ProviderGitLab, "https://gitlab.com/gitlab/"); got != "https://gitlab.com/gitlab" {
+		t.Fatalf("a connection under a sub-path stores %q, want the path kept — the premise of this test moved", got)
+	}
+	if got := apiStored(t, "https://gitlab.com/gitlab"); got != "https://gitlab.com" {
+		t.Fatalf("the webhook API stores %q for a sub-path pin, want the origin only — the documented caveat moved", got)
+	}
 	for _, lane := range []struct {
-		name string
-		base string
-		run  func(t *testing.T, s *Server, base string) map[string]string
+		name     string
+		provider forge.Provider
+		pin      string
+		run      func(t *testing.T, s *Server, base string) map[string]string
 	}{
-		{name: "gitlab /revi <question>", base: "https://gitlab.com/gitlab", run: gitlabQuestionLane},
-		{name: "gitlab reply in a Revi thread", base: "https://gitlab.com/gitlab", run: gitlabReplyLane},
-		{name: "github /revi <question>", base: "https://github.com", run: githubQuestionLane},
-		{name: "github review-thread reply", base: "https://github.com", run: githubReviewReplyLane},
+		{name: "gitlab /revi <question>", provider: forge.ProviderGitLab, pin: "https://gitlab.com/gitlab", run: gitlabQuestionLane},
+		{name: "gitlab reply in a Revi thread", provider: forge.ProviderGitLab, pin: "https://gitlab.com/gitlab", run: gitlabReplyLane},
+		{name: "github /revi <question>", provider: forge.ProviderGitHub, pin: "https://github.com", run: githubQuestionLane},
+		{name: "github review-thread reply", provider: forge.ProviderGitHub, pin: "https://github.com", run: githubReviewReplyLane},
 	} {
 		t.Run(lane.name, func(t *testing.T) {
-			for _, base := range []string{lane.base, ""} {
+			for source, stored := range map[string]string{
+				"connection-provisioned": connStored(lane.provider, lane.pin),
+				"pinned through the API": apiStored(t, lane.pin),
+				"unpinned":               "",
+			} {
 				s := newWebhookTestServer(t)
 				s.cfg.Bots.Paths = []string{botsDirAbs(t)}
-				vars := lane.run(t, s, base)
+				vars := lane.run(t, s, stored)
 				got, present := vars["forge_base_url"]
 				switch {
-				case base != "" && got != base:
-					t.Errorf("pinned to %q: forge_base_url = %q (present %v), want the pin", base, got, present)
-				case base == "" && present:
-					t.Errorf("unpinned: forge_base_url = %q, want it absent", got)
+				case stored != "" && got != stored:
+					t.Errorf("%s (stored %q): forge_base_url = %q (present %v), want the stored base", source, stored, got, present)
+				case stored == "" && present:
+					t.Errorf("%s: forge_base_url = %q, want it absent", source, got)
 				}
 			}
 		})

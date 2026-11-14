@@ -12,17 +12,19 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The chain as the engine runs it: the real engine walks revi-converse's
 // edges; converse_agent is answered with a draft in the shape of its real
 // schema, and publish_reply and converse_health run on a real ClawExecutor
-// under a secret guard built the way the run builds it from the bundle's
-// declaration (model.declaredWorkflowSecrets: name, value, placeholder,
-// mounted path, the declared sinks).
+// under the run's own secret guard — model.BuildSecretGuard over the
+// compiled bundle, the token handed in as the run's resolved credential —
+// which the executor materialises on the host as an unsandboxed run does.
 
 // converseChainExec answers converse_agent with a draft and runs every other
 // node on a real ClawExecutor.
@@ -62,23 +64,50 @@ func (c *converseChainExec) output(id string) map[string]any {
 	return c.outs[id]
 }
 
-// reviConverseGuard is the run's secret guard for forge_token as the run
-// holds it: the bundle's declaration (its sinks included) with the value
-// mounted at path. held=false is a run without the binding.
-func reviConverseGuard(t *testing.T, wf *ir.Workflow, path string, held bool) *secretguard.Guard {
+// reviConverseGuard is the run's secret guard, built by the production
+// builder from the compiled bundle: the forge_token binding arrives as the
+// run's resolved credential (held=false: a run without the binding).
+func reviConverseGuard(t *testing.T, wf *ir.Workflow, held bool) *secretguard.Guard {
 	t.Helper()
-	decl, ok := wf.Secrets["forge_token"]
-	if !ok {
+	if _, ok := wf.Secrets["forge_token"]; !ok {
 		t.Fatal("revi-converse declares no forge_token secret")
 	}
-	var secrets []secretguard.Secret
+	creds := secrets.Credentials{Generic: map[string]string{}}
 	if held {
-		secrets = append(secrets, secretguard.Secret{
-			Name: "forge_token", Value: publishToken, Placeholder: secretguard.PlaceholderForName("forge_token"),
-			FilePath: path, Env: decl.Env, Sinks: append([]string(nil), decl.Sinks...),
-		})
+		creds.Generic["forge_token"] = publishToken
 	}
-	return secretguard.New(secrets, secretguard.DefaultConfig())
+	return model.BuildSecretGuard(secrets.WithCredentials(context.Background(), creds), wf, nil, nil)
+}
+
+// The run's guard keeps forge_token off every materialiser: the bundle
+// grants it the `file` sink only, so its placeholder resolves neither in an
+// authored body (the `command` sink: a tool command, a script) nor in a
+// model's tool input (`agent`), and one arriving in data is defused — while
+// `{{secrets.forge_token.path}}` still renders a path. Built by the
+// production builder, so a builder that dropped the declared grants would
+// fail here, not only in a hand-built guard.
+func TestReviConverseRunGuardKeepsTheTokenOffEveryMaterialiser(t *testing.T) {
+	wf := reviConverseWorkflow(t)
+	guard := reviConverseGuard(t, wf, true)
+	text := "key " + tokenPlaceholder + " and '" + tokenPlaceholder + "'"
+	for name, got := range map[string]string{
+		"a script or command body (MaterializeShell, command sink)": guard.MaterializeShell(text),
+		"a model's tool input (Materialize, agent sink)":            guard.Materialize(text),
+	} {
+		if strings.Contains(got, publishToken) {
+			t.Errorf("%s resolves forge_token to its value: %q", name, got)
+		}
+	}
+	authored, env := guard.MaterializeAuthoredShellEnv(text)
+	if strings.Contains(authored, publishToken) || len(env) != 0 {
+		t.Errorf("an authored command resolves forge_token: %q, env %v", authored, env)
+	}
+	if got := guard.DefuseUngranted(secretsink.Agent, text); strings.Contains(got, tokenPlaceholder) || !strings.Contains(got, tokenDefused) {
+		t.Errorf("a placeholder in data is not defused: %q", got)
+	}
+	if path := guard.ResolveSecretRef("forge_token"); path == "" || strings.Contains(path, "__ITERION_SECRET_") {
+		t.Errorf("{{secrets.forge_token.path}} renders %q, want the mounted path", path)
+	}
 }
 
 // chainRun is one run of the chain against a fake GitLab discussion.
@@ -122,7 +151,7 @@ func runChain(t *testing.T, wf *ir.Workflow, agent map[string]any, held bool, se
 	}
 	pr := f.srv.URL + "/g/p/-/merge_requests/7"
 	ex := &converseChainExec{
-		real:  model.NewClawExecutor(model.NewRegistry(), wf, model.WithWorkDir(t.TempDir()), model.WithSecretGuard(reviConverseGuard(t, wf, writeToken(t), held))),
+		real:  model.NewClawExecutor(model.NewRegistry(), wf, model.WithWorkDir(t.TempDir()), model.WithSecretGuard(reviConverseGuard(t, wf, held))),
 		agent: agent,
 	}
 	st, err := store.New(t.TempDir())
@@ -184,6 +213,8 @@ func TestReviConverseChainPostsTheDraftAndGatesIt(t *testing.T) {
 		{name: "a NUL in the draft", answer: "Re: op\n\nA NUL\x00 here (app.go:3).", wantWrites: 1, wantBody: "Re: op\n\nA NUL here (app.go:3).", wantBanner: "forge reply OK: "},
 		{name: "the agent skipped", skipped: "no question in the note", wantDegraded: true, wantBanner: "forge reply skipped: no question in the note"},
 		{name: "a skipped_reason past an environment entry", skipped: huge, wantDegraded: true, wantBanner: "forge reply skipped: the diff could not be read"},
+		{name: "a NUL in the skipped_reason", skipped: "no question\x00 in the note", wantDegraded: true, wantBanner: "forge reply skipped: no question in the note"},
+		{name: "a filler draft beside a reason", answer: "N/A", skipped: "the diff could not be read", wantDegraded: true, wantBanner: "forge reply skipped: the diff could not be read"},
 		{name: "an empty draft", wantDegraded: true, wantBanner: "forge reply skipped: the agent returned an empty answer"},
 		{name: "no token", answer: publishAnswer, noToken: true, wantDegraded: true, wantBanner: "forge reply skipped: forge_token is not mounted"},
 		{name: "the forge refuses", answer: publishAnswer, refuse: http.StatusForbidden, wantWrites: 1, wantBody: forge.InertGitLabQuickActions(publishAnswer), wantDegraded: true, wantBanner: "HTTP 403"},

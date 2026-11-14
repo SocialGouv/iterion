@@ -184,6 +184,13 @@ const (
 var (
 	converseWriteVerb = regexp.MustCompile(`\b(POST|PUT|PATCH|DELETE)\b`)
 	converseWriteFlag = regexp.MustCompile(`curl[^\n]*\s(-X|--request|-d|--data[a-z-]*|-F|--form|-T|--upload-file)(\s|=|$)`)
+	// A write told in words: sending something to a thread, a note, a
+	// comment, a discussion or an endpoint, or replying in one.
+	converseWriteIntent = regexp.MustCompile(`(?i)\b(post|send|publish|submit|upload)(s|es|ed|ing)?\b[^.:;]{0,80}\b(thread|notes?|comments?|discussions?|endpoints?)\b`)
+	converseReplyIntent = regexp.MustCompile(`(?i)\brepl(y|ies|ied|ying)\s+(in|to|on|into)\s+(the |this |that |a |its )?(thread|discussion|note|comment)\b`)
+	// A write told by its tool: a JSON body, a forge CLI's raw API, wget's
+	// POST, python's HTTP clients.
+	converseWriteTool = regexp.MustCompile(`(?i)--json\b|\bgh\s+api\b|\bglab\s+api\b|\bwget\b[^\n]*--post|\burllib\b|\brequests\.post\b`)
 )
 
 // converseWriteInstructions reads the prompts claw sends the converse agent
@@ -202,6 +209,21 @@ func converseWriteInstructions(system, user string) []string {
 	rest := strings.Replace(sys, converseNoWriteRule, "", 1) + " " + fold(user)
 	for _, verb := range converseWriteVerb.FindAllString(rest, -1) {
 		problems = append(problems, "the prompts claw sends name the forge write "+strconv.Quote(verb)+" outside the no-write rule")
+	}
+	// Outside the read-only GET section too, a write told in words or by
+	// its tool.
+	outside := rest
+	if i := strings.Index(outside, converseReadSection); i >= 0 {
+		end := len(outside)
+		if j := strings.Index(outside[i+len(converseReadSection):], "── "); j >= 0 {
+			end = i + len(converseReadSection) + j
+		}
+		outside = outside[:i] + outside[end:]
+	}
+	for _, re := range []*regexp.Regexp{converseWriteIntent, converseReplyIntent, converseWriteTool} {
+		for _, hit := range re.FindAllString(outside, -1) {
+			problems = append(problems, "the prompts claw sends tell a forge write: "+strconv.Quote(hit))
+		}
 	}
 	for _, flag := range converseWriteFlag.FindAllString(system+"\n"+user, -1) {
 		problems = append(problems, "the prompts claw sends hold a curl write: "+strconv.Quote(flag))
