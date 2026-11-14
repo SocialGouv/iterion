@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/testfs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1162,8 +1163,14 @@ func mustMkdir(t *testing.T, dir string) {
 	}
 }
 
+// mustWrite writes a fixture; an executable one (a stub the scripts exec
+// through PATH, from parallel subtests) goes through testfs.WriteExecutable.
 func mustWrite(t *testing.T, path, body string, mode os.FileMode) {
 	t.Helper()
+	if mode&0o111 != 0 {
+		testfs.WriteExecutable(t, path, []byte(body))
+		return
+	}
 	if err := os.WriteFile(path, []byte(body), mode); err != nil {
 		t.Fatal(err)
 	}

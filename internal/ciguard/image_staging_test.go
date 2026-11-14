@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/SocialGouv/iterion/internal/testfs"
 )
 
 type stagingStep struct {
@@ -98,9 +100,7 @@ case "$3" in
  *) exit 91 ;;
 esac
 `
-			if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(fake), 0700); err != nil {
-				t.Fatal(err)
-			}
+			testfs.WriteExecutable(t, filepath.Join(dir, "docker"), []byte(fake))
 			cmd := exec.CommandContext(t.Context(), "bash", "-c", publish.Run)
 			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "IMAGE_REF="+image, "CAPTURE="+capture, "GITHUB_OUTPUT="+output)
 			for k, v := range publish.Env {
