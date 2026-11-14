@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.1.0](https://github.com/SocialGouv/iterion/compare/v6.0.3...v6.1.0) (2026-11-14)
+
+### Features
+
+* **connectors:** triggers.yaml declares how a delivery is read — ingress, outputs, filters, loop guard, sample ([#3282](https://github.com/SocialGouv/iterion/issues/3282)) ([15b0a36](https://github.com/SocialGouv/iterion/commit/15b0a36ab0e7f530283ae82d020bf683cc876b4f)), references [#3271](https://github.com/SocialGouv/iterion/issues/3271) [#3271](https://github.com/SocialGouv/iterion/issues/3271) [#3269](https://github.com/SocialGouv/iterion/issues/3269) [#3277](https://github.com/SocialGouv/iterion/issues/3277)
+
+    <details><summary>why</summary>
+
+    L1a of #3271 (ADR-168 §3–§5, §9). The format half of the event-source catalog: decoders and validation only, no lane reads a field yet, and no shipped package uses one (the migration's release A rule).
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** the env derivations see a reader handed on as a value, and decide claw's credential-guard names ([#3256](https://github.com/SocialGouv/iterion/issues/3256)) ([4a88b32](https://github.com/SocialGouv/iterion/commit/4a88b32f91c0e2cb6f36936fd254e7d3c450fcfb))
+
+    <details><summary>why</summary>
+
+    pkg/backend/model derives the env names claw's provider and tool packages read, so each is decided for a sandboxed node. The walk only knew a read form called with a literal: claw's credential read guard (pkg/claw/internal/tools/sensitive.go) reads through `env`, a parameter defaulted to os.Getenv, under names held in loops — and seven of its nine names were in neither the derivation nor the classification.
+
+    </details>
+* **git:** the git caller guards see a git named by a value — a lookup's result, a constant — not only the literal ([#3255](https://github.com/SocialGouv/iterion/issues/3255)) ([816ac37](https://github.com/SocialGouv/iterion/commit/816ac375049bbe00c3441c4c7df4446c0f557f8e))
+
+    <details><summary>why</summary>
+
+    pkg/git's three caller sweeps (TestEveryGitCallerSanitizesEnv, TestEveryGitCallerRunsNoRepositoryHook, TestEveryTestGitCallerDisablesAutoMaintenance) matched a git subprocess by the literal "git" only. The PATH seam asks callers to spawn the path envtrust.LookPath returned, so the sites that follow it were invisible: dropping NoRunHooks or SanitizeEnv from claw's runGit or /diff left every guard green (measured in the MG-4 review, round 2).
+
+    </details>
+* **test:** every test binary linking a live pricing tier isolates it from TestMain ([#3257](https://github.com/SocialGouv/iterion/issues/3257)) ([53fb9ac](https://github.com/SocialGouv/iterion/commit/53fb9ac21fad98cc0f564df1051f550f2691a057))
+
+    <details><summary>why</summary>
+
+    Test binaries that link claw's model registry (pkg/claw/internal/apikit) or the models.dev aggregator (pkg/backend/modelspecs) read the host's cache and refresh it from the network unless isolated, so a verdict that reads a price or a context window depended on the host and on openrouter.ai / models.dev. MG-4 isolated claw's own 25 packages; iterion's side was not covered: 60 packages link a live tier, and three isolated it.
+
+    </details>
+* **testfs:** write a test executable under ForkLock, so a parallel fork cannot make its exec fail ETXTBSY ([#3258](https://github.com/SocialGouv/iterion/issues/3258)) ([6db51aa](https://github.com/SocialGouv/iterion/commit/6db51aaa1b22d69e457c5df89c707bff3d716a48))
+
+    <details><summary>why</summary>
+
+    internal/ciguard's TestImageStagingCannotMixWorkflowRuns writes a fake `docker` and execs it while sibling parallel tests fork. A fork that lands between the open and the close of the write copies the descriptor into its child, which holds it until its own exec; the kernel refuses to exec a file anyone holds for writing ("bad interpreter: Text file busy", 1 red in 7 runs on 2026-11-13).
+
+    </details>
+
 ## [6.0.3](https://github.com/SocialGouv/iterion/compare/v6.0.2...v6.0.3) (2026-11-14)
 
 ### Bug Fixes
