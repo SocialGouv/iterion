@@ -32,10 +32,12 @@ const TriggersSchemaVersion = 1
 // which is also what makes a declaration survive an ordinary `iterion
 // connectors gen`, since only ops/ is rewritten there.
 //
-// What a trigger does NOT carry, deliberately: no filter, no payload mapping,
-// no polling cursor. Those are the trigger-ingress family that
-// docs/adr/098-connector-catalog.md defers to a later lot of #1072, and a
-// field invented before its reader is a format nobody can change afterwards.
+// Beyond its id, event and description, a trigger declares how a delivery
+// is read (ADR-168 §5): the outputs extracted from it, the filters an
+// operator may choose, the loop guard that drops the bot's own events, and a
+// recorded sample its declarations are proven against. The package's
+// `ingress:` block is their only reader, so a trigger declaring any of them
+// requires one.
 type Trigger struct {
 	// ID is how a workflow names this event: `<connector>.<resource>.<verb>`,
 	// the SAME rule as an operation id (AddressableOperationID), because both
@@ -50,6 +52,19 @@ type Trigger struct {
 	Event string `yaml:"event" json:"event"`
 	// Description is the one line an operator reads.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// DisplayName is the catalog's label for the event.
+	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	// Outputs are the named values extracted from a delivery: what the
+	// studio offers for mapping and what a run receives by default.
+	Outputs []TriggerOutput `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+	// Filters are the values an operator may filter deliveries on.
+	Filters []TriggerFilter `yaml:"filters,omitempty" json:"filters,omitempty"`
+	// Ignore drops a delivery before any subscription is read.
+	Ignore string `yaml:"ignore,omitempty" json:"ignore,omitempty"`
+	// Sample is a recorded delivery under samples/, read at load into
+	// SampleBody.
+	Sample     string `yaml:"sample,omitempty" json:"sample,omitempty"`
+	SampleBody []byte `yaml:"-" json:"-"`
 }
 
 // triggersDoc is a parsed triggers.yaml.
@@ -59,6 +74,7 @@ type triggersDoc struct {
 	// document's: a mis-copied file would otherwise contribute its events to
 	// the wrong package.
 	Connector string    `yaml:"connector"`
+	Ingress   *Ingress  `yaml:"ingress,omitempty"`
 	Triggers  []Trigger `yaml:"triggers"`
 }
 
@@ -101,6 +117,23 @@ func readTriggers(fsys fs.FS, dir string, p *Package) error {
 	if err := checkDocConnector(TriggersFile, doc.Connector, p.Connector.ID); err != nil {
 		return err
 	}
+	// A sample is read with the document, from the same tree, so every tier
+	// that carries the package carries what its declarations are proven
+	// against.
+	for i, t := range doc.Triggers {
+		if t.Sample == "" {
+			continue
+		}
+		if !validSamplePath(t.Sample) {
+			return fmt.Errorf("spec: %s: trigger %q sample %q is not a samples/<name>.json path inside the package", TriggersFile, t.ID, t.Sample)
+		}
+		b, err := fs.ReadFile(fsys, path.Join(dir, t.Sample))
+		if err != nil {
+			return fmt.Errorf("spec: %s: trigger %q sample: %w", TriggersFile, t.ID, err)
+		}
+		doc.Triggers[i].SampleBody = b
+	}
+	p.Ingress = doc.Ingress
 	p.Triggers = doc.Triggers
 	return nil
 }
@@ -111,6 +144,9 @@ func readTriggers(fsys fs.FS, dir string, p *Package) error {
 // delivery arriving from outside: a declaration that is merely ignored is an
 // event an operator believes is wired.
 func validateTriggers(p *Package) error {
+	if err := validateIngress(p); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, t := range p.Triggers {
 		// Prevents: a declaration no workflow could ever name, which is the
@@ -147,6 +183,9 @@ func validateTriggers(p *Package) error {
 		// to name a trigger would inherit the ambiguity.
 		if _, ok := p.Operation(t.ID); ok {
 			return fmt.Errorf("connector %q: trigger %q is also an operation id — one id is one thing", p.Connector.ID, t.ID)
+		}
+		if err := validateTriggerExtraction(p, t); err != nil {
+			return err
 		}
 	}
 	return nil
