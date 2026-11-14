@@ -550,6 +550,9 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 // and the Verified Action ladder share one source of truth for how a
 // shell recipe is resolved and built.
 func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
+	// The rendering resolve reports and buildCmd runs: resolve hands its
+	// shown form to the hooks, buildCmd resolves its markers.
+	var body authoredBody
 	return func() string {
 			// Expand environment variables FIRST, on the author-controlled
 			// command template only. Doing this AFTER resolveCommandTemplate
@@ -570,7 +573,8 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
 			// under the same shell escaping and the same missing-value rule.
 			td := TemplateDataFromContext(ctx)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+			body = renderCommandBody(expandedCommand, node.CommandRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
+			resolved := body.shown()
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -592,13 +596,16 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 							node.ID, rewrite.SandboxEnv)
 					}
 				} else if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
+					// A command naming no secret holds no marker: the
+					// rewrite is the whole body.
 					resolved = rewritten
+					body = authoredBody{text: rewritten}
 				}
 			}
 			return resolved
 		},
 		func(resolved string) (toolCommand, func(), error) {
-			// Materialise secret placeholders into the command actually
+			// Materialise the author's references into the command actually
 			// executed via env-var indirection, not by inlining the raw
 			// value into the command string: `resolved` (placeholder
 			// form) is what the hooks/logs persist, and the exec'd
@@ -606,11 +613,15 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// either — a command line is visible to any co-resident
 			// local process via `ps`/`/proc/<pid>/cmdline` for the
 			// subprocess's whole lifetime, unlike envp.
-			// Authored: this is the node's own `command:`, so the env-only
-			// class (the run's minted grant) resolves here. A command a
-			// MODEL proposed — the self-repair rung — goes through the plain
-			// materialiser, where it resolves to nothing.
-			materialized, env := e.secretGuard.MaterializeAuthoredShellEnv(resolved)
+			// Authored: only the markers of the node's own `command:`
+			// resolve — the env-only class (the run's minted grant) among
+			// them — and a placeholder that arrived through data stays
+			// text. A command a MODEL proposed — the self-repair rung — goes
+			// through the plain materialiser, the agent sink's.
+			materialized, env, err := body.shellFor(resolved)
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
 			return e.toolNodeCommand(ctx, materialized, env), nil, nil
 		}
 }
@@ -914,6 +925,10 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // node, factored out of executeToolNodeScript so the standard path and
 // the Verified Action ladder share one source of truth.
 func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
+	// The rendering resolve reports and buildCmd writes, and the author's
+	// own text it was rendered from.
+	var body authoredBody
+	var authored string
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
 			// only the author-controlled `${NAME}` braces are env-expanded so
@@ -928,7 +943,9 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
 			// literals.
 			td := TemplateDataFromContext(ctx)
-			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			authored = expanded
+			body = renderScriptBody(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			return body.shown()
 		},
 		func(resolved string) (toolCommand, func(), error) {
 			// Before any temp file exists: a {{vars.x}} naming a server-minted
@@ -936,6 +953,14 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// sit in the script file in clear.
 			if err := refuseMintedScriptRef(e.secretGuard, node); err != nil {
 				return toolCommand{}, nil, err
+			}
+			// Materialise the author's references into the executed script
+			// body only. `resolved` (placeholder form) stays the value passed
+			// to hooks/logs, so the real secret never reaches the event
+			// stream; a placeholder that arrived through data stays text.
+			script, err := body.scriptFor(resolved)
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
@@ -969,18 +994,16 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			}
 			tmpPath := tmpFile.Name()
 			cleanup := func() { _ = os.Remove(tmpPath) }
-			// Materialise secret placeholders into the executed script body
-			// only. `resolved` (placeholder form) stays the value passed to
-			// hooks/logs, so the real secret never reaches the event stream.
-			body := e.secretGuard.MaterializeShell(resolved)
 			// A script body is the author's own program: iterion cannot
 			// rewrite a reference into a variable read for it, so the author
 			// names the environment variable and the engine hands the value
 			// to the interpreter — instead of the body (and the temp file it
 			// is written to, which a copy-based sandbox pushes into the
-			// workspace) carrying the credential in clear.
-			scriptEnv := e.secretGuard.AuthoredEnvForBody(body)
-			if _, werr := tmpFile.WriteString(body); werr != nil {
+			// workspace) carrying the credential in clear. Named by the
+			// AUTHOR's text, before any value is rendered into it: a
+			// placeholder data carries names no variable.
+			scriptEnv := e.secretGuard.AuthoredEnvForBody(authored)
+			if _, werr := tmpFile.WriteString(script); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
@@ -1003,7 +1026,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// dotfile would otherwise be swept up by a later `git add -A`.
 			if inWorkspace && e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
-					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
+					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(script)); rerr != nil {
 						cleanup()
 						return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
 					}
@@ -1532,7 +1555,19 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil)
+	//
+	// The text returned is the run's rendering in its shown form — the one
+	// hooks, events and logs persist; what runs is renderCommandBody's.
+	return renderCommandBody(command, refs, input, vars, td, ctxRunID, guard, shapes).shown()
+}
+
+// renderCommandBody is the run's rendering of a shell body — a `command:`, a
+// `postcondition:` — under guard: resolveCommandTemplate's reading, with each
+// secret reference the author wrote as a marker of this one rendering, which
+// the body's materialiser resolves and nothing else (bodySecrets).
+func renderCommandBody(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes) authoredBody {
+	secrets := newBodySecrets(guard)
+	return authoredBody{text: renderCommand(command, refs, input, vars, td, ctxRunID, guard, shapes, nil, secrets.markFunc()), secrets: secrets}
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -1558,23 +1593,32 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return renderScript(script, refs, input, vars, td, ctxRunID, guard, nil)
+	return renderScriptBody(script, refs, input, vars, td, ctxRunID, guard).shown()
+}
+
+// renderScriptBody is the run's rendering of a `script:` body under guard:
+// resolveScriptTemplate's reading, with each secret reference the author
+// wrote as a marker of this one rendering (bodySecrets).
+func renderScriptBody(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard) authoredBody {
+	secrets := newBodySecrets(guard)
+	return authoredBody{text: renderScript(script, refs, input, vars, td, ctxRunID, guard, nil, secrets.markFunc()), secrets: secrets}
 }
 
 // renderCommand and renderScript are the two readings of a tool body —
 // shell-escaped values with a hole kept as written, JSON literals with a
 // hole as null — named once each so the production path and a dry run
-// cannot choose differently.
-func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved, nil)
+// cannot choose differently. mark is resolveTemplateWith's: a run's
+// bodySecrets, nil for a preview.
+func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string), mark func(text string) string) string {
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved, mark)
 }
 
 // A script body carries no declared shape: every namespace renders as a
 // JSON literal there, which is already what both list types mean to a
 // JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
 // for a `json`. Passing the declarations would be wiring nothing reads.
-func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved, nil)
+func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string), mark func(text string) string) string {
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved, mark)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -1600,12 +1644,14 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
 //
-// secretRef, when set, renders each `{{secrets.NAME}}` the template holds in
-// place of secretRefText: an action's params render the author's own
-// references to markers of that one rendering (authoredSecrets), so their
-// materialiser can tell them from a placeholder data spells. Nil everywhere
-// else.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string), secretRef func(name string) string) string {
+// mark, when set, is handed the text of each secret reference the AUTHOR
+// wrote — a `{{secrets.NAME}}`'s secretRefText, a server-minted
+// `{{vars.x}}`'s placeholder — and renders what stands in its place: a
+// marker of that one rendering (authoredSecrets for an action's params,
+// bodySecrets for a run's tool body), so the materialiser behind it can tell
+// the author's reference from a placeholder data spells. Nil for a preview,
+// which materialises nothing.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string), mark func(text string) string) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -1638,8 +1684,15 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		// rendered value would sit in the script file in clear. The raw
 		// {{!vars.x}} form is the author's own text, quoting included, and
 		// keeps the value in both bodies.
+		//
+		// The placeholder is the author's reference, so it is MARKED like a
+		// `{{secrets.NAME}}`: the materialiser resolves the marker and never a
+		// placeholder that data spells, quotes included.
 		if shellBody && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
 			if ph := guard.AuthoredEnvPlaceholder(ref.Path[0]); ph != "" {
+				if mark != nil {
+					ph = mark(ph)
+				}
 				subs[ref.Raw] = "'" + ph + "'"
 				continue
 			}
@@ -1711,12 +1764,13 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// value is swapped in by the secret guard immediately before
 			// exec (executeToolNodeShell / Script), never landing in the
 			// persisted command text or logs. File secrets render their
-			// mounted path instead.
-			if secretRef != nil {
-				val = secretRef(ref.Path[0])
-			} else {
-				val = secretRefText(guard, ref.Path[0])
+			// mounted path instead. A run renders the author's reference as
+			// its marker (mark), which the materialiser resolves.
+			text := secretRefText(guard, ref.Path[0])
+			if mark != nil {
+				text = mark(text)
 			}
+			val = text
 			handled = true
 		case ref.Kind == ir.RefArtifacts || ref.Kind == ir.RefAttachments || ref.Kind == ir.RefLoop:
 			// The namespaces a prompt resolves — artifacts, attachments, loop
@@ -1770,14 +1824,15 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			subs[ref.Raw] = defaultRender(val, shape)
 		}
 		// A placeholder that arrives through DATA — an input an edge mapped
-		// from a model's output, an upstream output, a launch var — was
-		// written by a model, not by the author: it is the agent sink's,
-		// whatever body it lands in. A secret kept off the agent is defused
-		// here, before the body's materialiser scans the rendered text and
-		// would resolve it under the body's own grant. An action's params
-		// materialise no placeholder at all, only the author's markers
-		// (authoredSecrets): there a data placeholder is text whatever the
-		// secret grants.
+		// from a model's output, an upstream output, a launch var — is not
+		// the author's: no body's materialiser resolves it, since each
+		// resolves only the markers of its own rendering (bodySecrets,
+		// authoredSecrets), so it is text whatever its secret grants. It is
+		// still the agent sink's beyond the body: whatever the body sends on
+		// — a request the egress proxy substitutes on the wire, whoever
+		// spelled the placeholder — carries it as a model would have, so a
+		// secret kept off the agent is defused here, into the form that
+		// resolves nowhere.
 		if ref.Kind != ir.RefSecrets {
 			subs[ref.Raw] = guard.DefuseUngranted(secretsink.Agent, subs[ref.Raw])
 		}

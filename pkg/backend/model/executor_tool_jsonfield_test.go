@@ -270,7 +270,7 @@ func TestPostconditionRecipe_RendersByDeclaration(t *testing.T) {
 	}
 	node.PostcondRefs = mustRefs(node.Postcondition)
 
-	got := e.postconditionBody(context.Background(), node, map[string]any{"ids": []any{"T-1", "T-2"}})
+	got := e.postconditionBody(context.Background(), node, map[string]any{"ids": []any{"T-1", "T-2"}}).shown()
 
 	if want := `IDS='["T-1","T-2"]'`; !strings.Contains(got, want) {
 		t.Errorf("postcondition resolved to %q, want it to contain %q", got, want)

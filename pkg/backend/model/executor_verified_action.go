@@ -247,19 +247,28 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // `command:` is resolved: the same env expansion, the same escaper, the same
 // snapshot, and the same declared shapes — its refs are validated against the
 // same input schema, so a `json`-declared field holding a list must land as
-// one token here exactly as it does in the command itself.
-func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) string {
+// one token here exactly as it does in the command itself — and the same
+// marking of the author's own secret references (renderCommandBody).
+func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) authoredBody {
 	expanded, _ := ToolBodyEnv(node, node.Postcondition, lookupToolEnv)
 	td := TemplateDataFromContext(ctx)
-	return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
+	return renderCommandBody(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
 }
 
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
-	resolve := func() string { return e.postconditionBody(ctx, node, input) }
+	var body authoredBody
+	resolve := func() string {
+		body = e.postconditionBody(ctx, node, input)
+		return body.shown()
+	}
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
-		// A postcondition is the AUTHOR's text, like the node's command: the
-		// env-only class resolves for it, by environment.
-		materialized, env := e.secretGuard.MaterializeAuthoredShellEnv(resolved)
+		// A postcondition is the AUTHOR's text, like the node's command: its
+		// own references resolve — the env-only class by environment — and
+		// a placeholder that arrived through data stays text.
+		materialized, env, err := body.shellFor(resolved)
+		if err != nil {
+			return toolCommand{}, nil, err
+		}
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, postcondToolName(node), resolve, buildCmd)

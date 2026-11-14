@@ -76,8 +76,10 @@ import (
 // MaterializeShellEnv), `egress` gates the substitution on the wire
 // (MaterializeForHostWithin); `command` and `params` gate the authored
 // bodies the executor materialises (MaterializeShell,
-// MaterializeAuthoredShellEnv, MaterializeFor). A placeholder of a secret
-// that does not grant the sink is left as written — never resolved there.
+// MaterializeAuthoredShellEnv, MaterializeFor), each called on the text of
+// ONE reference the author wrote, never on a rendered body. A placeholder of
+// a secret that does not grant the sink is left as written — never resolved
+// there.
 type Secret struct {
 	Name        string
 	Value       string
@@ -648,7 +650,9 @@ func (g *Guard) MaterializesFor(sink string) bool {
 // It is the guard's answer to a placeholder that arrives through DATA — a
 // model's output a prompt or an edge carried into a tool body — rather than
 // through the author's own `{{secrets.X}}`: the text is model-authored, so
-// it is the agent sink's, whatever body it lands in. Nil-safe.
+// it is the agent sink's beyond the body (a body's own materialiser never
+// resolves it: it resolves only the author's references), and the egress
+// proxy would substitute it in whatever the body sends. Nil-safe.
 func (g *Guard) DefuseUngranted(sink, s string) string {
 	st := g.load()
 	if st == nil || s == "" || len(st.placeholderSinks) == 0 {
@@ -960,9 +964,11 @@ func (g *Guard) MaterializeFor(sink, s string) string {
 // Escape each value for inside-single-quote use (each single quote becomes
 // close-quote + backslash-quote + reopen-quote) so the surrounding quotes stay
 // balanced and the value can never be interpreted as shell syntax.
-// Use this at every shell/tool-node exec site of an AUTHORED body (a tool
-// node's script: the `command` sink); the (raw) Materialize is for a model's
-// own tool input (the `agent` sink).
+// Use this on the text of ONE reference the author wrote in a body (a tool
+// node's script: the `command` sink) — the executor resolves each authored
+// reference through it, never the rendered body, where data spells
+// placeholders as well as the author does; the (raw) Materialize is for a
+// model's own tool input (the `agent` sink).
 func (g *Guard) MaterializeShell(s string) string {
 	st := g.load()
 	if st == nil || s == "" || len(st.placeholderValue) == 0 {
@@ -1055,18 +1061,24 @@ func (g *Guard) materializeShellEnvAt(sink, s string) (string, map[string]string
 	return s, env
 }
 
-// MaterializeAuthoredShellEnv is MaterializeShellEnv for text the workflow's
-// AUTHOR wrote — a tool node's own `command:`, its postcondition. It resolves
-// everything MaterializeShellEnv resolves, plus the env-only class: a
-// credential the server minted for this run, which reaches the command
-// through the child process's environment and nowhere else.
+// MaterializeAuthoredShellEnv is MaterializeShellEnv for a reference the
+// workflow's AUTHOR wrote — in a tool node's own `command:`, its
+// postcondition. It resolves everything MaterializeShellEnv resolves, at the
+// `command` sink, plus the env-only class: a credential the server minted for
+// this run, which reaches the command through the child process's environment
+// and nowhere else.
 //
 // The distinction is PROVENANCE, not sink. A command a MODEL proposed (the
 // self-repair rung) goes through plain MaterializeShellEnv, where an env-only
 // placeholder resolves to nothing — so a model that writes one, or copies one
 // out of the failed command it was shown, gets the placeholder and not the
 // grant. The plain method is the safe default every new call site inherits;
-// this one is chosen explicitly, for text no model can author.
+// this one is chosen explicitly, for text no model can author — which a
+// rendered body is NOT: data an edge or a launch var carries into it spells
+// placeholders as well as the author does. So s is the text of ONE authored
+// reference, in the form it stands in the body (the placeholder, quoted or
+// bare); the executor marks each such reference in its rendering and resolves
+// the marks through here, one at a time (pkg/backend/model, bodySecrets).
 //
 // An env-only placeholder is converted ONLY in its single-quoted form, with
 // no inline fallback: the whole point is that its value never enters an argv.
@@ -1102,7 +1114,9 @@ func (g *Guard) MaterializeAuthoredShellEnv(s string) (string, map[string]string
 // placeholder is that name (it is a valid POSIX environment-variable name by
 // construction, which is what MaterializeShellEnv already relies on). Only a
 // body that names one receives it, so the value reaches the one node that
-// asked and not every tool process of the run. Nil-safe.
+// asked and not every tool process of the run. s is the author's text as
+// written, before any value is rendered into it: a placeholder data carries
+// names no variable. Nil-safe.
 func (g *Guard) AuthoredEnvForBody(s string) map[string]string {
 	st := g.load()
 	if st == nil || s == "" || len(st.envOnlyValue) == 0 {

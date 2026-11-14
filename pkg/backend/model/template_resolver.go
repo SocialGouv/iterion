@@ -313,7 +313,7 @@ func (r *TemplateResolver) ResolveRef(ref string, input map[string]any, td *Temp
 // `json` value renders as one token and a `string[]` as argv words, exactly
 // as the run will render them; nil renders every reference undeclared.
 func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, shapes *Shapes, unresolved func(ref string)) string {
-	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved)
+	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved, nil)
 }
 
 // RenderScript renders a tool node's `script:` as the executor does before
@@ -321,5 +321,5 @@ func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, t
 // to nothing the language's null — and said to unresolved when a caller
 // listens, since the null hides it from the text.
 func RenderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
-	return renderScript(script, refs, input, vars, td, runID, nil, unresolved)
+	return renderScript(script, refs, input, vars, td, runID, nil, unresolved, nil)
 }

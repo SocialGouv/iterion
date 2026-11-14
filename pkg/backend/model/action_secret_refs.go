@@ -34,8 +34,8 @@ import (
 type authoredSecrets struct {
 	guard     *secretguard.Guard
 	transport actionSecrets
-	// byName is the marker of each name referenced, drawn on first use.
-	byName map[string]string
+	// byText is the marker of each reference text, drawn on first use.
+	byText map[string]string
 	// text is each marker's canonical text, secretRefText's reading of its
 	// name: what the reference renders to on every other surface.
 	text map[string]string
@@ -50,20 +50,28 @@ type authoredSecrets struct {
 // spell is the random part.
 const authoredMarkerPrefix = "__ITERION_AUTHORED_"
 
+// drawAuthoredMarker draws a fresh marker: letters, digits and underscores,
+// an underscore first — the spelling every reader of a marker relies on,
+// drawn in this one place for both tables (authoredSecrets, bodySecrets).
+func drawAuthoredMarker() string {
+	return authoredMarkerPrefix + rand.Text() + "__"
+}
+
 func newAuthoredSecrets(guard *secretguard.Guard, transport actionSecrets) *authoredSecrets {
-	return &authoredSecrets{guard: guard, transport: transport, byName: map[string]string{}, text: map[string]string{}}
+	return &authoredSecrets{guard: guard, transport: transport, byText: map[string]string{}, text: map[string]string{}}
 }
 
 // marker is the template layer's rendering of an authored `{{secrets.NAME}}`
-// (resolveTemplateWith's secretRef): the marker standing for name in this
-// rendering, drawn on its first reference.
-func (a *authoredSecrets) marker(name string) string {
-	if m, ok := a.byName[name]; ok {
+// (resolveTemplateWith's mark), handed the reference's text — secretRefText's
+// reading of its name: the marker standing for that text in this rendering,
+// drawn on its first reference.
+func (a *authoredSecrets) marker(text string) string {
+	if m, ok := a.byText[text]; ok {
 		return m
 	}
-	m := authoredMarkerPrefix + rand.Text() + "__"
-	a.byName[name] = m
-	a.text[m] = secretRefText(a.guard, name)
+	m := drawAuthoredMarker()
+	a.byText[text] = m
+	a.text[m] = text
 	a.order = append(a.order, m)
 	a.leafR, a.shownR = nil, nil
 	return m
