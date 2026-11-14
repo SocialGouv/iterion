@@ -1,7 +1,11 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.7
+version: 0.1.8
+## 0.1.8 — the run's duration budget follows the agent's tool loop: 30
+## minutes, not 10. With tool_max_steps 60 (0.1.7) a step on the team
+## gateway's deepseek takes ~10-15 s, and a question that needed ~50 steps
+## died on its 10-minute budget before it posted its answer (VAO !48).
 ## 0.1.7 — the converse agent declares its tools (bash, read_file, glob,
 ## grep): a routing cell that moves it to claw (the team gateway lanes) gave
 ## it NO tool, so it could neither read the diff nor post and answered a

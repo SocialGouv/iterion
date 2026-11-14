@@ -337,10 +337,15 @@ workflow revi_converse:
   entry: converse_agent
 
   budget:
-    ## One short LLM step + a deterministic gate. Conversations
-    ## must feel snappy.
+    ## One agent tool loop + a deterministic gate. The loop is bounded at
+    ## converse_agent's tool_max_steps (60), and on the team gateway's
+    ## deepseek one step takes ~10-15 s (up to ~30 s with its tools), so
+    ## the run's duration must outlive the step bound: at 10 minutes a
+    ## question that needed ~50 steps died on its budget before it posted
+    ## (VAO !48, 2026-11-14). A short question still answers in a few
+    ## minutes; the bound is what a long one may take, not what it costs.
     max_parallel_branches: 1
-    max_duration: "10m"
+    max_duration: "30m"
     max_cost_usd: 5
 
   converse_agent -> converse_health with {

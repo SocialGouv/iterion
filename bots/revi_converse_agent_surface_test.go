@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -52,5 +53,27 @@ func TestReviConverseAgentToolLoopOutlivesTheClawDefault(t *testing.T) {
 	const floor = 20
 	if got := reviConverseAgent(t).ToolMaxSteps; got < floor {
 		t.Errorf("converse_agent's tool_max_steps = %d, want >= %d — on claw the loop stops at %d steps, before the reply is verified", got, floor, model.DefaultClawToolMaxSteps)
+	}
+}
+
+// The run's duration budget must outlive the agent's tool loop: a question
+// that needs most of tool_max_steps has to finish and post its answer
+// before the run is cut. On the team gateway one deepseek step takes
+// ~10-15 s and a step with its tool calls up to ~30 s; at 10 minutes, a
+// question that needed ~50 steps died on its budget with nothing posted
+// (VAO !48, 2026-11-14). The floor is the step bound at 30 s a step.
+func TestReviConverseBudgetOutlivesTheToolLoop(t *testing.T) {
+	const perStep = 30 * time.Second
+	wf := compileBotFile(t, filepath.Join(botsDir(t), "revi-converse", "main.bot"))
+	if wf.Budget == nil || wf.Budget.MaxDuration == "" {
+		t.Fatal("revi-converse declares no max_duration")
+	}
+	got, err := time.ParseDuration(wf.Budget.MaxDuration)
+	if err != nil {
+		t.Fatalf("revi-converse max_duration %q: %v", wf.Budget.MaxDuration, err)
+	}
+	steps := reviConverseAgent(t).ToolMaxSteps
+	if want := time.Duration(steps) * perStep; got < want {
+		t.Errorf("revi-converse max_duration = %s, want >= %s (tool_max_steps %d at %s a step) — a long question dies on its budget before it posts", got, want, steps, perStep)
 	}
 }
