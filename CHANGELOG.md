@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.0.3](https://github.com/SocialGouv/iterion/compare/v6.0.2...v6.0.3) (2026-11-14)
+
+### Bug Fixes
+
+* **webhooks:** verify an HMAC-signed delivery before charging its admission ([#3278](https://github.com/SocialGouv/iterion/issues/3278)) ([f621951](https://github.com/SocialGouv/iterion/commit/f62195157875c65bc309bc53f57bcc04bd67ebc8)), closes [#3276](https://github.com/SocialGouv/iterion/issues/3276)
+
+    <details><summary>why</summary>
+
+    On an hmac-mode webhook (GitHub, Forgejo, the generic webhook in hmac mode) the middleware skipped authentication and charged the hook's rate bucket and the tenant's durable monthly counter before the provider handler verified the signature. A request with no valid signature still spent both, so anyone holding a hook's URL could exhaust them and get the tenant's genuine deliveries answered 429.
+
+    </details>
+
 ## [6.0.2](https://github.com/SocialGouv/iterion/compare/v6.0.1...v6.0.2) (2026-11-14)
 
 ### Bug Fixes
