@@ -252,6 +252,13 @@ type Context struct {
 	Artifacts func(path []string) any
 	Loop      func(path []string) any // loop.<name>.<...>
 	Run       func(path []string) any // run.<...>
+	// Named holds namespaces a caller declares beyond the standard ones,
+	// keyed by name (a connector package's `payload`, `headers`, `event`…).
+	// A named namespace is resolved by its callback and never by the
+	// implicit-input rule; it never shadows a standard namespace, which
+	// resolves first. A caller that leaves Input nil also turns every
+	// other unknown root into an error instead of a field of `input`.
+	Named map[string]func(path []string) any
 }
 
 // Eval evaluates the AST against the context and returns the resulting
@@ -1426,6 +1433,9 @@ func resolvePath(namespace string, path []string, st *evalState) (any, error) {
 			return nil, nil
 		}
 		return ctx.Run(path), nil
+	}
+	if fn, ok := ctx.Named[namespace]; ok && fn != nil {
+		return fn(path), nil
 	}
 	// Bare identifier (e.g. `approved` in a `when` clause): interpret as a
 	// field of the implicit `input` namespace. This matches the legacy

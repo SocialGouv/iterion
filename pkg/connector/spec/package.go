@@ -55,6 +55,10 @@ type Package struct {
 	// triggers.yaml. Empty for every outbound-only package, which is most of
 	// them.
 	Triggers []Trigger
+	// Ingress is how a delivery for this package is read and authenticated
+	// (triggers.yaml's `ingress:` block, ADR-168 §3). Nil when the package
+	// declares none.
+	Ingress *Ingress
 }
 
 // Operations flattens every domain's operations, sorted by id, so callers
