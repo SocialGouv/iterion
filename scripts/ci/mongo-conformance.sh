@@ -10,9 +10,9 @@
 # mode is the worst one: a suite nobody runs locally, green by absence. The
 # job's own header says the same thing about itself.
 #
-# Both of the job's `go test` invocations run, not just the first. The recipe in
-# docs/development.md extracts `\./pkg/[a-z/]+/\.\.\.`, which cannot see the
-# second line — `./pkg/server/ -run '^TestRound3CloudCoordinatorBusHoldRecovery$'`,
+# Every `go test` invocation of the job runs, not just the first. The recipe in
+# docs/development.md extracts `\./pkg/[a-z/]+/\.\.\.`, which cannot see a
+# targeted line such as `./pkg/server/ -run '^TestRound3CloudCoordinatorBusHoldRecovery$'`,
 # the public cloud coordinator against the durable outbox. A member that ran
 # only the first would report a verdict for a job it had not finished.
 #

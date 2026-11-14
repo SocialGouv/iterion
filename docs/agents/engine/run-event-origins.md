@@ -129,3 +129,20 @@ the guarantee does not join every callback goroutine. StopBackground preserves
 run status; Drain retains its existing interruption rules. Explicit feeds may
 end before Drain emits its final legacy interruption event. Protocol-one
 admission and the default stream migration remain separately gated.
+
+## Snapshot scan binding
+
+BuildSnapshot loads metadata through LoadRunWithValueFormat, then scans events
+with that same run's header bound into the context. A native filesystem or
+Mongo store then refuses a run recreated under the same ID with a different
+header between those two reads, as it already refused a deleted one: the HTTP
+and WS snapshot fails instead of folding a successor's events into the loaded
+metadata. A scan failure after events reached the reducer returns no snapshot.
+Metadata naming another run, or none, is refused before the scan; a custom
+store that ignores its context gets no guarantee.
+
+The binding covers this function's own two reads. It does not bind a snapshot
+to the WS upgrade's authorization or to later subscriptions, detect a
+canonical-tenant change under an unchanged header, distinguish historical runs
+whose births are both empty, or pin Service.SnapshotCtx's merge reconciliation,
+which reads the run before BuildSnapshot. Protocol-one admission stays off.

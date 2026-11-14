@@ -1657,8 +1657,22 @@ func worktreeAvailable(dir string) bool {
 // BuildSnapshot is the cold-read convenience: load run.json + events
 // from the store, then fold them into a RunSnapshot. Events are
 // streamed via ScanEvents to keep memory bounded for long runs.
+//
+// The scan carries the loaded run's header, so a native store refuses
+// the events of a successor recreated under the same ID with a different
+// header instead of folding them into this run's metadata. Caller intent
+// is compared, never replaced, and nothing is reloaded. A store that
+// ignores its context gets no such guarantee.
 func BuildSnapshot(ctx context.Context, s store.RunStore, runID string) (*RunSnapshot, error) {
-	run, err := s.LoadRun(ctx, runID)
+	ctx, run, err := store.LoadRunWithValueFormat(ctx, s, runID)
+	if err != nil {
+		return nil, err
+	}
+	binding, err := store.CaptureRunDataBinding(store.RunDataHeader{RunID: run.ID, Format: store.ValueFormat(run.FormatVersion), Protocol: run.DataProtocol, BirthID: run.BirthID})
+	if err != nil {
+		return nil, err
+	}
+	ctx, err = store.WithRunDataBinding(ctx, binding)
 	if err != nil {
 		return nil, err
 	}

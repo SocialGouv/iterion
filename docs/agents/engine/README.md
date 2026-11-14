@@ -27,4 +27,4 @@ view in [architecture.md](../../architecture.md).
 | [retained-payloads.md](retained-payloads.md) | FS/Mongo grants and cleanup limits. |
 | [run-streams.md](run-streams.md) | Mongo/FS selection, replay, lifetime. |
 | [run-cursors.md](run-cursors.md) | Event cursor boundaries and legacy compatibility. |
-| [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker and Service feeds. |
+| [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker, Service feeds and snapshot scans. |

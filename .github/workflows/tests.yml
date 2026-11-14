@@ -866,6 +866,11 @@ jobs:
           # including tenants that only subscribe to custom/run events.
           go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
+          # BuildSnapshot's run-origin matrix against the native Mongo store.
+          # The `/...` form keeps pkg/runview visible to pkg/store/mongo's
+          # gated-package guard; -run leaves the rest of it to `test`.
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
+            -run '^TestSnapshotOriginNativeMongo$'
 
       - name: Subbot lease Mongo and NATS witness
         env:
