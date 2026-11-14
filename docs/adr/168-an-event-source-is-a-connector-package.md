@@ -62,7 +62,7 @@ ingress:
     unit: s                        # s | ms
     tolerance: 5m
   installation: 'payload.team_id'  # optional: the authenticated identity a delivery must carry (§6)
-  event: { header: X-Forgejo-Event }          # or { field: type }
+  event: { header: X-Forgejo-Event }          # or { from: 'payload.type' }
   delivery_id: { header: X-Forgejo-Delivery } # metadata only (see "identity")
   headers: [X-Forgejo-Event, X-Forgejo-Delivery]   # the only headers an expression may read
   redact: [token]                             # body fields removed from the event
