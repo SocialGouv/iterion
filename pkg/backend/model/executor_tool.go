@@ -936,29 +936,34 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // node, factored out of executeToolNodeScript so the standard path and
 // the Verified Action ladder share one source of truth.
 func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
-	// The rendering resolve reports and buildCmd writes, and the author's
-	// own text it was rendered from.
+	// The rendering resolve reports and buildCmd writes, the author's own
+	// text it was rendered from, and the rendering's refusal.
 	var body authoredBody
 	var authored string
+	var renderErr error
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
 			// only the author-controlled `${NAME}` braces are env-expanded so
-			// injected values from inputs/vars stay inert. But where the shell
-			// path uses shell-escape, script: tools use resolveScriptTemplate
-			// (JSON literal rendering) so values land as valid JS/Python/Ruby
-			// literals — shell-escape's single-quote wrapping breaks
-			// script-language string parsers when the value contains embedded
-			// apostrophes. No compression: a script body is not a shell command line.
+			// injected values from inputs/vars stay inert. A js/py body
+			// renders values as JSON literals — shell-escape's single-quote
+			// wrapping breaks script-language string parsers when the value
+			// contains embedded apostrophes — and a sh/bash body writes each
+			// for the quoting the shell reads it in (renderScriptIn). No
+			// compression: a script body is not a shell command line.
 			expanded, _ := ToolBodyEnv(node, node.Script, lookupToolEnv)
 			// Same single pass over one snapshot as the shell recipe:
-			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
-			// literals.
+			// {{run.*}} and {{outputs.*}} beside {{input.*}}.
 			td := TemplateDataFromContext(ctx)
 			authored = expanded
-			body = renderScriptBody(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
+			body, renderErr = renderScriptBodyIn(expanded, node.Language, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
 			return body.shown()
 		},
 		func(resolved string) (toolCommand, func(), error) {
+			// Before any temp file exists: a shell script holding data where
+			// no quoting holds a value is refused, whatever the value.
+			if renderErr != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, renderErr)
+			}
 			// Before any temp file exists: a {{vars.x}} naming a server-minted
 			// (env-only) credential is refused, not rendered — the value would
 			// sit in the script file in clear.
@@ -1605,6 +1610,10 @@ func renderCommandBody(command string, refs []*ir.Ref, input, vars map[string]an
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
+//
+// A sh/bash body is not one of these: a JSON literal is a double-quoted word
+// a shell expands, so a tool node's script goes through renderScriptIn,
+// which writes a shell script's data for the quoting it stands in.
 func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
@@ -1624,6 +1633,17 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 func renderScriptBody(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard) authoredBody {
 	secrets := newBodySecrets(guard)
 	return authoredBody{text: renderScript(script, refs, input, vars, td, ctxRunID, guard, nil, secrets.markFunc()), secrets: secrets}
+}
+
+// renderScriptBodyIn is the run's rendering of a tool node's `script:`
+// written in language under guard: renderScriptIn's reading — a sh/bash
+// script's data written for the quoting it stands in — with each secret
+// reference the author wrote as a marker of this one rendering
+// (bodySecrets). The error is a shell script's refusal (renderShellScript).
+func renderScriptBodyIn(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes) (authoredBody, error) {
+	secrets := newBodySecrets(guard)
+	text, err := renderScriptIn(script, language, refs, input, vars, td, ctxRunID, guard, shapes, nil, secrets.markFunc())
+	return authoredBody{text: text, secrets: secrets}, err
 }
 
 // renderCommand and renderScript are the two readings of a tool body —

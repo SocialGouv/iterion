@@ -218,7 +218,7 @@ const (
 	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
 	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
 	// class): the prompt rendering lands as ONE word no file matches
-	// (shell-escaped in a command, JSON-quoted in a shell script), and the
+	// (shell-escaped in a command and at a shell script's word position), and the
 	// quoted env var collapses the same way — or never expands at all under
 	// single quotes. Both shell bodies only: a js/py script consumes the ref
 	// as data. Both warnings — the catalogue carries zero instances (the

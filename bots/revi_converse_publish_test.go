@@ -111,9 +111,12 @@ func renderReviConversePublish(t *testing.T, input, vars map[string]any, runURL,
 	}
 	td := &model.TemplateData{RunID: publishRunID, Run: map[string]any{"id": publishRunID, "url": runURL}}
 	var unresolved []string
-	script := model.RenderScript(tn.Script, tn.ScriptRefs, input, all, td, publishRunID, func(ref string) {
+	script, err := model.RenderScript(tn.Script, tn.Language, tn.ScriptRefs, input, all, td, publishRunID, nil, func(ref string) {
 		unresolved = append(unresolved, ref)
 	})
+	if err != nil {
+		t.Fatalf("publish_reply does not render: %v", err)
+	}
 	slices.Sort(unresolved)
 	if !slices.Equal(unresolved, wantUnresolved) {
 		t.Fatalf("publish_reply left %v unresolved, want %v — the case does not drive the input it names", unresolved, wantUnresolved)

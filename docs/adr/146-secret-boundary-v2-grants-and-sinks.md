@@ -312,7 +312,10 @@ body does.
   into a sh or bash script is a double-quoted word the shell expands, so
   it can still reach the environment — `$(env)`, or in bash a name
   enumerated with `${!prefix@}` and read with `${!x}` — the pre-existing
-  data-in-a-shell-script class, open on its own ticket (#3291). Where the shell expands nothing — single
+  data-in-a-shell-script class, open on its own ticket (#3291). #3291
+  closed it: a sh or bash script's data is written for the quoting it
+  stands in, and the shell expands nothing in it ([dsl.md](../dsl.md)).
+  Where the shell expands nothing — single
   quotes, a heredoc whose delimiter is quoted — the script therefore reads
   the variable's name and not the value; `C342` warns on those positions,
   and the reference belongs outside the quotes, in an unquoted heredoc, or

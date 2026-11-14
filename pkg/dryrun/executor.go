@@ -22,7 +22,9 @@ const (
 	// KindUnresolvedRef: a `{{…}}` the renderer kept as written — the node
 	// would have sent the placeholder to the model or the shell.
 	KindUnresolvedRef Kind = "unresolved_ref"
-	// KindShellSyntax: the interpreter refuses the rendered text.
+	// KindShellSyntax: the interpreter refuses the rendered text, or the
+	// run refuses to render it — a shell script holding data where no
+	// quoting holds a value.
 	KindShellSyntax Kind = "shell_syntax"
 	// KindUnchecked: something a dry run has no reading of — an interpreter
 	// without a checker, a connector action, a subbot child — said, never
@@ -437,7 +439,12 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		case n.Script != "":
 			body, reads := x.bodyEnv(n, n.Script)
 			x.envReading(id, "script", reads)
-			rendered := model.RenderScript(body, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script", input))
+			rendered, err := model.RenderScript(body, n.Language, n.ScriptRefs, input, vars, td, runID, shapes, x.reporter(id, "script", input))
+			if err != nil {
+				// The run's refusal: a shell script holding data where no
+				// quoting holds a value never reaches its interpreter.
+				x.add(Finding{Node: id, Kind: KindShellSyntax, Where: "script", Detail: "the run refuses this script: " + err.Error()})
+			}
 			x.shellCheck(id, "script", n.Language, rendered, reads)
 		default:
 			body, reads := x.bodyEnv(n, n.Command)

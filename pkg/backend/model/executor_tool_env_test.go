@@ -53,7 +53,9 @@ func TestExpansionStillPrecedesSubstitution(t *testing.T) {
 			want  string
 		}{
 			{"command", shell(), "echo '" + payload + "'"},
-			{"script", script(), `x = "` + payload + `"`},
+			// A sh script (the node's default language) writes the value
+			// as a command does, one single-quoted word.
+			{"script", script(), "x = '" + payload + "'"},
 			{"postcondition", e.postconditionBody(ctx, node, input).shown(), "test '" + payload + "'"},
 		} {
 			if tc.got != tc.want {
