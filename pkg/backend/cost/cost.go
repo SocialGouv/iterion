@@ -255,7 +255,7 @@ func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadToke
 	// sources publishes a cache-read rate today, so the cache share is not
 	// subtracted here: the full input prices at the input rate, exactly as
 	// before the cache split.
-	if pricing, ok := clawapi.LookupModelPricing(model); ok {
+	if pricing, ok := livePricing(model); ok {
 		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
 	}
 	// The model string arrives in every shape a backend might report:
@@ -296,6 +296,11 @@ func splitModelSpec(model string) (prefix, bare string) {
 	}
 	return model[:i], model[i+1:]
 }
+
+// livePricing is claw's live-registry seam, a package var like specLookup:
+// the real lookup reads the host's cache and refreshes it from the network in
+// a goroutine that outlives the call, so tests pin it to a fixture instead.
+var livePricing = clawapi.LookupModelPricing
 
 // specLookup is the aggregator seam, a package var so tests swap in a fixture
 // instead of resolving against whatever the host's ~/.iterion cache last

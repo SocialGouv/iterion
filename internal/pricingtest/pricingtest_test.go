@@ -1,7 +1,9 @@
 package pricingtest
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,5 +43,15 @@ func TestIsolateDoesNotReadAPlantedTempCache(t *testing.T) {
 	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(map[string]modelspecs.Spec{"fixture/isolation": want})))
 	if got, ok := modelspecs.Default().LookupExact("fixture", "isolation"); !ok || got.InputCostPerM != want.InputCostPerM {
 		t.Fatalf("explicit seeded registry was lost: %+v, found=%v", got, ok)
+	}
+}
+
+// A forced refresh — `iterion models --refresh`, the server's ?refresh=1 —
+// must not reach models.dev from an isolated binary.
+func TestIsolateRefusesAForcedRefresh(t *testing.T) {
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
+	t.Cleanup(Isolate())
+	if err := modelspecs.Default().Refresh(context.Background()); !errors.Is(err, modelspecs.ErrSeededRegistryNeverFetches) {
+		t.Fatalf("Refresh on the isolated registry = %v, want ErrSeededRegistryNeverFetches: a forced refresh would fetch models.dev", err)
 	}
 }

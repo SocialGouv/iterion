@@ -3,13 +3,13 @@ package runtime
 import (
 	"fmt"
 	"github.com/SocialGouv/iterion/internal/detecttest"
+	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
+	"github.com/SocialGouv/iterion/internal/proctest"
 	"io"
 	"os"
 	"sync"
 	"testing"
-
-	"github.com/SocialGouv/iterion/internal/hometest"
-	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // Tool nodes and the fake shared sandboxes here start real shells, and a
@@ -22,6 +22,7 @@ import (
 // released, unremovable, or re-created after its release, wherever it lies —
 // fails the package too, reclaimed by its recorded path.
 func TestMain(m *testing.M) {
+	pricingtest.Isolate() // for the rest of the process: no restore before os.Exit
 	restoreProviders := detecttest.IsolateProviders()
 	code := hometest.Isolate(func() int {
 		return proctest.NoProcessLeaks(func() int {

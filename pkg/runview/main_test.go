@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
@@ -19,5 +20,7 @@ import (
 // repository the tests run in gained a dead worktree entry, and names the
 // test that left it.
 func TestMain(m *testing.M) {
-	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
+	pricingtest.Isolate() // for the rest of the process: no restore before os.Exit
+	code := proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
+	os.Exit(code)
 }

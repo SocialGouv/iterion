@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/internal/testparallel"
 )
 
@@ -43,7 +44,7 @@ func TestMain(m *testing.M) {
 	capParallelism()
 	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	os.Exit(m.Run())
+	os.Exit(pricingtest.Run(m.Run))
 }
 
 // capParallelism lowers `-parallel` to botsParallelCap when the operator left

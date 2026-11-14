@@ -111,7 +111,9 @@ path. A controlled local transport demonstrates writes after cache removal;
 it does not reproduce the exact CI cleanup interleaving.
 
 Delegate TestMain now uses `pricingtest.Isolate`, as model and runner already
-do. A fresh cache with a different price must leave the static estimate intact.
+do, and since #3257 so does every test binary that links a live tier (cost and
+modelspecs, below pricingtest, on their own; pkg/claw under its own guard),
+under a guard reading the dependency graph. A fresh cache with a different price must leave the static estimate intact.
 The shared helper uses an empty `NewSeeded` registry: its former fixed
 `iterion-modelspecs-test-absent.json` path could actually exist. The helper's
 test first reads a valid planted cache through an explicit registry, then

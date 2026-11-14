@@ -5,11 +5,12 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/detecttest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 )
 
 func TestMain(m *testing.M) {
 	restoreProviders := detecttest.IsolateProviders()
-	code := m.Run()
+	code := pricingtest.Run(m.Run)
 	restoreProviders()
 	os.Exit(code)
 }

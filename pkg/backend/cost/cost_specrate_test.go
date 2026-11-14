@@ -1,21 +1,74 @@
 package cost
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	clawapi "github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
-// TestMain pins the aggregator tier OFF for the whole package. Every other
-// test here asserts an exact dollar figure or an exact zero, and the real
-// registry answers from the host's ~/.iterion cache — so without this the
-// figures would be whatever the developer's machine last fetched from
-// models.dev, and "unknown model returns 0" would depend on models.dev not
-// knowing it. Tests that exercise the tier opt back in via withSpecs.
+// TestMain pins both live tiers OFF for the whole package (this package sits
+// below internal/pricingtest, which imports it, so it isolates itself). Every
+// other test here asserts an exact dollar figure or an exact zero, and the
+// real tiers answer from the host's caches and refresh them from the network
+// — so without this the figures would be whatever the developer's machine
+// last fetched. Both seams are stubbed (tests opt back in via withSpecs and
+// withLivePricing), and claw's registry is also switched off on an empty
+// cache this binary owns, for anything that reaches it past the seam.
 func TestMain(m *testing.M) {
-	specLookup = func(string, string) (modelspecs.Spec, bool) { return modelspecs.Spec{}, false }
-	os.Exit(m.Run())
+	specLookup = stubSpecLookup
+	// The process registry too: anything reaching it past the seam — a stub
+	// gone live, a test putting the real wiring back — finds a seeded table that
+	// never fetches.
+	modelspecs.SetDefault(modelspecs.NewSeeded(nil))
+	livePricing = stubLivePricing
+	cache, err := os.MkdirTemp("", "cost-claw-cache-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cost TestMain:", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1"); err != nil {
+		fmt.Fprintln(os.Stderr, "cost TestMain:", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_CACHE_HOME", cache); err != nil {
+		fmt.Fprintln(os.Stderr, "cost TestMain:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.Remove(cache) // empty unless a test wrote there; never a tree walk
+	os.Exit(code)
+}
+
+// stubSpecLookup is the aggregator tier as TestMain pins it: it knows nothing.
+func stubSpecLookup(string, string) (modelspecs.Spec, bool) { return modelspecs.Spec{}, false }
+
+// stubLivePricing is claw's tier as TestMain pins it: it prices nothing.
+func stubLivePricing(string) (clawapi.ModelPricing, bool) { return clawapi.ModelPricing{}, false }
+
+// TestTheTestBinaryRunsOnStubbedPricingTiers is the run-time witness
+// internal/pricingtest's guard requires of this package: both live tiers are
+// stubbed and claw's registry is switched off, whatever TestMain looks like.
+func TestTheTestBinaryRunsOnStubbedPricingTiers(t *testing.T) {
+	if got := os.Getenv("CLAW_DISABLE_LIVE_REGISTRY"); got != "1" {
+		t.Errorf("CLAW_DISABLE_LIVE_REGISTRY = %q, want 1: claw's registry would read the host's cache and refresh it", got)
+	}
+	// The function itself, not its answer: with the switch on, claw's real
+	// lookup answers nothing either.
+	if reflect.ValueOf(livePricing).Pointer() != reflect.ValueOf(stubLivePricing).Pointer() {
+		t.Error("livePricing is not stubLivePricing: claw's tier seam is not stubbed")
+	}
+	if reflect.ValueOf(specLookup).Pointer() != reflect.ValueOf(stubSpecLookup).Pointer() {
+		t.Error("specLookup is not stubSpecLookup: the aggregator seam is not stubbed")
+	}
+	if err := modelspecs.Default().Refresh(context.Background()); !errors.Is(err, modelspecs.ErrSeededRegistryNeverFetches) {
+		t.Errorf("the process registry refreshed (%v): TestMain did not seed it, so a lookup past the seam reaches models.dev", err)
+	}
 }
 
 // withSpecs points the aggregator tier at a fixture for the duration of a test.
@@ -101,9 +154,7 @@ func TestEstimateUSD_PartialAggregatorPriceFallsThroughWhole(t *testing.T) {
 // Tier order: claw's live registry keeps its precedence, so no run's charged
 // rate moves because iterion started reading its own aggregator.
 func TestEstimateUSD_LiveRegistryStillOutranksAggregator(t *testing.T) {
-	dir := liveCacheDir(t)
-	t.Setenv("XDG_CACHE_HOME", dir)
-	seedClawCache(t, dir, "gpt-5", 99, 999)
+	withLivePricing(t, map[string]clawapi.ModelPricing{"gpt-5": {InputUSDPerMillion: 99, OutputUSDPerMillion: 999, Source: "live"}})
 	withSpecs(t, map[string]modelspecs.Spec{"gpt-5": {InputCostPerM: 1, OutputCostPerM: 2}})
 
 	if got := EstimateUSD("gpt-5", 1_000_000, 1_000_000); got != 1098 {
