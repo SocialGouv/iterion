@@ -41,7 +41,7 @@ func RegisterDiagnosticCommands(r *Registry) {
 			apiKey := os.Getenv("ANTHROPIC_API_KEY")
 			if apiKey == "" {
 				fmt.Println("  API key:      not set ⚠")
-				fmt.Println("    Hint: Set ANTHROPIC_API_KEY or run /login to authenticate.")
+				fmt.Println("    Hint: Set ANTHROPIC_API_KEY.")
 				allOK = false
 			} else {
 				masked := apiKey[:4] + "..." + apiKey[len(apiKey)-4:]

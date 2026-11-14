@@ -18,7 +18,6 @@ const (
 	CategoryCode          CommandCategory = "code"
 	CategoryUX            CommandCategory = "ux"
 	CategoryContext       CommandCategory = "context"
-	CategoryAuth          CommandCategory = "auth"
 	CategoryInteraction   CommandCategory = "interaction"
 	CategoryUncategorized CommandCategory = ""
 )
@@ -183,20 +182,7 @@ func (r *Registry) ResumeSupportedCommands() []Command {
 // This is the standard way to create a fully-initialized command registry.
 func NewFullRegistry() *Registry {
 	r := NewRegistry()
-	RegisterSessionCommands(r)
-	RegisterSessionTimelineCommands(r)
-	RegisterStatusCommands(r)
-	RegisterConfigCommands(r)
-	RegisterDiagnosticCommands(r)
-	RegisterAuthCommands(r)
-	RegisterMCPCommand(r)
-	RegisterPluginCommands(r)
-	RegisterPluginMarketplaceCommands(r)
-	RegisterCodeCommands(r)
-	RegisterUXCommands(r)
-	RegisterContextCommands(r)
-	RegisterGitCommands(r)
-	RegisterInteractionCommands(r)
+	InitializeAll(r)
 	return r
 }
 
@@ -207,7 +193,6 @@ func InitializeAll(r *Registry) {
 	RegisterStatusCommands(r)
 	RegisterConfigCommands(r)
 	RegisterDiagnosticCommands(r)
-	RegisterAuthCommands(r)
 	RegisterMCPCommand(r)
 	RegisterPluginCommands(r)
 	RegisterPluginMarketplaceCommands(r)

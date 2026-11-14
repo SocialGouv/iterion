@@ -36,7 +36,9 @@ func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 // NewClient creates the HTTP client. cfg.BaseURL overrides DefaultBaseURL;
 // cfg.APIKey is the account key. The env fallback (ZAI_API_KEY) belongs to
 // the caller, mirroring the anthropic provider's seam: the provider wires,
-// the resolver decides where the key comes from.
+// the caller (claw's runtime.SelectProvider) decides where the key comes from.
+// iterion does not build this provider: it serves GLM as anthropic/glm-* through
+// the anthropic provider, pointed at z.ai.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if err := api.RefuseOpenAIOnlyOptions("zai", cfg); err != nil {
 		return nil, err

@@ -46,7 +46,6 @@ func AllCategories() []CommandCategory {
 		CategoryCode,
 		CategoryUX,
 		CategoryContext,
-		CategoryAuth,
 		CategoryInteraction,
 	}
 	sort.Slice(cats, func(i, j int) bool {

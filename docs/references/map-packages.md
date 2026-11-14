@@ -137,7 +137,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/claw/internal/api/sseutil` | holds tiny helpers shared between providers that translate OpenAI-style SSE tool_call streams into the Anthropic-shaped api.StreamEvent vocabulary. | — |
 | `pkg/claw/internal/apikit` | provides API transport infrastructure: telemetry, error classification, retry logic, context-window preflight checks, proxy support, and prompt… | `TelemetrySink` |
 | `pkg/claw/internal/apikit/telemetry/otlpgrpc` | implements an OTLP/gRPC exporter for apikit.TelemetryEvent using the official OpenTelemetry SDK (sdk/log + otlploggrpc). | — |
-| `pkg/claw/internal/auth` | — multi-provider credential storage. | — |
+| `pkg/claw/internal/auth` | reads the Codex CLI's credentials for claw's OpenAI provider. | — |
 | `pkg/claw/internal/commands` | — | `ConfigSwitcher`, `PluginManagerProvider`, `SessionDirProvider`, `SessionManager`, `UsageTracker` |
 | `pkg/claw/internal/config` | — | `DiagnosticKind` |
 | `pkg/claw/internal/context` | — | — |

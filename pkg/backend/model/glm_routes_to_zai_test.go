@@ -138,6 +138,34 @@ func TestClawEnvFactoryServesGLMThroughZAI(t *testing.T) {
 	}
 }
 
+// A bearer beside a z.ai key: a claude id spends the bearer — against
+// api.anthropic.com, or against the operator's own gateway when one is set —
+// and never the z.ai key, which is GLM's alone. claw's own resolver used to
+// pin "an Anthropic credential beats z.ai"; this is that rule on iterion's
+// path, for the bearer half of it.
+func TestClawEnvFactoryKeepsTheBearerForAClaudeIDBesideAZAIKey(t *testing.T) {
+	for _, base := range []string{"", "https://gw.example.internal/anthropic"} {
+		t.Run("base="+base, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-bearer")
+			t.Setenv("ANTHROPIC_BASE_URL", base)
+			t.Setenv("ZAI_API_KEY", "zai-key")
+			t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+			client, err := NewRegistry().Resolve("anthropic/claude-sonnet-4")
+			if err != nil {
+				t.Fatalf("Resolve: %v — a claude id with a bearer must not be refused for the z.ai key beside it", err)
+			}
+			cc, ok := client.(*api.Client)
+			if !ok {
+				t.Fatalf("client is %T", client)
+			}
+			if cc.OAuthToken != "tok-bearer" || cc.APIKey == "zai-key" {
+				t.Errorf("client = {bearer %q, key is the z.ai key: %v}, want the bearer and never the z.ai key", cc.OAuthToken, cc.APIKey == "zai-key")
+			}
+		})
+	}
+}
+
 // A GLM node spends the z.ai key, never the subscription: beside a Claude
 // forfait (a forfait-first bundle, the z.ai key pinned for its route) the
 // subscription guard must not refuse it, while it still refuses a claude node

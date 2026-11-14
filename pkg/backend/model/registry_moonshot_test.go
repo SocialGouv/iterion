@@ -75,6 +75,11 @@ func TestRegistry_MoonshotKeepsSlashedAlias(t *testing.T) {
 // loop, where nothing in the failure says which variable was expected.
 func TestRegistry_MoonshotWithoutKeyRefusesByName(t *testing.T) {
 	t.Setenv("MOONSHOT_API_KEY", "")
+	// Every other provider's credential is set: none of them may fund the
+	// Moonshot wire (claw's own resolver used to pin the same rule).
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-pod")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod")
+	t.Setenv("ZAI_API_KEY", "zai-pod")
 	_, err := NewRegistry().Resolve("moonshot/kimi-k2")
 	if err == nil {
 		t.Fatal("Resolve without a Moonshot key must fail, not build a credential-less client")

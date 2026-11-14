@@ -35,7 +35,6 @@ func TestAllCategoriesHaveCommands(t *testing.T) {
 		CategoryCode,
 		CategoryUX,
 		CategoryContext,
-		CategoryAuth,
 		CategoryInteraction,
 	}
 

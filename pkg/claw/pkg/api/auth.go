@@ -10,12 +10,6 @@ type AuthSourceKind = api.AuthSourceKind
 // AuthSource holds authentication credentials for API requests.
 type AuthSource = api.AuthSource
 
-// OAuthTokenSet represents a saved OAuth token set for auth resolution.
-type OAuthTokenSet = api.OAuthTokenSet
-
-// ForeignProviderEnvVar describes a non-Anthropic provider's env var.
-type ForeignProviderEnvVar = api.ForeignProviderEnvVar
-
 // AuthMethod describes how a provider authenticates.
 type AuthMethod = api.AuthMethod
 
@@ -49,17 +43,5 @@ var CombinedAuth = api.CombinedAuth
 // ResolveStartupAuth resolves auth from environment variables.
 var ResolveStartupAuth = api.ResolveStartupAuth
 
-// ResolveStartupAuthWithOAuth resolves auth with OAuth fallback.
-var ResolveStartupAuthWithOAuth = api.ResolveStartupAuthWithOAuth
-
 // EnrichBearerAuthError adds a helpful hint for sk-ant-* bearer token misuse.
 var EnrichBearerAuthError = api.EnrichBearerAuthError
-
-// SuggestForeignProvider checks whether a foreign provider's API key is set.
-var SuggestForeignProvider = api.SuggestForeignProvider
-
-// ForeignProviderEnvVars returns a defensive copy of the foreign provider env
-// var list. This prevents callers from mutating the backing slice.
-func ForeignProviderEnvVars() []ForeignProviderEnvVar {
-	return append([]ForeignProviderEnvVar(nil), api.ForeignProviderEnvVars...)
-}
