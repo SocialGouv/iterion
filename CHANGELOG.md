@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.1.1](https://github.com/SocialGouv/iterion/compare/v6.1.0...v6.1.1) (2026-11-14)
+
+### Bug Fixes
+
+* **secretguard:** a secret placeholder that arrives through data is text in every authored body ([#3268](https://github.com/SocialGouv/iterion/issues/3268)) ([#3292](https://github.com/SocialGouv/iterion/issues/3292)) ([67fa2f9](https://github.com/SocialGouv/iterion/commit/67fa2f9f9670f804fe014bcdc097c7aaf4796283)), closes [#3291](https://github.com/SocialGouv/iterion/issues/3291)
+
+    <details><summary>why</summary>
+
+    #3268, operator decision (2026-11-14, option 1). A tool node's command:, postcondition: and script: were materialised by scanning the RESOLVED body — the author's text plus every interpolated value — so a placeholder carried in data (a model's answer, a diff, a webhook var) was swapped for its secret's value whenever the secret was granted the agent sink, which no `sinks:` (the ADR-146 default) grants. Proven critical on revi-converse: an answer quoting __ITERION_SECRET_forge_token__ was posted…
+
+    </details>
+
 ## [6.1.0](https://github.com/SocialGouv/iterion/compare/v6.0.3...v6.1.0) (2026-11-14)
 
 ### Features
