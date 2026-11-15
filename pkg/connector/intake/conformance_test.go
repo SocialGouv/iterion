@@ -523,6 +523,46 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
+	t.Run("a match-refused pair is re-judged, and only such a pair", func(t *testing.T) {
+		s := newStore(t)
+		in := mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+		var pairs []Pair
+		for _, sub := range []string{"m", "n", "r"} {
+			p := pending(in, sub, t0)
+			p.State, p.Reason = PairRefused, "expression past its budget"
+			pairs = append(pairs, p)
+		}
+		pairs = append(pairs, pending(in, "p", t0))
+		if err := s.WritePairs(ctx, pairs); err != nil {
+			t.Fatal(err)
+		}
+		at := t0.Add(time.Hour)
+		before, _ := s.GetPair(ctx, "t1", PairID(in.ID, "m"))
+		got, err := s.RejudgePair(ctx, "t1", before.ID, Verdict{SubscriptionID: "m", Matched: true}, at)
+		if err != nil || got.State != PairPending || got.MatchRefusal || got.Reason != "" || got.Attempts != 0 ||
+			got.Generation != before.Generation+1 || !got.NotBefore.Equal(stamp(at)) {
+			t.Fatalf("a matching re-judgment = %+v (%v), want pending, its refusal cleared, due now", got, err)
+		}
+		got, err = s.RejudgePair(ctx, "t1", PairID(in.ID, "n"), Verdict{SubscriptionID: "n", Reason: "filter room: no"}, at)
+		if err != nil || got.State != PairNotMatched || got.MatchRefusal || got.Reason != "filter room: no" {
+			t.Fatalf("a non-matching re-judgment = %+v (%v), want not_matched with its reason", got, err)
+		}
+		got, err = s.RejudgePair(ctx, "t1", PairID(in.ID, "r"), Verdict{SubscriptionID: "r", Refusal: "still past its budget"}, at)
+		if err != nil || got.State != PairRefused || !got.MatchRefusal || got.Reason != "still past its budget" {
+			t.Fatalf("a refusing re-judgment = %+v (%v), want refused by matching, with the new reason", got, err)
+		}
+		// Only a match-refused pair: a pending one, a re-judged one, a
+		// foreign tenant's are not.
+		for _, id := range []string{PairID(in.ID, "p"), PairID(in.ID, "m")} {
+			if _, err := s.RejudgePair(ctx, "t1", id, Verdict{Matched: true}, at); !errors.Is(err, ErrNotReplayable) {
+				t.Fatalf("re-judging %s = %v, want ErrNotReplayable", id, err)
+			}
+		}
+		if _, err := s.RejudgePair(ctx, "t2", PairID(in.ID, "r"), Verdict{Matched: true}, at); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("re-judging from another tenant = %v, want ErrNotFound", err)
+		}
+	})
+
 	t.Run("claims follow arrival: a newer row never passes a retry or an expired claim", func(t *testing.T) {
 		// Steady load: each tick one delivery arrives and one row is claimed.
 		// A row released once, and a claim a crashed worker left, must be

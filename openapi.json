@@ -18237,6 +18237,68 @@
         ]
       }
     },
+    "/api/v1/intakes": {
+      "get": {
+        "operationId": "getV1Intakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes",
+        "tags": [
+          "intakes"
+        ]
+      }
+    },
+    "/api/v1/intakes/{id}": {
+      "get": {
+        "operationId": "getV1IntakesById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes/{id}",
+        "tags": [
+          "intakes"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/intakes/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1IntakesByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/intakes/{id}/replay",
+        "tags": [
+          "intakes"
+        ]
+      }
+    },
     "/api/v1/limits/cost": {
       "get": {
         "operationId": "getV1LimitsCost",
@@ -18483,6 +18545,44 @@
           }
         }
       ]
+    },
+    "/api/v1/pairs": {
+      "get": {
+        "operationId": "getV1Pairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/pairs",
+        "tags": [
+          "pairs"
+        ]
+      }
+    },
+    "/api/v1/pairs/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PairsByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pairs/{id}/replay",
+        "tags": [
+          "pairs"
+        ]
+      }
     },
     "/api/v1/pipeline-board": {
       "get": {

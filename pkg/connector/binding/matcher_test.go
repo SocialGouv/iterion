@@ -150,3 +150,19 @@ func TestAMissingCatalogIsRetried(t *testing.T) {
 		t.Fatalf("a missing catalog = %+v, want an error", vs)
 	}
 }
+
+// The local scope's two tenants map onto each other, and a cloud tenant is
+// itself on both sides.
+func TestTheLocalTenantsMapBothWays(t *testing.T) {
+	if got := ConnectionTenant(""); got != connection.LocalTenant {
+		t.Errorf("ConnectionTenant(\"\") = %q, want %q", got, connection.LocalTenant)
+	}
+	if got := SubscriptionTenant(connection.LocalTenant); got != "" {
+		t.Errorf("SubscriptionTenant(local) = %q, want the local scope", got)
+	}
+	for _, team := range []string{"t1", "team-42"} {
+		if ConnectionTenant(team) != team || SubscriptionTenant(team) != team {
+			t.Errorf("team %q did not map to itself", team)
+		}
+	}
+}

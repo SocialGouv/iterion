@@ -443,6 +443,41 @@ func (m *MemoryStore) ReplayPair(_ context.Context, tenantID, id string, now tim
 	return copyPair(*p), nil
 }
 
+func (m *MemoryStore) RejudgePair(_ context.Context, tenantID, id string, v Verdict, now time.Time) (Pair, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	p, ok := m.pairs[id]
+	if !ok || p.TenantID != tenantID {
+		return Pair{}, fmt.Errorf("%w: pair %s", ErrNotFound, id)
+	}
+	if p.State != PairRefused || !p.MatchRefusal {
+		return Pair{}, fmt.Errorf("%w: pair %s is %s, not refused by matching", ErrNotReplayable, p.ID, p.State)
+	}
+	// A pair matching refused was never launched: its attempts are whole.
+	p.State, p.Reason, p.MatchRefusal = rejudged(v)
+	p.Generation++
+	p.NotBefore = stamp(now)
+	p.LastError = ""
+	p.UpdatedAt = stamp(now)
+	return copyPair(*p), nil
+}
+
+// rejudged is the state, reason and match-refusal mark a new verdict gives
+// a pair matching refused (Store.RejudgePair).
+func rejudged(v Verdict) (state, reason string, matchRefusal bool) {
+	switch {
+	case v.Refusal != "":
+		return PairRefused, v.Refusal, true
+	case v.Matched:
+		return PairPending, "", false
+	}
+	if v.Reason == "" {
+		return PairNotMatched, "the subscription's filters did not match", false
+	}
+	return PairNotMatched, v.Reason, false
+}
+
 // replayable says why a pair cannot be replayed, if it cannot.
 func replayable(p *Pair) error {
 	switch {

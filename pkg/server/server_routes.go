@@ -447,6 +447,11 @@ func (s *Server) routes() {
 	// Automations view. No-op without a TriggerStore.
 	if s.cfg.TriggerStore != nil {
 		s.registerTriggerRoutes()
+		// The connector intake's dead-letter view and replays: a re-judged
+		// pair reads its subscription from the trigger store.
+		if s.connectorIntakes != nil {
+			s.registerConnectorDeadLetterRoutes()
+		}
 	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).

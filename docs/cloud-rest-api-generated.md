@@ -232,6 +232,14 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/forge/publish-review` | open | no |
 | `GET` | `/api/v1/forge/pull-request` | open | no |
 
+## `/api/intakes` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/intakes` | session + write rung | yes |
+| `GET` | `/api/v1/intakes/{id}` | session + write rung | yes |
+| `POST` | `/api/v1/intakes/{id}/replay` | session + write rung | yes |
+
 ## `/api/legal` family
 
 | Method | Path | Auth | Spec |
@@ -414,6 +422,13 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/orgs/{id}/teams` | session | yes |
 | `PATCH` | `/api/orgs/{id}/teams/{team_id}/caps` | session | yes |
 | `GET` | `/api/orgs/{id}/usage` | session | yes |
+
+## `/api/pairs` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/pairs` | session + write rung | yes |
+| `POST` | `/api/v1/pairs/{id}/replay` | session + write rung | yes |
 
 ## `/api/parse` family
 

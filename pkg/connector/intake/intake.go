@@ -264,6 +264,12 @@ type Store interface {
 	// launch-refused pair moves to the next epoch, a new submission. A
 	// match-refused pair is not replayable: nothing ever matched it.
 	ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (Pair, error)
+	// RejudgePair records a new matching verdict on a pair matching refused
+	// (MatchRefusal) — the replay such a pair takes instead of a launch
+	// (#3296): matched, it becomes pending with its attempts whole; not
+	// matched, it is not_matched with the reason; refused again, it keeps
+	// its refusal under the new reason. ErrNotReplayable for any other pair.
+	RejudgePair(ctx context.Context, tenantID, id string, v Verdict, now time.Time) (Pair, error)
 }
 
 // prepareIntake validates an intake and fills what Accept derives.
