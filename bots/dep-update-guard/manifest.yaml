@@ -1,7 +1,16 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.12.1
+version: 2.12.2
+## 2.12.2 — the verify baseline is built in a repository that ignores the
+## mirror. Live on buildkit-operator#65 (run 01a1dfbb-046c), 2.12.1 printed
+## VERIFY BASELINE NOT BUILT: the repository ignores .claude, and `git add`
+## exits 1 on an exclusion whose path its walk already classifies as ignored
+## ("The following paths are ignored by one of your .gitignore files"), so
+## the script ran on the uncommitted alignment and held again. The baseline's
+## `git add` now leaves such an exclusion unspelled — the engine's own staging
+## gesture does the same (pkg/runtime stagingExclusions, #1558): it excludes
+## nothing git does not already keep out.
 ## 2.12.1 — an alignment that IS regenerated output can pass the gate
 ## (buildkit-operator#65). Vetty verifies before it commits, so verify.sh met
 ## HEAD plus the alignment uncommitted, and the drift gate the verify-build

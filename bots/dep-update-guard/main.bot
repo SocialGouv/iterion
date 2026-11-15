@@ -1853,6 +1853,27 @@ def baseline_restore():
     drop_file(saved)
     drop_file(mark)
     return ''
+def add_exclusions():
+    # git add exits 1 -- the index correctly staged -- on an exclusion whose
+    # literal path its untracked walk classifies as ignored: present in the
+    # tree and covered by the ignore rules (buildkit-operator ignores
+    # .claude). The engine's own staging gesture answers it the same way
+    # (pkg/runtime stagingExclusions, #1558): such an exclusion is left
+    # unspelled, since it excludes nothing git does not already keep out.
+    top = bgit(['rev-parse', '--show-toplevel']).stdout.strip()
+    out = []
+    for spec in os.environ.get('ITERION_TREE_NOISE', '').split():
+        lit = spec.split(')', 1)[1] if spec.startswith(':(') else spec
+        lit = lit.rstrip('*')
+        full = os.path.join(top, lit) if top and lit else ''
+        if full and os.path.lexists(full):
+            args = ['check-ignore', '-q']
+            if os.path.isdir(full) and not os.path.islink(full):
+                args.append('--no-index')
+            if bgit(args + ['--', ':(top)' + lit]).returncode == 0:
+                continue
+        out.append(spec)
+    return out
 def baseline_build():
     # Returns (sha, '') on a baseline, ('', '') when there is nothing to
     # baseline -- no repository, no commit yet, no pending path -- and
@@ -1875,7 +1896,7 @@ def baseline_build():
     tenv = dict(genv)
     tenv['GIT_INDEX_FILE'] = tmpidx
     try:
-        for args in (['read-tree', head], ['add', '-A', '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split(), ['write-tree']):
+        for args in (['read-tree', head], ['add', '-A', '--', ':/'] + add_exclusions(), ['write-tree']):
             p = bgit(args, tenv)
             if p.returncode != 0:
                 return '', 'git ' + args[0] + ' exited ' + str(p.returncode) + ': ' + (p.stderr or '').strip()[:300]

@@ -7,6 +7,27 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-15 — 2.12.2: the baseline in a repository that ignores the mirror (buildkit-operator#65, live)
+
+- Status: **fixed, live pending.** 2.12.1 was rolled to iterion.cloud (v7.1.0)
+  and `/vetty` on buildkit-operator#65 ran it (run `01a1dfbb-046c`): audit
+  safe, `align` regenerated the two CRDs, and `verify_run` printed
+  `VERIFY BASELINE NOT BUILT: git add exited 1: The following paths are
+  ignored by one of your .gitignore files: .claude`. The repository ignores
+  `.claude`; `git add` exits 1 on an exclusion whose literal path its walk
+  classifies as ignored, the index correctly staged. The baseline was dropped,
+  as designed, loudly, and the drift gate read the alignment again
+  (`hold_unstable`).
+- The fix. The baseline's `git add` leaves such an exclusion unspelled, the
+  rule the engine's own staging gesture already follows
+  (`pkg/runtime` `stagingExclusions`, #1558).
+- Proof. A case on a repository that ignores `.claude` (bko's shape): the
+  baseline is built, both gate forms pass, the mirror stays out of it. Spelling
+  every exclusion again turns it red on "the alignment itself was read as
+  drift" — the live failure; the bench is 10/10.
+- The witness had missed it because its fixture did not ignore the mirror:
+  the one repository shape the deployment target has.
+
 ## 2026-11-15 — 2.12.1: an alignment that is regenerated output was read as drift (buildkit-operator#65)
 
 - Status: **fixed, live pending.** The deterministic witnesses run the shipped
