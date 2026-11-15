@@ -141,4 +141,4 @@ launch:
 ## nothing. `next` until that release is cut, when the release-floors hook
 ## writes its number (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= next"
+  iterion: ">= 7.2.0"

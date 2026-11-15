@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.2.0](https://github.com/SocialGouv/iterion/compare/v7.1.0...v7.2.0) (2026-11-15)
+
+### Features
+
+* **revi:** publish_mode=off evaluation mode — the run does everything and writes nothing to the forge ([#3283](https://github.com/SocialGouv/iterion/issues/3283)) ([#3315](https://github.com/SocialGouv/iterion/issues/3315)) ([1a09459](https://github.com/SocialGouv/iterion/commit/1a094590cd6b7d7ef022a206e7f72167d31ec0e2)), references [#3281](https://github.com/SocialGouv/iterion/issues/3281) [#3313](https://github.com/SocialGouv/iterion/issues/3313) [#3310](https://github.com/SocialGouv/iterion/issues/3310)
+
+    <details><summary>why</summary>
+
+    A hidden launch var `publish_mode` ("" | "off") on revi-converse 0.1.9 and review-pr 0.9.23: with `off` the run does all its work and writes nothing to the forge, so #3283 can measure cost on real product PRs. Health gates read evaluation mode as such, never "OK", and still report every real failure as degraded. The server honours it (no gate claim, no reconcile/notice, no publish grant, never the fixer's prior_review); both manifests floor on ">= next". Only operators and bots holding…
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** Vetty builds its verify baseline in a repository that ignores the mirror ([#3314](https://github.com/SocialGouv/iterion/issues/3314)) ([b650753](https://github.com/SocialGouv/iterion/commit/b650753df79a852244f67db528c975903ee4de97)), references [buildkit-operator#65](https://github.com/buildkit-operator/issues/65) [#1558](https://github.com/SocialGouv/iterion/issues/1558)
+
+    <details><summary>why</summary>
+
+    2.12.1 shipped (v7.1.0) and `/vetty` on buildkit-operator#65 ran it: run 01a1dfbb-046c audited safe, `align` regenerated the two CRDs, and verify_run printed
+
+    </details>
+
 ## [7.1.0](https://github.com/SocialGouv/iterion/compare/v7.0.0...v7.1.0) (2026-11-15)
 
 ### Features

@@ -238,7 +238,7 @@ version: 0.9.23
 ## that release is cut, when the release-floors hook writes its number
 ## (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= next"
+  iterion: ">= 7.2.0"
 ## 0.9.0 — ticket conformance now works with NO configuration on the
 ## forge's own issues. Since 0.6.0 the check only ran when an operator
 ## pinned `tracker_api_base` per repo, which meant that on 16 connected
