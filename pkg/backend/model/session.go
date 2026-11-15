@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -528,11 +529,49 @@ func applySessionMessages(ctx context.Context, sessKey string, opts GenerationOp
 // on a resumed node: its transient retries grew 11 → 22 → 33 messages, and
 // its schema retry replayed 91 stored messages followed by the 11 it was
 // resuming from.
+//
+// A retry of such a task replays the store's capture instead when it
+// extends the carried history: the conversation an earlier attempt of this
+// execution continued from it, whose tool turns the retry then sees — and is
+// charged for (claw_step_budget.go). A capture that does not extend it is
+// another conversation's, and stays out.
 func applySessionMessagesForTask(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
 	if len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0 {
-		return opts
+		return continueCarriedHistory(ctx, taskSessionKey(task), opts)
 	}
 	return applySessionMessages(ctx, taskSessionKey(task), opts)
+}
+
+// continueCarriedHistory replaces the carried history in opts with the
+// store's capture under sessKey when the capture strictly extends it.
+func continueCarriedHistory(ctx context.Context, sessKey string, opts GenerationOptions) GenerationOptions {
+	runID, store := runtimeContextFrom(ctx)
+	if store == nil || runID == "" || sessKey == "" {
+		return opts
+	}
+	captured := store.load(runID, sessKey)
+	if !conversationExtends(captured, opts.Messages) {
+		return opts
+	}
+	opts.Messages = append([]api.Message(nil), captured...)
+	return opts
+}
+
+// conversationExtends reports whether longer holds every message of prefix,
+// in order and unchanged, and at least one more. An empty prefix carries no
+// history, and nothing extends it.
+func conversationExtends(longer, prefix []api.Message) bool {
+	if len(prefix) == 0 || len(longer) <= len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		a, errA := json.Marshal(prefix[i])
+		b, errB := json.Marshal(longer[i])
+		if errA != nil || errB != nil || !bytes.Equal(a, b) {
+			return false
+		}
+	}
+	return true
 }
 
 // captureSessionMessages writes back the final accumulated messages

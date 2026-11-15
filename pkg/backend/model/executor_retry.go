@@ -230,8 +230,29 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // transport retries the re-ask itself pays carry the reask marker, so a
 // timeline reader keys them to the re-ask's work instead of mistaking them
 // for first-attempt retries.
-func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask)
+func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask, carryForward...)
+}
+
+// toolTurnsSeedCarry hands every attempt of one in-place retry loop the
+// tool-turn seed of the conversation its first attempt started from, as the
+// first attempt that reports one fixes it (delegate.Task.ToolTurnsSeed). A
+// retry replays what the dead attempt left (claw's session store holds it)
+// and is charged the turns that replay holds beyond this seed, so the seed
+// must be the first attempt's, never one a retry fixes from its own replay.
+type toolTurnsSeedCarry struct{ seed *int }
+
+// attempt is task as the next attempt runs it.
+func (c *toolTurnsSeedCarry) attempt(task delegate.Task) delegate.Task {
+	task.ToolTurnsSeed = c.seed
+	return task
+}
+
+// observe reads the attempt that just failed.
+func (c *toolTurnsSeedCarry) observe(prev delegate.Result) {
+	if c.seed == nil {
+		c.seed = prev.ToolTurnsSeed
+	}
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
@@ -1413,22 +1434,15 @@ func (e *ClawExecutor) dispatchChain(
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
-		// The tool turns this element's attempts completed so far. An
-		// in-place retry continues the conversation they built — claw's
-		// session store replays it — so the next attempt starts with them
-		// spent (delegate.Task.ToolTurnsSpent). Scoped to the element, and
-		// never written to the CACHED task: a route change restarts from the
-		// last-good conversation (rollbackTaskSession below), with nothing
-		// of the bound spent.
-		turnsSpent := 0
+		// Scoped to the element, and never written to the CACHED task: a
+		// route change restarts from the last-good conversation
+		// (rollbackTaskSession below), and its first attempt fixes a seed of
+		// its own.
+		var turnsSeed toolTurnsSeedCarry
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			attempt := *task
-			attempt.ToolTurnsSpent = turnsSpent
-			return e.executeDelegate(ctx, backend, attempt)
+			return e.executeDelegate(ctx, backend, turnsSeed.attempt(*task))
 		}, "", func(prev delegate.Result) {
-			// prev folds every attempt so far, and the fold sums their
-			// tool turns (foldSpend).
-			turnsSpent = prev.ToolTurns
+			turnsSeed.observe(prev)
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
 			// called from engine_run and resume only) — so the CLI session

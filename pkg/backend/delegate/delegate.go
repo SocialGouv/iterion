@@ -571,12 +571,14 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
-	// ToolTurnsSpent is how many tool turns of ToolMaxSteps this node
-	// execution already completed before this invocation: an in-place retry
-	// continues the dead attempt's conversation, so the turns it completed
-	// stay spent (the executor carries Result.ToolTurns forward). The claw
-	// backend hands its loop only what is left; zero is a fresh budget.
-	ToolTurnsSpent int
+	// ToolTurnsSeed is how many completed tool turns the conversation of
+	// this node execution held when its first attempt started. The claw
+	// backend charges a loop the completed tool turns the conversation it
+	// replays holds beyond it, and hands the loop what is left of
+	// ToolMaxSteps. Nil on a first attempt: the backend fixes it from the
+	// conversation its first loop starts from and reports it in
+	// Result.ToolTurnsSeed, which an in-place retry carries back here.
+	ToolTurnsSeed *int
 
 	// MaxTokens caps the LLM response length per call. Honored by API-based
 	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
@@ -2175,10 +2177,15 @@ type Result struct {
 	ThinkingMs int
 
 	// ToolTurns is how many tool turns this invocation completed, every
-	// internal attempt included — the figure an in-place retry carries into
-	// Task.ToolTurnsSpent. Attempts are disjoint, so a fold sums it. Zero
-	// for a backend that does not count them.
+	// internal attempt included. Attempts are disjoint, so a fold sums it.
+	// Zero for a backend that does not count them. It reports; it charges
+	// nothing (Task.ToolTurnsSeed).
 	ToolTurns int
+
+	// ToolTurnsSeed is the seed the invocation's tool-step budget charged
+	// against — the task's, or the one it fixed — and nil when it fixed
+	// none: what an in-place retry hands the next attempt.
+	ToolTurnsSeed *int
 
 	// GatewaySpec is the invocation's catalog provenance on an
 	// OpenAI-compatible gateway route (ADR-122 §resolution): which table

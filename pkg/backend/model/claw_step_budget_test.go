@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // The tool-step bound is the node execution's, not the attempt's (#3283,
@@ -221,13 +224,14 @@ func TestClawStepBudget_TheNudgeSpendsFromTheSameBound(t *testing.T) {
 }
 
 // An in-place retry of the EXECUTOR re-enters Execute on the conversation
-// the dead attempt left (the session store survives it), so the turns that
-// attempt completed stay spent: claw's own retry loop takes one attempt
-// here, the executor's takes the cut, and its second attempt is handed the
-// 3 turns left of 5.
+// the dead attempt left (the session store survives it), carrying the seed
+// the first attempt started from, so the turns that replay holds stay
+// spent: claw's own retry loop takes one attempt here, the executor's takes
+// the cut, and its second attempt is handed the 3 turns left of 5.
 //
-// Mutant: drop the carry at the dispatch (the attempt sees no
-// ToolTurnsSpent) and the second attempt runs 5 turns: 7 for a bound of 5.
+// Mutant: drop the seed's carry at the dispatch, and the second attempt
+// fixes its seed from its own replay — the dead turns included — and runs
+// 5 turns: 7 for a bound of 5.
 func TestClawStepBudget_AnExecutorRetryContinuesTheSpentTurns(t *testing.T) {
 	t.Parallel()
 	probe, ran := budgetProbe()
@@ -253,36 +257,317 @@ func TestClawStepBudget_AnExecutorRetryContinuesTheSpentTurns(t *testing.T) {
 	}
 }
 
-// A seeded execution is handed only what is left, and one with nothing left
-// makes no loop request at all — the sandboxed runner's re-entry, where the
-// seed is all the crossing carries.
-func TestClawStepBudget_ASeededExecutionRunsOnlyWhatIsLeft(t *testing.T) {
+// storedRounds is a stored conversation holding n completed probe turns.
+func storedRounds(n int) []api.Message {
+	conversation := []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Judge the diff."}}}}
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("tu_stored_%d", i)
+		conversation = append(conversation,
+			api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: id, Name: "probe", Input: map[string]any{}}}},
+			api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: id, Content: "observed"}.ToContentBlock()}},
+		)
+	}
+	return conversation
+}
+
+// toolResultsIn counts the tool results a request carries.
+func toolResultsIn(req api.CreateMessageRequest) int {
+	n := 0
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if b.Type == "tool_result" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// A re-entered execution — an executor retry, a sandboxed runner's crossing
+// — is charged the turns its replay holds beyond the seed it carries, never
+// a count kept beside the conversation: a replay that holds the whole bound
+// goes straight to the recovery pass with those turns in view, and one that
+// lost the dead attempt's turns gets the whole bound back. Without a seed
+// the first conversation is the seed: a persisted session's earlier turns
+// charge nothing.
+//
+// Mutant: charge the seed itself (the turns the carry says are spent, the
+// replay unread) and the lost replay goes to the recovery pass with no tool
+// result in view.
+func TestClawStepBudget_ARetryIsChargedWhatItsReplayHolds(t *testing.T) {
 	t.Parallel()
+	seed := func(n int) *int { return &n }
 	for _, tc := range []struct {
-		spent, want int
-		kinds       string
+		name    string
+		seed    *int
+		stored  int
+		want    int
+		kinds   string
+		results int // tool results the answering request carries
 	}{
-		{spent: 3, want: 2, kinds: "LLR"},
-		{spent: 5, want: 0, kinds: "R"},
-		{spent: 9, want: 0, kinds: "R"},
+		{name: "3 replayed of 5", seed: seed(0), stored: 3, want: 2, kinds: "LLR", results: 5},
+		{name: "the whole bound replayed", seed: seed(0), stored: 5, want: 0, kinds: "R", results: 5},
+		{name: "a seed below the replay", seed: seed(2), stored: 5, want: 2, kinds: "LLR", results: 7},
+		{name: "the replay lost", seed: seed(4), stored: 0, want: 5, kinds: "LLLLLR", results: 5},
+		{name: "no seed: the first conversation is it", seed: nil, stored: 5, want: 5, kinds: "LLLLLR", results: 10},
 	} {
-		t.Run(fmt.Sprintf("spent_%d", tc.spent), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			probe, ran := budgetProbe()
 			client := budgetModel(nil, nil)
 			task := budgetTask(probe, 5)
-			task.ToolTurnsSpent = tc.spent
-			res, err := budgetBackend(client, 1).Execute(budgetCtx(), task)
+			task.ToolTurnsSeed = tc.seed
+			store := newNodeSessionStore()
+			store.save("run-budget", "judge", storedRounds(tc.stored))
+			res, err := budgetBackend(client, 1).Execute(withRuntimeContext(context.Background(), "run-budget", store), task)
 			requireVerdict(t, res, err)
 			if got := ran.Load(); got != int64(tc.want) {
-				t.Fatalf("%d tool turns ran with %d of 5 spent, want %d", got, tc.spent, tc.want)
+				t.Fatalf("%d tool turns ran with %d replayed, want %d (requests %s)", got, tc.stored, tc.want, requestKinds(client))
 			}
 			if got := requestKinds(client); got != tc.kinds {
 				t.Errorf("requests = %s, want %s", got, tc.kinds)
 			}
+			last := client.calls[len(client.calls)-1]
+			if got := toolResultsIn(last); got != tc.results {
+				t.Errorf("the answering request carries %d tool results, want %d", got, tc.results)
+			}
 			if res.ToolTurns != tc.want {
 				t.Errorf("Result.ToolTurns = %d, want this invocation's %d", res.ToolTurns, tc.want)
 			}
+			wantSeed := tc.stored
+			if tc.seed != nil {
+				wantSeed = *tc.seed
+			}
+			if res.ToolTurnsSeed == nil || *res.ToolTurnsSeed != wantSeed {
+				t.Errorf("Result.ToolTurnsSeed = %v, want %d", res.ToolTurnsSeed, wantSeed)
+			}
 		})
+	}
+}
+
+// A node without an output schema whose replay already holds the whole
+// bound has no recovery pass to answer from: it fails and says why, and
+// makes no request.
+//
+// Mutant: run the loop with the 0 left (MaxSteps 0, the loop's default of
+// 10) and the node runs 10 more turns.
+func TestClawStepBudget_ASchemalessNodeWithTheBoundReplayedFails(t *testing.T) {
+	t.Parallel()
+	probe, ran := budgetProbe()
+	client := budgetModel(nil, nil)
+	task := budgetTask(probe, 5)
+	task.OutputSchema = nil
+	zero := 0
+	task.ToolTurnsSeed = &zero
+	store := newNodeSessionStore()
+	store.save("run-budget", "judge", storedRounds(5))
+	_, err := budgetBackend(client, 1).Execute(withRuntimeContext(context.Background(), "run-budget", store), task)
+	if err == nil || !strings.Contains(err.Error(), "already holds the 5 tool turns its tool_max_steps allows") {
+		t.Fatalf("err = %v, want the bound-replayed refusal", err)
+	}
+	if ran.Load() != 0 || client.count() != 0 {
+		t.Fatalf("%d tool turns, %d requests — want none", ran.Load(), client.count())
+	}
+}
+
+// A task that carries its own history — a resumed pause, a continued
+// conversation — skips the store's replay, so a retry used to restart from
+// that history while being charged the dead attempt's turns: the recovery
+// pass answered with none of them in view. A retry now replays the dead
+// attempt's capture when the store holds one that extends the carried
+// history, and sees the turns it is charged for; with no store nothing is
+// replayed, nothing is charged, and the retry answers from turns it ran
+// itself.
+//
+// Each case completes the 4 turns of its bound, then the recovery pass is
+// cut and the turn retried.
+//
+// Mutants: keep the carried history over its capture (the store case runs
+// 4 more turns); charge the invocation's own count instead of the replay
+// (the case without a store answers with none of its turns in view).
+func TestClawStepBudget_ACarriedHistoryIsRetriedFromItsCapture(t *testing.T) {
+	t.Parallel()
+	resumed := func(task *delegate.Task) {
+		prior, _ := json.Marshal([]api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Judge the diff."}}},
+			{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_ask", Name: "ask_user", Input: map[string]any{"question": "go?"}}}},
+		})
+		task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = prior, "tu_ask", "yes"
+	}
+	continued := func(task *delegate.Task) {
+		prior, _ := json.Marshal([]api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Judge the diff."}}},
+			{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "verdict: maybe"}}},
+		})
+		task.ContinueConversation = prior
+	}
+	for _, tc := range []struct {
+		name    string
+		carry   func(*delegate.Task)
+		store   bool
+		ran     int64
+		kinds   string
+		results int // tool results the answering request carries
+	}{
+		{name: "resumed, with its capture", carry: resumed, store: true, ran: 4, kinds: "LLLLRR", results: 5},
+		{name: "continued, with its capture", carry: continued, store: true, ran: 4, kinds: "LLLLRR", results: 4},
+		{name: "resumed, no store", carry: resumed, ran: 8, kinds: "LLLLRLLLLR", results: 5},
+		{name: "continued, no store", carry: continued, ran: 8, kinds: "LLLLRLLLLR", results: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe, ran := budgetProbe()
+			client := budgetModel(map[int]bool{5: true}, nil)
+			task := budgetTask(probe, 4)
+			tc.carry(&task)
+			ctx := context.Background()
+			if tc.store {
+				ctx = budgetCtx()
+			}
+			res, err := budgetBackend(client, 3).Execute(ctx, task)
+			requireVerdict(t, res, err)
+			if got := ran.Load(); got != tc.ran {
+				t.Fatalf("%d tool turns ran, want %d (requests %s)", got, tc.ran, requestKinds(client))
+			}
+			if got := requestKinds(client); got != tc.kinds {
+				t.Errorf("requests = %s, want %s", got, tc.kinds)
+			}
+			if got := toolResultsIn(client.calls[len(client.calls)-1]); got != tc.results {
+				t.Errorf("the answering request carries %d tool results, want %d — the answer is grounded in turns it cannot see", got, tc.results)
+			}
+		})
+	}
+}
+
+// The prefix test the carried-history replay rests on: a capture replaces
+// the carried history only when it holds every message of it unchanged,
+// and more.
+func TestConversationExtends(t *testing.T) {
+	t.Parallel()
+	text := func(s string) api.Message {
+		return api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: s}}}
+	}
+	carried := []api.Message{text("a"), text("b")}
+	for _, tc := range []struct {
+		name   string
+		longer []api.Message
+		want   bool
+	}{
+		{"one more", []api.Message{text("a"), text("b"), text("c")}, true},
+		{"the same", []api.Message{text("a"), text("b")}, false},
+		{"shorter", []api.Message{text("a")}, false},
+		{"a changed message", []api.Message{text("a"), text("B"), text("c")}, false},
+		{"none", nil, false},
+	} {
+		if got := conversationExtends(tc.longer, carried); got != tc.want {
+			t.Errorf("%s: conversationExtends = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if conversationExtends([]api.Message{text("a")}, nil) {
+		t.Error("an empty carried history is extended by a stored conversation — the store's turns would replace a history the task never had")
+	}
+}
+
+// The launcher predicts the seed of a sandboxed task that carries its own
+// history from the task alone (carriedToolRounds), and the in-container
+// loop must agree with it: a resumed pause whose answered call completes a
+// turn, a continued conversation as it ended. The in-process Execute fixes
+// its seed from the conversation it composes — the two readings are pinned
+// equal here.
+//
+// Mutant: count a resumed pause without its answer, and the prediction
+// falls one short of what the loop starts from.
+func TestCarriedToolRoundsMatchesTheComposedConversation(t *testing.T) {
+	t.Parallel()
+	prior := storedRounds(2)
+	paused := append(append([]api.Message(nil), prior...),
+		api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_ask", Name: "ask_user", Input: map[string]any{"question": "go?"}}}})
+	resume, _ := json.Marshal(paused)
+	cont, _ := json.Marshal(append(append([]api.Message(nil), prior...),
+		api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "verdict: maybe"}}}))
+	for _, tc := range []struct {
+		name  string
+		carry func(*delegate.Task)
+		want  int
+	}{
+		{"resumed", func(task *delegate.Task) {
+			task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = resume, "tu_ask", "yes"
+		}, 3},
+		{"continued", func(task *delegate.Task) { task.ContinueConversation = cont }, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe, _ := budgetProbe()
+			task := budgetTask(probe, 4)
+			tc.carry(&task)
+			if got := carriedToolRounds(task); got != tc.want {
+				t.Fatalf("carriedToolRounds = %d, want %d", got, tc.want)
+			}
+			res, err := budgetBackend(budgetModel(nil, nil), 1).Execute(context.Background(), task)
+			requireVerdict(t, res, err)
+			if res.ToolTurnsSeed == nil || *res.ToolTurnsSeed != tc.want {
+				t.Fatalf("the in-process loop fixed seed %v, the launcher predicts %d", res.ToolTurnsSeed, tc.want)
+			}
+		})
+	}
+}
+
+// seedRecordingBackend records the tool-turn seed each call is handed: call
+// 1 answers without the schema's field, call 2 (the re-ask's first attempt)
+// fixes seed 3 and dies on a transient failure, call 3 answers.
+type seedRecordingBackend struct {
+	mu    sync.Mutex
+	seeds []*int
+}
+
+func (b *seedRecordingBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seeds = append(b.seeds, task.ToolTurnsSeed)
+	switch len(b.seeds) {
+	case 1:
+		return delegate.Result{Output: map[string]any{"other": "x"}, BackendName: "test_backend"}, nil
+	case 2:
+		three := 3
+		return delegate.Result{ToolTurnsSeed: &three, ToolTurns: 2, BackendName: "test_backend"}, &delegate.ErrTransient{Reason: "stream closed"}
+	}
+	return delegate.Result{Output: map[string]any{"answer": "blue"}, BackendName: "test_backend"}, nil
+}
+
+// A schema re-ask is a conversation of its own — a restart runs the node's
+// tool loop again — and its in-place retries are charged against the seed
+// its first attempt fixed, like the dispatch's own: the retry is handed it.
+//
+// Mutant: run the re-ask's retries without the seed's carry, and the retry
+// is handed none — it would fix one from its own replay.
+func TestToolTurnsSeedRidesTheReaskRetries(t *testing.T) {
+	t.Parallel()
+	backend := &seedRecordingBackend{}
+	reg := delegate.NewRegistry()
+	reg.Register("test_backend", backend)
+	wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{
+		"out_schema": {Name: "out_schema", Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}}},
+	}}
+	exec := NewClawExecutor(NewRegistry(), wf, WithBackendRegistry(reg),
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}))
+	node := &ir.AgentNode{
+		BaseNode:     ir.BaseNode{ID: "answerer"},
+		LLMFields:    ir.LLMFields{Backend: "test_backend"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "out_schema"},
+	}
+	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
+	if err != nil || output["answer"] != "blue" {
+		t.Fatalf("the re-ask's retry must answer: output=%v err=%v", output, err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.seeds) != 3 {
+		t.Fatalf("%d calls, want the answer, the re-ask and its retry", len(backend.seeds))
+	}
+	if backend.seeds[1] != nil {
+		t.Errorf("the re-ask's first attempt was handed seed %d, want none (it fixes its own)", *backend.seeds[1])
+	}
+	if got := backend.seeds[2]; got == nil || *got != 3 {
+		t.Fatalf("the re-ask's retry was handed seed %v, want the 3 its first attempt fixed", got)
 	}
 }

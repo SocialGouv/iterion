@@ -1076,9 +1076,13 @@ func (e *ClawExecutor) validateAndRetry(
 			e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: attempt + 1, Reask: reask.mode, ReaskInChain: f.inChain})
 		}
 		retryTask := reask.task
+		// A re-ask is a conversation of its own — a restart runs the node's
+		// tool loop again — and its in-place retries replay what its dead
+		// attempt left, charged against the seed its first attempt fixed.
+		var turnsSeed toolTurnsSeedCarry
 		retryResult, retryErr := e.retryDelegateLoopReask(callCtx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
-			return e.executeDelegate(callCtx, backend, retryTask)
-		})
+			return e.executeDelegate(callCtx, backend, turnsSeed.attempt(retryTask))
+		}, turnsSeed.observe)
 		marginalCost := costs.add(retryResult, &retryTask, backendName)
 		e.emitReaskOutcome(f.id, backendName, task.Model, reask, retryResult, retryErr, marginalCost, attempt+1)
 		if retryResult.SessionID == "" && !retryTask.ForkSession {

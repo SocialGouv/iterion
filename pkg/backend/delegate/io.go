@@ -72,7 +72,7 @@ type IOTask struct {
 	Model                 string           `json:"model,omitempty"`
 	HasTools              bool             `json:"has_tools,omitempty"`
 	ToolMaxSteps          int              `json:"tool_max_steps,omitempty"`
-	ToolTurnsSpent        int              `json:"tool_turns_spent,omitempty"`
+	ToolTurnsSeed         *int             `json:"tool_turns_seed,omitempty"`
 	MaxTokens             int              `json:"max_tokens,omitempty"`
 	WorkDir               string           `json:"work_dir,omitempty"`
 	// WorkspaceTrust travels WITH WorkDir, because the two answer one
@@ -317,7 +317,7 @@ func ToIOTask(t Task) IOTask {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
-		ToolTurnsSpent:         t.ToolTurnsSpent,
+		ToolTurnsSeed:          t.ToolTurnsSeed,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
 		WorkspaceTrust:         t.WorkspaceTrust,
@@ -388,7 +388,7 @@ func FromIOTask(t IOTask) Task {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
-		ToolTurnsSpent:         t.ToolTurnsSpent,
+		ToolTurnsSeed:          t.ToolTurnsSeed,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
 		WorkspaceTrust:         t.WorkspaceTrust,
