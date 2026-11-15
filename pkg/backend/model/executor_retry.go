@@ -243,9 +243,10 @@ func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string
 // attempt's, never one a retry fixes from its own replay.
 //
 // A carry over the run's session store (newToolTurnsAnchorCarry) keeps the
-// anchor beside the session until the node succeeds: the engine's recovery
-// re-runs a failed node through a fresh dispatch, on the session the
-// executor keeps on error, and that re-run is a retry of the same execution.
+// anchor beside the session until the node succeeds or pauses for a human
+// (EndToolStepBudget): the engine's recovery re-runs a failed node through a
+// fresh dispatch, on the session the executor keeps on error, and that
+// re-run is a retry of the same execution.
 type toolTurnsAnchorCarry struct {
 	anchor *string
 	// store, runID and key address the session the anchor is kept beside;
@@ -263,6 +264,19 @@ func newToolTurnsAnchorCarry(ctx context.Context, task *delegate.Task) toolTurns
 	}
 	key := taskSessionKey(*task)
 	return toolTurnsAnchorCarry{anchor: store.anchorOf(runID, key), store: store, runID: runID, key: key}
+}
+
+// EndToolStepBudget ends the tool-step budget of nodeID's execution in
+// runID: the anchor kept beside its session is dropped, so the execution
+// resumed after a human pause fixes its own from the conversation it resumes
+// with — the pause point, the answer included — and is charged only the
+// turns after it. An answer the interaction model gives without pausing
+// ends nothing: the run goes on under the same budget.
+func (e *ClawExecutor) EndToolStepBudget(runID, nodeID string) {
+	if e.sessions == nil || runID == "" {
+		return
+	}
+	e.sessions.dropAnchor(runID, e.sessionKeyOf(nodeID))
 }
 
 // attempt is task as the next attempt runs it.

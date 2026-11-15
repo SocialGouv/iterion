@@ -2378,9 +2378,10 @@ retryable:
   `network connectivity issue — delegate retry k/n … (backoff …)`.
 
 On `claw`, `tool_max_steps` bounds one node execution — from its first
-attempt until the node completes, a pause for an operator included — and
-every tool loop is charged the completed tool turns its conversation already
-holds. The backend's own stream retries, the tool-use nudge, the executor's
+attempt until the node completes or pauses for a human — and every tool loop
+is charged the completed tool turns its conversation already holds. A resume
+after an operator pause (an `ask_user` question, a permission decision) gets
+the whole bound again, charged only the turns after the pause. The backend's own stream retries, the tool-use nudge, the executor's
 in-place retries and the engine's recovery re-runs each replay the
 conversation the dead attempt left: the session store holds it, and a
 sandboxed runner captures each tool turn as it completes, so one that dies

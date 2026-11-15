@@ -186,7 +186,7 @@ type nodeSessionStore struct {
 	sessions map[string]*nodeSession
 	// anchors keeps, beside a session, the tool-step anchor of the node
 	// execution that conversation belongs to (toolTurnsAnchorCarry), until
-	// the node succeeds or the session is evicted.
+	// the node succeeds, pauses for a human, or the session is evicted.
 	anchors map[string]string
 }
 

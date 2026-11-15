@@ -3580,7 +3580,20 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 	if oldPause != "" && oldPause != rs.pauseSessionRef {
 		e.deleteSessionBlob(rs.ctx, rs.runID, oldPause)
 	}
+	// A pause for a human is a supervised checkpoint: the node execution
+	// resumed from it starts a tool-step budget of its own, charged only the
+	// turns after the pause — as a cold resume, whose executor holds no
+	// budget, already is.
+	if b, ok := e.executor.(toolStepBudgetEnder); ok {
+		b.EndToolStepBudget(rs.runID, nodeID)
+	}
 	return ErrRunPaused
+}
+
+// toolStepBudgetEnder is the optional interface ClawExecutor implements so
+// a pause for a human ends the paused node execution's tool-step budget.
+type toolStepBudgetEnder interface {
+	EndToolStepBudget(runID, nodeID string)
 }
 
 // pauseInfo bundles the optional backend-side state captured at pause

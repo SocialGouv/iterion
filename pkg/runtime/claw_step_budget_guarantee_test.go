@@ -40,9 +40,10 @@ import (
 // compaction, a pause on an operator question with or without a call beside
 // it, then its resume — and every run must hold:
 //
-//	(a) the tool executions of the node execution — from its first attempt
-//	    until the node completes, its pause included — never exceed
-//	    tool_max_steps, counted at the tool, not from requests;
+//	(a) the tool executions of a node execution never exceed
+//	    tool_max_steps, counted at the tool, not from requests — before the
+//	    pause, and after it: a resume after a human pause gets the whole
+//	    bound again;
 //	(b) the request that answers carries the result of every execution the
 //	    run completed, but for the oldest a compaction folded;
 //	(c) the node answers — unless the world's own failures outlast every
@@ -519,8 +520,10 @@ func readFileOr(path string) string {
 // violations is what a world's run breaks of (a), (b) and (c).
 func (o guaranteeOutcome) violations() []string {
 	var v []string
-	if n := len(o.executed); n > o.plan.Bound {
-		v = append(v, fmt.Sprintf("(a) the node execution ran %d tool executions (%v between its pauses) for tool_max_steps %d", n, o.perSegment, o.plan.Bound))
+	for segment, n := range o.perSegment {
+		if n > o.plan.Bound {
+			v = append(v, fmt.Sprintf("(a) node execution %s (counted from the last pause before it) ran %d tool executions for tool_max_steps %d", segment, n, o.plan.Bound))
+		}
 	}
 	if o.runErr != nil {
 		if !o.exhausted() {
