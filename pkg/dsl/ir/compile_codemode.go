@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // compileCodemode turns one `codemode:` declaration into the two things the
@@ -90,8 +91,8 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 		b.Wall = c.codemodeDuration(cb.Wall, "wall", scope, name)
 		b.CPU = c.codemodeDuration(cb.CPU, "cpu", scope, name)
 	} else {
-		b.Wall, _ = parseCodemodeDuration(cb.Wall)
-		b.CPU, _ = parseCodemodeDuration(cb.CPU)
+		b.Wall = parseCodemodeDuration(cb.Wall)
+		b.CPU = parseCodemodeDuration(cb.CPU)
 	}
 
 	if reportCeiling {
@@ -107,16 +108,18 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 // codemodeDuration parses a quoted duration (`"90s"`, `"2m"`), the spelling
 // `timeout:` uses. Zero means absent.
 // parseCodemodeDuration is codemodeDuration without the diagnostics: the arm
-// for a block whose bounds are already known to be inert.
-func parseCodemodeDuration(raw string) (time.Duration, bool) {
+// for a block whose bounds are already known to be inert. The two agree on
+// every input — empty, unparseable, negative, overflowing, valid — which is
+// what makes the split safe; measured rather than assumed.
+func parseCodemodeDuration(raw string) time.Duration {
 	if raw == "" {
-		return 0, true
+		return 0
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d < 0 {
-		return 0, false
+		return 0
 	}
-	return d, true
+	return d
 }
 
 func (c *compiler) codemodeDuration(raw, prop, scope, name string) time.Duration {
@@ -126,15 +129,28 @@ func (c *compiler) codemodeDuration(raw, prop, scope, name string) time.Duration
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		c.warnfAtProperty(DiagCodemodeBoundUnreadable, scope, name, "codemode",
-			"%s %q declares codemode %s: %q, which is not a duration (%v): the DEFAULT applies instead (wall 30s, cpu 10s), which is NOT the bound you declared — looser if you were lowering it, tighter if you were raising it. Write it the way timeout: is written — \"90s\", \"2m\"",
-			scope, name, prop, raw, err)
+			"%s %q declares codemode %s: %q, which is not a duration (%v): the DEFAULT applies instead (%s), which is NOT the bound you declared — looser if you were lowering it, tighter if you were raising it. Write it the way timeout: is written — \"90s\", \"2m\"",
+			scope, name, prop, raw, err, codemodeDurationDefault(prop))
 		return 0
 	}
 	if d < 0 {
 		c.warnfAtProperty(DiagCodemodeBoundUnreadable, scope, name, "codemode",
-			"%s %q declares codemode %s: %q, a NEGATIVE duration: the DEFAULT applies instead (wall 30s, cpu 10s), which is NOT the bound you declared",
-			scope, name, prop, raw)
+			"%s %q declares codemode %s: %q, a NEGATIVE duration: the DEFAULT applies instead (%s), which is NOT the bound you declared",
+			scope, name, prop, raw, codemodeDurationDefault(prop))
 		return 0
 	}
 	return d
+}
+
+// codemodeDurationDefault names the default a refused duration falls back to,
+// READ from the table that defines it. The first draft hand-copied "wall 30s,
+// cpu 10s" into two format strings and a documentation row, and a `cpu:`
+// message named the wall's number — three copies of two values with nothing
+// tying them to DefaultLimits, in the package that already imports it.
+func codemodeDurationDefault(prop string) string {
+	def := scripthost.DefaultLimits()
+	if prop == "cpu" {
+		return "cpu " + def.CPU.String()
+	}
+	return "wall " + def.Wall.String()
 }

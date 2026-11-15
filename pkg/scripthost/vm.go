@@ -199,6 +199,13 @@ var promiseType = reflect.TypeOf((*goja.Promise)(nil))
 //
 // undefined becomes JSON null, so a script that returns nothing is still a
 // value rather than a refusal.
+// promiseRefusal is the one sentence both guards answer with, so a program
+// cannot tell which of them refused it — and so the depth half can be
+// strengthened or weakened without changing what a model reads.
+func promiseRefusal(what string) error {
+	return fmt.Errorf("%s is a Promise, and this host runs no event loop, so it can never settle: there is no async here — return the value itself, not a promise of it", what)
+}
+
 func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return "null", nil
@@ -239,16 +246,41 @@ func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	// path a sibling test pins. ExportType reads the shape without running
 	// anything, and was measured to trap on none of the exotics probed.
 	//
-	// KNOWN GAP, stated rather than hidden: a `goja.Proxy` wrapping a promise
-	// answers `goja.Proxy` from ExportType, so it still encodes as `{}`.
-	// Catching it needs a `then`-own-property probe, which runs script code
+	// KNOWN GAPS of the DEPTH half, stated rather than hidden, and all of them
+	// require a program to put a promise somewhere JSON does not render: a
+	// `goja.Proxy` wrapping one (it answers `goja.Proxy` from ExportType), a
+	// promise inside a `Map` or a `Set` (both encode as `{}` whatever they
+	// hold), and a program that replaces `JSON.stringify` or defines
+	// `toJSON`. The ROOT test above is what holds regardless. Closing the
+	// Proxy case needs a `then`-own-property probe, which runs script code
 	// inside the encoder — the hazard the Export path was abandoned for.
+	// TWO guards, and the pair is the point: one the script cannot reach and
+	// one that reaches further.
+	//
+	// The ROOT test runs in Go before any script code, so nothing a program
+	// does can disarm it. The REPLACER covers depth, and it is ADVISORY by
+	// construction: it runs only if whatever `JSON.stringify` names calls it,
+	// and on whatever `toJSON` left behind — both names belong to the script.
+	// A draft that replaced the root test with the replacer alone was
+	// measured and regressed exactly there: `var S = JSON.stringify;
+	// JSON.stringify = v => S(v)` — a commonplace idiom, for BigInt support
+	// or pretty-printing — re-opened the silent `{}`, as did
+	// `p.toJSON = () => 7`. A deliberate override is a program's own
+	// business; the accident is what the root test keeps.
+	if v.ExportType() == promiseType {
+		return "", promiseRefusal("the value itself")
+	}
+
 	promised := ""
 	replacer := vm.ToValue(func(call goja.FunctionCall) goja.Value {
 		v := call.Argument(1)
 		if promised == "" && v.ExportType() == promiseType {
 			if key := call.Argument(0).String(); key != "" {
-				promised = key
+				// Clipped: a program may use a megabyte-long object key, and
+				// an error carrying it whole was measured turning the verdict
+				// into `result_too_large` — a refusal about the wrong thing.
+				clipped, _ := clipToolText(key, 80)
+				promised = "property " + clipped
 			} else {
 				promised = "the value itself"
 			}
@@ -261,7 +293,7 @@ func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 		return "", err
 	}
 	if promised != "" {
-		return "", fmt.Errorf("%s is a Promise, and this host runs no event loop, so it can never settle: there is no async here — return the value itself, not a promise of it", promised)
+		return "", promiseRefusal(promised)
 	}
 	// JSON.stringify answers undefined for a function, a symbol or undefined
 	// itself. The script returned something unrepresentable, which is a value

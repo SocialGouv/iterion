@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // The bounds from `.bot` TEXT, through the whole chain. Every test here
@@ -300,5 +302,86 @@ workflow w:
 	}
 	if n.CodemodeBounds == nil || n.CodemodeBounds.ToolCalls != 77 {
 		t.Errorf("CodemodeBounds = %+v, want ToolCalls 77 on the judge", n.CodemodeBounds)
+	}
+}
+
+// The C349 gate — the fix round 2 led with, and which had no test. Measured
+// as unwitnessed: replacing the gate with the pre-fix ungated form left all
+// sixteen `pkg/dsl/...` packages green, because no test put a bad duration
+// beside a node-rung `mode: off` (the C348 tests use `tool_calls`, the C349
+// tests have no `mode: off`), so neither half of the split was observed.
+func TestAnInertBlockReportsNeitherItsCeilingNorItsDurations(t *testing.T) {
+	t.Parallel()
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    mode: off
+    tool_calls: 4097
+    wall: "two minutes"
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	// C348 says no program runs; a C347 about a clamp at a spawn that will
+	// not happen, or a C349 about a default that will not apply, are both
+	// text about an enforcement there is none of.
+	if got := countCode(r, DiagCodemodeBoundsWithModeOff); got != 1 {
+		t.Errorf("C348 = %d, want 1: %+v", got, r.Diagnostics)
+	}
+	if got := countCode(r, DiagCodemodeBoundAboveCeiling); got != 0 {
+		t.Errorf("C347 = %d, want 0 on an inert block", got)
+	}
+	if got := countCode(r, DiagCodemodeBoundUnreadable); got != 0 {
+		t.Errorf("C349 = %d, want 0 on an inert block — the gate is honoured at one of its two sites otherwise", got)
+	}
+	// And the parse still happened: the inert arm must agree with the
+	// reporting arm on the value, only not on the diagnostics.
+	n := r.Workflow.Nodes["a"].(*AgentNode)
+	if n.CodemodeBounds == nil || n.CodemodeBounds.Wall != 0 {
+		t.Errorf("bounds = %+v, want Wall 0 (the duration was not readable)", n.CodemodeBounds)
+	}
+}
+
+// The default a refused duration falls back to is READ from the table that
+// defines it, not hand-copied. Three copies of two numbers existed, and one
+// of them named the wall's default in a `cpu:` message.
+func TestTheRefusedDurationMessageNamesItsOwnDefaultFromTheTable(t *testing.T) {
+	t.Parallel()
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    wall: "two minutes"
+    cpu: "forty"
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	def := scripthost.DefaultLimits()
+	var sawWall, sawCPU bool
+	for _, d := range r.Diagnostics {
+		if d.Code != DiagCodemodeBoundUnreadable {
+			continue
+		}
+		if strings.Contains(d.Message, "codemode wall:") {
+			sawWall = true
+			if !strings.Contains(d.Message, "wall "+def.Wall.String()) {
+				t.Errorf("the wall message does not name DefaultLimits().Wall (%s): %s", def.Wall, d.Message)
+			}
+		}
+		if strings.Contains(d.Message, "codemode cpu:") {
+			sawCPU = true
+			if !strings.Contains(d.Message, "cpu "+def.CPU.String()) {
+				t.Errorf("the cpu message does not name DefaultLimits().CPU (%s) — the first draft named the wall's: %s", def.CPU, d.Message)
+			}
+		}
+	}
+	if !sawWall || !sawCPU {
+		t.Fatalf("expected one C349 per bad duration: %+v", r.Diagnostics)
 	}
 }

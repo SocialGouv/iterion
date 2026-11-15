@@ -294,11 +294,11 @@ func callFrameCap() int64 {
 // deployment. The envelope (type, id, flags, the remaining count) is small
 // and fixed; 1 KiB covers it.
 //
-// The CALL direction keeps [Limits.ScriptBytes]: its payload is an input the
-// script composed, which no declared bound describes, and the parent is the
-// one process no rlimit covers — TestAnOversizedFrameIsRefusedRatherThanBuffered
-// is that guard. A script that composes an input larger than its own
-// `script_bytes` meets that cap and the error names the number.
+// The CALL direction has [callFrameCap] above, for the same reason and since
+// the same commit: an operator's `script_bytes` described neither frame. The
+// draft of this comment that said the call direction "keeps
+// Limits.ScriptBytes" was true for twenty minutes and false by the time it
+// shipped — the commit that wrote it moved that site too.
 func resultFrameCap(l Limits) int64 {
 	const jsonEscapeWorstCase = 6
 	const envelope = 1 << 10

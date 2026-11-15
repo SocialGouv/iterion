@@ -48,7 +48,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"PortDecl.Name":           "written as the entry header",
 		"CriterionDecl.Name":      "written as the entry header",
 		"PublicEffect.Name":       "written as the entry header",
-		"File.Profile":            "written through f.EffectiveProfile(), which a `.Field` regex cannot see",
+		"File.Profile":            "the EFFECTIVE profile is written as `dsl: N` for N > 1, through f.EffectiveProfile(); an explicit `dsl: 1` is canonicalised away, same program",
 	}
 	types := []string{
 		"WorkflowDecl", "LLMDecl", "AgentDecl", "JudgeDecl", "RouterDecl", "HumanDecl",
@@ -89,11 +89,18 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 	// No exclusion list. Measured: seven of the eight names an earlier draft
 	// excluded pass the sweep's own assertion if they are simply LISTED, so
 	// the exclusion bought nothing and set a precedent for the next type. The
-	// eighth, ast.File, hid exactly one real field — Profile, written through
-	// f.EffectiveProfile() and so invisible to a `.Field` regex — at the cost
-	// of putting every top-level declaration list on ast.File (Agents,
-	// Workflows, Contracts, …) outside the alarm, which is the field class
-	// the alarm exists for. That one field is named in `unwritten` instead.
+	// eighth, ast.File, hid exactly one real field — Profile, which the
+	// writer renders through f.EffectiveProfile() and a `.Field` regex
+	// therefore cannot see. That field is named in `unwritten` instead.
+	//
+	// One honest limit of this sweep, measured rather than assumed: the regex
+	// matches a field NAME anywhere in the writer source, not a receiver, so
+	// nine of ast.File's list fields (Agents, Judges, Routers, Humans, Tools,
+	// Computes, Comments, Vars, Attachments) are also names a second
+	// declaration carries — dropping `f.<name>` from the writer keeps the
+	// sweep green. Listing File really added only Contracts, Workflows,
+	// Secrets, Presets and Imports. It is a drift alarm on the SOURCE, as
+	// the doc above says, and the value guarantee is the round-trip tests.
 	listed := map[string]bool{}
 	for _, name := range types {
 		listed[name] = true

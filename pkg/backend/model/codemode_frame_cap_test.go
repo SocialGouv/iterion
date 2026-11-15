@@ -62,7 +62,12 @@ func TestAToolResultInsideItsOwnBoundReachesTheProgram(t *testing.T) {
 // test above would look like a fix.
 func TestAToolResultAboveItsBoundIsClippedNotFatal(t *testing.T) {
 	t.Parallel()
-	payload := strings.Repeat("z", 200<<10)
+	// The same escaping shape here, and it is not cosmetic: this is the arm
+	// where the clip lands EXACTLY on the declared bound, so it is the only
+	// one that pins the factor to 6 rather than to "at least 4". Measured:
+	// with a payload that escapes 1:1, a factor of 5 — a wrong value that
+	// breaks a reachable configuration — survived both suites.
+	payload := strings.Repeat("<", 200<<10)
 	toolMap := map[string]*GenerationTool{
 		"big": {Name: "big", Execute: func(context.Context, json.RawMessage) (string, error) {
 			return payload, nil
