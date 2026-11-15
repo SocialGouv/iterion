@@ -39,6 +39,7 @@ func TestReviewPRPublishHealthSeesALostGateOnEveryExit(t *testing.T) {
 			"findings_in_review": "0", "comments_sent": "0", "findings_reclassified": "0",
 			"review_url": "", "skipped_reason": "", "body_missing": "false", "fallback": "",
 			"gate_requested": "false", "gate_posted": "false", "gate_skipped_reason": "",
+			"evaluation": "false",
 		}
 		for k, v := range over {
 			vals[k] = v

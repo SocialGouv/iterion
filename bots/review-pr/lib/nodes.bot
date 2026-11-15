@@ -515,7 +515,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} PUBLISH_MODE={{vars.publish_mode}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -534,7 +534,7 @@ def finding_id(f):
     # does not change.
     return 'R' + hashlib.sha256(key.encode('utf-8', 'surrogatepass')).hexdigest()[:6]
 
-def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason='', body_missing=False, fallback=''):
+def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason='', body_missing=False, fallback='', evaluation=False):
     # The gate travels STRUCTURED, not only folded into the summary string. A
     # required check that never lands blocks the pull request for good, so the
     # run must be able to say so with a predicate rather than with prose a
@@ -550,16 +550,22 @@ def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped=''
     # loss against it, never against the merge step's own count.
     # (No backticks in these comments: this block is a backtick-delimited
     # command: string, and one would terminate it. Same trap as below.)
+    # Evaluation mode owes no gate on any exit, so no exit may ask
+    # publish_health to miss one: the gate is withheld here, once, for all.
+    # evaluation is true on the one exit where a ready review was withheld.
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
                       'comments_posted': posted, 'suggestions_posted': sugg,
                       'body_missing': bool(body_missing), 'fallback': str(fallback or ''),
                       'findings_in_review': int(findings_in_review), 'comments_sent': int(comments_sent),
                       'findings_reclassified': int(findings_reclassified),
                       'skipped_reason': skipped, 'summary': summary,
-                      'gate_requested': bool(gate_requested), 'gate_posted': bool(gate_posted),
-                      'gate_skipped_reason': gate_skipped_reason}))
+                      'gate_requested': bool(gate_requested) and not evaluation_mode, 'gate_posted': bool(gate_posted),
+                      'gate_skipped_reason': gate_skipped_reason, 'evaluation': bool(evaluation)}))
     raise SystemExit(0)
 
+# EVALUATION MODE (publish_mode=off): the review is built whole, then nothing
+# is sent -- no review, no commit status. Read before any exit, like the gate.
+evaluation_mode = str(os.environ.get('PUBLISH_MODE', '')).strip().lower() == 'off'
 url = os.environ.get('PUB_URL', '').strip()
 tok = os.environ.get('PUB_TOKEN', '').strip()
 # Read HERE, not at the gate block below: every emit() has to be able to say
@@ -956,7 +962,8 @@ for t in tickets:
 tickets = kept_tickets
 findings_in_review = sum(1 for f in findings if isinstance(f, dict))
 findings_reclassified = len(anomaly_findings)
-if not url or not tok:
+# Evaluation mode sends nothing, so it needs no publish grant.
+if (not url or not tok) and not evaluation_mode:
     emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
 nl = chr(10)
@@ -1335,6 +1342,15 @@ if gate_enabled:
         note = payload['gate'].get('note') or ''
         payload['gate']['note'] = (note + '; ' + extra) if note else str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); ' + extra
 comments_sent = len(comments)
+# Evaluation mode stops here, the request built and never sent: what it
+# carries is reported, the gate verdict it would have posted included.
+if evaluation_mode:
+    held = ('evaluation mode (publish_mode=off): review built and not published; nothing was sent to the forge publish endpoint ('
+            + str(findings_in_review) + ' finding(s) in the review, ' + str(comments_sent) + ' inline comment(s), mode ' + mode + ')')
+    gate = payload.get('gate')
+    if gate:
+        held = held + '; the merge gate ' + gate_ctx + ' would read ' + ('failure' if gate['blocking_count'] else 'success') + ' (' + str(gate['blocking_count']) + ' blocking at ' + gate['threshold'] + ') and was not posted'
+    emit(False, skipped=held, summary=held + '.', gate_skipped_reason='evaluation mode (publish_mode=off)', evaluation=True)
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
@@ -1387,17 +1403,19 @@ emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
 
 ## Deterministic anti-façade gate (no LLM): when findings existed but
 ## zero inline comments landed, or the review body did not land, emit a
-## loud banner. The board + report already succeeded upstream, so this
-## informs (degraded=true) rather than hard-failing the run. A review
-## reported folded (fallback summary, body landed) carries its findings in
-## its body: that is a publish, not a failure. fallback partial with zero
+## loud banner. A review publish_review withheld in evaluation mode
+## (`evaluation`, publish_mode=off) is neither: it reads `evaluation mode`,
+## not degraded and never OK. The board + report already succeeded
+## upstream, so this informs (degraded=true) rather than hard-failing the
+## run. A review reported folded (fallback summary, body landed) carries
+## its findings in its body: that is a publish, not a failure. fallback partial with zero
 ## inline comments is not a fold: on GitHub and Forgejo it is the re-fetch
 ## listing fewer comments than were sent, nothing folded. The findings it
 ## counts are what the review carries (publish_review's own counts) as well
 ## as the merge step's: the merge floor restores findings converge dropped,
 ## and a converge count of 0 must not hide their loss.
 tool publish_health:
-  command: `TOTAL={{input.total_findings}} IN_REVIEW={{input.findings_in_review}} SENT={{input.comments_sent}} RECLASSIFIED={{input.findings_reclassified}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} BODY_MISSING={{input.body_missing}} FALLBACK={{input.fallback}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -I -c "
+  command: `TOTAL={{input.total_findings}} IN_REVIEW={{input.findings_in_review}} SENT={{input.comments_sent}} RECLASSIFIED={{input.findings_reclassified}} POSTED={{input.comments_posted}} PUBLISHED={{input.published}} BODY_MISSING={{input.body_missing}} FALLBACK={{input.fallback}} REVIEW_URL={{input.review_url}} SKIPPED={{input.skipped_reason}} GATE_REQ={{input.gate_requested}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} EVALUATION={{input.evaluation}} python3 -I -c "
 import os, json, sys
 converge_total = int(os.environ.get('TOTAL', '0') or '0')
 posted = int(os.environ.get('POSTED', '0') or '0')
@@ -1456,7 +1474,12 @@ reclassified_only = (anchors_lost and in_review == 0 and reclassified > 0
 # nothing to post - the merge floor may have restored findings converge did
 # not count. A published summary fold still says the findings are in the body.
 count_unknown = in_review < 0 and posted == 0 and not (published and fallback == 'summary')
-degraded = body_missing or (anchors_lost and not folded) or count_unknown or gate_missing or placeholder_refused
+# Evaluation mode (publish_mode=off): publish_review built the review and
+# withheld it by design, so 0 comments on the PR is the intended outcome, not
+# a loss -- and not a publish either, so never OK. A refused placeholder
+# review, a missing body or a lost gate still read as themselves.
+withheld = flag('EVALUATION') and not published
+degraded = body_missing or placeholder_refused or gate_missing or (not withheld and ((anchors_lost and not folded) or count_unknown))
 def unknown_banner():
     landed = ('the review landed with 0 inline comments and nothing reports them folded' if published
               else 'the review did not publish (reason: ' + (skipped or 'none given') + ')')
@@ -1471,6 +1494,8 @@ if gate_missing:
     banners.append(chr(9888) + ' MERGE GATE NOT POSTED: the required check did not land (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.')
 if banners:
     banner = ' '.join(banners)
+elif withheld:
+    banner = (skipped or 'evaluation mode (publish_mode=off): review built and not published') + '. Nothing was sent to the pull request: no review, no inline comment, no merge gate status (board filing is off in this mode).'
 elif folded:
     banner = 'forge publish OK: ' + str(in_review if in_review > 0 else total) + ' finding(s) folded into the review body (no inline comment landed); review: ' + (review_url or 'n/a')
 elif count_unknown and published:
@@ -1512,12 +1537,14 @@ print(json.dumps({'degraded': degraded, 'banner': banner}))
 ## of the sentinel-default vars (see each var's own doc above). guard's
 ## branch reproduces the bot's pre-#685 literal defaults exactly, so an
 ## unpinned run is byte-identical to before this feature existed.
+## Evaluation mode (`publish_mode: off`) is the one thing above an explicit
+## override: it writes no board issue, whatever post_to_board says.
 compute tier_expand:
   output: tier_resolution
   expr:
     severity_threshold: "if(vars.severity_threshold != 'auto', vars.severity_threshold, if(vars.review_tier == 'glance', 'high', if(vars.review_tier == 'audit', 'low', 'medium')))"
     max_findings: "if(vars.max_findings != 0, vars.max_findings, if(vars.review_tier == 'glance', 5, if(vars.review_tier == 'audit', 40, 15)))"
-    post_to_board: "if(vars.post_to_board != 'auto', vars.post_to_board == 'true', vars.review_tier != 'glance')"
+    post_to_board: "if(vars.publish_mode == 'off', false, if(vars.post_to_board != 'auto', vars.post_to_board == 'true', vars.review_tier != 'glance'))"
     effective_review_mode: "if(vars.review_mode == 'dual' || vars.review_tier == 'audit', 'dual', 'mono')"
 
 ## Converges the reviewer branch(es) and fills in whichever family did not

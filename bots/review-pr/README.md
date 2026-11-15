@@ -96,6 +96,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
 | `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
+| `publish_mode` | `""` | Evaluation mode: `off` runs the whole review and publishes nothing — no review, no merge-gate status, no board issue (see Evaluation mode below). An operator's launch only; hidden from the launch form. |
 | `fixer_hint` | *(empty)* | Sentence published with the findings when this repo has a fixer to escalate to. Empty omits the line: the reviewer does not advertise a fixer on its own initiative. `{finding}` is replaced by the first finding's id. |
 
 ## Run
@@ -305,6 +306,36 @@ iterion run bots/review-pr/main.bot \
   The LLM never chooses the gate result. The status is advisory until the repo
   requires that context in branch protection; see
   [Merge gate](../../docs/merge-gate.md).
+
+## Evaluation mode (`publish_mode=off`)
+
+For measuring a review's cost and quality on a live pull request without
+posting on it (#3283). The run does everything — reviewers, merge, the merge
+floor, the workspace-anomaly strip, the request `publish_review` builds and
+the gate verdict it would carry — and then:
+
+- `publish_review` sends nothing to the forge-publish endpoint: no review, no
+  inline comment, no commit status. It needs no publish grant either. Its
+  output is `published: false`, `evaluation: true`, `gate_requested: false`
+  (on every exit of such a run), the counts the request carried
+  (`findings_in_review`, `comments_sent`) and a `skipped_reason` opening on
+  `evaluation mode (publish_mode=off)` that names the gate verdict it would
+  have posted.
+- `tier_expand` resolves `post_to_board` to `false` whatever it says, so the
+  merge step files no board issue. The workspace report (`report_path`) is
+  still written: it is the run's scratch, not the team's.
+- `publish_health` reads the withheld review as `evaluation mode`: not
+  degraded, and never `forge publish OK`. A refused placeholder review still
+  reads `REVIEW REFUSED`.
+- The server's merge-gate arms owe the run nothing: no in-flight claim, no
+  synthetic failure or relaunch, no pause or DLQ comment
+  ([merge gate](../../docs/merge-gate.md)).
+
+Only an operator sets the var — a launch's `--var` or `bot_args`, a remote
+launch, the integration's own pinned launch vars. A forge event never does:
+the webhook lanes build their vars from fixed payload keys, and no manifest
+channel they layer may carry it, in any bot of the catalogue
+(`bots/publish_mode_eval_test.go`).
 
 ## Read-only by construction
 

@@ -524,6 +524,10 @@ func TestGateNotices_ShareOneAuthorizationWalk(t *testing.T) {
 		{"a run whose launch pinned the gate off posts nothing", func(_ *testing.T, _ *Server, run *store.Run) {
 			run.Inputs["gate_enabled"] = "false"
 		}, 0},
+		// Evaluation mode: the run was launched not to touch the pull request.
+		{"a run launched in evaluation mode posts nothing", func(_ *testing.T, _ *Server, run *store.Run) {
+			run.Inputs["publish_mode"] = "off"
+		}, 0},
 		{"a provider with no comment client posts nothing", func(_ *testing.T, s *Server, _ *store.Run) {
 			s.forgeIssueCommenterFor = func(context.Context, forge.Connection) (forgeIssueCommenter, error) {
 				return nil, nil

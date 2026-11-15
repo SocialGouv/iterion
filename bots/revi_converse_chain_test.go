@@ -145,6 +145,12 @@ const chainRunID = "chain-run-1"
 
 func runChain(t *testing.T, wf *ir.Workflow, agent map[string]any, held bool, setup func(*converseFakeForge)) chainRun {
 	t.Helper()
+	return runChainWith(t, wf, agent, held, setup, nil)
+}
+
+// runChainWith is runChain with launch vars laid over the webhook-shaped set.
+func runChainWith(t *testing.T, wf *ir.Workflow, agent map[string]any, held bool, setup func(*converseFakeForge), extra map[string]any) chainRun {
+	t.Helper()
 	f := newConverseFakeForge(t)
 	if setup != nil {
 		setup(f)
@@ -162,6 +168,9 @@ func runChain(t *testing.T, wf *ir.Workflow, agent map[string]any, held bool, se
 		"workspace_dir": t.TempDir(), "base_ref": "main", "pr_url": pr, "discussion_id": "6a1f0c",
 		"trigger_note": "/revi why does A return 2?", "converse_question": "why does A return 2?",
 		"thread_context": "", "replier": "op",
+	}
+	for k, v := range extra {
+		vars[k] = v
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

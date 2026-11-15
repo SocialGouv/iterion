@@ -2110,6 +2110,24 @@ func GateValueDisables(v string) bool {
 	return true
 }
 
+// PublishModeVar is the launch var that puts a publishing bot in evaluation
+// mode (bots/review-pr, bots/revi-converse): set by an operator — a launch's
+// vars, or an integration's pinned launch vars — never from a forge event's
+// payload.
+const PublishModeVar = "publish_mode"
+
+// PublishModeWithholds classifies one publish_mode value: true for "off", the
+// evaluation mode in which the bot runs its whole review or answer and posts
+// nothing — no review, no reply, no commit status. Every other value, the
+// empty default included, publishes. It mirrors the bots' own test (trimmed,
+// any case), so "the bot will not post" and "the server must not post on its
+// behalf" cannot diverge. Read by the server's run-level gate arms (the
+// launch claim, the reconciler, the auto-fix lane, the pause and DLQ
+// notices): such a run owes the merge gate nothing.
+func PublishModeWithholds(v string) bool {
+	return strings.EqualFold(strings.TrimSpace(v), "off")
+}
+
 // operatorGateDisabled reports whether the repo's operator launch vars pin
 // the merge gate off. The pin is what turns the review bot advisory-only —
 // the publish step skips the commit status and the server-side gate

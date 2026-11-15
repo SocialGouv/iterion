@@ -1,7 +1,21 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.22
+version: 0.9.23
+## 0.9.23 — evaluation mode: `publish_mode: off` (a hidden launch var an
+## operator sets — --var, bot_args, a remote launch, an integration's pinned
+## launch vars — and no forge event can: the webhook lanes write fixed
+## payload keys, and no manifest channel they layer may carry it) runs the whole
+## review and publishes nothing: publish_review builds the request, the gate
+## verdict included, and sends nothing to the forge-publish endpoint (no
+## review, no inline comment, no commit status, no grant needed),
+## `tier_expand` turns `post_to_board` off whatever it says, and every exit
+## reports `gate_requested: false`. publish_output carries `evaluation:
+## true` on the withheld exit and publish_health reads it as `evaluation
+## mode`, neither OK nor degraded. The server's merge-gate arms (the launch
+## claim, the reconciler, the pause and DLQ notices, the auto-fix lane) owe
+## such a run nothing. For measuring cost and quality on a live pull request
+## without posting on it (#3283).
 ## 0.9.22 — `publish_health` judges a loss against what the review carries.
 ## It compared against converge's own `total_findings`, so converge at 0
 ## over findings the merge floor restored read `forge publish OK: 0 inline
@@ -486,6 +500,9 @@ invocations:
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
-## out of the form (still settable via --var / bot_args).
+## out of the form (still settable via --var / bot_args). publish_mode is
+## an operator's evaluation switch, hidden so no form offers to silence a
+## review.
 launch:
   primary: [pr_url, base_ref, review_tier]
+  hidden: [publish_mode]

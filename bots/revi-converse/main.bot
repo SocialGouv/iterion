@@ -27,7 +27,9 @@
 ## drafted and never posted, because the POST was the agent's last step).
 ##
 ## Read-only safety: the agent's tools read; the one forge write is
-## publish_reply's POST. No board writes, no source mutation.
+## publish_reply's POST. No board writes, no source mutation. Evaluation
+## mode (`--var publish_mode=off`, an operator's launch) withholds that POST
+## too: the run drafts and reports, and the forge sees no request.
 ##
 ## Deferred: a `forge.reply` DSL capability — sibling of `board.create` —
 ## would let the server own the posting and the bot identity
@@ -84,6 +86,16 @@ vars:
   ## base URL keeps the path; a pin set through the webhook API is stored
   ## as scheme://host. Empty: pr_url's origin is the base.
   forge_base_url: string = ""
+  ## Evaluation mode, set by an operator (--var, bot_args, a remote launch,
+  ## an integration's pinned launch vars), never from a forge event's
+  ## payload: "" (the default) posts the answer; "off"
+  ## runs the agent and drafts the answer, and publish_reply sends nothing to
+  ## the forge — no duplicate read, no POST — reporting the draft as withheld
+  ## (`evaluation`), which converse_health reads as intended, not as a
+  ## failure. For measuring cost and quality on a live thread without
+  ## answering in it. A run in this mode also owes the repo's merge gate
+  ## nothing, so the server neither claims nor repairs it on the run's behalf.
+  publish_mode: string [enum: "", "off"] = ""
 
 secrets:
   ## Forge API token. publish_reply posts the answer with it, read from
@@ -284,22 +296,32 @@ schema publish_reply_output:
   answer_preview: string
   ## skipped_reason: why nothing was posted — the agent's own reason, a
   ## missing token, an unusable pr_url, the forge's HTTP status and
-  ## message, a re-read that did not find the note. Empty when posted.
+  ## message, a re-read that did not find the note, evaluation mode. Empty
+  ## when posted.
   skipped_reason: string
   ## summary: the calls made and their statuses (never the token).
   summary: string
+  ## evaluation: the reply was ready to post and publish_mode=off withheld
+  ## it — nothing was sent to the forge, by design. False on every other
+  ## exit, an evaluation run's included when something else stopped it
+  ## first (an empty draft, an unusable pr_url): those read as they always do.
+  evaluation: bool
 
 schema converse_health_input:
   posted: bool
   reply_url: string
   skipped_reason: string
+  ## publish_reply's evaluation: a reply withheld by publish_mode=off reads
+  ## as evaluation mode, neither answered nor degraded.
+  evaluation: bool
   ## The conversation's PR URL (vars.pr_url): a note the forge created
   ## lives on the PR's own host.
   pr_url: string
 
 ## Deterministic anti-façade gate: degraded unless the reply was posted
-## with an http(s) note URL on the PR's host; the banner says how the
-## reply fell short. Forge-agnostic — a pure invariant check.
+## with an http(s) note URL on the PR's host, or withheld by evaluation
+## mode; the banner says how the reply fell short. Forge-agnostic — a pure
+## invariant check.
 schema converse_health_output:
   degraded: bool
   banner: string
@@ -417,6 +439,14 @@ agent converse_agent:
 ## reported as posted, with that note's URL, and nothing is written again.
 ## A read that fails is said in the summary and does not stop the post.
 ##
+## Evaluation mode (publish_mode=off): the node does everything that needs
+## no forge — reads the draft, checks the target, builds the body, refuses a
+## credential in it — then stops before the duplicate read: no request at
+## all. It reports posted=false, evaluation=true and a reason that says so,
+## with the draft's preview and the call it would have made. No token is
+## needed there; the checks a post depends on (an empty draft, an unusable
+## pr_url or discussion id) still speak first, under their own reason.
+##
 ## Every outcome exits 0 with posted=false and a skipped_reason saying why
 ## — the agent's own reason (when it drafted nothing, or only filler: "N/A",
 ## "none", "-", no run of three letters), an empty answer, no token or an
@@ -444,6 +474,7 @@ tool publish_reply:
     pr = {{vars.pr_url}}
     disc = {{vars.discussion_id}}
     forge_base = {{vars.forge_base_url}}
+    publish_mode = {{vars.publish_mode}}
     tok_path = {{secrets.forge_token.path}}
     run_url = {{run.url}}
     run_id = {{run.id}}
@@ -462,6 +493,8 @@ tool publish_reply:
 
     pr, disc, forge_base = text_of(pr), text_of(disc), text_of(forge_base)
     agent_skip = text_of(agent_skip)
+    # publish_mode=off: everything up to the first request, then nothing sent.
+    evaluation_mode = text_of(publish_mode).lower() == "off"
     token = ""
     token_forms = []
 
@@ -486,7 +519,7 @@ tool publish_reply:
         return s
 
 
-    def emit(posted, forge, reply_url="", preview="", skipped="", summary=""):
+    def emit(posted, forge, reply_url="", preview="", skipped="", summary="", evaluation=False):
         # Every field reaches converse_health's environment or the run report:
         # a NUL, which no environment entry can carry, is dropped from each.
         def clean(v):
@@ -499,7 +532,7 @@ tool publish_reply:
             summary = (summary + " The agent's skipped_reason: " + clean(agent_skip)[:300]).strip()
         print(json.dumps({"posted": posted, "forge": clean(forge), "reply_url": clean(reply_url),
                           "answer_preview": clean(preview), "skipped_reason": skipped,
-                          "summary": summary}))
+                          "summary": summary, "evaluation": bool(evaluation)}))
         raise SystemExit(0)
 
 
@@ -589,12 +622,14 @@ tool publish_reply:
              summary="Nothing posted: the agent drafted no answer.")
     if pr_problem:
         emit(False, forge, preview=preview, skipped=pr_problem, summary="Nothing posted: " + pr_problem)
-    if token_problem:
+    # Evaluation mode sends nothing, so it needs no token; a mounted one is
+    # still read above, so the body's credential refusal and the redaction hold.
+    if token_problem and not evaluation_mode:
         emit(False, forge, preview=preview, skipped=token_problem, summary="Nothing posted: unreadable forge token.")
-    if not tok_path or not os.path.isfile(tok_path):
+    if (not tok_path or not os.path.isfile(tok_path)) and not evaluation_mode:
         emit(False, forge, preview=preview, skipped="forge_token is not mounted on this run; the answer was not posted (it is in the run report)",
              summary="Nothing posted: no forge token.")
-    if not token:
+    if not token and not evaluation_mode:
         emit(False, forge, preview=preview, skipped="the forge_token file is empty; the answer was not posted (it is in the run report)",
              summary="Nothing posted: empty forge token.")
 
@@ -763,6 +798,18 @@ tool publish_reply:
              skipped="the answer carries " + what + "; posting it would publish a credential, so nothing was posted",
              summary="Nothing posted: the answer carried " + what + ".")
 
+    # Evaluation mode stops here, before the first request: the reply is
+    # ready, and withholding it is the run's purpose, not a failure.
+    if evaluation_mode:
+        held = ("Evaluation mode (publish_mode=off): the reply was ready for the " + where + " and was not posted; "
+                "no request reached the forge (it would have been POST " + post_url + ", " + str(units(body))
+                + " UTF-16 units with the run footer). The draft is in the run report.")
+        if truncated:
+            held += " It would have been truncated to the forge comment limit."
+        emit(False, forge, preview=preview,
+             skipped="evaluation mode (publish_mode=off): the reply was drafted and not posted; nothing was sent to the forge",
+             summary=held, evaluation=True)
+
 
     class Stay(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
@@ -891,14 +938,17 @@ tool publish_reply:
 ## re-read. A claimed post without one reads UNVERIFIED; posting nothing
 ## is degraded too — the banner carries publish_reply's skipped_reason
 ## (the agent's own, a missing token, the forge's refusal), a MISSING
-## banner when there is none. The run still succeeds — this informs
-## (degraded=true) rather than hard-failing. Forge-agnostic: pure
-## invariant assertion.
+## banner when there is none. One non-post is not degraded: a reply
+## publish_reply withheld in evaluation mode (publish_mode=off), which
+## reads `evaluation mode` — never OK, since nothing reached the thread.
+## The run still succeeds — this informs (degraded=true) rather than
+## hard-failing. Forge-agnostic: pure invariant assertion.
 tool converse_health:
-  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} PR_URL={{input.pr_url}} python3 -I -c "
+  command: `POSTED={{input.posted}} REPLY_URL={{input.reply_url}} SKIPPED={{input.skipped_reason}} PR_URL={{input.pr_url}} EVALUATION={{input.evaluation}} python3 -I -c "
 import os, json, sys
 from urllib.parse import urlsplit
 posted = os.environ.get('POSTED', 'false') == 'true'
+withheld = os.environ.get('EVALUATION', 'false') == 'true' and not posted
 reply = os.environ.get('REPLY_URL', '').strip()
 skipped = os.environ.get('SKIPPED', '').strip()
 def web_host(s):
@@ -918,12 +968,14 @@ if answered:
     banner = 'forge reply OK: ' + reply
 elif posted:
     banner = chr(9888) + ' FORGE REPLY UNVERIFIED: publish_reply claimed posted=true but its reply_url is not an http(s) URL on the pull request host (' + (pr_host or 'pr_url is not a web URL') + '). Treat as not-yet-confirmed; re-check the thread before re-triggering.'
+elif withheld:
+    banner = 'evaluation mode: forge reply not posted, by design (publish_mode=off); nothing was sent to the forge, and the draft is in the run report.'
 elif skipped:
     banner = 'forge reply skipped: ' + skipped
 else:
     banner = chr(9888) + ' FORGE REPLY MISSING: nothing was posted and no skipped_reason was given. The question is unanswered; check the run before re-triggering.'
 sys.stderr.write(banner + chr(10))
-print(json.dumps({'degraded': not answered, 'banner': banner}))
+print(json.dumps({'degraded': not answered and not withheld, 'banner': banner}))
 "`
   input: converse_health_input
   output: converse_health_output
@@ -962,6 +1014,7 @@ workflow revi_converse:
     reply_url: "{{outputs.publish_reply.reply_url}}",
     skipped_reason: "{{outputs.publish_reply.skipped_reason}}",
     pr_url: "{{vars.pr_url}}",
+    evaluation: "{{outputs.publish_reply.evaluation}}",
   }
 
   converse_health -> done

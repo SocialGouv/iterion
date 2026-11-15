@@ -105,7 +105,7 @@ func renderReviConversePublish(t *testing.T, input, vars map[string]any, runURL,
 	if !ok || tn.Script == "" || tn.Language != "py" {
 		t.Fatalf("publish_reply is %T (language %q), want a python script tool node", wf.Nodes["publish_reply"], tn.Language)
 	}
-	all := map[string]any{"pr_url": "", "discussion_id": "", "forge_base_url": ""}
+	all := map[string]any{"pr_url": "", "discussion_id": "", "forge_base_url": "", "publish_mode": ""}
 	for k, v := range vars {
 		all[k] = v
 	}
@@ -150,6 +150,7 @@ type publishOut struct {
 	AnswerPreview string `json:"answer_preview"`
 	SkippedReason string `json:"skipped_reason"`
 	Summary       string `json:"summary"`
+	Evaluation    bool   `json:"evaluation"`
 }
 
 // tokenForms are the spellings of the token the node must neither post nor

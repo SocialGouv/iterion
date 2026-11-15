@@ -95,6 +95,7 @@ Bot vars ([`bots/review-pr/main.bot`](../bots/review-pr/main.bot)):
 |-----|---------|---------|
 | `gate_enabled` | `true` | Post the `revi/review` status. `false` = advisory-only reviews. |
 | `gate_severity` | `high` | Severity floor that blocks (`low`<`medium`<`high`<`critical`). `high` = high+critical block; low/medium advise. |
+| `publish_mode` | `""` | `off` = evaluation mode: the review runs whole and nothing is posted — no review, no status (see [below](#evaluation-mode)). |
 
 Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
@@ -443,6 +444,29 @@ and the head of an open MR/PR carries **no** status. Query that last one
 with the **full** SHA — GitLab's statuses endpoint returns `[]` for an
 abbreviated one whether or not a status exists (measured on 19.2: full SHA
 → `["iterion/review"]`, same commit at 8 chars → `[]`).
+
+## <a name="evaluation-mode"></a>Evaluation mode — a run that owes no verdict
+
+`publish_mode: off` (review-pr and revi-converse) is a measurement run: the
+bot does all its work and posts nothing — `publish_review` sends no request
+to the publish endpoint, so neither the review nor the status lands, and
+`publish_health` reads `evaluation mode`. The server's gate arms read the
+same launch var (`forge.PublishModeWithholds`, beside
+`forge.GateValueDisables`): `markGateInFlight` claims nothing, and
+`runGateDisabled` — read by the reconciler, the auto-fix lane and the pause
+and DLQ notices — says the run owes no verdict. So an evaluation run leaves
+no in-flight claim, no synthetic `review died` failure, no relaunch and no
+comment on the pull request it was launched not to touch.
+
+Only an operator sets it: a launch's `--var` or `bot_args`, a remote
+launch, or an integration's pinned launch vars. A forge event cannot — the
+webhook lanes write fixed payload keys, and no manifest channel they layer
+may carry it (`bots/publish_mode_eval_test.go`). Pinned on an integration,
+it makes every review of the repo an evaluation: the repo-level derivations
+(forcing `review_on_sync`, the merge-queue mirror) read `gate_enabled` only,
+so a repo whose gate context is a REQUIRED check then waits on a status
+nothing posts. Pin `gate_enabled: "false"` beside it, or keep the var on
+individual launches.
 
 ### GitHub merge queues
 

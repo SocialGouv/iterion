@@ -285,6 +285,11 @@ schema publish_output:
   gate_requested: bool
   gate_posted: bool
   gate_skipped_reason: string
+  ## evaluation: the review was built and publish_mode=off withheld it --
+  ## no request reached the forge-publish endpoint, by design. False on every
+  ## other exit; gate_requested is false on every exit of such a run, since
+  ## it owes no gate.
+  evaluation: bool
 
 schema publish_health_input:
   published: bool
@@ -314,6 +319,9 @@ schema publish_health_input:
   gate_requested: bool
   gate_posted: bool
   gate_skipped_reason: string
+  ## publish_output.evaluation: a review withheld by publish_mode=off reads
+  ## as evaluation mode, neither a lost publish nor a healthy one.
+  evaluation: bool
 
 ## Deterministic anti-façade gate: degraded=true covers findings with no
 ## inline comment that the publish step does not report folded into the

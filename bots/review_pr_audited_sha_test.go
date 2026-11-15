@@ -137,6 +137,7 @@ func TestReviewPRPublishPinsTheGateToTheReviewedRevision(t *testing.T) {
 		"{{vars.gate_severity}}":       "'high'",
 		"{{vars.gate_context}}":        "'revi/review'",
 		"{{vars.fixer_hint}}":          "''",
+		"{{vars.publish_mode}}":        "''",
 	} {
 		rendered = strings.ReplaceAll(rendered, ref, val)
 	}

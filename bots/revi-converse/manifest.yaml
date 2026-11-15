@@ -1,7 +1,17 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.8
+version: 0.1.9
+## 0.1.9 — evaluation mode: `publish_mode: off` (a hidden launch var an
+## operator sets — --var, bot_args, a remote launch, an integration's pinned
+## launch vars — and no forge event can: the webhook lanes write fixed
+## payload keys, and no manifest channel they layer may carry it) runs the agent and
+## drafts the answer, and publish_reply sends nothing — no duplicate read, no
+## POST, no token needed — reporting `evaluation: true` and a reason that
+## says so; converse_health reads it as `evaluation mode`, neither OK nor
+## degraded. The server's merge-gate arms owe such a run nothing. For
+## measuring cost and quality on a live thread without answering in it
+## (#3283).
 ## 0.1.8 — the agent drafts, a deterministic node posts. converse_agent
 ## hands its answer back in converse_output.answer and never writes on the
 ## forge; publish_reply (no LLM) posts it in the thread with the forge_token
@@ -109,10 +119,12 @@ invocations:
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
-## out of the form (still settable via --var / bot_args).
+## out of the form (still settable via --var / bot_args). publish_mode is
+## an operator's evaluation switch, hidden so no form offers to silence a
+## reply.
 launch:
   primary: [converse_question, pr_url]
-  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url]
+  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url, publish_mode]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot) needs 3.225.0, and the
 ## `sinks:` grant on forge_token needs 4.7.0, the release that reads it (the
