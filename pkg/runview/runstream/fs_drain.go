@@ -176,7 +176,7 @@ func (d *fileDrain) drainEvents(ctx context.Context, reader io.Reader) error {
 				return e
 			}
 			if !d.events.Ship(ctx, batch) {
-				return errors.Join(errEventDeliveryStopped, ctx.Err())
+				return eventShipRefused(d.events, ctx)
 			}
 			d.seq = batch[len(batch)-1].Seq
 			d.after = true

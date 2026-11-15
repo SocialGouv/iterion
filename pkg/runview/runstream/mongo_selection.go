@@ -280,7 +280,7 @@ func (m *MongoSource) selectedEventsOnce(ctx context.Context, s MongoSelection, 
 			continue
 		}
 		if !pipe.Ship(round.ctx, []*store.Event{evt}) {
-			return false, errors.Join(errEventDeliveryStopped, round.ctx.Err())
+			return false, eventShipRefused(pipe, round.ctx)
 		}
 		*pos = mongoEventPosition{seq: evt.Seq, after: true}
 		if m.metrics != nil && !evt.Timestamp.IsZero() {

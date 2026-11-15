@@ -11,6 +11,22 @@ import (
 // It is local completion, not corruption and not a reconnect request.
 var errEventDeliveryStopped = errors.New("runstream: event delivery stopped")
 
+// eventShipRefused names why pipe refused rows shipped under c. The consumer's
+// Close stops delivery; otherwise c ended — a round the terminal poller ended
+// is transport control, and the subscription resumes from the last shipped
+// event.
+func eventShipRefused(pipe EventPipe, c context.Context) error {
+	select {
+	case <-pipe.Done():
+		return errors.Join(errEventDeliveryStopped, c.Err())
+	default:
+		if err := c.Err(); err != nil {
+			return err
+		}
+		return errors.New("runstream: ship refused under a live context and an open pipe")
+	}
+}
+
 func checkObservedBatch(rows []*store.Event, original store.RunObservation, observed bool) error {
 	for _, evt := range rows {
 		if evt == nil {
@@ -30,10 +46,9 @@ func checkObservedBatch(rows []*store.Event, original store.RunObservation, obse
 }
 
 func replayObservedEvents(c context.Context, s MongoSelection, pos *mongoEventPosition, pipe EventPipe, original store.RunObservation, observed bool) error {
-	var firstFatal error
-	stopped := false
+	var firstFatal, refused error
 	backfillErr := s.BackfillEvents(c, pos.seq, pos.after, MaxEventsPerPage(), func(rows []*store.Event) bool {
-		if firstFatal != nil || stopped {
+		if firstFatal != nil || refused != nil {
 			return false
 		}
 		if e := checkObservedBatch(rows, original, observed); e != nil {
@@ -41,7 +56,7 @@ func replayObservedEvents(c context.Context, s MongoSelection, pos *mongoEventPo
 			return false
 		}
 		if !pipe.Ship(c, rows) {
-			stopped = true
+			refused = eventShipRefused(pipe, c)
 			return false
 		}
 		if len(rows) > 0 {
@@ -52,8 +67,8 @@ func replayObservedEvents(c context.Context, s MongoSelection, pos *mongoEventPo
 	if firstFatal != nil {
 		return errors.Join(firstFatal, backfillErr, c.Err())
 	}
-	if stopped {
-		return errors.Join(errEventDeliveryStopped, backfillErr, c.Err())
+	if refused != nil {
+		return errors.Join(refused, backfillErr)
 	}
 	return backfillErr
 
