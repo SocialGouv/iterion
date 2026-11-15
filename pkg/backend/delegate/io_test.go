@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 func TestIOTaskRoundTrip(t *testing.T) {
@@ -51,6 +52,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		AmbientContext:         ambient.None,
 		AmbientContextSource:   "workflow",
 		Codemode:               true,
+		CodemodeBounds:         &scripthost.Limits{Wall: 2 * time.Minute, CPU: 45 * time.Second, Memory: 1 << 29, ScriptBytes: 1 << 19, ResultBytes: 1 << 21, ToolCalls: 256, ToolResultBytes: 1 << 17},
 	}
 
 	ioTask := ToIOTask(original)
@@ -154,6 +156,24 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if string(got.SettingsHooks) != string(original.SettingsHooks) {
 		t.Errorf("SettingsHooks = %s, want %s", got.SettingsHooks, original.SettingsHooks)
+	}
+	// Every field of the bound set, by reflection rather than by hand: this
+	// test is hand-enumerated, which is why three mutants that dropped
+	// CodemodeBounds on the way through ToIOTask and FromIOTask stayed green
+	// across thirty packages. A pointer to a struct is exactly the shape a
+	// hand-written round-trip forgets.
+	if (got.CodemodeBounds == nil) != (original.CodemodeBounds == nil) {
+		t.Fatalf("CodemodeBounds nil-ness changed: %v vs %v", got.CodemodeBounds, original.CodemodeBounds)
+	}
+	if got.CodemodeBounds != nil {
+		rt := reflect.TypeOf(*original.CodemodeBounds)
+		for i := 0; i < rt.NumField(); i++ {
+			want := reflect.ValueOf(*original.CodemodeBounds).Field(i).Int()
+			have := reflect.ValueOf(*got.CodemodeBounds).Field(i).Int()
+			if want != have {
+				t.Errorf("CodemodeBounds.%s = %d, want %d — the field did not survive the wire", rt.Field(i).Name, have, want)
+			}
+		}
 	}
 	if got.Codemode != original.Codemode {
 		// A sandboxed node rebuilds its loop on the other side of this

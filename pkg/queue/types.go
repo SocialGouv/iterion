@@ -256,9 +256,14 @@ import (
 // version fence cannot catch that and is not what answers it: the migration
 // sentence on ADR-165 is — re-route the node to claw, or declare
 // `codemode: off`.
-// v32 adds the codemode BOUNDS to the same carrier: `codemode_bounds` rides
-// `ir_compiled`, no RunMessage field was added, and the bump is the
-// additive-field rule's case rather than a formality.
+// v32 adds the codemode BOUNDS to the same carrier. They ride `ir_compiled`
+// inside the `codemode` object — `ir_compiled` is the compiled AST, so the
+// bounds travel as the block's own fields (`tool_calls`, `wall`, …) beside
+// its mode, and NOT under a key of their own. An earlier draft named a
+// `codemode_bounds` key here: that name is real but belongs to ANOTHER wire,
+// `delegate.IOTask`'s sandbox relay, and on this one it existed only as three
+// json tags on a struct family nothing marshals; they are gone. No RunMessage field was added, and the bump
+// is the additive-field rule's case rather than a formality.
 //
 // The direction is the opposite of v31's and the rule still asks for a bump.
 // A pre-bounds runner drops the key and runs the program under

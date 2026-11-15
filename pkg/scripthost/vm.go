@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"reflect"
 	"time"
 
 	"github.com/dop251/goja"
@@ -194,6 +195,10 @@ func safeErrorText(err error) (text string) {
 //
 // undefined becomes JSON null, so a script that returns nothing is still a
 // value rather than a refusal.
+// promiseType is what ExportType answers for a promise. Held as a value so
+// the comparison costs no allocation and no evaluation.
+var promiseType = reflect.TypeOf((*goja.Promise)(nil))
+
 func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return "null", nil
@@ -206,6 +211,22 @@ func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	stringify, ok := goja.AssertFunction(jsonObj.ToObject(vm).Get("stringify"))
 	if !ok {
 		return "", errors.New("JSON.stringify is not callable")
+	}
+
+	// A PROMISE is refused rather than encoded. `JSON.stringify` renders one
+	// as `{}`, so a program ending in `f()` where f is async came back as a
+	// successful empty object — a silent wrong answer, which is the one thing
+	// this repository's conventions forbid outright. There is no event loop
+	// here (a bare goja.Runtime pumps no job queue), so the promise could
+	// never settle and `{}` is not a value the script computed: it is the
+	// shape of an absence. `await` is already a syntax error; this is the
+	// half that was silent.
+	// ExportType, not Export: exporting MATERIALISES the value, which
+	// evaluates an exotic object's getters — a `new Map([[{get x(){throw 1}},1]])`
+	// threw from inside this guard and changed the error path a sibling test
+	// pins. ExportType reads the shape without running anything.
+	if v.ExportType() == promiseType {
+		return "", errors.New("the program's last expression is a Promise, and this host runs no event loop, so it can never settle: there is no async here — return the value itself, not a promise of it")
 	}
 
 	out, err := stringify(goja.Undefined(), v)

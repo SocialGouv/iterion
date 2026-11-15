@@ -190,15 +190,14 @@ defaults and ceilings are in [dsl.md](../../dsl.md).
 `timeout:`'s spelling; a byte size and a count are bare integers. Measured
 first: this DSL has no byte-size form and vendors no parser for one, so
 `256KiB` is its own lot with its own edges (KiB vs KB, floats, overflow).
-Philosophy 1 reads a bound with no override as a defect.
 
 **Clamped, never refused.** The parent reduces a request above `Ceiling`
-where it spawns the program and reports it through `OnClamp`; **C347** says
-the same thing at compile, **C349** on a duration that is not one (the field
-falls back to its default — tighter than asked, never looser), **C348** on
-bounds beside a `mode: off`. The compiler warns and the clamp enforces: a
-diagnostic that also lowered the value would make the bound a thing two
-places decide, and `OnClamp` would stop firing on its own case.
+where it spawns the program and reports it through `OnClamp`; **C347** says it
+at compile, **C349** on a duration that is not one (the default applies, which
+is LOOSER than a bound you were lowering), **C348** on bounds beside a
+`mode: off` — at the NODE rung only: the workflow rung's bounds are the
+default every on-node runs under. The compiler warns and the clamp enforces: a
+diagnostic that also lowered the value would give the bound two owners.
 
 **It arrived from a measurement.** On this repository's bot catalog a program
 surveying 39 files spent **40 of the 64 default calls**; a second attempt

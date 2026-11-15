@@ -168,7 +168,18 @@ func (b *toolBridge) roundTrip(name string, input []byte) (Frame, error) {
 		return Frame{}, fmt.Errorf("%w: writing call %d: %v", errToolChannelBroken, b.nextID, err)
 	}
 
-	line, err := readFrameLine(b.in, b.limits.ScriptBytes)
+	// The cap is derived from what this frame CARRIES, not from the source
+	// size. A result frame holds text the parent already clipped to
+	// ToolResultBytes, so resultFrameCap is the bound that describes it;
+	// ScriptBytes stood here and describes a program's length, which is a
+	// different number that happened to be larger while neither could be
+	// declared. Measured once both could: `tool_result_bytes: 524288` —
+	// half its own platform ceiling — with the DEFAULT 256 KiB
+	// `script_bytes` made the child refuse a frame its own parent had
+	// written, as "a tool-channel frame passed 262144 bytes", and
+	// codemodeTool classifies that as a deployment failure and tells the
+	// model no other program will run either.
+	line, err := readFrameLine(b.in, resultFrameCap(b.limits))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return Frame{}, fmt.Errorf("%w: the parent closed the channel while call %d was in flight",

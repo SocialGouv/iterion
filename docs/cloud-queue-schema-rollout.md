@@ -28,7 +28,7 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v31 consumer accepts v27 through v31: a v27
+  directions. The current v32 consumer accepts v27 through v32: a v27
   message predates the wire-carried `bot_source_tier`, and the run document
   its publisher persisted already carries the stamp — the runner re-reads the
   tier from there, so the #1959 floor never silently drops; a v28 message
@@ -406,8 +406,14 @@ number: re-route the node to a backend that serves codemode, or declare
 ## v32: the codemode bounds, in the same carrier
 
 **What rose.** The `codemode:` block's seven bounds (ADR-165) reach the runner
-inside `ir_compiled`, as `codemode_bounds` on each agent/judge node and on the
-workflow. No RunMessage field was added — the value rides a field that already
+inside `ir_compiled`. That field is the compiled **AST**, so they travel as the
+`codemode` object's own keys (`tool_calls`, `wall`, `cpu`, `memory`,
+`script_bytes`, `result_bytes`, `tool_result_bytes`) beside its `mode` — not
+under a key of their own. An earlier draft named a `codemode_bounds` key here:
+that name is real but belongs to ANOTHER wire — `delegate.IOTask`, the sandbox
+relay — and on this one it existed only as three json tags on `ir.Workflow`,
+`AgentNode` and `JudgeNode`, a struct family nothing marshals; they are gone.
+No RunMessage field was added — the value rides a field that already
 travels — and no `MinSchemaVersion` move: it stays **27**.
 
 **Why a bump, when the fallback is TIGHTER.** This is the opposite direction
@@ -422,9 +428,9 @@ additive-field rule names their class itself — *budget caps*. A stale runner
 silently re-making that choice is the correctness bug the rule exists for,
 whichever direction the silence goes in.
 
-**What this bump does NOT cover.** A v31 message carrying `codemode_bounds` is
+**What this bump does NOT cover.** A v31 message carrying the bounds is
 impossible: v31 is the release that compiled the attribute without the block
-form, so no v31 publisher can produce the key. There is no window here of the
+form, so no v31 publisher can put a bound inside its `codemode` object. There is no window here of the
 kind v31 had to name.
 
 **Order: server first,** as the default. An old runner parks a v32 message

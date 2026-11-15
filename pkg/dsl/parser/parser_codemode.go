@@ -101,19 +101,19 @@ func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token) {
 	case "mode":
 		cb.Mode = p.expectIdent()
 	case "tool_calls":
-		cb.ToolCalls = int64(p.expectInt())
+		cb.ToolCalls = p.expectInt64()
 	case "wall":
 		cb.Wall = p.expectString()
 	case "cpu":
 		cb.CPU = p.expectString()
 	case "memory":
-		cb.Memory = int64(p.expectInt())
+		cb.Memory = p.expectInt64()
 	case "script_bytes":
-		cb.ScriptBytes = int64(p.expectInt())
+		cb.ScriptBytes = p.expectInt64()
 	case "result_bytes":
-		cb.ResultBytes = int64(p.expectInt())
+		cb.ResultBytes = p.expectInt64()
 	case "tool_result_bytes":
-		cb.ToolResultBytes = int64(p.expectInt())
+		cb.ToolResultBytes = p.expectInt64()
 	default:
 		p.unknownProperty("codemode", propTok, name)
 		p.skipUnknownProperty()

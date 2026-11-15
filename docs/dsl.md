@@ -444,8 +444,14 @@ agent surveyor:
 
 A duration is **quoted**, the spelling `timeout:` uses; a byte size and a
 count are **bare integers**, because this DSL has no byte-size value form and
-inventing one is its own lot. An unreadable or negative duration is **C349**
-and falls back to its default — tighter than what was asked for, never looser.
+inventing one is its own lot. **A bound of `0` is the DEFAULT, not a ban** —
+`Limits.Clamp` reads any non-positive bound as "nobody chose", so
+`tool_calls: 0` is sixty-four calls. There is deliberately no way to spell a
+ban: a node that must run no program declares `codemode: off`. An unreadable or negative duration is **C349**
+and falls back to its default. Mind the direction: the default is tighter than
+a bound you were RAISING and looser than one you were LOWERING — a mistyped
+`wall: "5 s"` is enforced as the 30-second default, six times what was meant.
+C349 is what makes either visible.
 
 Every bound has a **platform ceiling a tenant cannot raise**
 (`scripthost.Ceiling`: 4096 calls, 10m wall, 5m CPU, 2 GiB, 4 MiB of source,

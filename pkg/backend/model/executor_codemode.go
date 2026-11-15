@@ -41,9 +41,10 @@ import (
 // The BOUNDS come back with the policy, from the same call, for the reason
 // this file's whole shape encodes: a second place that walked the same ladder
 // would be a second opinion, and the one that answered second would win on
-// some path. They are resolved even when the policy is off — the caller
-// carries nil then, because it carries no capability either — so the walk has
-// no branch a reader has to hold two readings of.
+// some path. They are resolved only where the capability is GRANTED — an off
+// policy returns before the bounds ladder is walked, because a node that runs
+// no program has no bound to carry, and a non-nil bound set beside a
+// Codemode:false task would read as a budget nobody can spend.
 func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.CodemodePolicy, *ir.CodemodeBounds, error) {
 	// ONE guard. `policy.Declared()` stood here too and could never fire:
 	// the only rung answering "not declared" is the default, and the default

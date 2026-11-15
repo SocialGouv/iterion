@@ -1213,6 +1213,15 @@ type CodemodeBlock struct {
 // written in the block form with a body. It is what tells a `codemode: on`
 // short form from a block that happens to carry only `mode: on`, and what the
 // unparser asks to choose a form.
+//
+// It reads a NON-ZERO bound, which makes a block whose only bound is the
+// literal `0` indistinguishable from a mode-only one. That is the shape of
+// `Limits.Clamp`'s own contract — a non-positive bound means "nobody chose" —
+// so the two really are the same program, and `iterion fmt` rewriting
+// `tool_calls: 0` to the short form loses no semantics. What it loses is the
+// chance to TELL the author that zero is the default rather than a ban;
+// saying that needs pointer fields (ast.MemoryBlock's shape, for this exact
+// reason) and is its own lot, filed rather than half-built here.
 func (c *CodemodeBlock) Bounded() bool {
 	if c == nil {
 		return false

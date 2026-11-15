@@ -136,9 +136,21 @@ var formWitnesses = map[spec.Form]witnesses{
 func bodyWitness(body string) string {
 	k, ok := spec.Lookup(body)
 	if !ok {
-		return "mode: zz_word" // no such kind: let the parser say so
+		// A Body naming a kind the registry does not have. Returning a line
+		// that happens to parse would hide it behind a green sweep (and
+		// `mode:` did, since every body so far has one); this name cannot be
+		// a property of anything, so the red says what is wrong.
+		return "__no_such_body_kind__: 1"
 	}
+	// `mode` is skipped on purpose: every BlockOrIdent body so far opens with
+	// one, so a witness taken from the first property was the same line for
+	// `sandbox` and for `codemode` and stopped telling a right Body: from a
+	// wrong one. Skipping it also restores `sandbox`'s original witness
+	// (`image: "img"`) rather than weakening it.
 	for _, bp := range k.Properties {
+		if bp.Name == "mode" {
+			continue
+		}
 		w, ok := formWitnesses[bp.Form]
 		if !ok || len(w.accepted) == 0 {
 			continue
@@ -155,7 +167,7 @@ func bodyWitness(body string) string {
 		}
 		return bp.Name + ": " + v
 	}
-	return "mode: zz_word"
+	return "__no_body_witness__: 1"
 }
 
 // witnessLine writes one witness as the property's line(s): a value after
@@ -229,5 +241,28 @@ func TestEveryPropertyFormHasWitnesses(t *testing.T) {
 				t.Errorf("%s.%s: form %q has no witnesses", k.Name, p.Name, p.Form)
 			}
 		}
+	}
+}
+
+// bodyWitness has to tell the two BlockOrIdent bodies APART. Measured once a
+// second property of that form existed: both kinds open with `mode`, so a
+// witness taken from the first property was the identical line for both and
+// the sweep stopped distinguishing a right `Body:` from a wrong one.
+func TestTheBodyWitnessDistinguishesTheBodies(t *testing.T) {
+	t.Parallel()
+	sandbox, codemode := bodyWitness("sandbox"), bodyWitness("codemode")
+	if sandbox == codemode {
+		t.Errorf("both bodies witness as %q — a wrong Body: would pass the form sweep", sandbox)
+	}
+	// And each is a property of ITS own kind, not of the other's.
+	for body, want := range map[string]string{"sandbox": "image", "codemode": "tool_calls"} {
+		if got := bodyWitness(body); !strings.HasPrefix(got, want+":") {
+			t.Errorf("bodyWitness(%q) = %q, want a %s line", body, got, want)
+		}
+	}
+	// A Body nobody declares must produce a red that names the problem,
+	// never a line that happens to parse.
+	if got := bodyWitness("no_such_kind_here"); !strings.Contains(got, "no_such_body_kind") {
+		t.Errorf("bodyWitness of an unknown kind = %q, which may parse and hide the mistake", got)
 	}
 }

@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -203,5 +204,101 @@ workflow w:
 	// author meant, never looser, and the diagnostic says so.
 	if n.CodemodeBounds.Wall != 0 || n.CodemodeBounds.CPU != 0 {
 		t.Errorf("Wall/CPU = %s/%s, want 0/0 so the default applies", n.CodemodeBounds.Wall, n.CodemodeBounds.CPU)
+	}
+}
+
+// A plain `codemode: off` draws NO C348 — the half of that diagnostic the
+// first round left unwitnessed. Measured: dropping the `bounds != nil` half
+// of its guard survived ./pkg/dsl/..., so every `codemode: off` in the
+// language would have drawn a spurious warning with nothing to say so. In a
+// tool that blocks, a false positive costs as much as a hole.
+func TestAPlainCodemodeOffDrawsNoBoundsDiagnostic(t *testing.T) {
+	t.Parallel()
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode: off
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	if got := countCode(r, DiagCodemodeBoundsWithModeOff); got != 0 {
+		t.Errorf("C348 on a plain `codemode: off`: %d time(s), want 0: %+v", got, r.Diagnostics)
+	}
+	if len(r.Diagnostics) > 0 {
+		t.Errorf("`codemode: off` drew diagnostics: %+v", r.Diagnostics)
+	}
+}
+
+// Each C349 names the property it is about. Measured as unwitnessed: giving
+// the cpu message the label "wall" survived ./pkg/dsl/..., because the
+// sibling test counts two C349s and checks both fields are zero, never which
+// message names which field. An author with two bad durations would have been
+// told the same thing twice.
+func TestEachUnreadableDurationNamesItsOwnProperty(t *testing.T) {
+	t.Parallel()
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    wall: "two minutes"
+    cpu: "forty"
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	var sawWall, sawCPU bool
+	for _, d := range r.Diagnostics {
+		if d.Code != DiagCodemodeBoundUnreadable {
+			continue
+		}
+		if strings.Contains(d.Message, `codemode wall: "two minutes"`) {
+			sawWall = true
+		}
+		if strings.Contains(d.Message, `codemode cpu: "forty"`) {
+			sawCPU = true
+		}
+	}
+	if !sawWall {
+		t.Errorf("no C349 names wall with its own value: %+v", r.Diagnostics)
+	}
+	if !sawCPU {
+		t.Errorf("no C349 names cpu with its own value: %+v", r.Diagnostics)
+	}
+}
+
+// The judge host carries its bounds too. Measured as unwitnessed: setting the
+// judge's CodemodeBounds to nil at the compile site survived ./pkg/dsl/...,
+// because both compile tests used an agent and the every-kind fixture gives
+// the judge only the short form. A new state honoured at one of two sites.
+func TestAJudgeCarriesItsDeclaredBounds(t *testing.T) {
+	t.Parallel()
+	r := compileFile(t, `
+judge j:
+  model: "m"
+  backend: "claw"
+  codemode:
+    tool_calls: 77
+
+workflow w:
+  entry: j
+  j -> done
+`)
+	if len(r.Diagnostics) > 0 {
+		t.Fatalf("drew diagnostics: %+v", r.Diagnostics)
+	}
+	n, ok := r.Workflow.Nodes["j"].(*JudgeNode)
+	if !ok {
+		t.Fatalf("node j is %T", r.Workflow.Nodes["j"])
+	}
+	if n.Codemode != "on" {
+		t.Errorf("Codemode = %q, want \"on\"", n.Codemode)
+	}
+	if n.CodemodeBounds == nil || n.CodemodeBounds.ToolCalls != 77 {
+		t.Errorf("CodemodeBounds = %+v, want ToolCalls 77 on the judge", n.CodemodeBounds)
 	}
 }

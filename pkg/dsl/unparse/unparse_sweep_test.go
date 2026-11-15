@@ -54,6 +54,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"ToolNodeDecl", "ComputeDecl", "ComputeExpr", "SubbotDecl", "EmitDecl", "WaitDecl",
 		"AwaitAnswersDecl", "FailDecl", "GroupDecl", "UseDecl", "Edge", "LoopClause",
 		"ForeachClause", "WhenClause", "WithEntry", "BudgetBlock", "ResourcesBlock",
+		"CodemodeBlock",
 		"SandboxBlock", "SandboxBuildBlock", "SandboxNetworkBlock", "MemoryBlock",
 		"CompactionBlock", "FallbackDecl", "CursorDecl", "CursorEnumValue", "CursorBand",
 		"CursorBlock", "CursorSetting", "SupervisorDecl", "MCPServerDecl", "MCPAuthDecl",
@@ -73,6 +74,39 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 	for typ, fs := range structFields(t, filepath.Join("..", "ast", "contract.go")) {
 		fields[typ] = fs
 	}
+	// KEPT COMPLETE BY CONSTRUCTION. Until this check existed the sweep only
+	// erred when a LISTED type was missing from ast.go, never the reverse —
+	// so a new declaration type was outside the alarm entirely, and
+	// `CodemodeBlock` was: a mutant that stopped writing a workflow-level
+	// `codemode:` block survived `./pkg/dsl/...` and every importer of this
+	// package, while `iterion fmt` silently deleted the declaration. Since
+	// the block form implies `on`, that does not merely lose seven numbers,
+	// it turns codemode OFF for every node that inherited it. The jsonenc
+	// sweep has had this half since it shipped; this one owed it.
+	notADeclaration := map[string]string{
+		"File":             "the document itself; the writer's own traversal is what renders it",
+		"Comment":          "comments travel through comments.go, not the field writers",
+		"ImportDecl":       "written by writeImports from the File",
+		"ActionParam":      "an entry of a tool action's params, iterated",
+		"VarsBlock":        "a container; its Fields are swept as VarField",
+		"SecretsBlock":     "a container; its Fields are swept as SecretField",
+		"AttachmentsBlock": "a container; its Fields are swept as AttachmentField",
+		"PresetsBlock":     "a container; its Entries are swept as Preset",
+	}
+	listed := map[string]bool{}
+	for _, name := range types {
+		listed[name] = true
+	}
+	for typ := range fields {
+		if listed[typ] {
+			continue
+		}
+		if _, ok := notADeclaration[typ]; ok {
+			continue
+		}
+		t.Errorf("ast.%s is in neither the sweep's type list nor its exclusions — a declaration outside this alarm loses fields silently, which is how CodemodeBlock got here", typ)
+	}
+
 	for _, typ := range types {
 		fs, ok := fields[typ]
 		if !ok {

@@ -648,7 +648,7 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 | Property | Value | Meaning |
 |---|---|---|
 | `mode` | ident — `on`, `off` | on or off — the short form's value, written out (C337 on another word) |
-| `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
+| `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
 | `wall` | string | How long the child may live, e.g. "60s" (default "30s", ceiling "10m") — the parent's backstop, including for a child that never starts |
 | `cpu` | string | The child's CPU-seconds ceiling, e.g. "30s" (default "10s", ceiling "5m"); RLIMIT_CPU's unit is seconds, so the value is rounded UP |
 | `memory` | int | Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290 |

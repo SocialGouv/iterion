@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -116,3 +117,100 @@ func TestTheDefaultsAreUnderTheCeiling(t *testing.T) {
 // in Go however identical their fields, so this line stops compiling the day
 // the alias is replaced by a copy.
 var _ scripthost.Limits = CodemodeBounds{}
+
+// The seven bounds are seven HAND-WRITTEN entries in four places — the
+// parser's switch, ast.CodemodeBlock.Bounded, ResolveCodemodeBounds's literal
+// and CodemodeBoundsAboveCeiling's calls. An eighth field added to
+// scripthost.Limits would be accepted by none of them, and
+// ResolveCodemodeBounds would ERASE it: it builds its result from a field
+// literal, so a value a node set would come back zero on every codemode node.
+//
+// These two census tests read the field set from the TYPE, so the next bound
+// cannot land without an author surface. Written after an adversarial round
+// added an eighth bound properly (field, DefaultLimits, Ceiling, Clamp) and
+// measured: pkg/scripthost noticed, and nothing in the DSL layer did.
+//
+// The census is also why the two sibling tests above may keep their explicit
+// literals: those assert the SHAPE of a report, this one asserts COVERAGE.
+func TestEveryBoundOfTheHostIsNamedByTheCeilingCensus(t *testing.T) {
+	t.Parallel()
+	ceil := scripthost.Ceiling()
+	rt := reflect.TypeOf(ceil)
+	over := reflect.New(rt).Elem()
+	// Every field one past its ceiling at once, set by reflection rather
+	// than by name.
+	for i := 0; i < rt.NumField(); i++ {
+		cv := reflect.ValueOf(ceil).Field(i)
+		over.Field(i).SetInt(cv.Int() + 1)
+	}
+	bounds := over.Interface().(scripthost.Limits)
+	named := CodemodeBoundsAboveCeiling(&bounds)
+	if len(named) != rt.NumField() {
+		t.Fatalf("scripthost.Limits has %d bounds, the census named %d: %v — a bound the census cannot see is a bound clamped with nothing said",
+			rt.NumField(), len(named), named)
+	}
+}
+
+func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
+	t.Parallel()
+	rt := reflect.TypeOf(scripthost.Limits{})
+	for i := 0; i < rt.NumField(); i++ {
+		name := rt.Field(i).Name
+		node := reflect.New(rt).Elem()
+		// A value no default and no ceiling can collide with, so a field
+		// that comes back right cannot have come back right by accident.
+		node.Field(i).SetInt(7)
+		asked := node.Interface().(scripthost.Limits)
+		got := ResolveCodemodeBounds(&asked, nil)
+		if got == nil {
+			t.Fatalf("%s: resolution dropped a declared bound set entirely", name)
+		}
+		if v := reflect.ValueOf(*got).Field(i).Int(); v != 7 {
+			t.Errorf("%s: declared 7, resolved %d — the field literal in ResolveCodemodeBounds does not carry it", name, v)
+		}
+	}
+}
+
+// The (nil, workflow) arm — declare once at the workflow, inherit on every
+// node, which is the ladder's most common real shape and the one this file's
+// own doc defends. Measured as unwitnessed: a mutant returning nil as soon as
+// the NODE declared nothing survived ./pkg/dsl/..., ./pkg/backend/model/ and
+// ./pkg/queue/ with every package ok, because the sibling tests always pass a
+// non-nil node and the (nil, nil) test only covers both-absent.
+func TestAWorkflowRungAloneReachesANodeThatDeclaresNothing(t *testing.T) {
+	t.Parallel()
+	got := ResolveCodemodeBounds(nil, &CodemodeBounds{ToolCalls: 256, Wall: 9 * time.Minute})
+	if got == nil {
+		t.Fatalf("a node declaring nothing resolved to nil: the workflow's declaration reached nothing")
+	}
+	if got.ToolCalls != 256 || got.Wall != 9*time.Minute {
+		t.Errorf("resolved %+v, want the workflow's 256 calls and 9m", got)
+	}
+}
+
+// The census ORDER, which the function's own doc promises ("in the order the
+// DSL block lists them"). Measured as unwitnessed: reversing the seven calls
+// survived ./pkg/dsl/..., because the sibling test checks set membership by
+// prefix and never the sequence. A promise a doc makes is an oracle.
+func TestTheCeilingCensusNamesFieldsInTheBlocksOwnOrder(t *testing.T) {
+	t.Parallel()
+	ceil := scripthost.Ceiling()
+	over := CodemodeBoundsAboveCeiling(&CodemodeBounds{
+		ToolCalls:       ceil.ToolCalls + 1,
+		Wall:            ceil.Wall + time.Second,
+		CPU:             ceil.CPU + time.Second,
+		Memory:          ceil.Memory + 1,
+		ScriptBytes:     ceil.ScriptBytes + 1,
+		ResultBytes:     ceil.ResultBytes + 1,
+		ToolResultBytes: ceil.ToolResultBytes + 1,
+	})
+	want := []string{"tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
+	if len(over) != len(want) {
+		t.Fatalf("named %d fields, want %d: %v", len(over), len(want), over)
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(over[i], w+" ") {
+			t.Errorf("position %d is %q, want %s — the doc promises the block's own order", i, over[i], w)
+		}
+	}
+}

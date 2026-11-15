@@ -62,7 +62,7 @@ type Workflow struct {
 	// CodemodeBounds is the workflow-level DEFAULT bound set its agent and
 	// judge nodes inherit field by field (ResolveCodemodeBounds). nil = none
 	// declared, which leaves every field to scripthost.DefaultLimits.
-	CodemodeBounds *CodemodeBounds `json:"codemode_bounds,omitempty"`
+	CodemodeBounds *CodemodeBounds
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -286,8 +286,13 @@ type AgentNode struct {
 	// CodemodeBounds is this node's declared bound set; nil inherits the
 	// workflow's, field by field. Clamped to scripthost.Ceiling in the
 	// parent at spawn, with C347 at compile where a value is above it.
-	CodemodeBounds *CodemodeBounds `json:"codemode_bounds,omitempty"`
-	Permission     string          // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	//
+	// No LLMNode getter, deliberately: every reader reaches it through the
+	// struct (extractBackendFields), and an interface method nobody calls
+	// is a seam that rots untested. One line adds it back the day a reader
+	// holds an LLMNode rather than the node.
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -331,8 +336,8 @@ type JudgeNode struct {
 	// CodemodeBounds is this node's declared bound set; nil inherits the
 	// workflow's, field by field. Clamped to scripthost.Ceiling in the
 	// parent at spawn, with C347 at compile where a value is above it.
-	CodemodeBounds *CodemodeBounds `json:"codemode_bounds,omitempty"`
-	Permission     string          // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -764,7 +769,6 @@ type LLMNode interface {
 	GetAutoMemory() string
 	GetAmbientContext() string
 	GetCodemode() string
-	GetCodemodeBounds() *CodemodeBounds
 	GetPermission() string
 	GetPermissionAllow() []string
 	GetPermissionAsk() []string
@@ -798,7 +802,6 @@ func (n *AgentNode) GetCompress() string                      { return n.Compres
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *AgentNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *AgentNode) GetCodemode() string                      { return n.Codemode }
-func (n *AgentNode) GetCodemodeBounds() *CodemodeBounds       { return n.CodemodeBounds }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -826,7 +829,6 @@ func (n *JudgeNode) GetCompress() string                      { return n.Compres
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *JudgeNode) GetAmbientContext() string                { return n.AmbientContext }
 func (n *JudgeNode) GetCodemode() string                      { return n.Codemode }
-func (n *JudgeNode) GetCodemodeBounds() *CodemodeBounds       { return n.CodemodeBounds }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }

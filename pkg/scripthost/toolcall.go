@@ -255,3 +255,34 @@ func clipToolText(s string, max int64) (string, bool) {
 // utf8Start reports whether b can begin a UTF-8 sequence — i.e. it is not a
 // continuation byte.
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// resultFrameCap bounds one RESULT frame — the parent-to-child direction,
+// whose payload the parent itself clipped to [Limits.ToolResultBytes].
+//
+// It is a derived number rather than a Limits field on purpose: a frame size
+// is a property of this protocol, not a bound an operator chooses, and an
+// eighth Limits field would owe a DSL surface it should not have.
+//
+// The factor is JSON escaping, not a margin: `json.Encode` renders a control
+// byte as `\uXXXX`, six bytes for one, and the parent clips on a rune
+// boundary so the text it sends is valid UTF-8 but may be entirely control
+// characters. A cap below that refuses a payload the parent was told to send,
+// which in a blocking path costs as much as a hole — the frame error is not
+// even a refusal the model can act on, it is classified as a broken
+// deployment. The envelope (type, id, flags, the remaining count) is small
+// and fixed; 1 KiB covers it.
+//
+// The CALL direction keeps [Limits.ScriptBytes]: its payload is an input the
+// script composed, which no declared bound describes, and the parent is the
+// one process no rlimit covers — TestAnOversizedFrameIsRefusedRatherThanBuffered
+// is that guard. A script that composes an input larger than its own
+// `script_bytes` meets that cap and the error names the number.
+func resultFrameCap(l Limits) int64 {
+	const jsonEscapeWorstCase = 6
+	const envelope = 1 << 10
+	cap := l.ToolResultBytes
+	if cap <= 0 {
+		cap = DefaultLimits().ToolResultBytes
+	}
+	return cap*jsonEscapeWorstCase + envelope
+}

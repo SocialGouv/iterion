@@ -771,8 +771,34 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 	if j == nil {
 		return nil
 	}
+	// The two rules sandboxBlockFromJSON states forty lines below, and they
+	// are rules rather than tidiness: UnmarshalFile BYPASSES the parser
+	// (compile.go says so where it enforces its own invariants), so every
+	// default the parser applies has to be applied here too or the same
+	// document is two programs. The first draft of this function was a
+	// verbatim field copy — it took the struct's shape and left both rules,
+	// and an adversarial round measured the result: a bounds block whose
+	// mode was not repeated compiled to `on` through the parser and to ""
+	// through the transport, with no diagnostic on either side, because
+	// C348 keys on "off" and never on "".
+	//
+	// `codemode: {}` — a block a canvas created and did not fill in — has
+	// no mode and no bound, which no .bot text can express, and means what
+	// its absence means: inherit. It is read as absent, so the document
+	// saves and reads back the same.
+	if j.Mode == "" && !j.bounded() {
+		return nil
+	}
+	// A block with bounds but no mode is the block form, which the parser
+	// reads as `on` — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode. A mode written out is kept as
+	// written: this fills a hole, it does not overwrite a choice.
+	mode := j.Mode
+	if mode == "" {
+		mode = "on"
+	}
 	return &CodemodeBlock{
-		Mode:            j.Mode,
+		Mode:            mode,
 		ToolCalls:       j.ToolCalls,
 		Wall:            j.Wall,
 		CPU:             j.CPU,

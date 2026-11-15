@@ -773,7 +773,7 @@ func (c *compiler) compile() *Workflow {
 		interaction = &im
 	}
 
-	wfCodemode, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "the workflow")
+	wfCodemode, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
 
 	w := &Workflow{
 		Name:                wf.Name,
@@ -1178,7 +1178,7 @@ func (c *compiler) compileAgents() {
 		if !ok {
 			continue
 		}
-		agentCodemode, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent "+strconv.Quote(a.Name))
+		agentCodemode, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent", a.Name)
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
@@ -1225,7 +1225,7 @@ func (c *compiler) compileJudges() {
 		if !ok {
 			continue
 		}
-		judgeCodemode, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge "+strconv.Quote(j.Name))
+		judgeCodemode, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge", j.Name)
 		c.nodes[j.Name] = &JudgeNode{
 			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
