@@ -565,7 +565,7 @@ def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped=''
 
 # EVALUATION MODE (publish_mode=off): the review is built whole, then nothing
 # is sent -- no review, no commit status. Read before any exit, like the gate.
-evaluation_mode = str(os.environ.get('PUBLISH_MODE', '')).strip().lower() == 'off'
+evaluation_mode = os.environ.get('PUBLISH_MODE', '') == 'off'
 url = os.environ.get('PUB_URL', '').strip()
 tok = os.environ.get('PUB_TOKEN', '').strip()
 # Read HERE, not at the gate block below: every emit() has to be able to say
@@ -1349,7 +1349,10 @@ if evaluation_mode:
             + str(findings_in_review) + ' finding(s) in the review, ' + str(comments_sent) + ' inline comment(s), mode ' + mode + ')')
     gate = payload.get('gate')
     if gate:
-        held = held + '; the merge gate ' + gate_ctx + ' would read ' + ('failure' if gate['blocking_count'] else 'success') + ' (' + str(gate['blocking_count']) + ' blocking at ' + gate['threshold'] + ') and was not posted'
+        # The note travels with the verdict: a fail-closed gate (no diff read,
+        # an unreadable finding set) blocks with no finding behind it, and
+        # without its note it reads as one.
+        held = held + '; the merge gate ' + gate_ctx + ' would read ' + ('failure' if gate['blocking_count'] else 'success') + ' (' + str(gate['blocking_count']) + ' blocking at ' + gate['threshold'] + (', note: ' + gate['note'] if gate.get('note') else '') + ') and was not posted'
     emit(False, skipped=held, summary=held + '.', gate_skipped_reason='evaluation mode (publish_mode=off)', evaluation=True)
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
@@ -1450,8 +1453,20 @@ body_missing = flag('BODY_MISSING')
 gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
 placeholder_refused = skipped.startswith('placeholder-shape:')
 published = flag('PUBLISHED')
-anchors_lost = total > 0 and posted == 0
 fallback = os.environ.get('FALLBACK', '').strip()
+# EVALUATION MODE (publish_mode=off): publish_review built the review and sent
+# nothing, by design. That absence is all the mode excuses: the review is
+# judged as the forge would have taken it -- every inline comment it built
+# lands, the body lands, and a review with no anchored finding is the summary
+# fold publish_review reports itself -- so whatever this gate reads as
+# degraded in what the review CARRIES (a lost finding set, findings all
+# reclassified, a refused placeholder) reads degraded here too.
+withheld = flag('EVALUATION') and not published
+held = skipped
+if withheld:
+    published, body_missing, posted, skipped = True, False, max(sent, 0), ''
+    fallback = 'summary' if sent == 0 and in_review > 0 else ''
+anchors_lost = total > 0 and posted == 0
 # Zero inline comments on a published review whose body landed is not a lost
 # publish when the publish step says every comment is in that body: fallback
 # summary - folded by the forge layer after it refused the anchors, by the
@@ -1474,12 +1489,7 @@ reclassified_only = (anchors_lost and in_review == 0 and reclassified > 0
 # nothing to post - the merge floor may have restored findings converge did
 # not count. A published summary fold still says the findings are in the body.
 count_unknown = in_review < 0 and posted == 0 and not (published and fallback == 'summary')
-# Evaluation mode (publish_mode=off): publish_review built the review and
-# withheld it by design, so 0 comments on the PR is the intended outcome, not
-# a loss -- and not a publish either, so never OK. A refused placeholder
-# review, a missing body or a lost gate still read as themselves.
-withheld = flag('EVALUATION') and not published
-degraded = body_missing or placeholder_refused or gate_missing or (not withheld and ((anchors_lost and not folded) or count_unknown))
+degraded = body_missing or (anchors_lost and not folded) or count_unknown or gate_missing or placeholder_refused
 def unknown_banner():
     landed = ('the review landed with 0 inline comments and nothing reports them folded' if published
               else 'the review did not publish (reason: ' + (skipped or 'none given') + ')')
@@ -1494,8 +1504,6 @@ if gate_missing:
     banners.append(chr(9888) + ' MERGE GATE NOT POSTED: the required check did not land (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.')
 if banners:
     banner = ' '.join(banners)
-elif withheld:
-    banner = (skipped or 'evaluation mode (publish_mode=off): review built and not published') + '. Nothing was sent to the pull request: no review, no inline comment, no merge gate status (board filing is off in this mode).'
 elif folded:
     banner = 'forge publish OK: ' + str(in_review if in_review > 0 else total) + ' finding(s) folded into the review body (no inline comment landed); review: ' + (review_url or 'n/a')
 elif count_unknown and published:
@@ -1525,6 +1533,12 @@ elif count_unknown:
     banner = unknown_banner()
 else:
     banner = 'forge publish OK: ' + str(posted) + ' inline comment(s) posted; review: ' + (review_url or 'n/a')
+# Never OK in evaluation mode, since nothing reached the pull request; and a
+# degraded review says it is degraded as built, not as posted.
+if withheld and degraded:
+    banner = 'evaluation mode (publish_mode=off): nothing was sent to the pull request, and the review as built is degraded (judged as if every inline comment had landed): ' + banner
+elif withheld:
+    banner = (held or 'evaluation mode (publish_mode=off): review built and not published') + '. Nothing was sent to the pull request: no review, no inline comment, no merge gate status (board filing is off in this mode).'
 sys.stderr.write(banner + chr(10))
 print(json.dumps({'degraded': degraded, 'banner': banner}))
 "`

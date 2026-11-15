@@ -386,19 +386,26 @@ vars:
   ## workspace credentials.
   forge_publish_url: string = ""
   forge_publish_token: string = ""
-  ## EVALUATION MODE, set by an operator (--var, bot_args, a remote launch,
-  ## an integration's pinned launch vars), never from a forge event's
-  ## payload. "" (the default) publishes as above. "off"
-  ## runs the whole review — reviewers, merge, the merge floor, the request
-  ## publish_review builds and the gate verdict it would carry — and writes
-  ## nothing anywhere a team reads: publish_review sends no request to the
+  ## EVALUATION MODE. "" (the default) publishes as above. "off" runs the
+  ## whole review — reviewers, merge, the merge floor, the request
+  ## publish_review builds and the gate verdict it would carry — and sends
+  ## nothing to the forge: publish_review makes no request to the
   ## forge-publish endpoint (no review, no commit status), `tier_expand`
-  ## turns `post_to_board` off whatever it says, and the server's gate arms
-  ## (the launch claim, the reconciler, the pause notices) owe the run
-  ## nothing. publish_health reads the withheld review as `evaluation mode`,
-  ## neither OK nor degraded. For measuring cost and quality on a live pull
-  ## request without posting on it. The workspace report (`report_path`) is
-  ## still written: it is the run's own scratch, not the team's.
+  ## turns `post_to_board` off whatever it says, and the server holds the run
+  ## to it — no publish grant is minted, its gate arms (the launch claim, the
+  ## reconciler, the pause notices) owe the run nothing, and its review seeds
+  ## no fixer. publish_health judges the review as the forge would have taken
+  ## it: `evaluation mode` when nothing else is wrong, never OK, and degraded
+  ## whenever what the review carries is (a lost finding set, findings all
+  ## reclassified). For measuring cost and quality on a live pull request
+  ## without posting on it. The workspace report (`report_path`) is still
+  ## written: it is the run's own scratch, not the team's. Operators set it
+  ## (--var, bot_args, a remote launch, an integration's pinned launch vars),
+  ## and so can a bot holding board.create, through a card's bot_args; a pull
+  ## request's author or a webhook payload never can. The server reads the
+  ## literal: a `$` expansion is refused at its launch admission. The read-only
+  ## contract of the reviewers and the merge step stays prompt-enforced in
+  ## this mode (docs/merge-gate.md).
   publish_mode: string [enum: "", "off"] = ""
 
 secrets:

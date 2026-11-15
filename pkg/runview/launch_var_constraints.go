@@ -3,8 +3,10 @@ package runview
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -21,8 +23,9 @@ var ErrLaunchVarsRefused = errors.New("var validation")
 //
 // It is the EARLIER of two refusals, never a replacement: the engine's gate
 // (Engine.Run → validateVarConstraints) is the one every launch surface
-// funnels into, and this one must never refuse a value that gate admits. So
-// it judges only what reads the same in every environment:
+// funnels into, and this one must never refuse a value that gate admits —
+// with one exception, below: a var the server reads itself. So it judges
+// only what reads the same in every environment:
 //
 //   - inputs are the values the run starts with, every server-side
 //     derivation applied — the credential-derived topology vars included,
@@ -35,6 +38,19 @@ var ErrLaunchVarsRefused = errors.New("var validation")
 // The refusal is the engine's, in the engine's words: each violation names
 // the var, the value and the constraint it failed.
 func GateLaunchVars(wf *ir.Workflow, inputs map[string]any) error {
+	// The exception: one var the server itself reads off the stored launch
+	// value, and so the one place this gate refuses what the engine admits —
+	// publish_mode, by its gate arms, its publish-grant mint and its hand-off
+	// walk (forge.PublishModeWithholds). The engine reads it expanded, so an
+	// expansion would let the two disagree — `${X:-off}` withheld by the bot
+	// while the server arms the gate for it. Refused here — the admission of
+	// both launch paths, the in-process launch and the cloud publisher —
+	// whatever the bot declares: the run and the server then read the same
+	// literal.
+	if v, ok := inputs[forge.PublishModeVar].(string); ok && strings.Contains(v, "$") {
+		return fmt.Errorf("%w: var %q: value %q carries a $ expansion, which the server cannot read the way the run will: pass the literal \"off\" (evaluation mode) or leave it unset",
+			ErrLaunchVarsRefused, forge.PublishModeVar, v)
+	}
 	literal := make(map[string]any, len(inputs))
 	for k, v := range inputs {
 		if decl, declared := wf.Vars[k]; declared {

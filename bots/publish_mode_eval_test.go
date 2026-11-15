@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -158,6 +159,24 @@ func TestReviConverseChainEvaluationModeWithholdsTheReply(t *testing.T) {
 	}
 }
 
+// The bundles that read publish_mode need the server that reads it too — its
+// gate arms, its publish-grant mint, its hand-off walk. v7.0.0, the release
+// this change was built on, has none of that: it would claim the gate for an
+// evaluation run and repair it with a synthetic failure and a relaunch. Both
+// manifests refuse it; their floor is `>= next` until the cut writes the
+// release that carries the server half.
+func TestPublishModeBundlesRefuseAServerThatCannotReadIt(t *testing.T) {
+	for _, bot := range []string{"revi-converse", "review-pr"} {
+		m, err := bundle.LoadManifest(filepath.Join(botsDir(t), bot, bundle.ManifestFile))
+		if err != nil {
+			t.Fatalf("%s: %v", bot, err)
+		}
+		if verdict, why := bundle.CheckManifestEngine(m, "7.0.0"); verdict != bundle.EngineTooOld {
+			t.Errorf("%s: a 7.0.0 server reads the bundle as %s (%s) — it must refuse it", bot, verdict, why)
+		}
+	}
+}
+
 // reviewPRPublishOnce runs publish_review once, rendered over refs, against
 // an endpoint answering resp, and returns how many requests it received, the
 // last body, and the node's publish_output.
@@ -295,9 +314,11 @@ func TestReviewPRPublishReviewEvaluationModeSendsNothing(t *testing.T) {
 	})
 }
 
-// publish_mode=off silences a review or a reply, so only an operator's own
-// launch (--var, bot_args, a remote launch) may set it. A forge webhook
-// builds its launch from fixed payload keys (pkg/server's lane builders: the
+// publish_mode=off silences a review or a reply, so a pull request's author
+// or a webhook payload must never set it — operators do (--var, bot_args, a
+// remote launch, an integration's pinned launch vars), and so can a bot
+// holding board.create, through a card's bot_args. A forge webhook builds its
+// launch from fixed payload keys (pkg/server's lane builders: the
 // PR's url, branches, title and body, the comment) and then lays on what
 // manifests declare — the union of every co-enabled bot's
 // forge.webhook.launch_vars, an invocation's context_vars, the args_var a
@@ -355,5 +376,147 @@ func TestPublishModeIsNeverAWebhookVar(t *testing.T) {
 		if v == nil || v.Type != ir.VarString || !slices.Equal(v.EnumValues, []string{"", "off"}) || !v.HasDefault || v.Default != "" {
 			t.Errorf("%s: %s = %+v, want a string var [enum: \"\", \"off\"] defaulting to \"\" (publish)", bot, name, v)
 		}
+	}
+}
+
+// reviewPRPublishIdeal runs publish_review once against an endpoint that
+// answers as a forge taking everything it is sent: every inline comment
+// lands, the body lands, the gate is posted when one is asked for. It
+// returns how many requests reached the endpoint and the node's
+// publish_output.
+func reviewPRPublishIdeal(t *testing.T, refs map[string]string) (int, map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Comments []json.RawMessage `json:"comments"`
+			Gate     *struct {
+				Blocking int `json:"blocking_count"`
+			} `json:"gate"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		state := "success"
+		if req.Gate != nil && req.Gate.Blocking > 0 {
+			state = "failure"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"published": true, "provider": "github", "review_url": "https://forge/review/7",
+			"comments_posted": len(req.Comments), "suggestions_posted": 0, "verified": true,
+			"gate_posted": req.Gate != nil, "gate_state": state, "gate_sha": "deadbeefcafe",
+		})
+	}))
+	defer srv.Close()
+	all := map[string]string{
+		"vars.forge_publish_url":      srv.URL + "/api/v1/forge/publish-review",
+		"vars.forge_publish_token":    "run-token",
+		"input.pr_url":                "https://github.com/acme/widgets/pull/7",
+		"input.effective_review_mode": "mono",
+		"input.scope_files":           "2",
+		"input.review_scope":          "a.go ; b.go",
+		"input.claude_summary":        "Reviewed a.go and b.go",
+		"vars.gate_enabled":           "true",
+	}
+	for k, v := range refs {
+		all[k] = v
+	}
+	out, err := exec.Command("sh", "-c", renderReviewPRBodyHealthNode(t, "publish_review", all)).Output()
+	if err != nil {
+		t.Fatalf("publish_review failed: %v (out %q)", err, out)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	dec.UseNumber()
+	var published map[string]any
+	if err := dec.Decode(&published); err != nil {
+		t.Fatalf("output is not publish_output JSON: %v (%q)", err, out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return hits, published
+}
+
+// banner names: the ⚠ banner a degraded verdict opens on, up to its colon.
+var degradedBannerName = regexp.MustCompile("⚠ ([A-Z ]+):")
+
+// Evaluation mode excuses the absence of the forge write and nothing else:
+// for every shape of review, its publish_health verdict equals the default
+// mode's verdict on a forge that took everything sent — the same review,
+// published whole. What the review carries (a lost finding set, findings all
+// reclassified, a refused placeholder) reads degraded in both, under the same
+// ⚠ banner; a review the evaluation withheld says so, and a sound one reads
+// `evaluation mode`, never OK. And a gate that fails closed keeps its note in what the
+// evaluation reports, so it never reads as a real blocking finding.
+func TestReviewPRPublishHealthEvaluationExcusesOnlyTheForgeWrite(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	const anchored = `[{"file":"a.go","line":1,"title":"first finding","severity":"high"},{"file":"b.go","line":9,"title":"second finding","severity":"medium"}]`
+	const unanchored = `[{"file":"","line":0,"title":"first finding","severity":"high"},{"file":"b.go","line":0,"title":"second finding","severity":"medium"}]`
+	const mixed = `[{"file":"a.go","line":1,"title":"first finding","severity":"high"},{"file":"","line":0,"title":"second finding","severity":"medium"}]`
+	const reviewer = `[{"file":"a.go","line":1,"title":"recovered finding","severity":"high"}]`
+	for _, tc := range []struct {
+		name         string
+		refs         map[string]string
+		gateTotal    string
+		wantDegraded bool
+		wantHeld     string // a part of the evaluation's skipped_reason
+	}{
+		{name: "two anchored findings", refs: map[string]string{"input.findings": anchored}, gateTotal: "2"},
+		{name: "no anchored finding: the summary fold", refs: map[string]string{"input.findings": unanchored}, gateTotal: "2"},
+		{name: "anchored and unanchored findings", refs: map[string]string{"input.findings": mixed}, gateTotal: "2"},
+		{name: "no finding", refs: map[string]string{"input.findings": `[]`}, gateTotal: "0"},
+		{name: "a lost finding set: the merge step answered prose, the reviewers nothing",
+			refs: map[string]string{"input.findings": "See structured findings array."}, gateTotal: "3", wantDegraded: true},
+		{name: "a lost finding set: the merge step counted 2 and answered none",
+			refs: map[string]string{"input.findings": `[]`}, gateTotal: "2", wantDegraded: true},
+		{name: "an unreadable merge recovered from the reviewers",
+			refs: map[string]string{"input.findings": "See structured findings array.", "input.claude_findings": reviewer}, gateTotal: "1"},
+		{name: "every finding reclassified as workspace anomaly",
+			refs: map[string]string{"input.findings": anchored, "input.workspace_anomaly": " M a.go\n M b.go"}, gateTotal: "2", wantDegraded: true},
+		{name: "a placeholder review", refs: map[string]string{"input.findings": anchored, "input.claude_summary": "placeholder"}, gateTotal: "2", wantDegraded: true},
+		{name: "no diff could be read: the gate fails closed",
+			refs: map[string]string{"input.findings": `[]`, "input.scope_files": "-1"}, gateTotal: "0",
+			wantHeld: "would read failure (1 blocking at high, note: no diff could be read"},
+		{name: "an unreadable finding set: the gate fails closed",
+			refs: map[string]string{"input.findings": "See structured findings array."}, gateTotal: "0",
+			wantHeld: "note: review output unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, def := reviewPRPublishIdeal(t, tc.refs)
+			defDegraded, defBanner := runReviewPRHealthOverEdge(t, def, tc.gateTotal)
+			if defDegraded != tc.wantDegraded {
+				t.Fatalf("default mode: degraded = %v (%q), want %v — the case does not drive the shape it names", defDegraded, defBanner, tc.wantDegraded)
+			}
+			evalRefs := map[string]string{"vars.publish_mode": "off"}
+			for k, v := range tc.refs {
+				evalRefs[k] = v
+			}
+			hits, ev := reviewPRPublishIdeal(t, evalRefs)
+			if hits != 0 {
+				t.Fatalf("evaluation mode reached the endpoint %d time(s)", hits)
+			}
+			evDegraded, evBanner := runReviewPRHealthOverEdge(t, ev, tc.gateTotal)
+			if evDegraded != defDegraded {
+				t.Errorf("evaluation: degraded = %v (%q); the default mode on a forge that took everything reads %v (%q)", evDegraded, evBanner, defDegraded, defBanner)
+			}
+			if strings.Contains(evBanner, "forge publish OK") {
+				t.Errorf("evaluation banner %q reads OK, and nothing was published", evBanner)
+			}
+			// The withheld exit is the one that says evaluation mode; a review
+			// refused before it (the placeholder) speaks under its refusal.
+			if ev["evaluation"] == true && !strings.HasPrefix(evBanner, evalWithheldReason) {
+				t.Errorf("evaluation banner %q does not open on evaluation mode", evBanner)
+			}
+			if m := degradedBannerName.FindStringSubmatch(defBanner); evDegraded && m != nil && !strings.Contains(evBanner, m[1]) {
+				t.Errorf("evaluation banner %q does not carry the default mode's %s", evBanner, m[1])
+			}
+			if skipped, _ := ev["skipped_reason"].(string); tc.wantHeld != "" && !strings.Contains(skipped, tc.wantHeld) {
+				t.Errorf("evaluation skipped_reason %q does not say %q", skipped, tc.wantHeld)
+			}
+		})
 	}
 }

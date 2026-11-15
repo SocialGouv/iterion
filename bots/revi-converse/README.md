@@ -104,14 +104,17 @@ reports `posted=false`, `evaluation=true`, a `skipped_reason` opening on
 withheld; `converse_health` reads that as `evaluation mode`, not degraded and
 never OK. A check that would have stopped a real post (an empty draft, a
 `pr_url` or discussion id it cannot reply on, an answer carrying the token)
-still speaks first, under its own reason. Only an operator sets the var: a
-launch's `--var` or `bot_args`, a remote launch, the integration's own
-pinned launch vars. A forge event never does — the webhook lanes build their
-vars from fixed payload keys, and no manifest channel they layer
-(`forge.webhook.launch_vars`, an invocation's `args_var` or `context_vars`,
-`dispatch_vars`) may carry it in any bot of the catalogue
-(`bots/publish_mode_eval_test.go`). The server's merge-gate arms owe such a
-run nothing ([merge gate](../../docs/merge-gate.md)).
+still speaks first, under its own reason. Operators set the var — a
+launch's `--var` or `bot_args`, a remote launch, an integration's pinned
+launch vars — and so can a bot holding `board.create`, through a card's
+`bot_args`. A pull request's author or a webhook payload never can: the
+webhook lanes build their vars from fixed payload keys, and no manifest
+channel they layer (`forge.webhook.launch_vars`, an invocation's `args_var`
+or `context_vars`, `dispatch_vars`) may carry it in any bot of the catalogue
+(`bots/publish_mode_eval_test.go`). The server reads the literal — a `$`
+expansion is refused at its launch admission — and holds the run to it: its
+merge-gate arms owe it nothing, it mints it no publish grant, and its
+hand-off walk skips it ([merge gate](../../docs/merge-gate.md#evaluation-mode)).
 
 **The forge token is not posted in a body.** Two guards. `forge_token` is
 granted the `file` sink only, so a `__ITERION_SECRET_forge_token__` the agent
@@ -140,7 +143,7 @@ report.
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then reads the thread itself (a GET). |
 | `replier` | string | `""` | Forge username of the operator who asked, used to address the answer. |
-| `publish_mode` | string `""` \| `"off"` | `""` | Evaluation mode: `off` drafts the answer and sends nothing to the forge (see above). An operator's launch only. |
+| `publish_mode` | string `""` \| `"off"` | `""` | Evaluation mode: `off` drafts the answer and sends nothing to the forge (see above). Set by an operator or a bot holding `board.create`, never by a webhook payload. |
 
 The studio launch form renders `converse_question` and `pr_url` top-level;
 `discussion_id`, `trigger_note`, `thread_context`, `replier` and

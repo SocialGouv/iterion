@@ -107,3 +107,30 @@ func TestLaunch_RefusesAVarOutsideItsConstraintBeforeTheRunExists(t *testing.T) 
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 }
+
+// publish_mode is read raw by the server (its gate arms, its publish-grant
+// mint, its hand-off walk) and expanded by the engine, so the one value this
+// gate refuses although the engine would admit it is an expansion there —
+// whatever the workflow declares. A literal passes, and an expansion in any
+// other var is still the engine's to judge.
+func TestGateLaunchVars_RefusesAnExpansionInPublishMode(t *testing.T) {
+	declared := &ir.Workflow{Name: "w", Vars: map[string]*ir.Var{
+		"publish_mode": {Name: "publish_mode", Type: ir.VarString, EnumValues: []string{"", "off"}},
+	}}
+	for _, wf := range []*ir.Workflow{declared, constrainedWorkflow()} {
+		for _, v := range []string{"${X:-off}", "$X", "${PUBLISH_MODE}"} {
+			err := GateLaunchVars(wf, map[string]any{"publish_mode": v})
+			if !errors.Is(err, ErrLaunchVarsRefused) || !strings.Contains(err.Error(), `var "publish_mode"`) {
+				t.Errorf("publish_mode=%q: err = %v, want a refusal naming the var", v, err)
+			}
+		}
+	}
+	for _, ok := range []map[string]any{{"publish_mode": "off"}, {"publish_mode": ""}} {
+		if err := GateLaunchVars(declared, ok); err != nil {
+			t.Errorf("%v: refused: %v", ok, err)
+		}
+	}
+	if err := GateLaunchVars(constrainedWorkflow(), map[string]any{"mode": "${MODE:-fast}"}); err != nil {
+		t.Errorf("an expansion in another var is the engine's to judge, refused: %v", err)
+	}
+}

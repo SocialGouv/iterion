@@ -86,15 +86,18 @@ vars:
   ## base URL keeps the path; a pin set through the webhook API is stored
   ## as scheme://host. Empty: pr_url's origin is the base.
   forge_base_url: string = ""
-  ## Evaluation mode, set by an operator (--var, bot_args, a remote launch,
-  ## an integration's pinned launch vars), never from a forge event's
-  ## payload: "" (the default) posts the answer; "off"
-  ## runs the agent and drafts the answer, and publish_reply sends nothing to
-  ## the forge — no duplicate read, no POST — reporting the draft as withheld
+  ## Evaluation mode. "" (the default) posts the answer; "off" runs the agent
+  ## and drafts the answer, and publish_reply sends nothing to the forge — no
+  ## duplicate read, no POST — reporting the draft as withheld
   ## (`evaluation`), which converse_health reads as intended, not as a
   ## failure. For measuring cost and quality on a live thread without
-  ## answering in it. A run in this mode also owes the repo's merge gate
-  ## nothing, so the server neither claims nor repairs it on the run's behalf.
+  ## answering in it. Operators set it (--var, bot_args, a remote launch, an
+  ## integration's pinned launch vars), and so can a bot holding
+  ## board.create, through a card's bot_args; a pull request's author or a
+  ## webhook payload never can. The server reads the literal: a `$`
+  ## expansion is refused at its launch admission. A run in this mode owes
+  ## the repo's merge gate nothing (the server neither claims nor repairs it
+  ## on the run's behalf), holds no publish grant, and seeds no later run.
   publish_mode: string [enum: "", "off"] = ""
 
 secrets:
@@ -494,7 +497,9 @@ tool publish_reply:
     pr, disc, forge_base = text_of(pr), text_of(disc), text_of(forge_base)
     agent_skip = text_of(agent_skip)
     # publish_mode=off: everything up to the first request, then nothing sent.
-    evaluation_mode = text_of(publish_mode).lower() == "off"
+    # Read as the literal the engine admits ("" or "off"), the way the server
+    # reads it.
+    evaluation_mode = publish_mode == "off"
     token = ""
     token_forms = []
 

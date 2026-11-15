@@ -918,6 +918,19 @@ func gateRunURL(base, runID string) string {
 	return deeplink.Run(base, runID)
 }
 
+// runInEvaluationMode reports whether the run was launched with
+// publish_mode=off (forge.PublishModeWithholds): it posted nothing on its
+// pull request, by design. Every reader that would speak for such a run —
+// the gate arms through runGateDisabled, the hand-off walk — asks here, on
+// the launch value as stored.
+func runInEvaluationMode(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	mode, ok := run.Inputs[forge.PublishModeVar].(string)
+	return ok && forge.PublishModeWithholds(mode)
+}
+
 // runInputString reads one launch input as a trimmed string.
 // runGateDisabled reports whether the run was launched with an EXPLICIT
 // gate_enabled pin that leaves the gating bot advisory-only (the value
@@ -936,7 +949,7 @@ func runGateDisabled(run *store.Run) bool {
 	if run == nil || run.Inputs == nil {
 		return false
 	}
-	if mode, ok := run.Inputs[forge.PublishModeVar].(string); ok && forge.PublishModeWithholds(mode) {
+	if runInEvaluationMode(run) {
 		return true
 	}
 	v, ok := run.Inputs["gate_enabled"]

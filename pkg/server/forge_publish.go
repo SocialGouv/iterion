@@ -1604,6 +1604,21 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		return vars, "", nil
 	}
 	dropMaskedGrant(vars)
+	// Evaluation mode (publish_mode=off): the run publishes nothing, so it
+	// holds no grant — whatever bot version serves it, the publish endpoint
+	// has nothing to honour. A grant the caller or the repo policy carried is
+	// withdrawn like an untrusted launch's. Pinned on an integration, the var
+	// reaches every bot of that repo, each launched without a grant.
+	if forge.PublishModeWithholds(vars[forge.PublishModeVar]) {
+		for _, k := range forgePublishVars() {
+			delete(vars, k)
+		}
+		if prURL != "" && s != nil && s.logger != nil {
+			s.logger.Info("forge publish: %s: no publish grant minted for an evaluation launch (%s=off, bot %q) — the run publishes nothing",
+				prURL, forge.PublishModeVar, strings.TrimSpace(botID))
+		}
+		return vars, "", nil
+	}
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, "", nil
 	}
