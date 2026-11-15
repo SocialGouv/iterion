@@ -34,17 +34,21 @@ required check — and only ever the commit it audited. See
   detached onto it, the index matching it, the branch ref and the working tree
   untouched, never pushed — and puts HEAD and the index back before it
   answers (normal end, exception, SIGTERM; after a SIGKILL the next call
-  restores from the marker first; a failed restore holds red, exit 6). A
+  restores from the marker first; a failed restore holds red, exit 6; a
+  baseline found in HEAD's history with no marker — the scratch dir lost to a
+  hard kill, Revi R17f17b — holds red too, and is never built upon). A
   masked exit status loops back to `verify_build` like a missing or an empty
   script.
 - Proof. `TestDepUpdateGuardVerifyBaseline`: both gate forms pass when the
   regeneration reproduces the alignment and fail when it departs from it; the
   baseline's parent is the head the run read, align's new file is in it, the
   tree noise is not; HEAD, the branch ref and the index come back after a
-  normal end, a SIGTERM and a SIGKILL. Eight mutants, each red on its own
-  case: no baseline (the #65 failure, verbatim), no SIGTERM handler, no
-  `atexit`, no restore-first, a failed restore reading green, the noise in the
-  baseline, the index left on the old tree, a masked exit not looping back.
+  normal end, a SIGTERM and a SIGKILL; a baseline stranded without its marker
+  holds red and HEAD stays on it. Nine mutants, each red on its own case: no
+  baseline (the #65 failure, verbatim), no SIGTERM handler, no `atexit`, no
+  restore-first, a failed restore reading green, the noise in the baseline,
+  the index left on the old tree, a masked exit not looping back, an orphaned
+  baseline not checked.
 
 ## 2026-11-11 — 2.12.0: the gate follows a pure rebase, and re-arms on UNSTABLE (#3128) — no live run yet
 

@@ -1803,7 +1803,8 @@ script = os.path.join(scratch, 'verify.sh')
 # index are put back before this tool answers -- on a normal end, an
 # exception or a SIGTERM -- and a kill that leaves no chance to do so leaves
 # the marker the next call restores from first. A restore that fails holds
-# the gate red: a commit made from a tree still on the baseline would ship it.
+# the gate red: a commit made from a tree still on the baseline would ship it;
+# so does a baseline found in HEAD's history with no marker to restore it from.
 import atexit, shutil, signal
 _drop = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
          'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
@@ -1811,6 +1812,9 @@ _drop = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
          'GIT_ICASE_PATHSPECS')
 genv = dict((k, v) for k, v in os.environ.items() if k not in _drop)
 mark = os.path.join(scratch, 'verify-baseline.json')
+# The baseline's author: no other commit carries it, which is how a baseline
+# left without its marker is recognised.
+baseline_email = 'verify-baseline@iterion.invalid'
 def bgit(args, env=None):
     try:
         return subprocess.run(['git', '-C', ws] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300, env=env or genv)
@@ -1884,7 +1888,7 @@ def baseline_build():
     for k in ('GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME'):
         cenv[k] = 'iterion verify baseline'
     for k in ('GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_EMAIL'):
-        cenv[k] = 'verify-baseline@iterion.invalid'
+        cenv[k] = baseline_email
     # A local object nobody pushes: no hook runs, and no signature is asked
     # of a runner that holds no key.
     p = bgit(['-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', head, '-m', 'verify baseline: the aligned tree, local, never pushed'], cenv)
@@ -1906,6 +1910,22 @@ def baseline_build():
             undone = baseline_restore()
             return '', 'git ' + args[0] + ' exited ' + str(p.returncode) + ': ' + (p.stderr or '').strip()[:300] + ((' -- ' + undone) if undone else '')
     return sha, ''
+def baseline_orphan():
+    # A baseline in HEAD's recent history with no marker to explain it: a
+    # hard kill took the scratch dir -- and the marker with it -- while the
+    # workspace kept HEAD on the baseline. Building on it would baseline a
+    # baseline and put HEAD back onto it, never onto the branch; holding red
+    # is the one reading that cannot commit on top of it. Read by the
+    # baseline's own author, never by a detached HEAD: a workspace checked out
+    # detached is not an anomaly.
+    p = bgit(['log', '-64', '--format=%H %ae', 'HEAD'])
+    if p.returncode != 0:
+        return ''
+    for line in p.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == baseline_email:
+            return parts[0]
+    return ''
 def on_term(signum, frame):
     raise SystemExit(128 + signum)
 signal.signal(signal.SIGTERM, on_term)
@@ -1913,6 +1933,10 @@ atexit.register(baseline_restore)
 stale = baseline_restore()
 if stale:
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 6, 'precheck_rejected': False, 'precheck_reason': '', 'log_tail': stale + ' -- a previous verify was cut short on its baseline and this tree cannot be put back; nothing may be committed from it.'}))
+    raise SystemExit(0)
+orphan = baseline_orphan()
+if orphan:
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 6, 'precheck_rejected': False, 'precheck_reason': '', 'log_tail': 'VERIFY BASELINE ORPHANED: HEAD history holds the local verify baseline ' + orphan[:12] + ' with no marker to restore it from -- a hard kill lost the scratch dir while the workspace kept HEAD on it. Nothing may be committed from this tree; a fresh checkout clears it.'}))
     raise SystemExit(0)
 # No script is an AUTHORSHIP defect, not a red build: the agent skipped a step
 # rather than proved a failure. It loops back with that said, because otherwise

@@ -17,9 +17,12 @@ version: 2.12.1
 ## answers, on a normal end, an exception or a SIGTERM; a SIGKILL leaves a
 ## marker in the scratch dir the next verify_run restores from first, and a
 ## restore that fails holds the gate red (exit 6): a commit made from a tree
-## still on the baseline would ship it. A tree with nothing pending gets no
-## baseline. The verify_build prompt says so, so the agent's own confirmation
-## run — the alignment still uncommitted there — does not scope the gate out.
+## still on the baseline would ship it. So does a baseline found in HEAD's
+## recent history with no marker (a hard kill that took the scratch dir with
+## it, Revi R17f17b): recognised by its own author, never by a detached HEAD,
+## and never built upon. A tree with nothing pending gets no baseline. The
+## verify_build prompt says so, so the agent's own confirmation run — the
+## alignment still uncommitted there — does not scope the gate out.
 ## A MASKED EXIT STATUS rejection now loops back to verify_build as
 ## fix_verify, like a missing or an empty script: the build never ran, and
 ## holding it as a red build reported a diagnostic `diff -u | head` as a

@@ -294,6 +294,36 @@ func TestDepUpdateGuardVerifyBaseline(t *testing.T) {
 		restored(t, ws, scratch, before)
 	})
 
+	// Revi R17f17b: the marker lives in the scratch dir, which a hard kill can
+	// take with it on a sandbox that banks scratch only at teardown, while the
+	// workspace keeps HEAD on the baseline. Read as "nothing to restore", the
+	// next call would baseline the baseline and put HEAD back onto it.
+	t.Run("a baseline left without its marker holds red and is not built upon", func(t *testing.T) {
+		ws, _ := repo(t)
+		align(t, ws)
+		scratch := t.TempDir()
+		script("version: v0.23.0", "kill -KILL \"$PPID\"\nexit 1\n")(t, scratch)
+		if out, err := execute(t, ws, scratch); err == nil {
+			t.Fatalf("verify_run answered through a SIGKILL: %q", out)
+		}
+		for _, name := range []string{"verify-baseline.json", "verify-baseline.index"} {
+			if err := os.Remove(filepath.Join(scratch, name)); err != nil {
+				t.Fatalf("the scenario needs the kill to have left %s: %v", name, err)
+			}
+		}
+		stranded := gittest.Run(t, ws, "rev-parse", "HEAD")
+
+		script("version: v0.23.0", "")(t, scratch)
+		res := run(t, ws, scratch)
+		if res.Passed || res.ExitCode != 6 || !strings.Contains(res.LogTail, "VERIFY BASELINE ORPHANED") {
+			t.Errorf("a baseline with no marker must hold the gate red with exit 6, got passed=%v exit=%d:\n%s",
+				res.Passed, res.ExitCode, res.LogTail)
+		}
+		if got := gittest.Run(t, ws, "rev-parse", "HEAD"); got != stranded {
+			t.Errorf("HEAD moved from the stranded baseline %s to %s: a baseline was built on top of it", stranded, got)
+		}
+	})
+
 	t.Run("a masked exit status loops back to verify_build", func(t *testing.T) {
 		ws, _ := repo(t)
 		align(t, ws)
