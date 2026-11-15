@@ -401,6 +401,15 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	// log line; the budget clocks its own elapsed), but a node that spent
 	// five minutes before a 30s retry reported the 30s.
 	next.Duration += prev.Duration
+	// Thinking and the tool turns are per-attempt counts like the tokens:
+	// every backend reports the thinking of its own turns and claw the tool
+	// turns of its own invocation, so the attempts' figures are disjoint
+	// and SUM. The later attempt's alone would report a node whose attempts
+	// thought 463k tokens as its last attempt's 185k, and a last attempt
+	// that reported no usage as no thinking at all.
+	next.ThinkingTokens += prev.ThinkingTokens
+	next.ThinkingMs += prev.ThinkingMs
+	next.ToolTurns += prev.ToolTurns
 	// The attempts are the same element's: one that names no session
 	// identity of its own — a refusal before any call, an attempt
 	// cancelled in backoff — keeps the one before it, so the spend folded
@@ -730,6 +739,10 @@ type chainSpend struct {
 	// unreported counts the failed routes' calls whose usage the provider
 	// did not report: their tokens and cost above are a lower bound.
 	unreported int
+	// thinkingTokens and thinkingMs are the failed routes' thinking, which
+	// sums across routes like their tokens (foldSpend).
+	thinkingTokens int
+	thinkingMs     int
 	// slices itemises the spend above per abandoned attempt that spent,
 	// under the labels of the element that spent it — what the delegate
 	// event carrying the folded figure hands its consumers
@@ -769,6 +782,8 @@ func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 	s.duration += r.Duration
 	s.costUSD += r.CostUSD
 	s.unreported += r.UnreportedCalls
+	s.thinkingTokens += r.ThinkingTokens
+	s.thinkingMs += r.ThinkingMs
 	if r.Tokens > 0 || r.CostUSD > 0 {
 		s.slices = append(s.slices, SpendSlice{
 			BackendName:    on.backend,
@@ -802,13 +817,15 @@ func (s *chainSpend) discountLastSlice(cost float64, tokens int) {
 // leaving the map at the last route's figure alone would under-report
 // the chain's true cost to max_cost_usd / org caps / donor ledgers.
 func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
-	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 {
+	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 && s.thinkingTokens == 0 && s.thinkingMs == 0 {
 		return r
 	}
 	r.Tokens += s.tokens
 	r.CostUSD += s.costUSD
 	r.UnreportedCalls += s.unreported
 	r.Duration += s.duration
+	r.ThinkingTokens += s.thinkingTokens
+	r.ThinkingMs += s.thinkingMs
 	// An unallocated map records nothing, and the map is what the caps read
 	// — so the shape that loses the most is the one that had no output at
 	// all: a last element that could not even spawn, folding a whole
@@ -1396,9 +1413,22 @@ func (e *ClawExecutor) dispatchChain(
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
+		// The tool turns this element's attempts completed so far. An
+		// in-place retry continues the conversation they built — claw's
+		// session store replays it — so the next attempt starts with them
+		// spent (delegate.Task.ToolTurnsSpent). Scoped to the element, and
+		// never written to the CACHED task: a route change restarts from the
+		// last-good conversation (rollbackTaskSession below), with nothing
+		// of the bound spent.
+		turnsSpent := 0
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			return e.executeDelegate(ctx, backend, *task)
+			attempt := *task
+			attempt.ToolTurnsSpent = turnsSpent
+			return e.executeDelegate(ctx, backend, attempt)
 		}, "", func(prev delegate.Result) {
+			// prev folds every attempt so far, and the fold sums their
+			// tool turns (foldSpend).
+			turnsSpent = prev.ToolTurns
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
 			// called from engine_run and resume only) — so the CLI session

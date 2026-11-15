@@ -2377,6 +2377,20 @@ retryable:
   (the inflated default only applies when neither is set). Each retry logs
   `network connectivity issue — delegate retry k/n … (backoff …)`.
 
+A retry never hands a node its tool-step bound again. On `claw`, the node's
+`tool_max_steps` is spent by the tool turns that **complete** across the
+whole node execution: the backend's own stream retries, the tool-use nudge
+and the executor's in-place retries each continue the conversation the dead
+attempt left (the session store replays it), so each gets what is left. A
+stream cut before a turn completes spends nothing. A retry that finds the
+bound spent makes no loop request: a node with an output schema goes
+straight to the schema-forced recovery pass over that conversation, one
+without fails and says why. A route change in the fallback chain restarts
+from the last-good conversation, with the whole bound. `claude_code` maps
+the bound to `--max-turns`, which the CLI counts per query: a retry that
+resumes the session, and the formatting pass, each run under the whole
+bound again.
+
 Only after a provider exhausts this budget does the run fall through to the
 next entry in the `provider:` chain (above).
 

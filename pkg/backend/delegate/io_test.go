@@ -26,6 +26,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		Model:                  "anthropic/claude-sonnet-4-6",
 		HasTools:               true,
 		ToolMaxSteps:           10,
+		ToolTurnsSpent:         7,
 		MaxTokens:              8192,
 		WorkDir:                "/workspace",
 		BaseDir:                "/workspace",
@@ -99,6 +100,12 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.MaxTokens != original.MaxTokens {
 		t.Errorf("MaxTokens = %d, want %d", got.MaxTokens, original.MaxTokens)
+	}
+	// An in-place retry of a sandboxed node re-crosses with the tool turns
+	// its dead attempts completed: lost on the wire, the in-container loop
+	// starts the node's tool_max_steps over on the replayed conversation.
+	if got.ToolTurnsSpent != original.ToolTurnsSpent {
+		t.Errorf("ToolTurnsSpent = %d, want %d — the runner would hand the loop the whole bound again", got.ToolTurnsSpent, original.ToolTurnsSpent)
 	}
 	if got.Ultracode != original.Ultracode {
 		t.Errorf("Ultracode = %v, want %v", got.Ultracode, original.Ultracode)
@@ -186,6 +193,7 @@ func TestIOResultRoundTrip(t *testing.T) {
 		PeakInputTokens:    1500,
 		ThinkingTokens:     50,
 		ThinkingMs:         20,
+		ToolTurns:          9,
 		Duration:           5 * time.Second,
 		ExitCode:           0,
 		BackendName:        "claw",
@@ -207,6 +215,11 @@ func TestIOResultRoundTrip(t *testing.T) {
 
 	if got.Tokens != original.Tokens {
 		t.Errorf("Tokens = %d, want %d", got.Tokens, original.Tokens)
+	}
+	// The in-container loop's completed tool turns are what the launcher's
+	// in-place retry carries into the next crossing.
+	if got.ToolTurns != original.ToolTurns {
+		t.Errorf("ToolTurns = %d, want %d — a retry of the crossing would start the bound over", got.ToolTurns, original.ToolTurns)
 	}
 	if got.Duration != original.Duration {
 		t.Errorf("Duration = %v, want %v (millisecond precision expected)", got.Duration, original.Duration)

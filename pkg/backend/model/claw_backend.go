@@ -784,6 +784,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		})
 	}
 
+	// The tool-step budget the node execution shares (claw_step_budget.go):
+	// pinned once the loop's tools are final — codemode adds its own — so the
+	// first pass, every retryLoop attempt and the tool-use nudge spend from
+	// one count, seeded with what an earlier invocation of this execution
+	// already completed on the conversation this one continues.
+	var stepBudget *toolStepBudget
+	if len(opts.Tools) > 0 {
+		stepBudget = newToolStepBudget(opts.MaxSteps, task.ToolTurnsSpent)
+		ctx = withToolStepBudget(ctx, stepBudget)
+	}
+
 	// Dispatch to the appropriate generation strategy. A gateway route's
 	// catalog record is resolved ONCE, HERE, before anything runs, and
 	// carried immutable on everything the invocation produces (ADR-122
@@ -826,6 +837,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// What this call spent, as the arm resolved it here, where the client
 	// was built (ADR-161 decision 8): the delegate events' credential keys.
 	res.Credential = spend
+	// The tool turns every attempt of this invocation completed, read from
+	// the budget they spent from rather than folded attempt by attempt: an
+	// in-place retry of the executor continues from this figure.
+	res.ToolTurns = stepBudget.turnsRun()
 	return res, genErr
 }
 
@@ -1165,7 +1180,14 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	opts = applySessionMessagesForTask(ctx, task, opts)
-	result, err := GenerateTextDirect(ctx, client, opts)
+	result, ran, err := runToolLoop(ctx, client, opts)
+	if !ran {
+		// The earlier attempts of this node execution completed every tool
+		// turn the bound allows. A node without an output schema has no
+		// recovery pass to answer from, and running the loop again would
+		// spend past the bound.
+		return delegate.Result{}, fmt.Errorf("claw backend: node %q: its tool-step budget (tool_max_steps %d) is spent by this node execution's earlier attempts, and a node without an output schema has no recovery pass to answer from", task.NodeID, toolStepBudgetFrom(ctx).limit)
+	}
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
@@ -1265,13 +1287,23 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	opts = applySessionMessagesForTask(ctx, task, opts)
-	result, err := GenerateTextDirect(ctx, client, opts)
+	result, ran, err := runToolLoop(ctx, client, opts)
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
 		return meteredFailure(ctx, task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
+	}
+	if !ran {
+		// The earlier attempts of this node execution completed every tool
+		// turn the bound allows — this attempt retries a failure that came
+		// after the last one. The loop does not run again: the recovery pass
+		// below answers from the conversation this attempt continues, the
+		// replayed history included.
+		b.logger.Warn("[%s] the tool-step budget (tool_max_steps %d) is spent by this node execution's earlier attempts — the tool loop does not run again, the recovery pass answers from the conversation they left",
+			task.NodeID, toolStepBudgetFrom(ctx).limit)
+		result = &TextResult{Messages: opts.Messages}
 	}
 
 	// A tool-equipped reviewer/judge that ended the loop WITHOUT calling a
@@ -1287,7 +1319,11 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// emitted a JSON verdict (looksStructured) or that used its tools is
 	// left untouched, so a reviewer whose data is inline (e.g.
 	// whole_improve_loop's chunk_content) never pays for it.
-	if task.NeedsToolLoop() && countToolCalls(result) == 0 && !looksStructured(result.Text) {
+	//
+	// The nudge spends from the node execution's tool-step budget like any
+	// other loop run (runToolLoop), and an exhausted budget has no turn to
+	// give it: the recovery pass is what follows.
+	if task.NeedsToolLoop() && countToolCalls(result) == 0 && !looksStructured(result.Text) && !toolStepBudgetFrom(ctx).exhausted() {
 		nudged := opts
 		// The nudge is the harness's re-ask, not the operator's prompt —
 		// already screened on the first pass.
@@ -1301,7 +1337,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				Timestamp:    time.Now(),
 			})
 		}
-		reRun, reErr := GenerateTextDirect(ctx, client, nudged)
+		reRun, _, reErr := runToolLoop(ctx, client, nudged)
 		switch reErr {
 		case nil:
 			// Carry the wasted first-pass usage into the re-run so cost
@@ -1541,8 +1577,12 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		// top of it, and the node has nothing to show for either. The error
 		// says what every turn came back with, so the next run is fixed at
 		// its cause rather than re-run blind.
+		finalTurn := describeFinalTurn(final, stepMaxTokens(final, opts), recErr)
+		if !ran {
+			finalTurn = fmt.Sprintf("none on this attempt, the node execution's earlier attempts having completed all %d tool turns of its tool_max_steps", toolStepBudgetFrom(ctx).limit)
+		}
 		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
-			describeFinalTurn(final, stepMaxTokens(final, opts), recErr), recErr)
+			finalTurn, recErr)
 	}
 	output := map[string]any{"text": text}
 	tokens := annotateUsage(ctx, output, task.Model, billed)

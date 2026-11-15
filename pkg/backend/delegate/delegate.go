@@ -571,6 +571,13 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
+	// ToolTurnsSpent is how many tool turns of ToolMaxSteps this node
+	// execution already completed before this invocation: an in-place retry
+	// continues the dead attempt's conversation, so the turns it completed
+	// stay spent (the executor carries Result.ToolTurns forward). The claw
+	// backend hands its loop only what is left; zero is a fresh budget.
+	ToolTurnsSpent int
+
 	// MaxTokens caps the LLM response length per call. Honored by API-based
 	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
 	// Zero means "use the backend default" (typically 8192).
@@ -2166,6 +2173,12 @@ type Result struct {
 	// before a thinking-bearing assistant message arrived). Zero when no
 	// thinking was produced.
 	ThinkingMs int
+
+	// ToolTurns is how many tool turns this invocation completed, every
+	// internal attempt included — the figure an in-place retry carries into
+	// Task.ToolTurnsSpent. Attempts are disjoint, so a fold sums it. Zero
+	// for a backend that does not count them.
+	ToolTurns int
 
 	// GatewaySpec is the invocation's catalog provenance on an
 	// OpenAI-compatible gateway route (ADR-122 §resolution): which table
