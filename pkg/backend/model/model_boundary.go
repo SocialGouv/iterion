@@ -28,9 +28,35 @@ import (
 // re-ask): TestEveryBackendExecuteCrossesTheModelBoundary refuses a call
 // that does not. The task is a value: the executor's own copy — what the
 // session ledger, the events and the logs read — is untouched.
+//
+// It is also where the effort a call runs at is settled: the route's
+// accepted-effort mapping replaces the requested level when the route does
+// not take it, and the Result carries what the backend was handed and who
+// decided it (recordReasoningEffort) — the fact travels with the result, so
+// a reader of the node's output never reconstructs it from the node, the
+// overrides and the environment.
 func (e *ClawExecutor) executeDelegate(ctx context.Context, backend delegate.Backend, task delegate.Task) (delegate.Result, error) {
-	task.ReasoningEffort = e.routeReasoningEffort(ctx, task.NodeID, task.Model, task.ReasoningEffort)
-	return backend.Execute(ctx, e.taskForModel(task))
+	requested := task.ReasoningEffort
+	applied, mappedBy := e.routeReasoningEffort(ctx, task.NodeID, task.Model, requested)
+	task.ReasoningEffort = applied
+	res, err := backend.Execute(ctx, e.taskForModel(task))
+	recordReasoningEffort(&res, task.ReasoningEffortSource, requested, applied, mappedBy)
+	return res, err
+}
+
+// recordReasoningEffort writes on res the effort the call was handed
+// (delegate.Result.ReasoningEffort): applied, with the request's provenance
+// when the route sent the level as asked, and with the accepted-efforts
+// list's source plus the requested level when the route replaced it.
+func recordReasoningEffort(res *delegate.Result, requestedSource, requested, applied, mappedBy string) {
+	res.ReasoningEffort, res.ReasoningEffortSource, res.ReasoningEffortRequested = applied, "", ""
+	switch {
+	case applied == "":
+	case mappedBy != "":
+		res.ReasoningEffortSource, res.ReasoningEffortRequested = mappedBy, requested
+	default:
+		res.ReasoningEffortSource = requestedSource
+	}
 }
 
 // generationForModel is the boundary of the executor's DIRECT model calls —

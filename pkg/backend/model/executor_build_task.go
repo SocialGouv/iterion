@@ -286,7 +286,11 @@ func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
 // per-node model label and context-usage gauge. A gateway route's catalog
 // provenance is re-stamped from Result.GatewaySpec as `_gateway_spec` —
 // harness-recorded like the counters, so it survives the wipe a
-// model-written key of the same name does not (#2786).
+// model-written key of the same name does not (#2786). The effort the call
+// ran at lands as `_reasoning_effort_applied`, who decided it as
+// `_reasoning_effort_source`, and the level asked for, when the route
+// replaced it, as `_reasoning_effort_requested` (Result.ReasoningEffort):
+// a report reads what the run used instead of the dial it was set from.
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
@@ -351,7 +355,26 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if len(result.GatewaySpec) > 0 {
 		output["_gateway_spec"] = result.GatewaySpec
 	}
+	if result.ReasoningEffort != "" {
+		output[OutputReasoningEffortApplied] = result.ReasoningEffort
+		if result.ReasoningEffortSource != "" {
+			output[OutputReasoningEffortSource] = result.ReasoningEffortSource
+		}
+		if result.ReasoningEffortRequested != "" {
+			output[OutputReasoningEffortRequested] = result.ReasoningEffortRequested
+		}
+	}
 }
+
+// The output keys stampDelegateOutputMeta records the effort a call ran at
+// under (delegate.Result.ReasoningEffort). None is `_reasoning_effort`: that
+// is the INPUT key an edge raises a node's effort with, and a stamp of that
+// name would read, wherever an output is mapped whole, as an edge's request.
+const (
+	OutputReasoningEffortApplied   = "_reasoning_effort_applied"
+	OutputReasoningEffortSource    = "_reasoning_effort_source"
+	OutputReasoningEffortRequested = "_reasoning_effort_requested"
+)
 
 // meteredFailureOutput renders what a FAILED delegation spent, in the shape
 // the engine books from (`_tokens` / `_cost_usd`).
@@ -1401,7 +1424,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	outputSchema := e.resolveOutputSchema(f.outputSchema)
 
-	effort := e.effortForNode(node, f.reasoningEffort, input)
+	effort, effortSource := e.requestedEffort(node, f.reasoningEffort, input)
 	// "ultracode" is a mode (xhigh + workflow-orchestration prerogative),
 	// not a wire effort value. Remap to xhigh for the provider and carry the
 	// mode separately so the task can enable the orchestration prompt + tool.
@@ -1474,6 +1497,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		HomeScope:             RunnerHomeScopeFromContext(ctx),
 		ExtraEnv:              e.taskExtraEnv(),
 		ReasoningEffort:       wireEffort(effort),
+		ReasoningEffortSource: effortSource,
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
 		SessionLedger:         SessionLedgerFromContext(ctx),

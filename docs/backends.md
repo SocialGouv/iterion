@@ -2083,7 +2083,13 @@ without guessing a numeric equivalent for a name. Executor adjustments emit
 that listed the efforts) and `reason` — and a warning. The requested effort
 itself is the node's `reasoning_effort:`, an edge mapping, the launch
 override or a routing cell's `effort`; accepted efforts are a fact of the
-gateway, seated at the platform, org and team levels only. Gateway routes
+gateway, seated at the platform, org and team levels only. The node's output
+records what the call ran at, on every backend: `_reasoning_effort_applied`
+(the level handed to the backend), `_reasoning_effort_source` (`override` for
+a routing cell or a launch override, `node`, `edge`, or the list's source when
+the mapping replaced the level) and, only then, `_reasoning_effort_requested`
+— so a report prints the effort the run used rather than a dial
+(`bots/review-pr`'s run table). Gateway routes
 run on `claw` alone (C186 above): a CLI backend refuses a gateway route at
 dispatch, so it never reaches this mapping.
 

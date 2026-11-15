@@ -175,10 +175,10 @@ agent converge_gpt:
   ## board issues before it writes the report: at the default the merge
   ## would stop mid-publication.
   tool_max_steps: 60
-  ## SHARED with the claude twin, deliberately: the published run table
-  ## reads the merge step's effort from the ENVIRONMENT (publish_review's
-  ## AI_CONVERGE_EFFORT), not from the node that ran, so a second dial here
-  ## would print a number the run did not use.
+  ## SHARED with the claude twin: one dial for the merge step, whichever
+  ## twin runs. The published run table prints the effort the twin that ran
+  ## was dispatched at (its `_reasoning_effort_applied`, carried through
+  ## pr_gate), so a routing cell on either twin shows as what it is.
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   ## Same convergence as the claude twin: one firing, after both reviewer
   ## branches have settled.
@@ -515,7 +515,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} PUBLISH_MODE={{vars.publish_mode}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT={{input.ai_reviewer_claude_effort}} AI_REVIEWER_CLAUDE_EFFORT_SOURCE={{input.ai_reviewer_claude_effort_source}} AI_REVIEWER_CLAUDE_EFFORT_REQUESTED={{input.ai_reviewer_claude_effort_requested}} AI_REVIEWER_GPT_EFFORT={{input.ai_reviewer_gpt_effort}} AI_REVIEWER_GPT_EFFORT_SOURCE={{input.ai_reviewer_gpt_effort_source}} AI_REVIEWER_GPT_EFFORT_REQUESTED={{input.ai_reviewer_gpt_effort_requested}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT={{input.ai_reviewer_claude_glance_effort}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_claude_glance_effort_source}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_claude_glance_effort_requested}} AI_REVIEWER_GPT_GLANCE_EFFORT={{input.ai_reviewer_gpt_glance_effort}} AI_REVIEWER_GPT_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_gpt_glance_effort_source}} AI_REVIEWER_GPT_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_gpt_glance_effort_requested}} AI_CONVERGE_EFFORT={{input.ai_converge_effort}} AI_CONVERGE_EFFORT_SOURCE={{input.ai_converge_effort_source}} AI_CONVERGE_EFFORT_REQUESTED={{input.ai_converge_effort_requested}} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} PUBLISH_MODE={{vars.publish_mode}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -1151,6 +1151,26 @@ def ai_family(model, wire):
         return 'GPT'
     return ''
 
+def ai_effort(prefix):
+    # The effort the node that ran was DISPATCHED at, and who decided it: the
+    # engine's record on the node's output, never the dial the node was
+    # written with. A routing cell outranks that dial, and a gateway's feed
+    # replaces a level its route does not take -- reading the dial here
+    # printed a level the run did not use.
+    effort = ai_value(prefix + '_EFFORT')
+    if not effort:
+        return ''
+    source = ai_value(prefix + '_EFFORT_SOURCE')
+    requested = ai_value(prefix + '_EFFORT_REQUESTED')
+    if source.startswith('feed:'):
+        label = 'feed ' + source[len('feed:'):]
+    elif source.startswith('env:'):
+        label = 'table du runner'
+    else:
+        label = {'override': 'cellule', 'node': 'nœud', 'edge': 'arête'}.get(source, source)
+    notes = [n for n in (label, ('demandé ' + requested) if requested and requested != effort else '') if n]
+    return effort + (' (' + ' ; '.join(notes) + ')' if notes else '')
+
 ai_rows = []
 for prefix, glance in [('AI_REVIEWER_CLAUDE', False), ('AI_REVIEWER_GPT', False), ('AI_REVIEWER_CLAUDE_GLANCE', True), ('AI_REVIEWER_GPT_GLANCE', True), ('AI_CONVERGE', False)]:
     model = ai_value(prefix + '_MODEL')
@@ -1163,8 +1183,7 @@ for prefix, glance in [('AI_REVIEWER_CLAUDE', False), ('AI_REVIEWER_GPT', False)
         label = 'Synthèse' + (' · ' + family if family else '')
     else:
         label = 'Revue' + (' ' + family if family else '') + (' · glance' if glance else '')
-    effort = ai_value(prefix + '_EFFORT')
-    ai_rows.append('| ' + ' | '.join(ai_cell(v) for v in (label, model, harness, effort, ai_tokens(tokens))) + ' |')
+    ai_rows.append('| ' + ' | '.join(ai_cell(v) for v in (label, model, harness, ai_effort(prefix), ai_tokens(tokens))) + ' |')
 summary.extend(['', '<details>', '<summary><sub>Détails du run IA · Iterion</sub></summary>', '',
                 'Run : ' + ai_run_identity(), '',
                 'Tokens du run au moment de publier : **' + ai_tokens(ai_value('AI_RUN_TOKENS')) + '**.', ''])
@@ -1211,11 +1230,11 @@ if finding_ids:
         # meant to be copied, shell operators and URL query strings included.
         summary.extend([fixer_hint.replace('{finding}', finding_ids[0]).replace('<', '&lt;').replace('>', '&gt;'), ''])
 if ai_rows:
-    summary.extend(['| Étape | Modèle | Harness | Effort demandé | Tokens |',
+    summary.extend(['| Étape | Modèle | Harness | Effort (source) | Tokens |',
                     '|---|---|---|---|---:|'] + ai_rows)
 else:
     summary.append('Détails par étape indisponibles pour ce run.')
-summary.extend(['', '<sub>Tokens cumulés des appels IA, pas la taille du contexte. L’effort indiqué est le réglage demandé au modèle.</sub>', '', '</details>'])
+summary.extend(['', '<sub>Tokens cumulés des appels IA, pas la taille du contexte. L’effort indiqué est celui que le run a envoyé au modèle, avec sa source : cellule (surcharge de routage, celle d’une politique de routage ou du lancement), nœud (réglage du bot), arête (niveau passé par l’étape précédente), ou le feed de la passerelle quand il a remplacé le niveau demandé.</sub>', '', '</details>'])
 
 payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
 
@@ -1629,3 +1648,6 @@ compute pr_gate:
     ai_converge_tokens: "input.ai_converge_tokens"
     ai_converge_fallback: "input.ai_converge_fallback"
     ai_converge_wire: "input.ai_converge_wire"
+    ai_converge_effort: "input.ai_converge_effort"
+    ai_converge_effort_source: "input.ai_converge_effort_source"
+    ai_converge_effort_requested: "input.ai_converge_effort_requested"

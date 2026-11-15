@@ -331,6 +331,15 @@ schema converse_health_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 agent converse_agent:
+  ## No MCP server: the answer comes from the diff and the repository, which
+  ## the four tools below read. Inheriting the ambient set put the tools of
+  ## every server the platform's plugins and the repository's `.mcp.json`
+  ## bring into each request — 31 tool schemas where this node declares 4,
+  ## on every step of the loop (#3283) — and sent a code question to a web
+  ## search. Same on every backend: claw builds no `mcp_*` tool, and
+  ## claude_code's `--mcp-config` names none of those servers.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   ## Review-pr's claude slot, dials included (see its reviewer_claude for

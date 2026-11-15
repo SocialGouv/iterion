@@ -1,7 +1,21 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.23
+version: 0.9.24
+## 0.9.24 — the run table's effort column prints the effort each node that
+## ran was dispatched at, and who decided it, instead of the
+## `ITERION_VIBE_EFFORT_*` dial it was written with. publish_review no longer
+## reads those dials: each row takes the engine's record from the node's
+## output (`_reasoning_effort_applied`, `_reasoning_effort_source`,
+## `_reasoning_effort_requested`), the reviewers straight from their outputs,
+## the merge step through pr_gate whichever twin merged. A routing cell's
+## effort outranks the dial, and a gateway's feed replaces a level its route
+## does not take — the dial printed a level the run did not use (#3283).
+## The column reads `Effort (source)`: `low (cellule)` for a cell or a launch
+## override, `(nœud)` for the node's own setting, `(arête)` for an upstream
+## edge's level, and `high (feed pliage ; demandé medium)` when the feed
+## replaced the level asked for. A runner whose engine records no effort
+## leaves the cell `indisponible`.
 ## 0.9.23 — evaluation mode: `publish_mode: off` (a hidden launch var:
 ## operators set it — --var, bot_args, a remote launch, an integration's
 ## pinned launch vars — and so can a bot holding board.create, through a

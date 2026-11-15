@@ -681,6 +681,13 @@ type Task struct {
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string
 
+	// ReasoningEffortSource names who asked for ReasoningEffort: the run's
+	// model overrides, an upstream edge's mapping or the node's own
+	// `reasoning_effort:` (model.EffortSource*). The executor's bookkeeping,
+	// read back at the model boundary to record it on the Result; no backend
+	// reads it, and it does not cross the claw-runner wire.
+	ReasoningEffortSource string
+
 	// Ultracode enables the "Ultracode" mode: xhigh reasoning paired with a
 	// standing-consent prerogative to orchestrate multi-agent workflows.
 	// When set, BuildSystemPrompt appends a "## Workflow Orchestration"
@@ -2221,4 +2228,23 @@ type Result struct {
 	// output goes through the way the usage counters do, and is re-stamped
 	// there as `_gateway_spec`. Empty on a non-gateway route.
 	GatewaySpec json.RawMessage
+
+	// ReasoningEffort is the reasoning effort the executor handed the
+	// backend for this call: the level the node requested, after the
+	// route's accepted-effort mapping (ADR-166 §7). ReasoningEffortSource
+	// says who decided it — the request's provenance (Task.
+	// ReasoningEffortSource) when the route sent the level as asked, the
+	// accepted-efforts list's source (`feed:<name>`, `env:…`) when the
+	// route replaced it — and ReasoningEffortRequested is the level asked
+	// for, set only when the route replaced it. Recorded by the executor at
+	// the model boundary, never by a backend; a backend's own clamp below
+	// that boundary (claude_code's `none` → `low`, claw's per-model matrix)
+	// is not reflected. Stamped on the node's output as
+	// `_reasoning_effort_applied`, `_reasoning_effort_source` and
+	// `_reasoning_effort_requested` — never `_reasoning_effort`, the input
+	// key an edge raises a node's effort with. Empty when the node requests
+	// no effort.
+	ReasoningEffort          string
+	ReasoningEffortSource    string
+	ReasoningEffortRequested string
 }

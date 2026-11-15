@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
@@ -13,11 +14,14 @@ import (
 // telemetryKeyOf maps the suffix of an `ai_<node>_<suffix>` publish field to
 // the engine-written output key it carries.
 var telemetryKeyOf = map[string]string{
-	"model":    "_model",
-	"backend":  "_backend",
-	"tokens":   "_tokens",
-	"fallback": "_fallback_used",
-	"wire":     "_session_fingerprint",
+	"model":            "_model",
+	"backend":          "_backend",
+	"tokens":           "_tokens",
+	"fallback":         "_fallback_used",
+	"wire":             "_session_fingerprint",
+	"effort":           model.OutputReasoningEffortApplied,
+	"effort_source":    model.OutputReasoningEffortSource,
+	"effort_requested": model.OutputReasoningEffortRequested,
 }
 
 // The published run table and the merge-gate note read engine telemetry the
@@ -66,16 +70,19 @@ func TestReviewPRPublishEdgeMapsTheServingTelemetry(t *testing.T) {
 			want[f.Name] = "{{run.tokens}}"
 			continue
 		}
+		// The longest known suffix: a telemetry name may itself hold an
+		// underscore (`effort_source`), so the node is what precedes it.
 		rest := strings.TrimPrefix(f.Name, "ai_")
-		cut := strings.LastIndex(rest, "_")
-		if cut <= 0 {
-			t.Fatalf("publish_input.%s does not read as ai_<node>_<telemetry>", f.Name)
+		node, suffix := "", ""
+		for s := range telemetryKeyOf {
+			if strings.HasSuffix(rest, "_"+s) && len(s) > len(suffix) {
+				node, suffix = strings.TrimSuffix(rest, "_"+s), s
+			}
 		}
-		node, suffix := rest[:cut], rest[cut+1:]
-		key, known := telemetryKeyOf[suffix]
-		if !known {
-			t.Fatalf("publish_input.%s: telemetry suffix %q has no engine output key here — extend telemetryKeyOf", f.Name, suffix)
+		if suffix == "" || node == "" {
+			t.Fatalf("publish_input.%s: no telemetry suffix with an engine output key here — extend telemetryKeyOf", f.Name)
 		}
+		key := telemetryKeyOf[suffix]
 		if _, exists := cr.Workflow.Nodes[node]; !exists {
 			t.Errorf("publish_input.%s names node %q, which the workflow does not have", f.Name, node)
 		}

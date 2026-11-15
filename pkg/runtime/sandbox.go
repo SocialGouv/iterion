@@ -995,7 +995,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if p.Workflow != nil && containsClawNode(p.Workflow, p.EffectiveBackend) {
 		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]any{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
-			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
+			"limitations_v1": "MCP tools and ask_user run on the launcher, proxied over the runner channel: a stdio MCP server starts on the launcher, only the operator's servers start for a sandboxed run, and interaction: async is refused — see docs/sandbox.md",
 		})
 	}
 

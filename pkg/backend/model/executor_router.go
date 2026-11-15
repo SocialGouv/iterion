@@ -252,6 +252,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		if sess.claimPrompt(routerText, bn) && e.hooks.OnLLMPrompt != nil {
 			e.hooks.OnLLMPrompt(node.ID, systemText, routerText)
 		}
+		routerEffort, routerEffortSource := e.requestedEffort(node, node.ReasoningEffort, input)
 		t := &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
@@ -263,8 +264,9 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
 			// never reaches the provider; identity for every other level. Routers
 			// don't get the orchestration prerogative (they route, not orchestrate).
-			ReasoningEffort: wireEffort(e.effortForNode(node, node.ReasoningEffort, input)),
-			Sandbox:         e.sandbox,
+			ReasoningEffort:       wireEffort(routerEffort),
+			ReasoningEffortSource: routerEffortSource,
+			Sandbox:               e.sandbox,
 			// ProviderHint is set per-attempt by the chain walker.
 			InboxDrain: e.bindInboxDrain(ctx),
 			// A claude_code router keeps the CLI's native tools, background
@@ -359,13 +361,39 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 // Valid values are defined in ir.ValidReasoningEfforts: none, low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
+	effort, _ := sourcedReasoningEffort(nodeEffort, input)
+	return effort
+}
+
+// sourcedReasoningEffort is resolveReasoningEffort with the provenance of its
+// answer (EffortSourceEdge, EffortSourceNode; "" with an empty effort).
+func sourcedReasoningEffort(nodeEffort string, input map[string]any) (effort, source string) {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
-			return s
+			return s, EffortSourceEdge
 		}
 	}
-	return ir.ResolveEffortLiteral(nodeEffort)
+	if effort := ir.ResolveEffortLiteral(nodeEffort); effort != "" {
+		return effort, EffortSourceNode
+	}
+	return "", ""
 }
+
+// The provenance of the reasoning effort a node requests: who decided the
+// level effortForNode answers. The model boundary records it on the call's
+// Result (executeDelegate), and the node's output carries it as
+// `_reasoning_effort_source` (stampDelegateOutputMeta).
+const (
+	// EffortSourceOverride is the run's model overrides: a routing-policy
+	// cell (ADR-129) or the launch's own override row — the folded list the
+	// executor reads does not say which of the two wrote it.
+	EffortSourceOverride = "override"
+	// EffortSourceEdge is an upstream edge's `_reasoning_effort` mapping.
+	EffortSourceEdge = "edge"
+	// EffortSourceNode is the node's own `reasoning_effort:`, its `${…}`
+	// dial resolved.
+	EffortSourceNode = "node"
+)
 
 // effortForNode is resolveReasoningEffort with the launch-time override on
 // top. The override wins over BOTH the node's static `reasoning_effort:` and a
@@ -376,10 +404,17 @@ func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 // A bot that escalates effort per branch is therefore flattened by a run-wide
 // `*` override — which is what asking for one means.
 func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[string]any) string {
+	effort, _ := e.requestedEffort(node, nodeEffort, input)
+	return effort
+}
+
+// requestedEffort is effortForNode with the provenance of its answer
+// (EffortSource*): "" with an empty effort.
+func (e *ClawExecutor) requestedEffort(node ir.Node, nodeEffort string, input map[string]any) (effort, source string) {
 	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
-		return ov.Effort
+		return ov.Effort, EffortSourceOverride
 	}
-	return resolveReasoningEffort(nodeEffort, input)
+	return sourcedReasoningEffort(nodeEffort, input)
 }
 
 // providerOptsForNode builds the ProviderOptions map from the resolved

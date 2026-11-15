@@ -653,12 +653,16 @@ workflow review_pr:
     ## of names whichever twin merged. The engine writes `_fallback_used`
     ## only on a node it did not serve with its first choice, and
     ## `_session_fingerprint` is the routing label a facade would otherwise
-    ## hide behind a model id.
+    ## hide behind a model id. `_reasoning_effort_*` is the effort the twin
+    ## was dispatched at and who decided it.
     ai_converge_model: "{{outputs.converge._model}}",
     ai_converge_backend: "{{outputs.converge._backend}}",
     ai_converge_tokens: "{{outputs.converge._tokens}}",
     ai_converge_fallback: "{{outputs.converge._fallback_used}}",
     ai_converge_wire: "{{outputs.converge._session_fingerprint}}",
+    ai_converge_effort: "{{outputs.converge._reasoning_effort_applied}}",
+    ai_converge_effort_source: "{{outputs.converge._reasoning_effort_source}}",
+    ai_converge_effort_requested: "{{outputs.converge._reasoning_effort_requested}}",
   }
 
   converge_gpt -> pr_gate with {
@@ -674,6 +678,9 @@ workflow review_pr:
     ai_converge_tokens: "{{outputs.converge_gpt._tokens}}",
     ai_converge_fallback: "{{outputs.converge_gpt._fallback_used}}",
     ai_converge_wire: "{{outputs.converge_gpt._session_fingerprint}}",
+    ai_converge_effort: "{{outputs.converge_gpt._reasoning_effort_applied}}",
+    ai_converge_effort_source: "{{outputs.converge_gpt._reasoning_effort_source}}",
+    ai_converge_effort_requested: "{{outputs.converge_gpt._reasoning_effort_requested}}",
   }
 
   ## No PR target → finish after the board + report (the default,
@@ -706,19 +713,31 @@ workflow review_pr:
     ## is sent (z.ai answers a claude id with GLM), so `_model` alone
     ## cannot tell the published table which family actually served.
     ai_reviewer_claude_wire: "{{outputs.reviewer_claude._session_fingerprint}}",
+    ai_reviewer_claude_effort: "{{outputs.reviewer_claude._reasoning_effort_applied}}",
+    ai_reviewer_claude_effort_source: "{{outputs.reviewer_claude._reasoning_effort_source}}",
+    ai_reviewer_claude_effort_requested: "{{outputs.reviewer_claude._reasoning_effort_requested}}",
     ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
     ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
     ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
     ai_reviewer_gpt_wire: "{{outputs.reviewer_gpt._session_fingerprint}}",
+    ai_reviewer_gpt_effort: "{{outputs.reviewer_gpt._reasoning_effort_applied}}",
+    ai_reviewer_gpt_effort_source: "{{outputs.reviewer_gpt._reasoning_effort_source}}",
+    ai_reviewer_gpt_effort_requested: "{{outputs.reviewer_gpt._reasoning_effort_requested}}",
     ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
     ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
     ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
     ai_reviewer_claude_glance_fallback: "{{outputs.reviewer_claude_glance._fallback_used}}",
     ai_reviewer_claude_glance_wire: "{{outputs.reviewer_claude_glance._session_fingerprint}}",
+    ai_reviewer_claude_glance_effort: "{{outputs.reviewer_claude_glance._reasoning_effort_applied}}",
+    ai_reviewer_claude_glance_effort_source: "{{outputs.reviewer_claude_glance._reasoning_effort_source}}",
+    ai_reviewer_claude_glance_effort_requested: "{{outputs.reviewer_claude_glance._reasoning_effort_requested}}",
     ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
     ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
     ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
     ai_reviewer_gpt_glance_wire: "{{outputs.reviewer_gpt_glance._session_fingerprint}}",
+    ai_reviewer_gpt_glance_effort: "{{outputs.reviewer_gpt_glance._reasoning_effort_applied}}",
+    ai_reviewer_gpt_glance_effort_source: "{{outputs.reviewer_gpt_glance._reasoning_effort_source}}",
+    ai_reviewer_gpt_glance_effort_requested: "{{outputs.reviewer_gpt_glance._reasoning_effort_requested}}",
     ## The merge step's telemetry comes through pr_gate, not from a twin:
     ## `mono_family` decides which of `converge` / `converge_gpt` ran, and
     ## the run table must name the one that did.
@@ -727,6 +746,9 @@ workflow review_pr:
     ai_converge_tokens: "{{outputs.pr_gate.ai_converge_tokens}}",
     ai_converge_fallback: "{{outputs.pr_gate.ai_converge_fallback}}",
     ai_converge_wire: "{{outputs.pr_gate.ai_converge_wire}}",
+    ai_converge_effort: "{{outputs.pr_gate.ai_converge_effort}}",
+    ai_converge_effort_source: "{{outputs.pr_gate.ai_converge_effort_source}}",
+    ai_converge_effort_requested: "{{outputs.pr_gate.ai_converge_effort_requested}}",
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",
