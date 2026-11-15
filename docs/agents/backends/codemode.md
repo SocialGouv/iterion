@@ -54,8 +54,8 @@ either. C338 is retired.
 
 **Not there yet** (claiming it is false): no run-level override, no studio
 form, no DSL surface for the bounds — a node runs under `DefaultLimits`.
-#3155, the in-pod bench that declares codemode usable in CLOUD, has not
-run. Epic
+#3155's bench holds; what it still owes is named in
+[posture bench](../testing/deployment-posture-bench.md). Epic
 [#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
 #3182, #3195).
 

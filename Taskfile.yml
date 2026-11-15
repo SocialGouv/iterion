@@ -810,6 +810,16 @@ tasks:
     cmds:
       - bash scripts/ci/mongo-conformance.sh
 
+  bench:codemode-inpod:
+    desc: "The in-pod gating bench for codemode (#3155). Invoke it as `task -x bench:codemode-inpod …`: go-task answers 201 for ANY failure, which flattens this member's exit vocabulary (2 = nothing was tested, 1 = a red verdict) — the SHIPPED binary confining itself inside its OWN image, under the runner's real securityContext (caps dropped, no-new-privileges, RuntimeDefault seccomp). No CI job runs it: it needs docker and a pulled image. `IMAGE=<repo@sha256:…>` is required and must be a DIGEST — a tag would measure whatever moved under it. `RUN_AS_UID=` is the uid the image runs as, default 10001 (the server image); the production RUNNER image is iterion-runner-devbox at 1000. NOT named `UID`: `UID=1000 task …` is refused by bash (its UID is readonly) and the member would silently fall back to its default. Measured: `UID` is NOT exported, so `{{.UID}}` would always have been empty — the first version of this note had the hazard backwards. `MUTANT=eperm|enosys` denies landlock_create_ruleset to prove the bench can redden on the class it exists for; both mutants must FAIL. The containerd arm is bench:codemode-cluster"
+    cmds:
+      - bash scripts/ci/codemode-inpod-bench.sh --image "{{.IMAGE}}" {{if .RUN_AS_UID}}--uid "{{.RUN_AS_UID}}"{{end}} {{if .MUTANT}}--mutant "{{.MUTANT}}"{{end}}
+
+  bench:codemode-cluster:
+    desc: "The containerd arm of #3155's posture bench. Invoke it as `task -x bench:codemode-cluster …`: go-task answers 201 for ANY failure and flattens the 2-versus-1 distinction — a real Pod carrying the chart's securityContext on a local `kind` cluster, because `seccompProfile: RuntimeDefault` names whatever the RUNTIME defaults to and the docker arm therefore answers only for docker. Five pods: the bench, a posture readback, an Unconfined twin that proves the filter moves, and the two Localhost seccomp mutants that must FAIL. `IMAGE=<repo@sha256:…>` required (digest); `KEEP=1` leaves the cluster up. Reports the containerd version it measured — a default profile belongs to its build, so the production node's own is still owed"
+    cmds:
+      - bash scripts/ci/codemode-cluster-bench.sh --image "{{.IMAGE}}" {{if .NODE_IMAGE}}--node-image "{{.NODE_IMAGE}}"{{end}} {{if .KEEP}}--keep{{end}}
+
   ci:gofmt:
     desc: "The local member of the `gofmt (check)` step inside CI's `test-unit` job — which feeds the REQUIRED `test` aggregator, so an unformatted tracked file reddens a required context. Reports, never writes: `task fmt` would repair the defect CI fails on and then report green. The file list is `git ls-files`, not the job's `find .`, because find reaches `.works/`, `.repos/` and every registered worktree — the script says what that changes"
     cmds:

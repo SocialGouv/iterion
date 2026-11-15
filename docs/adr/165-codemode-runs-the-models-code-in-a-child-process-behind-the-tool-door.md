@@ -222,3 +222,132 @@ field — it rides `IRCompiled`, which already travels — but a pre-codemode
 runner's decoder drops the key and runs the node without the tool, which is
 the additive-field rule's case: a knob the caller set, that a stale runner
 silently falls back from. `MinSchemaVersion` stays 27.
+
+## Amendment — 2026-11-14: what the in-pod bench measured, and two legs it refused to invent
+
+#3155's bench exists and holds: seven legs on the SHIPPED binary inside its
+OWN image, under the runner's real securityContext, on docker AND containerd.
+[The posture bench](../agents/testing/deployment-posture-bench.md) carries the
+method; this records what it changes in this ADR.
+
+**It does not replace the unit suite, and the first draft of this amendment
+said it did.** `pkg/scripthost`'s suite does not go green without Landlock — it
+fails loudly, skipping only when a lane sets
+`ITERION_CODEMODE_ALLOW_NO_LANDLOCK=1` to go on record (measured: 5 passes
+become 5 failures under ENOSYS and 5 under EPERM). What it cannot do is judge
+the shipped image under the deployment's posture, which is the only thing the
+bench adds.
+
+**The feared answer was not the one we got.** The confinement this record
+mandates rests on `landlock_create_ruleset`, and a container's seccomp profile
+can refuse a syscall it does not list — `Confine` names that shape in its own
+comment, and collapsing it with absence once produced a child with a full
+filesystem and no error. Measured on `ghcr.io/socialgouv/iterion@sha256:0eeb55…`
+(v6.0.0) under `runAsUser` 10001, capabilities dropped,
+`allowPrivilegeEscalation: false` and the daemon's default seccomp profile
+(`Seccomp: 2` with a filter loaded, read back from the child's own
+`/proc/self/status` before anything was concluded): **`landlock_abi: 4`,
+`all_threads: true`**, both bombs biting. The posture's non-seccomp parts do
+not disturb Landlock.
+
+**Both runtimes, because `RuntimeDefault` is not one profile.** It names
+whatever the runtime defaults to, so a bench measuring only docker would answer
+for containerd by assumption. The containerd arm is a real Pod carrying the
+chart's securityContext on a local `kind` cluster (a devbox package of this
+repo): containerd 2.1.1, `seccompProfile: RuntimeDefault`, `landlock_abi: 4`,
+`all_threads: true`, container exit 0. Each arm reads its filter back against an
+`Unconfined` twin reporting `Seccomp: 0`, so a silently unconfined container
+cannot pass for a confined one — and that twin also isolates `NoNewPrivs: 1` as
+coming from `allowPrivilegeEscalation: false` rather than from seccomp.
+
+Seven mutants, six killed and one assumed, and the two that a SECOND
+adversarial round added are the instructive ones. The seccomp pair — `EPERM`
+and `ENOSYS` for that one syscall — reddens both arms and differently for each
+(no confinement reported vs `landlock_abi: 0` plus the `allow_without_landlock`
+remedy); in-cluster they are Kubernetes `Localhost` profiles. A Landlock that
+installs nothing while still reporting ABI 4 reddens the escape leg. No
+Landlock plus `-allow-without-landlock` exits 5, *it is not a pass*. `--uid 0`
+is refused before any leg runs.
+
+**THREE adversarial rounds, and the lesson is that each round killed a guard
+the previous one had just written.** Round 2 defeated two round-1 fixes: the
+same stubbed Landlock **plus `RLIMIT_NOFILE: 0`** made all three escape
+attempts fail with `EMFILE`, and a leg asking only *whether* they failed
+printed "too many open files" and passed — so the oracle requires `EACCES`,
+the errno Landlock refuses with on ABI 4, connect included. And a **global
+lock around every run** serialised the concurrency leg while still reporting
+the maximum overlap of timestamp windows, because those windows include the
+wait in queue.
+
+Round 3 then defeated round 2's replacement. Counting live children is
+satisfied by **either group alone**, so a scheduler admitting the three
+siblings together and then the three bombs together passed with a peak of 3
+and zero meetings. The kinds are now told apart by `argv[0]` — the bombs run
+through a second `Host` whose `Binary` is a symlink of the same file, which
+`command()` puts in the child's argv — and some 5 ms sample must see both at
+once: 0 under that mutant, ~330 honest.
+
+Round 3 also found the posture guard reading only the EFFECTIVE capability
+set, which an unprivileged uid holds empty whatever it may acquire: a
+`--privileged` container with a permissive seccomp profile reported every leg
+held, with the host's disks visible inside it. It now requires the BOUNDING
+set empty too — `CapBnd 0000000000000000` under the chart's
+`capabilities: drop: [ALL]`, `000001ffffffffff` in that container.
+
+Round 4 found the same shape once more, in the one input this gate exists to
+judge. `Seccomp: 2` names the MODE and never the PROFILE: an **allow-all
+seccomp profile alone** — no `--privileged`, nothing else — reported every leg
+held with exit 0, because a filter that denies nothing reports exactly the two
+fields the guard read. The profile comes from the daemon's `--seccomp-profile`
+and the kubelet's `RuntimeDefault`, and nothing was reading it, which is the
+defect this bench already refuses for the runner image and the kind node
+image. So the posture now asks the KERNEL: `add_key` must answer `EPERM`,
+which a runtime default refuses and a permissive profile lets through
+(measured: `EPERM` under the daemon default, `ENOKEY` under allow-all);
+`ENOSYS` is reported as not covered. Round 4 also found `--user 10001:0`
+accepted, the evidence files citing a `CapBnd` they did not contain, and a
+run with all seven legs executed answering the code reserved for "nothing was
+tested".
+
+One round-1 guard went the other way and was REMOVED: an asserted margin on
+the spinner compared wall time to a CPU bound and flipped its own verdict at
+14.9 s and 17.0 s over a healthy deployment.
+
+**Four rounds, four rounds with findings, and the pattern is the record's real
+contribution**: every round killed a guard the previous had just written, and
+twice the guard had been fixed in ONE FIELD of a two-field class. The mutant
+register is therefore a page of its own
+([posture-bench-mutants.md](../agents/testing/posture-bench-mutants.md)) with a
+standing rule — adding a guard to that bench means adding the mutant that
+proves it.
+
+The assumed survivor is named: with `applyParentDeathSignal` turned into a
+no-op the drain leg stays green, because that function's own doc calls
+`Pdeathsig` a backstop rather than the orphan bound — so that leg witnesses
+the property a drain needs and nothing about which holder delivers it.
+
+**What is still owed**: the production node's own containerd build, since a
+default profile is a property of that build. The structural question is settled
+— a containerd `RuntimeDefault` does not refuse `landlock_create_ruleset` — so
+what remains is re-running this bench against a production node and recording
+its version, not designing an experiment.
+
+**Two legs of the gate name mechanisms this codebase does not have — but the
+axis they protect is OWED, not covered.** The Consequences section asks for
+`oom_score_adj` and RSS probing to work under the runner's securityContext, and
+neither exists here (zero production sites, every spelling). So those legs
+cannot be written as specified. What must not follow — and the first draft of
+this amendment did follow it — is that the axis is therefore handled:
+`Confine`'s own comment says `RLIMIT_DATA` bounds the Go heap and that *a
+`MAP_SHARED` or memfd mapping is not charged to it, so a native payload's real
+ceiling is the pod's memory cgroup*, which is exactly the ground those legs
+covered. The concurrency leg bounds each bomb by its own `RLIMIT_DATA` and
+cannot observe an eviction. The requirement stands as written and is
+unsatisfied; what is retired is the SHAPE of the two legs, not the axis.
+
+**And the bench found a gap in the product while measuring itself**:
+`Limits.Clamp` enforces no FLOOR on `Memory`. A bound below what the child's Go
+runtime needs makes it crash — measured at 64 MiB, `script_host_died` with a
+SIGSEGV where the caller asked for `memory_exceeded`. A tenant can therefore
+write a `memory:` that produces an unexplained crash instead of a typed
+refusal. Its own ticket.

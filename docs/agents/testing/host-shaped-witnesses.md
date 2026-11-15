@@ -46,3 +46,34 @@ production and its deadlines are unchanged. Phase events and partial frames
 cannot satisfy the barrier. The existing context still fails a CLI that
 never reads. Removing the production take arm or the actual send fails the
 witness. Re-check on 2026-11-11 and on changes to the timer or fake CLI.
+
+## What the codemode posture bench paid for measuring its host
+
+Five, from [the posture bench](deployment-posture-bench.md)
+([#3155](https://github.com/SocialGouv/iterion/issues/3155)). Each was a green
+that meant nothing, and each was found by writing the mutant rather than by
+re-reading the code.
+
+- **A bound the leg trips, then a guard that was itself the flake.** The
+  spinner burned ~11 s against a 10 s bound, so siblings died of their own
+  limit while the leg blamed the bombs. A second version *asserted* a margin,
+  comparing WALL time to a CPU bound: the same setting passed at 14.9 s and
+  failed at 17.0 s over a healthy deployment at `--cpus 0.5`, the runner's own
+  request. Removed — `cpu_time_exceeded` already says it. Both groups now
+  carry explicit wide bounds; the bombs hit `wall_clock_exceeded` at
+  `--cpus 0.1` on the default 30 s wall.
+- **A goja regex without a backreference is not a bomb**: `/(a+)+$/` compiles
+  to linear RE2, only `/(a+)+\1b$/` forces backtracking.
+- **`docker cp` under a `tmpfs` mount** reports success for a file the
+  container cannot see — the copy lands in the layer the mount shadows.
+- **`kill(pid, 0)` cannot tell a zombie from a running process**, and whether
+  a reaped pid disappears depends on PID 1. Measured: with the entrypoint
+  overridden to `sleep`, which never waits, a descendant dead within 10 ms
+  kept its pid and the leg called it a survivor, 3 runs out of 3. The shipped
+  image runs `tini`; the oracle depends on neither and reads
+  `/proc/<pid>/stat`.
+- **A bench cannot ask a confined child about its environment**: `Confine`
+  calls `prctl(PR_SET_DUMPABLE, 0)`, so a same-uid reader gets `EACCES`
+  whatever the child holds. Measured: mutating the constructor to
+  `cmd.Env = os.Environ()` left such a leg green 8/8. That guarantee belongs
+  to `TestTheChildIsBuiltWithNoEnvironment`.
