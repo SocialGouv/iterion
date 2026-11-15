@@ -107,6 +107,34 @@ func TestMintTokenRefusesWithoutTheDerivationVerdict(t *testing.T) {
 	}
 }
 
+func TestOpenHMACSecret(t *testing.T) {
+	sealer := newTestSealer(t)
+	sealed, err := SealHMACSecret(sealer, "w1", "vendor-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := OpenHMACSecret(sealer, "w1", sealed); err != nil || string(got) != "vendor-secret" {
+		t.Fatalf("open = (%q, %v)", got, err)
+	}
+	// The blob is bound to its webhook: another id cannot open it.
+	if _, err := OpenHMACSecret(sealer, "w2", sealed); err == nil {
+		t.Fatal("a blob opened under another webhook's id")
+	}
+	if _, err := OpenHMACSecret(sealer, "w1", nil); err == nil {
+		t.Fatal("an absent secret opened")
+	}
+	if _, err := OpenHMACSecret(nil, "w1", sealed); err == nil {
+		t.Fatal("a secret opened without a sealer")
+	}
+	empty, err := SealHMACSecret(sealer, "w1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenHMACSecret(sealer, "w1", empty); err == nil {
+		t.Fatal("an empty secret opened: it would verify every HMAC computed with an empty key")
+	}
+}
+
 func TestSealAndVerifyHMACSignature(t *testing.T) {
 	sealer := newTestSealer(t)
 

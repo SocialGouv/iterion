@@ -19243,6 +19243,30 @@
         ]
       }
     },
+    "/api/webhooks/c/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postWebhooksCById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/webhooks/c/{id}",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
     "/api/webhooks/deliveries/{id}/retry": {
       "parameters": [
         {

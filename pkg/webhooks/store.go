@@ -206,5 +206,9 @@ type Limits struct {
 // call does NOT consume quota.
 type Counter interface {
 	Allow(ctx context.Context, tenantID, webhookID string, when time.Time, limits Limits) (bool, error)
+	// Release gives back the unit an Allow granted under the same arguments
+	// — a call the caller charged and then did not accept (a write that
+	// failed, a delivery that met its stored row).
+	Release(ctx context.Context, tenantID, webhookID string, when time.Time, limits Limits) error
 	OrgCount(ctx context.Context, tenantID string, when time.Time) (int, error)
 }

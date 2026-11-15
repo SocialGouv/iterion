@@ -213,6 +213,20 @@ func TestPolicyFromEnv(t *testing.T) {
 	}
 }
 
+func TestBacklogMaxFromEnv(t *testing.T) {
+	get := func(v string) func(string) string { return func(string) string { return v } }
+	for v, want := range map[string]int{"": DefaultBacklogMax, "0": 0, " 250 ": 250} {
+		if got, err := BacklogMaxFromEnv(get(v)); err != nil || got != want {
+			t.Errorf("%q = (%d, %v), want %d", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"many", "-1", "1.5"} {
+		if _, err := BacklogMaxFromEnv(get(v)); err == nil || !strings.Contains(err.Error(), EnvBacklogMax) {
+			t.Errorf("%q = %v, want an error naming %s", v, err, EnvBacklogMax)
+		}
+	}
+}
+
 func TestRetentionFromEnv(t *testing.T) {
 	get := func(v string) func(string) string { return func(string) string { return v } }
 	for v, want := range map[string]time.Duration{"": DefaultRetention, "0": 0, "72h": 72 * time.Hour} {

@@ -625,6 +625,7 @@ CRUD (operator-side) plus per-provider delivery URLs.
 | `POST` | `/api/webhooks/github/{id}` | webhook HMAC | Inbound PR delivery |
 | `POST` | `/api/webhooks/forgejo/{id}` | webhook HMAC | Inbound PR delivery (also Gitea headers) |
 | `POST` | `/api/webhooks/generic/{id}` | webhook token (or HMAC opt-in) | Bot-agnostic JSON delivery |
+| `POST` | `/api/webhooks/c/{id}` | as the connector package's `ingress:` declares | Connector ingress delivery, stored to the intake ([connector ingress](webhooks.md#connector-ingress)) |
 
 Source: [pkg/server/webhooks_routes.go](../pkg/server/webhooks_routes.go).
 Full reference: [webhooks.md](webhooks.md).

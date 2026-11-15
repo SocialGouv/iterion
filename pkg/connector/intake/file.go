@@ -104,6 +104,15 @@ func (f *FileStore) GetIntake(ctx context.Context, tenantID, id string) (out Int
 	return out, err
 }
 
+func (f *FileStore) CountBacklog(ctx context.Context, tenantID string) (n int, err error) {
+	err = f.withState(ctx, func(m *MemoryStore) error {
+		var e error
+		n, e = m.CountBacklog(ctx, tenantID)
+		return e
+	})
+	return n, err
+}
+
 func (f *FileStore) ListIntakes(ctx context.Context, tenantID, state string, limit int) (out []Intake, err error) {
 	err = f.withState(ctx, func(m *MemoryStore) error {
 		var e error

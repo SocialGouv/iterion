@@ -148,3 +148,66 @@ func TestDeliveryStore_ClaimFailedRetry(t *testing.T) {
 		}
 	})
 }
+
+// onCounterTwins runs one Counter contract against both twins.
+func onCounterTwins(t *testing.T, run func(*testing.T, Counter)) {
+	t.Helper()
+	t.Run("memory", func(t *testing.T) { run(t, NewMemoryCounter()) })
+	t.Run("mongo", func(t *testing.T) {
+		uri := os.Getenv("ITERION_TEST_MONGO_URI")
+		if uri == "" {
+			t.Skip("ITERION_TEST_MONGO_URI not set; skipping the Mongo counter")
+		}
+		ctx, cancel := mongotest.TeardownCtx()
+		defer cancel()
+		client, err := mongo.Connect(options.Client().ApplyURI(uri))
+		if err != nil {
+			t.Fatalf("mongo connect: %v", err)
+		}
+		nonce := make([]byte, 4)
+		_, _ = rand.Read(nonce)
+		db := client.Database("iterion_webhooks_" + hex.EncodeToString(nonce))
+		t.Cleanup(func() {
+			drop, dropCancel := mongotest.TeardownCtx()
+			defer dropCancel()
+			_ = db.Drop(drop)
+			_ = client.Disconnect(drop)
+		})
+		if err := EnsureSchema(ctx, db); err != nil {
+			t.Fatalf("EnsureSchema: %v", err)
+		}
+		run(t, NewMongoStores(db).Counter)
+	})
+}
+
+// Release gives back exactly the unit a granted Allow took — on the org and
+// on a per-webhook cap — and never drives a count below zero.
+func TestCounter_ReleaseUndoesAGrantedAllow(t *testing.T) {
+	onCounterTwins(t, func(t *testing.T, c Counter) {
+		ctx := context.Background()
+		now := time.Now()
+		lim := Limits{PerOrgMonthly: 10, PerWebhookMonthly: 1}
+		if ok, err := c.Allow(ctx, "t1", "w1", now, lim); !ok || err != nil {
+			t.Fatalf("first allow = %v, %v", ok, err)
+		}
+		if ok, _ := c.Allow(ctx, "t1", "w1", now, lim); ok {
+			t.Fatal("the per-webhook cap of 1 let a second call through")
+		}
+		if err := c.Release(ctx, "t1", "w1", now, lim); err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := c.OrgCount(ctx, "t1", now); n != 0 {
+			t.Fatalf("org count after the release = %d, want 0", n)
+		}
+		if ok, err := c.Allow(ctx, "t1", "w1", now, lim); !ok || err != nil {
+			t.Fatalf("the released per-webhook unit is not available again: %v, %v", ok, err)
+		}
+		_ = c.Release(ctx, "t1", "w1", now, lim)
+		if err := c.Release(ctx, "t1", "w1", now, lim); err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := c.OrgCount(ctx, "t1", now); n != 0 {
+			t.Fatalf("a release past zero = %d, want 0", n)
+		}
+	})
+}

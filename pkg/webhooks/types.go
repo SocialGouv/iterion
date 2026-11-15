@@ -30,6 +30,12 @@ const (
 	ProviderGitHub  Provider = "github"
 	ProviderForgejo Provider = "forgejo" // same wire shape as Gitea
 	ProviderGeneric Provider = "generic"
+	// ProviderConnector is a connector package's ingress (ADR-168 §6): the
+	// vendor is the bound connection's, the package's `ingress:` block says
+	// how a delivery is verified and read, and the route is
+	// POST /api/webhooks/c/{id}. The last value of the closed set: a new
+	// source is a package, not a provider.
+	ProviderConnector Provider = "connector"
 )
 
 // SignatureMode selects how an inbound delivery proves authenticity.
@@ -435,6 +441,28 @@ type Config struct {
 	// provider-switch lane, byte-identical for every row written before the
 	// field existed.
 	ConnectorConnectionID string `bson:"connector_connection_id,omitempty" json:"connector_connection_id,omitempty"`
+
+	// ContractDigest pins a connector ingress to the package's `ingress:`
+	// block as the operator consented to it when binding
+	// (spec.IngressDigest). A delivery whose package now resolves to another
+	// contract — a team override, a new version — is refused, naming both
+	// digests, until the operator re-binds. Set only on ProviderConnector.
+	ContractDigest string `bson:"contract_digest,omitempty" json:"contract_digest,omitempty"`
+	// Installation is the installation value a connector ingress is bound
+	// to (a Slack team_id), read from the authenticated body through the
+	// package's `installation:` expression; a delivery carrying another
+	// value is refused. Empty when the package declares none.
+	Installation string `bson:"installation,omitempty" json:"installation,omitempty"`
+	// Connector is the connector a connector ingress receives deliveries
+	// for, recorded when it is bound: the sealed secret is that vendor's, so
+	// a re-bind keeps it, and a delivery whose connection now names another
+	// connector is refused.
+	Connector string `bson:"connector,omitempty" json:"connector,omitempty"`
+	// SecretOrigin is where a connector ingress's sealed secret came from —
+	// minted by iterion or pasted from the vendor — as its package declared
+	// when the secret was sealed. A contract that declares another origin is
+	// consented to only after a rotation re-seals the secret from it.
+	SecretOrigin string `bson:"secret_origin,omitempty" json:"secret_origin,omitempty"`
 
 	CreatedBy  string     `bson:"created_by" json:"created_by"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`

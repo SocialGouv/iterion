@@ -242,6 +242,9 @@ func (s *Server) routes() {
 		s.registerGitHubWebhookRoute()
 		s.registerForgejoWebhookRoute()
 		s.registerGenericWebhookRoute()
+		if s.connectorIntakes != nil {
+			s.registerConnectorIngressRoute()
+		}
 	}
 
 	// Bot-secret bindings (policy wrapper over generic secrets).

@@ -155,6 +155,19 @@ var (
 	neverListable = []string{"Authorization", "Cookie", "Proxy-Authorization"}
 )
 
+// CarriesCredential reports whether a header may carry the ingress's
+// credential — one no package may list, or the header the credential travels
+// in — so no expression, locator, preview or stored event reads it. The one
+// predicate the validation, the preview and the lane share.
+func (in *Ingress) CarriesCredential(header string) bool {
+	k := http.CanonicalHeaderKey(strings.TrimSpace(header))
+	if slices.Contains(neverListable, k) {
+		return true
+	}
+	c := in.Credential
+	return (c.In == "" || c.In == "header") && c.Name != "" && k == http.CanonicalHeaderKey(c.Name)
+}
+
 // NewDeliveryContext is the one evaluation context a delivery's expressions
 // run under — validation against a sample, the preview and the lane share it.
 // Only the listed headers are visible, under their canonical names.
@@ -282,14 +295,16 @@ func validateIngress(p *Package) error {
 			return where("timestamp.tolerance %q is not a positive duration", t.Tolerance)
 		}
 	}
-	if err := checkLocator("event", &in.Event, true); err != nil {
+	if err := checkLocator(in, "event", &in.Event, true); err != nil {
 		return where("%v", err)
 	}
-	if err := checkLocator("delivery_id", in.DeliveryID, false); err != nil {
+	if err := checkLocator(in, "delivery_id", in.DeliveryID, false); err != nil {
 		return where("%v", err)
 	}
 	if in.Installation != "" {
-		if err := checkExpr("installation", in.Installation, NamespacePayload, NamespaceHeaders); err != nil {
+		// Prevents: an installation a forger chooses. Only the signed body
+		// is authenticated; a header is not.
+		if err := checkExpr("installation", in.Installation, NamespacePayload); err != nil {
 			return where("%v", err)
 		}
 	}
@@ -300,8 +315,7 @@ func validateIngress(p *Package) error {
 		}
 		// Prevents: a credential reaching an expression, a preview, the
 		// intake store or a run.
-		if slices.Contains(neverListable, k) || (c.In == "header" && k == http.CanonicalHeaderKey(c.Name)) ||
-			(c.Scheme == SchemeBearer || c.Scheme == SchemeBasic) && k == "Authorization" {
+		if in.CarriesCredential(k) {
 			return where("headers lists %q, which carries a credential and is never readable", k)
 		}
 	}
@@ -357,7 +371,7 @@ func checkSignedTemplate(signed string, ts *IngressTimestamp) error {
 	return nil
 }
 
-func checkLocator(name string, l *IngressLocator, required bool) error {
+func checkLocator(in *Ingress, name string, l *IngressLocator, required bool) error {
 	if l == nil || (l.Header == "" && l.From == "") {
 		if required {
 			return fmt.Errorf("%s locates nothing — it needs a header or a from expression", name)
@@ -370,12 +384,21 @@ func checkLocator(name string, l *IngressLocator, required bool) error {
 	if l.From != "" {
 		return checkExpr(name+".from", l.From, NamespacePayload, NamespaceHeaders)
 	}
+	// Prevents: a credential read as an event name or a delivery id, which
+	// the lane logs and stores.
+	if in.CarriesCredential(l.Header) {
+		return fmt.Errorf("%s reads header %q, which carries a credential and is never readable", name, http.CanonicalHeaderKey(l.Header))
+	}
 	return nil
 }
 
-// locate reads a locator's value from a delivery.
-func locate(l IngressLocator, payload map[string]any, headers http.Header, listed []string) (string, error) {
+// locate reads a locator's value from a delivery. A header that carries a
+// credential reads as an error, whatever the block says.
+func locate(in *Ingress, l IngressLocator, payload map[string]any, headers http.Header, listed []string) (string, error) {
 	if l.Header != "" {
+		if in.CarriesCredential(l.Header) {
+			return "", fmt.Errorf("header %q carries a credential and is never readable", http.CanonicalHeaderKey(l.Header))
+		}
 		return headers.Get(l.Header), nil
 	}
 	v, err := evalExpr(l.From, NewDeliveryContext(payload, headers, listed))
@@ -488,7 +511,7 @@ func checkSample(p *Package, t Trigger) error {
 		headers.Set(k, v)
 	}
 	listed := p.Ingress.Headers
-	event, err := locate(p.Ingress.Event, s.Payload, headers, listed)
+	event, err := locate(p.Ingress, p.Ingress.Event, s.Payload, headers, listed)
 	if err != nil {
 		return fmt.Errorf("connector %q: trigger %q: the ingress cannot read the sample's event: %w", id, t.ID, err)
 	}

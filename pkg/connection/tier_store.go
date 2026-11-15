@@ -69,7 +69,7 @@ func (c *StoreCatalog) Package(connectorID string) (*spec.Package, Tier, error) 
 			// ABSENT — the one case a layered lookup may fall through on.
 			return nil, Tier{}, fmt.Errorf("no connector %q in the %s tier: %w", connectorID, c.kind, errNoSuchConnector)
 		}
-		return nil, Tier{}, err
+		return nil, Tier{}, &CatalogUnavailableError{Tier: c.kind, Connector: connectorID, Err: err}
 	}
 	// The parse of THESE bytes, when this process already holds one. The
 	// hash is computed here from the files read, never taken from the row's

@@ -231,6 +231,7 @@ func TestTheCredentialPreviewRefusesAForeignWebhook(t *testing.T) {
 var webhookConfigReaders = map[string]string{
 	"readWebhookForTenant":      "THE chokepoint: the id comes from the caller — a path value for the CRUD, the request body for the credential preview — so it carries the `cfg.TenantID != teamID` clause and answers one 404 for absent and for foreign",
 	"webhookAuth":               "inbound delivery: the id is the delivery URL's own and the config's token or HMAC authenticates the request, so no team standing is claimed",
+	"handleConnectorIngress":    "inbound connector delivery: the id is the delivery URL's own, another provider's id answers as an absent one, and the package's declared credential authenticates the request against the config's own sealed secret, so no team standing is claimed",
 	"prepareWebhookRetry":       "retry sweeper: the id comes from the stored delivery, re-checked against that delivery's own tenant",
 	"fireDeferredWebhookLaunch": "debounce timer: the id comes from the stored deferred launch",
 	"cardLaunchPolicyLayers":    "dispatcher: the id comes from the board card's launch context, under the tenant the card carries",

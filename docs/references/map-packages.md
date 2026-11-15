@@ -193,6 +193,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/connector/facade` | the MCP offer over a connector package (ADR-098 §2, #2758): a connector's operations exposed to an agent as MCP tools, with the model choosing among… | — |
 | `pkg/connector/gen` | turns a vendor API description into a connector package. | — |
 | `pkg/connector/identity` | preserves the meaning of connector names across generation. | — |
+| `pkg/connector/ingress` | reads one inbound delivery the way a connector package declares it (ADR-168 §3, §4): bounded extraction of the credential, the verification of the… | — |
 | `pkg/connector/intake` | holds what a connector source owes after it answered a vendor (ADR-168 §8): the durable INTAKE row a delivery or a polled item becomes, and the… | `Matcher`, `Store`, `Submitter` |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — |
 | `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — |
