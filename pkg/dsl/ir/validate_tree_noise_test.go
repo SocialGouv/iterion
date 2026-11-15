@@ -140,9 +140,9 @@ func treeNoiseDiag(r *CompileResult, code DiagCode) *Diagnostic {
 	return nil
 }
 
-// TestTreeNoiseRefInANonShellScriptStaysSilent: a script: body renders its
-// refs as JSON literals (resolveScriptTemplate, unconditional over
-// languages), so `const noise = {{run.tree_noise}};` in a js/py body is
+// TestTreeNoiseRefInANonShellScriptStaysSilent: a js/py script: body
+// renders its refs as JSON literals (renderScriptIn), so
+// `const noise = {{run.tree_noise}};` in a js/py body is
 // VALID working code consuming the list as data — and both fixes the
 // shell-body message names break it (the bang form splices raw pathspecs —
 // a SyntaxError; a bare $ITERION_TREE_NOISE never env-expands in a script,
@@ -173,9 +173,9 @@ func TestTreeNoiseRefInANonShellScriptStaysSilent(t *testing.T) {
 				t.Fatalf("no C157 on a shell script body\ndiagnostics: %v", r.Diagnostics)
 			}
 			// The script message names the mechanism that actually applies
-			// there: a JSON literal, not shell escaping.
-			if !strings.Contains(got.Message, "JSON") {
-				t.Errorf("script message %q does not name the JSON-literal mechanism", got.Message)
+			// at a shell script's word position: one quoted variable read.
+			if !strings.Contains(got.Message, "from its environment as one quoted word") {
+				t.Errorf("script message %q does not name the environment read", got.Message)
 			}
 			for _, want := range []string{"{{!run.tree_noise}}", "$ITERION_TREE_NOISE"} {
 				if !strings.Contains(got.Message, want) {
@@ -374,9 +374,9 @@ func TestTreeNoiseScannerRound3Probes(t *testing.T) {
 // TestTreeNoiseRefInsideScriptQuotesIsData (p20): a sh script that wraps
 // ANOTHER interpreter — python3 -c "… {{run.tree_noise}} …" — hands the ref
 // to the shell as part of one quoted word whose content is SOURCE for that
-// interpreter; rendered as a JSON literal it lands there as data, valid and
-// working. C157's one-word verdict applies only to a ref the SHELL will
-// word-read: outside quotes, outside heredocs.
+// interpreter: the check cannot tell that data from a collapsed word. C157's
+// one-word verdict applies only to a ref the SHELL will word-read: outside
+// quotes, outside heredocs.
 //
 // Mutation that reddens it: drop the firstFreeOccurrence gate from the
 // script arm of the C157 check.

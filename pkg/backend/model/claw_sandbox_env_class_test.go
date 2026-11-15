@@ -150,6 +150,7 @@ var hostSideEnvReads = map[string]hostSideRead{
 	"ITERION_SECRETS_REDACT_MIN_SCORE":     {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
 	"ITERION_SECRETS_PLACEHOLDERS":         {whySinkGuard, []string{"secretGuardConfigFromEnv"}},
 	"ITERION_TREE_NOISE":                   {whyHostTool, []string{"(*ClawExecutor).treeNoiseEnvAppend"}},
+	"ITERION_SCRIPT_DATA_SPILL_MAX":        {"the bound on a script node's data written into its script, read where the executor writes the script file", []string{"scriptDataSpillMaxFromEnv"}},
 }
 
 // binaryHostOnly: functions of the runner binary that only another command

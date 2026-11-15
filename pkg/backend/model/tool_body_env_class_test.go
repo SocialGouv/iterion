@@ -69,7 +69,7 @@ var chokepointCallers = map[string]string{
 // that a new door does not have to join — renderCommand and renderScript are
 // reached today by four names, two unexported and two exported, and the
 // exported pair is what a preview in another package calls.
-var renderRoots = []string{"renderCommand", "renderScript"}
+var renderRoots = []string{"renderCommand", "renderScript", "renderShellScript"}
 
 // renderPassThrough lists the functions that only FORWARD a body to a
 // renderer, with the reason: the body reached them already read, so the
@@ -83,6 +83,8 @@ var renderPassThrough = map[string]string{
 	"renderScriptBody":       "the run's `script:` renderer, marking the author's secret references: its callers are the body preparers this sweep holds",
 	"resolveCommandTemplate": "the `command:` renderer wrapper: its callers are the body preparers this sweep holds",
 	"resolveScriptTemplate":  "the `script:` renderer wrapper: its callers are the body preparers this sweep holds",
+	"renderScriptIn":         "the `script:` renderer by language — renderShellScript for sh/bash, renderScript otherwise: its callers are the body preparers this sweep holds",
+	"renderScriptBodyIn":     "the run's `script:` renderer by language, marking the author's secret references: its callers are the body preparers this sweep holds",
 	"RenderCommand":          "the exported `command:` renderer a preview calls: its caller reads the environment, and a caller outside this package is held by the module-wide sweep in pkg/dryrun",
 	"RenderScript":           "the exported `script:` renderer a preview calls: its caller reads the environment, and a caller outside this package is held by the module-wide sweep in pkg/dryrun",
 }

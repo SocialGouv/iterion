@@ -18,7 +18,10 @@ func TestToolBodiesGetTheValueNotThePromptsText(t *testing.T) {
 		Attachments:       map[string]AttachmentInfo{"d": {Path: "/p/d", Size: 1024}},
 	}
 	body := "n = {{loop.r.iteration}}; m = {{loop.r.max}}; a = {{artifacts.report}}; s = {{attachments.d.size}}; p = {{attachments.d}}; sc = {{artifacts.report.score}}"
-	got := RenderScript(body, mustRefs(body), nil, nil, td, "run-1", nil)
+	got, err := RenderScript(body, "py", mustRefs(body), nil, nil, td, "run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if want := `n = 3; m = 10; a = {"score":3}; s = 1024; p = "/p/d"; sc = 3`; got != want {
 		t.Fatalf("script rendered\n%s\nwant\n%s", got, want)
 	}

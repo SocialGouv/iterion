@@ -68,7 +68,7 @@ func TestVerifiedAction_AnUnfundedDefaultRecoveryIsRefused(t *testing.T) {
 	exec := NewClawExecutor(NewRegistry(), &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}})
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "v"}, Goal: "g", Recovery: &ir.RecoverySpec{MaxAgentAttempts: 1}}
 
-	if _, _, err := exec.selfRepair(context.Background(), node, "out", "err", "cmd"); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
+	if _, _, err := exec.selfRepair(context.Background(), node, "out", "err", "cmd", repairData{}); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
 		t.Fatalf("selfRepair err = %v, want the default-model refusal", err)
 	}
 	if err := exec.agentRecovery(context.Background(), node, map[string]any{}, "recipe"); err == nil || !strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
@@ -86,7 +86,7 @@ func TestVerifiedAction_AnUnfundedDefaultRecoveryIsRefused(t *testing.T) {
 		return newMockClient(textEvents("fixed", 10, 5)), nil
 	})
 	execFunded := NewClawExecutor(reg, &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}})
-	if _, _, err := execFunded.selfRepair(context.Background(), node, "out", "err", "cmd"); err != nil && strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
+	if _, _, err := execFunded.selfRepair(context.Background(), node, "out", "err", "cmd", repairData{}); err != nil && strings.Contains(err.Error(), "ITERION_VERIFIED_ACTION_MODEL") {
 		t.Fatalf("a funded wire must pass the guard, got: %v", err)
 	}
 }

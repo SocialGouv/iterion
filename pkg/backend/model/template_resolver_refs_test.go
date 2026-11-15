@@ -20,8 +20,8 @@ func TestABangReferenceWithASpaceResolvesLikeATightOne(t *testing.T) {
 			t.Fatal(err)
 		}
 		var left []string
-		got := RenderScript(body, refs, nil, nil, td, "run-1", func(ref string) { left = append(left, ref) })
-		if got != "p = /p/a" || len(left) != 0 {
+		got, err := RenderScript(body, "py", refs, nil, nil, td, "run-1", func(ref string) { left = append(left, ref) })
+		if err != nil || got != "p = /p/a" || len(left) != 0 {
 			t.Fatalf("%q rendered %q, unresolved %v", body, got, left)
 		}
 	}
@@ -48,8 +48,8 @@ func TestTheRendererNamesWhatItLeaves(t *testing.T) {
 		t.Fatalf("the renderer named %v, want the holes as namespace.path", left)
 	}
 	left = nil
-	got = RenderScript("x = {{input.missing}}", mustRefs("x = {{input.missing}}"), map[string]any{}, nil, td, "run-1", func(ref string) { left = append(left, ref) })
-	if got != "x = null" || strings.Join(left, " ") != "input.missing" {
+	got, err = RenderScript("x = {{input.missing}}", "py", mustRefs("x = {{input.missing}}"), map[string]any{}, nil, td, "run-1", func(ref string) { left = append(left, ref) })
+	if err != nil || got != "x = null" || strings.Join(left, " ") != "input.missing" {
 		t.Fatalf("script rendered %q, named %v", got, left)
 	}
 }
@@ -128,7 +128,7 @@ func TestADottedInputReferenceDrillsInAToolBody(t *testing.T) {
 		t.Fatalf("the missing leaf was not named: %v", left)
 	}
 	script := "x = {{input.a.b}}; y = {{input.a.n}}"
-	if got := RenderScript(script, mustRefs(script), input, nil, nil, "run-1", nil); got != `x = "leaf"; y = 2` {
+	if got, err := RenderScript(script, "py", mustRefs(script), input, nil, nil, "run-1", nil); err != nil || got != `x = "leaf"; y = 2` {
 		t.Fatalf("script rendered %q", got)
 	}
 	prompt := (&TemplateResolver{}).Resolve("{{input.a.b}} {{input.a.n}}", input, nil)

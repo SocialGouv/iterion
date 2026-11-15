@@ -82,6 +82,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateTreeNoiseChannels(w)
 	c.validateTypedPlaceholders(w)
 	c.validateQuotedSecretInShellScripts(w)
+	c.validateShellScriptData(w)
 	c.validateBracedEnvBodies(w)
 	c.validateEnvDials(w)
 	c.validateSandboxOptOut(w)

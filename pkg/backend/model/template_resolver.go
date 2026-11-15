@@ -316,10 +316,16 @@ func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, t
 	return renderCommand(command, refs, input, vars, td, runID, nil, shapes, unresolved, nil)
 }
 
-// RenderScript renders a tool node's `script:` as the executor does before
-// the interpreter: each reference a JSON literal, a reference that resolves
-// to nothing the language's null — and said to unresolved when a caller
-// listens, since the null hides it from the text.
-func RenderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) string {
-	return renderScript(script, refs, input, vars, td, runID, nil, unresolved, nil)
+// RenderScript renders a tool node's `script:` written in language as the
+// executor does before the interpreter: in js/py each reference a JSON
+// literal, in a sh/bash script each data reference a read of the variable
+// the run hands the interpreter (the value is not in the text), a reference
+// that resolves to nothing the language's null — and said to unresolved when
+// a caller listens, since the null hides it from the text.
+//
+// The error is the run's refusal: a value no form carries (a NUL byte in a
+// shell script's data) fails the node, naming the reference.
+func RenderScript(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) (string, error) {
+	text, _, err := renderScriptIn(script, language, refs, input, vars, td, runID, nil, unresolved, nil)
+	return text, err
 }

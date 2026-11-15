@@ -312,7 +312,15 @@ body does.
   into a sh or bash script is a double-quoted word the shell expands, so
   it can still reach the environment — `$(env)`, or in bash a name
   enumerated with `${!prefix@}` and read with `${!x}` — the pre-existing
-  data-in-a-shell-script class, open on its own ticket (#3291). Where the shell expands nothing — single
+  data-in-a-shell-script class, open on its own ticket (#3291). #3291
+  closed it: a sh or bash script's data rides the environment too, read
+  through variables the engine names for the rendering, and the value never
+  enters the script's text, so no data is parsed as script text. A value
+  runs only where the shell itself runs or evaluates a variable's value —
+  a command word, another shell's code, bash's arithmetic and name
+  positions — which the compiler warns at, best effort (C344 – C346); the
+  run refuses no value for its position ([dsl.md](../dsl.md)).
+  Where the shell expands nothing — single
   quotes, a heredoc whose delimiter is quoted — the script therefore reads
   the variable's name and not the value; `C342` warns on those positions,
   and the reference belongs outside the quotes, in an unquoted heredoc, or

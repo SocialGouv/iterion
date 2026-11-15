@@ -1085,16 +1085,33 @@ func (g *Guard) MaterializeFor(sink, s string) string {
 	if st == nil || s == "" || len(st.placeholderValue) == 0 || !secretsink.Materialising(sink) {
 		return s
 	}
-	// Placeholders all carry the __ITERION_SECRET_<name>__ shape, so none
-	// is a substring of another — iteration order is irrelevant, and
-	// ReplaceAll already no-ops when the token is absent.
-	for ph, val := range st.placeholderValue {
-		if !st.resolvesAt(ph, sink) {
-			continue
+	return st.placeholderReplacer(sink, func(val string) string { return val }).Replace(s)
+}
+
+// placeholderReplacer swaps, in one pass, each placeholder of a secret that
+// resolves at sink for write(its value). One pass, longest placeholder
+// first where two start at one position: a placeholder can extend another
+// — `a__b`'s `__ITERION_SECRET_a__b__` begins with `a`'s — so swapping them
+// one by one answered by map order, and a value spelling a placeholder was
+// read again by the next swap.
+func (st *guardState) placeholderReplacer(sink string, write func(val string) string) *strings.Replacer {
+	phs := make([]string, 0, len(st.placeholderValue))
+	for ph := range st.placeholderValue {
+		if st.resolvesAt(ph, sink) {
+			phs = append(phs, ph)
 		}
-		s = strings.ReplaceAll(s, ph, val)
 	}
-	return s
+	slices.SortFunc(phs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(phs))
+	for _, ph := range phs {
+		pairs = append(pairs, ph, write(st.placeholderValue[ph]))
+	}
+	return strings.NewReplacer(pairs...)
 }
 
 // MaterializeShell is Materialize for a POSIX single-quoted shell context. The
@@ -1116,13 +1133,9 @@ func (g *Guard) MaterializeShell(s string) string {
 	if st == nil || s == "" || len(st.placeholderValue) == 0 {
 		return s
 	}
-	for ph, val := range st.placeholderValue {
-		if !st.resolvesAt(ph, secretsink.Command) {
-			continue
-		}
-		s = strings.ReplaceAll(s, ph, strings.ReplaceAll(val, "'", `'\''`))
-	}
-	return s
+	return st.placeholderReplacer(secretsink.Command, func(val string) string {
+		return strings.ReplaceAll(val, "'", `'\''`)
+	}).Replace(s)
 }
 
 // MaterializeShellEnv is MaterializeShell's env-indirected counterpart: for
