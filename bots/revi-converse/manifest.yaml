@@ -1,7 +1,22 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.8
+version: 0.1.9
+## 0.1.9 — evaluation mode: `publish_mode: off` (a hidden launch var:
+## operators set it — --var, bot_args, a remote launch, an integration's
+## pinned launch vars — and so can a bot holding board.create, through a
+## card's bot_args; a pull request's author or a webhook payload never can,
+## since the webhook lanes write fixed payload keys and no manifest channel
+## they layer may carry it) runs the agent and drafts the answer, and
+## publish_reply sends nothing — no duplicate read, no POST, no token
+## needed — reporting `evaluation: true` and a reason that says so;
+## converse_health reads it as `evaluation mode`, neither OK nor degraded.
+## The server reads the literal (a `$` expansion is refused at its launch
+## admission) and holds the run to it: its merge-gate arms owe it nothing,
+## it mints it no publish grant, and its hand-off walk skips it. The floor
+## rises to the release carrying that server half (`>= next`). For
+## measuring cost and quality on a live thread without answering in it
+## (#3283).
 ## 0.1.8 — the agent drafts, a deterministic node posts. converse_agent
 ## hands its answer back in converse_output.answer and never writes on the
 ## forge; publish_reply (no LLM) posts it in the thread with the forge_token
@@ -109,15 +124,21 @@ invocations:
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
-## out of the form (still settable via --var / bot_args).
+## out of the form (still settable via --var / bot_args). publish_mode is
+## an operator's evaluation switch, hidden so no form offers to silence a
+## reply.
 launch:
   primary: [converse_question, pr_url]
-  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url]
+  hidden: [discussion_id, trigger_note, thread_context, replier, forge_base_url, publish_mode]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot) needs 3.225.0, and the
 ## `sinks:` grant on forge_token needs 4.7.0, the release that reads it (the
 ## grant is what keeps a quoted placeholder from being materialised in
 ## publish_reply's body): the floor keeps an older runner from admitting the
-## bundle.
+## bundle. Evaluation mode (0.1.9) needs the release whose server reads
+## publish_mode — its gate arms, its publish-grant mint, its hand-off walk;
+## below it the server claims and repairs the gate for a run that publishes
+## nothing. `next` until that release is cut, when the release-floors hook
+## writes its number (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= 4.7.0"
+  iterion: ">= next"

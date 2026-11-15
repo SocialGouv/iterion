@@ -69,6 +69,7 @@ func TestReviewPRTierExpand(t *testing.T) {
 			"post_to_board":      "auto",
 			"review_mode":        reviewMode,
 			"mono_family":        monoFamily,
+			"publish_mode":       "",
 		}
 	}
 
@@ -145,6 +146,29 @@ func TestReviewPRTierExpand(t *testing.T) {
 		}
 		if out["post_to_board"] != true {
 			t.Errorf("explicit post_to_board=true was overridden by the tier: got %v", out["post_to_board"])
+		}
+	})
+
+	// Evaluation mode (publish_mode=off) writes nowhere a team reads, the
+	// board included: it is the one thing above an explicit post_to_board,
+	// on every tier. Nothing else the tier resolves changes with it.
+	t.Run("evaluation mode files no board issue, whatever post_to_board says", func(t *testing.T) {
+		for _, tier := range []string{"guard", "glance", "audit"} {
+			for _, board := range []string{"auto", "true", "false"} {
+				vars := sentinels(tier, "claude", "mono")
+				vars["post_to_board"] = board
+				published := eval(t, vars)
+				vars["publish_mode"] = "off"
+				out := eval(t, vars)
+				if out["post_to_board"] != false {
+					t.Errorf("tier %s, post_to_board=%s, publish_mode=off: post_to_board = %v, want false", tier, board, out["post_to_board"])
+				}
+				for _, key := range []string{"severity_threshold", "max_findings", "effective_review_mode"} {
+					if out[key] != published[key] {
+						t.Errorf("tier %s: publish_mode=off moved %s from %v to %v", tier, key, published[key], out[key])
+					}
+				}
+			}
 		}
 	})
 }

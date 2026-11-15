@@ -95,6 +95,7 @@ Bot vars ([`bots/review-pr/main.bot`](../bots/review-pr/main.bot)):
 |-----|---------|---------|
 | `gate_enabled` | `true` | Post the `revi/review` status. `false` = advisory-only reviews. |
 | `gate_severity` | `high` | Severity floor that blocks (`low`<`medium`<`high`<`critical`). `high` = high+critical block; low/medium advise. |
+| `publish_mode` | `""` | `off` = evaluation mode: the review runs whole and nothing is posted — no review, no status (see [below](#evaluation-mode)). |
 
 Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
@@ -443,6 +444,60 @@ and the head of an open MR/PR carries **no** status. Query that last one
 with the **full** SHA — GitLab's statuses endpoint returns `[]` for an
 abbreviated one whether or not a status exists (measured on 19.2: full SHA
 → `["iterion/review"]`, same commit at 8 chars → `[]`).
+
+## <a name="evaluation-mode"></a>Evaluation mode — a run that owes no verdict
+
+`publish_mode: off` (review-pr and revi-converse) is a measurement run: the
+bot does all its work and posts nothing — `publish_review` sends no request
+to the publish endpoint, so neither the review nor the status lands, and
+`publish_health` reads `evaluation mode`. The server reads the same launch
+var (`forge.PublishModeWithholds`, beside `forge.GateValueDisables`), as the
+exact literal `off`:
+
+- `markGateInFlight` claims nothing, and `runGateDisabled` — read by the
+  reconciler, the auto-fix lane and the pause and DLQ notices — says the run
+  owes no verdict. So an evaluation run leaves no in-flight claim, no
+  synthetic `review died` failure, no relaunch and no comment on the pull
+  request it was launched not to touch.
+- `injectForgePublishVars` mints no publish grant and withdraws one the
+  launch carried, as for an untrusted launch: whatever bot version serves the
+  run, the publish endpoint has no grant of it to honour.
+- The hand-off walk (`realWebhookHandoff`) skips the run, so its unpublished
+  review is never a fixer's `prior_review`, and never shadows the published
+  review behind it.
+- A `$` expansion in the value is refused at launch admission
+  (`runview.GateLaunchVars`): the engine expands it, the server would read it
+  raw, and the two must read the same literal.
+
+The bundles that read the var require the release that carries this server
+half (`requires.iterion: ">= next"`, rewritten by the cut), so an older
+server refuses them rather than claiming and repairing the gate for a run
+that publishes nothing.
+
+Operators set it — a launch's `--var` or `bot_args`, a remote launch, an
+integration's pinned launch vars — and so can a bot holding `board.create`,
+through a card's `bot_args`. A pull request's author or a webhook payload
+never can: the webhook lanes write fixed payload keys, and no manifest
+channel they layer may carry it (`bots/publish_mode_eval_test.go`).
+
+Pinned on an integration, it makes every launch of the repo an evaluation:
+
+- every bot of that repo — a fixer included — launches without a publish
+  grant, so nothing of theirs that goes through the publish endpoint lands;
+- the repo-level derivations (forcing `review_on_sync`, the merge-queue
+  mirror) read `gate_enabled` only, so a repo whose gate context is a
+  REQUIRED check then waits on a status nothing posts. Pin
+  `gate_enabled: "false"` beside it, or keep the var on individual launches.
+
+**A known limit.** Evaluation mode withholds what the deterministic nodes
+write; the agents keep the surface they have in the default mode. The
+read-only contract of review-pr's reviewers and merge step stays
+prompt-enforced: the merge step keeps its `board.create` and `board.label`
+grants (only the prompt reads `post_to_board`), and the reviewers keep their
+shell beside review-pr's `forge_token`, whose declaration grants every sink;
+revi-converse's agent keeps its shell and the mounted `forge_token` file it
+may read a thread with. A model that disobeyed its prompt could write on the
+board or the forge in either mode.
 
 ### GitHub merge queues
 

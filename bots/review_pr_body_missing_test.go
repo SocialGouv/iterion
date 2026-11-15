@@ -333,6 +333,15 @@ func runReviewPRPublishChain(t *testing.T, c publishChain) (publishChainRequest,
 		}
 		gateTotal = fmt.Sprint(len(parsed))
 	}
+	degraded, banner := runReviewPRHealthOverEdge(t, published, gateTotal)
+	return req, published, degraded, banner
+}
+
+// runReviewPRHealthOverEdge resolves every mapping of the compiled
+// publish_review -> publish_health edge against publish_review's output and
+// pr_gate's total_findings, and runs publish_health on the result.
+func runReviewPRHealthOverEdge(t *testing.T, published map[string]any, gateTotal string) (bool, string) {
+	t.Helper()
 	u := unittest.Whole(unit.LoadDir("review-pr/main.bot"))
 	if u.Merged == nil {
 		t.Fatalf("review-pr: the bundle did not parse: %v", u.Diagnostics)
@@ -367,8 +376,7 @@ func runReviewPRPublishChain(t *testing.T, c publishChain) (publishChainRequest,
 	if !seen {
 		t.Fatal("no publish_review -> publish_health edge")
 	}
-	degraded, banner := runReviewPRPublishHealth(t, healthRefs)
-	return req, published, degraded, banner
+	return runReviewPRPublishHealth(t, healthRefs)
 }
 
 // The fold has to travel from the publish endpoint's answer to publish_health

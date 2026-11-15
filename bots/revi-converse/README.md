@@ -44,7 +44,9 @@ publish_reply   (tool, deterministic python script — no LLM)
 converse_health (tool, deterministic — no LLM)
   → asserts the invariant: degraded=true unless posted=true with an http(s)
     reply_url on the host of `pr_url`, plus a banner (UNVERIFIED, the
-    skipped_reason, or MISSING); the run still succeeds
+    skipped_reason, or MISSING) — or a reply withheld in evaluation mode,
+    which reads `evaluation mode`, neither OK nor degraded; the run still
+    succeeds
 done
 ```
 
@@ -92,6 +94,28 @@ forge's status and message, a re-read that misses) is `posted=false` with its
 reason (capped at 2000 characters, NUL bytes dropped from every field —
 they ride `converse_health`'s environment), exit 0.
 
+**Evaluation mode** (`--var publish_mode=off`, #3283) measures a question's
+cost and answer on a live thread without answering in it. The agent drafts as
+always; `publish_reply` reads the draft, checks the target, builds the body
+and refuses a credential in it, then stops before its first request: the
+forge sees nothing — no duplicate read, no POST — and no token is needed. It
+reports `posted=false`, `evaluation=true`, a `skipped_reason` opening on
+`evaluation mode (publish_mode=off)` and a summary naming the call it
+withheld; `converse_health` reads that as `evaluation mode`, not degraded and
+never OK. A check that would have stopped a real post (an empty draft, a
+`pr_url` or discussion id it cannot reply on, an answer carrying the token)
+still speaks first, under its own reason. Operators set the var — a
+launch's `--var` or `bot_args`, a remote launch, an integration's pinned
+launch vars — and so can a bot holding `board.create`, through a card's
+`bot_args`. A pull request's author or a webhook payload never can: the
+webhook lanes build their vars from fixed payload keys, and no manifest
+channel they layer (`forge.webhook.launch_vars`, an invocation's `args_var`
+or `context_vars`, `dispatch_vars`) may carry it in any bot of the catalogue
+(`bots/publish_mode_eval_test.go`). The server reads the literal — a `$`
+expansion is refused at its launch admission — and holds the run to it: its
+merge-gate arms owe it nothing, it mints it no publish grant, and its
+hand-off walk skips it ([merge gate](../../docs/merge-gate.md#evaluation-mode)).
+
 **The forge token is not posted in a body.** Two guards. `forge_token` is
 granted the `file` sink only, so a `__ITERION_SECRET_forge_token__` the agent
 quotes — planted in a public thread, a diff or a question — is defused by the
@@ -119,11 +143,13 @@ report.
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then reads the thread itself (a GET). |
 | `replier` | string | `""` | Forge username of the operator who asked, used to address the answer. |
+| `publish_mode` | string `""` \| `"off"` | `""` | Evaluation mode: `off` drafts the answer and sends nothing to the forge (see above). Set by an operator or a bot holding `board.create`, never by a webhook payload. |
 
 The studio launch form renders `converse_question` and `pr_url` top-level;
 `discussion_id`, `trigger_note`, `thread_context`, `replier` and
-`forge_base_url` are webhook plumbing hidden from the form (still settable
-via `--var`).
+`forge_base_url` are webhook plumbing hidden from the form, and
+`publish_mode` an operator's evaluation switch hidden from it too (all still
+settable via `--var` or `bot_args`).
 
 ## Invocation
 
@@ -144,10 +170,12 @@ iterion run bots/revi-converse/main.bot \
   --var discussion_id=<thread-id>
 ```
 
-Run without the `forge_token` to compose an answer without posting it;
+Pass `--var publish_mode=off` to compose an answer without posting it;
 inspect it with `iterion report --run-id <id>` (the draft is the agent's
-`answer`). Such a run reads degraded: nothing answered the question on the
-forge, and `converse_health`'s banner is `publish_reply`'s `skipped_reason`.
+`answer`). Such a run reads `evaluation mode`: nothing reached the forge, by
+design. A run without the `forge_token` and without the var does not post
+either, but reads degraded: `converse_health`'s banner is `publish_reply`'s
+`skipped_reason`.
 Omitting `discussion_id` posts a new PR comment instead of a thread reply.
 
 ## Notable
@@ -166,8 +194,9 @@ Omitting `discussion_id` posts a new PR comment instead of a thread reply.
   declared. Budget: `max_parallel_branches: 1`, `max_duration: 30m` (the
   agent's 60-step loop at up to ~30 s a step on the gateway), `max_cost_usd:
   5`.
-- **Read-only by construction**: the only write is `publish_reply`'s POST.
-  No board writes, no source mutation.
+- **Read-only by construction**: the only write is `publish_reply`'s POST,
+  withheld in evaluation mode (`publish_mode=off`). No board writes, no
+  source mutation.
 - **Deferred**: a `forge.reply` DSL capability (sibling of `board.create`)
   would let the server own the posting instead of the bot's node —
   [docs/forge-conversations.md](../../docs/forge-conversations.md) §A4.

@@ -96,6 +96,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
 | `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
+| `publish_mode` | `""` | Evaluation mode: `off` runs the whole review and publishes nothing — no review, no merge-gate status, no board issue (see Evaluation mode below). Set by an operator or a bot holding `board.create`, never by a webhook payload; hidden from the launch form. |
 | `fixer_hint` | *(empty)* | Sentence published with the findings when this repo has a fixer to escalate to. Empty omits the line: the reviewer does not advertise a fixer on its own initiative. `{finding}` is replaced by the first finding's id. |
 
 ## Run
@@ -305,6 +306,47 @@ iterion run bots/review-pr/main.bot \
   The LLM never chooses the gate result. The status is advisory until the repo
   requires that context in branch protection; see
   [Merge gate](../../docs/merge-gate.md).
+
+## Evaluation mode (`publish_mode=off`)
+
+For measuring a review's cost and quality on a live pull request without
+posting on it (#3283). The run does everything — reviewers, merge, the merge
+floor, the workspace-anomaly strip, the request `publish_review` builds and
+the gate verdict it would carry — and then:
+
+- `publish_review` sends nothing to the forge-publish endpoint: no review, no
+  inline comment, no commit status. It needs no publish grant, and the
+  server mints it none. Its output is `published: false`, `evaluation:
+  true`, `gate_requested: false` (on every exit of such a run), the counts
+  the request carried (`findings_in_review`, `comments_sent`) and a
+  `skipped_reason` opening on `evaluation mode (publish_mode=off)` that names
+  the gate verdict it would have posted, with the gate's note when it has
+  one (a gate that fails closed because no diff could be read says so).
+- `tier_expand` resolves `post_to_board` to `false` whatever it says, so the
+  merge step files no board issue. The workspace report (`report_path`) is
+  still written: it is the run's scratch, not the team's.
+- `publish_health` judges the withheld review as the forge would have taken
+  it — every inline comment it built landed, its body landed, a review with
+  no anchored finding is the summary fold. Nothing else wrong reads
+  `evaluation mode`, not degraded and never `forge publish OK`; whatever
+  the default mode reads as degraded in what the review carries stays
+  degraded, prefixed by evaluation mode — a lost finding set (the merge step
+  counted findings the review does not carry), findings all reclassified as
+  workspace anomaly, a refused placeholder review.
+- The server holds the run to it: no in-flight claim, no synthetic failure
+  or relaunch, no pause or DLQ comment, no publish grant, and its review is
+  never handed to a fixer as the pull request's prior review
+  ([merge gate](../../docs/merge-gate.md#evaluation-mode)).
+
+Operators set the var — a launch's `--var` or `bot_args`, a remote launch,
+an integration's pinned launch vars — and so can a bot holding
+`board.create`, through a card's `bot_args`. A pull request's author or a
+webhook payload never can: the webhook lanes build their vars from fixed
+payload keys, and no manifest channel they layer may carry it, in any bot of
+the catalogue (`bots/publish_mode_eval_test.go`). The server reads the
+literal: a `$` expansion is refused at its launch admission. The read-only
+contract of the reviewers and the merge step stays prompt-enforced in this
+mode, as it is in the default one.
 
 ## Read-only by construction
 

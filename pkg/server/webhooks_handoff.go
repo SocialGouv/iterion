@@ -191,6 +191,14 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		if !run.Trust.Trusted() {
 			continue
 		}
+		// An evaluation run (publish_mode=off) posted nothing on the pull
+		// request: its review is no review the team saw, and handed on it
+		// would set a fixer working on findings nobody published — or shadow
+		// the published review behind it. Skipped, so the walk reaches that
+		// one.
+		if runInEvaluationMode(run) {
+			continue
+		}
 		spec, produces := producers[run.BotID]
 		if !produces {
 			continue

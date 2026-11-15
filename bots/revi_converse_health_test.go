@@ -49,10 +49,17 @@ func TestReviConverseHealthFlagsAnUnansweredQuestion(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	// on builds a full input: the agent's three fields beside the PR URL.
+	// on builds a full input: publish_reply's fields beside the PR URL, out
+	// of evaluation mode; held builds the same input from a run in it.
 	on := func(prURL string, posted bool, reply, skipped string) map[string]any {
-		return map[string]any{"posted": posted, "reply_url": reply, "skipped_reason": skipped, "pr_url": prURL}
+		return map[string]any{"posted": posted, "reply_url": reply, "skipped_reason": skipped, "pr_url": prURL, "evaluation": false}
 	}
+	held := func(prURL string, posted bool, reply, skipped string) map[string]any {
+		in := on(prURL, posted, reply, skipped)
+		in["evaluation"] = true
+		return in
+	}
+	const withheld = "evaluation mode (publish_mode=off): the reply was drafted and not posted; nothing was sent to the forge"
 	const pr = "https://forge/o/r/pull/1"
 	for _, tc := range []struct {
 		name           string
@@ -75,7 +82,7 @@ func TestReviConverseHealthFlagsAnUnansweredQuestion(t *testing.T) {
 		{name: "posted on the PR's host name, another port", input: on(pr, true, "https://forge:8443/notes/1", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted on the bare host of a pr_url on a port", input: on("https://forge.example:8443/g/p/-/merge_requests/7", true, "https://forge.example/g/p/-/merge_requests/7#note_3", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted with no pr_url to place it", input: on("", true, "https://forge/notes/1", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
-		{name: "posted with the pr_url absent", input: map[string]any{"posted": true, "reply_url": "https://forge/notes/1", "skipped_reason": ""}, wantUnresolved: []string{"input.pr_url"}, wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
+		{name: "posted with the pr_url absent", input: map[string]any{"posted": true, "reply_url": "https://forge/notes/1", "skipped_reason": "", "evaluation": false}, wantUnresolved: []string{"input.pr_url"}, wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted without a reply url", input: on(pr, true, "", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted without a reply url, a skipped_reason beside it", input: on(pr, true, "", "x"), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted with a placeholder reply url", input: on(pr, true, "placeholder", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
@@ -83,15 +90,22 @@ func TestReviConverseHealthFlagsAnUnansweredQuestion(t *testing.T) {
 		{name: "posted with a non-web scheme", input: on(pr, true, "ftp://forge/notes/1", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted with a scheme and no host", input: on(pr, true, "https://", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "posted with a url and trailing prose", input: on(pr, true, "https://forge/notes/1 placeholder", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
-		{name: "posted with the reply url absent", input: map[string]any{"posted": true, "skipped_reason": "", "pr_url": pr}, wantUnresolved: []string{"input.reply_url"}, wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
+		{name: "posted with the reply url absent", input: map[string]any{"posted": true, "skipped_reason": "", "pr_url": pr, "evaluation": false}, wantUnresolved: []string{"input.reply_url"}, wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
 		{name: "skipped with a reason", input: on(pr, false, "", "forge_token missing; this run is unattended-only"), wantDegraded: true, wantBanner: "forge reply skipped: forge_token missing; this run is unattended-only"},
 		{name: "skipped out of tool steps", input: on(pr, false, "", "Ran out of tool steps"), wantDegraded: true, wantBanner: "forge reply skipped: Ran out of tool steps"},
 		{name: "skipped with a placeholder reason", input: on(pr, false, "", "placeholder"), wantDegraded: true, wantBanner: "forge reply skipped: placeholder"},
 		{name: "nothing posted, no reason", input: on(pr, false, "", ""), wantDegraded: true, wantBanner: "FORGE REPLY MISSING"},
 		{name: "nothing posted, blank reason", input: on(pr, false, "", "  "), wantDegraded: true, wantBanner: "FORGE REPLY MISSING"},
 		{name: "nothing posted, a url beside it", input: on(pr, false, "https://forge/notes/1", ""), wantDegraded: true, wantBanner: "FORGE REPLY MISSING"},
-		{name: "nothing posted, reason absent", input: map[string]any{"posted": false, "reply_url": "", "pr_url": pr}, wantUnresolved: []string{"input.skipped_reason"}, wantDegraded: true, wantBanner: "forge reply skipped: "},
-		{name: "every input absent", input: map[string]any{}, wantUnresolved: []string{"input.posted", "input.pr_url", "input.reply_url", "input.skipped_reason"}, wantDegraded: true, wantBanner: "forge reply skipped: "},
+		{name: "nothing posted, reason absent", input: map[string]any{"posted": false, "reply_url": "", "pr_url": pr, "evaluation": false}, wantUnresolved: []string{"input.skipped_reason"}, wantDegraded: true, wantBanner: "forge reply skipped: "},
+		// Evaluation mode (publish_mode=off): a reply publish_reply withheld is
+		// the run's purpose, not a failure, and not an answer either — never
+		// OK. It masks nothing else: a claimed post still has to show its URL.
+		{name: "withheld in evaluation mode", input: held(pr, false, "", withheld), wantDegraded: false, wantBanner: "evaluation mode: forge reply not posted, by design (publish_mode=off)"},
+		{name: "withheld in evaluation mode, no reason given", input: held(pr, false, "", ""), wantDegraded: false, wantBanner: "evaluation mode: forge reply not posted"},
+		{name: "evaluation beside a claimed post without a reply url", input: held(pr, true, "", ""), wantDegraded: true, wantBanner: "FORGE REPLY UNVERIFIED"},
+		{name: "the same skip out of evaluation mode", input: on(pr, false, "", withheld), wantDegraded: true, wantBanner: "forge reply skipped: "},
+		{name: "every input absent", input: map[string]any{}, wantUnresolved: []string{"input.evaluation", "input.posted", "input.pr_url", "input.reply_url", "input.skipped_reason"}, wantDegraded: true, wantBanner: "forge reply skipped: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			command, unresolved := renderReviConverseHealth(t, tc.input)
@@ -123,6 +137,9 @@ func TestReviConverseHealthFlagsAnUnansweredQuestion(t *testing.T) {
 				}
 				if !strings.Contains(res.Banner, tc.wantBanner) {
 					t.Errorf("%s: banner %q does not name %q", shell, res.Banner, tc.wantBanner)
+				}
+				if strings.HasPrefix(tc.wantBanner, "evaluation mode") && strings.Contains(res.Banner, "reply OK") {
+					t.Errorf("%s: banner %q reads a withheld reply as answered", shell, res.Banner)
 				}
 			}
 		})

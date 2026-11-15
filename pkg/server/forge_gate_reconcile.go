@@ -918,20 +918,39 @@ func gateRunURL(base, runID string) string {
 	return deeplink.Run(base, runID)
 }
 
+// runInEvaluationMode reports whether the run was launched with
+// publish_mode=off (forge.PublishModeWithholds): it posted nothing on its
+// pull request, by design. Every reader that would speak for such a run —
+// the gate arms through runGateDisabled, the hand-off walk — asks here, on
+// the launch value as stored.
+func runInEvaluationMode(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	mode, ok := run.Inputs[forge.PublishModeVar].(string)
+	return ok && forge.PublishModeWithholds(mode)
+}
+
 // runInputString reads one launch input as a trimmed string.
 // runGateDisabled reports whether the run was launched with an EXPLICIT
 // gate_enabled pin that leaves the gating bot advisory-only (the value
 // classification is forge.GateValueDisables — one table shared with the
-// provisioning derivation). Every gate arm (the launch claim, this
-// reconciler, the auto-fix lane) must consult it: a repo that pinned the
-// gate off while still carrying a gate_context would otherwise get a
-// pending claim nothing ever resolves, then a synthetic "review died"
-// failure and a relaunch — a misconfiguration turned into a deadlock.
+// provisioning derivation), or in evaluation mode (publish_mode=off,
+// forge.PublishModeWithholds), where the bot posts nothing at all. Every
+// gate arm (the launch claim, this reconciler, the auto-fix lane, the pause
+// and DLQ notices) must consult it: a repo that pinned the gate off while
+// still carrying a gate_context would otherwise get a pending claim nothing
+// ever resolves, then a synthetic "review died" failure and a relaunch — a
+// misconfiguration turned into a deadlock; and an evaluation run would get
+// a red check and a comment on a pull request it was launched not to touch.
 // Absent key, or a non-string non-bool input shape → the gate stays armed
 // (the pre-pin behavior).
 func runGateDisabled(run *store.Run) bool {
 	if run == nil || run.Inputs == nil {
 		return false
+	}
+	if runInEvaluationMode(run) {
+		return true
 	}
 	v, ok := run.Inputs["gate_enabled"]
 	if !ok {
