@@ -43,12 +43,31 @@ func (p *pipe[T]) Ship(ctx context.Context, v T) bool {
 }
 
 // Warn surfaces an error — best-effort, dropped when the errors channel
-// is saturated. For a fatal error, Warn then return (Finish closes the
-// channels, which is the "stream over" signal the consumer acts on).
+// is saturated. Warn followed by Finish does not guarantee fatal publication;
+// a producer promising a terminal refusal must retain it before closing data.
 func (p *pipe[T]) Warn(err error) {
 	select {
 	case p.errs <- err:
 	default:
+	}
+}
+
+// fail is producer-only: retain the terminal error even when transient
+// warnings filled the buffer. It never waits for a consumer to drain warnings.
+func (p *pipe[T]) fail(err error) {
+	if err == nil {
+		return
+	}
+	for {
+		select {
+		case p.errs <- err:
+			return
+		default:
+			select {
+			case <-p.errs:
+			default:
+			}
+		}
 	}
 }
 

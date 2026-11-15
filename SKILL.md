@@ -381,7 +381,9 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str
 - `fail` — description str · code str|id · message str · resumable bool
-- `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · codemode on|off|{codemode} · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
+- `workflow` — entry id.id · contract id · vars {vars} · attachments {attachments} · business_stores {business_stores} · budget {budget} · resources {resources} · mcp {mcp} · compaction {compaction} · sandbox none|auto|{sandbox} · worktree auto|none · default_backend str · compress on|ultra|off · auto_memory on|off · ambient_context none|workspace|operator|all · codemode on|off|{codemode} · loop_budget_guard on|off · repo_devbox on|off · workspace_checkpoint on|off · permission off|ask|deny · allow [str] · ask [str] · deny [str] · tool_policy [tool] · capabilities [tool] · skills [skill] · interaction none|human|llm|llm_or_human|review|async|human_or_host
+- `business_stores` (`business_stores:` in workflow) — entries `<id>:`
+- `business_store` (`business_stores:` in business_stores) — kind str|id · namespace str|id · required bool
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int · on_exceeded fail|pause
 - `resources` (`resources:` in workflow) — entries `<name>: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int

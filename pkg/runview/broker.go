@@ -27,7 +27,8 @@ const subscriberBufferSize = 256
 // subscriptions only see events published after Subscribe.
 type EventBroker struct {
 	mu          sync.RWMutex
-	subscribers map[string][]*eventSub // run_id → active subscribers
+	subscribers map[string][]*eventSub // run_id → active legacy subscribers
+	observed    map[store.RunObservation]*observedEventTopic
 }
 
 // NewEventBroker creates an empty broker.
@@ -124,9 +125,9 @@ func (b *EventBroker) Subscribe(runID string) *EventSubscription {
 // lock is held only briefly even under buffer pressure.
 //
 // Publish takes a value to match the runtime.WithEventObserver
-// signature; we copy the pointer-shaped fields on the way out so
-// downstream consumers receive a stable snapshot of the event even if
-// the runtime mutated its local copy after emit.
+// signature. Each subscriber receives a separate Event value. Referenced
+// payloads (including nested Data) remain shared and must be treated as
+// read-only by publishers and subscribers while in use.
 func (b *EventBroker) Publish(evt store.Event) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -140,9 +141,8 @@ func (b *EventBroker) Publish(evt store.Event) {
 		if sub.closed {
 			continue
 		}
-		// Copy per subscriber: a shared pointer would let any consumer
-		// that mutates Data corrupt the others. Allocation cost is
-		// negligible against the upstream JSON marshalling.
+		// Copy the Event value, including its private observation. This
+		// isolates scalar fields, not referenced Data or nested payloads.
 		out := evt
 		select {
 		case sub.ch <- &out:

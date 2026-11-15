@@ -138,6 +138,36 @@
       },
       "type": "object"
     },
+    "business_stores": {
+      "description": "Declared business stores; no inference from accessed files. A bare block declares none. One store per entry; the same id may name stores in different namespaces",
+      "items": {
+        "additionalProperties": false,
+        "description": "One store per entry; the same id may name stores in different namespaces",
+        "properties": {
+          "id": {
+            "description": "The entry's name",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Store kind",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Logical namespace",
+            "type": "string"
+          },
+          "required": {
+            "description": "The declared store is required (default false); does not itself add an admission gate",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "catalog": {
       "additionalProperties": false,
       "description": "The catalog identity the .bot carries in its `## ---` frontmatter; a non-empty triggers or capabilities OVERRIDES the manifest's at discovery.",
@@ -2516,6 +2546,10 @@
         "budget": {
           "$ref": "#/$defs/budget",
           "description": "Run caps, each overridable by the matching run flag"
+        },
+        "business_stores": {
+          "$ref": "#/$defs/business_stores",
+          "description": "Expected business-store identities, normalized at launch and inherited by children"
         },
         "capabilities": {
           "description": "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none",

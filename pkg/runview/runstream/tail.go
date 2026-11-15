@@ -2,6 +2,7 @@ package runstream
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -75,81 +76,79 @@ func TailLogFile(path string, done <-chan struct{}, emit func(offset int64, chun
 // tailFile is the shared watch loop: wait for the file, prefer fsnotify,
 // fall back to polling, re-drain defensively, final-drain on done.
 func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64, logger *iterlog.Logger) {
-	// Wait (bounded) for the file to appear. A file still missing after
-	// the window doesn't terminate us — the producer may be starting;
-	// the watch loop below tolerates a missing file.
 	waitForFile(path, done, 5*time.Second)
-
-	watcher, watcherErr := fswatch.NewWatcher()
-	if watcherErr != nil {
-		logger.Warn("runstream: tail %s: fsnotify unavailable, falling back to polling: %v", path, watcherErr)
-		tailFilePolling(path, done, drain)
-		return
-	}
-	defer watcher.Close()
-
-	// Watch the directory rather than the file directly so we still see
-	// Create events if the file is rotated or initially missing.
-	dir := filepath.Dir(path)
-	if err := fswatch.Add(watcher, dir); err != nil {
-		logger.Warn("runstream: tail %s: watcher.Add(%q): %v — falling back to polling", path, dir, err)
-		tailFilePolling(path, done, drain)
-		return
-	}
-
-	// Drain whatever already exists so the subscriber sees the full
-	// backlog, not just bytes appended after subscription.
-	offset := drain(0)
-
-	pollTicker := time.NewTicker(tailDefensivePollInterval)
-	defer pollTicker.Stop()
-
-	// Snapshot the Errors channel so we can nil our reference if
-	// fsnotify closes it — a closed channel is always ready to receive
-	// and would spin this select.
-	errs := watcher.Errors
-
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
 		select {
 		case <-done:
-			drain(offset) // final drain to flush any tail bytes the watcher missed
-			return
-		case ev, ok := <-watcher.Events:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	offset := int64(0)
+	_ = watchFileDrains(ctx, filepath.Dir(path), filepath.Base(path), func(context.Context) error { offset = drain(offset); return nil }, logger)
+	cancel()
+	<-joined
+	drain(offset)
+}
+
+// watchFileDrains installs notification hints before the first finite drain.
+// Paths are used only for notifications; the callback owns all payload IO.
+func watchFileDrains(ctx context.Context, dir, name string, drain func(context.Context) error, logger *iterlog.Logger) error {
+	watcher, err := fswatch.NewWatcher()
+	var events <-chan fsnotify.Event
+	var errs <-chan error
+	cadence := tailPollFallbackInterval
+	if err == nil {
+		defer watcher.Close()
+		err = fswatch.Add(watcher, dir)
+		if err == nil {
+			events = watcher.Events
+			errs = watcher.Errors
+			cadence = tailDefensivePollInterval
+		}
+	}
+	if err != nil {
+		logger.Warn("runstream: watcher %s unavailable, using polling: %v", dir, err)
+	}
+	if err = drain(ctx); err != nil {
+		return err
+	}
+	tick := time.NewTicker(cadence)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-events:
 			if !ok {
-				return
-			}
-			if filepath.Clean(ev.Name) != filepath.Clean(path) {
+				events = nil
+				errs = nil
+				tick.Reset(tailPollFallbackInterval)
 				continue
 			}
-			if ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-				offset = drain(offset)
+			if filepath.Base(ev.Name) != name {
+				continue
 			}
-		case <-pollTicker.C:
-			offset = drain(offset)
-		case err, ok := <-errs:
+			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
+				continue
+			}
+			if err = drain(ctx); err != nil {
+				return err
+			}
+		case _, ok := <-errs:
 			if !ok {
 				errs = nil
 				continue
 			}
-			logger.Warn("runstream: tail %s: watcher error: %v", path, err)
-		}
-	}
-}
-
-// tailFilePolling is the fsnotify-less fallback. Slightly higher CPU but
-// functionally equivalent.
-func tailFilePolling(path string, done <-chan struct{}, drain func(offset int64) int64) {
-	offset := drain(0)
-
-	t := time.NewTicker(tailPollFallbackInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-done:
-			drain(offset)
-			return
-		case <-t.C:
-			offset = drain(offset)
+			// A watch error can mean dropped notifications. Polling restores liveness.
+			tick.Reset(tailPollFallbackInterval)
+		case <-tick.C:
+			if err = drain(ctx); err != nil {
+				return err
+			}
 		}
 	}
 }

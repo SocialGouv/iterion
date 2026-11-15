@@ -57,7 +57,7 @@ import (
 // team's ID). Grouped by their owning package.
 var teamScopedCollections = []string{
 	// run store (pkg/store/mongo)
-	"runs", "run_seq", "events", "interactions", "user_messages",
+	"runs", "run_seq", "events", "interactions", "user_messages", "run_data_v1_user_messages",
 	// workspace memory (pkg/store/mongo)
 	"memory_docs", "memory_spaces", "memory_tenant_usage",
 	// forge (pkg/forge)
@@ -68,6 +68,7 @@ var teamScopedCollections = []string{
 	"org_sso_providers", "org_verified_domains",
 	// run store, the per-run side tables (pkg/store/mongo)
 	"run_gitmeta", "run_plans", "run_notes", "run_turns", "run_logs",
+	"run_data_v1_events", "run_data_v1_logs", "run_data_v1_plans", "run_data_v1_notes",
 	"run_tags", "run_route_decisions", "retry_circuits",
 	// event triggers (pkg/trigger)
 	"trigger_subscriptions", "trigger_subscription_tombstones",
@@ -133,6 +134,7 @@ var orgScopedCollections = []string{
 // the reason here is how the next reader knows the loops above are not where
 // to look.
 var purgedByBespokeFilter = map[string]string{
+	"run_data_v1_seq":         "tenant encoded in _id.tenant_id, including retired/orphan births",
 	"oauth_credentials":       "keyed by an owner in its own namespace (secrets.OrgOwnerKey / OrgTierOwnerKey), not by a tenant id",
 	"llm_routing_policies":    "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-121 delivery 2",
 	"price_feeds":             "composite _id (\"platform\" / \"org:<id>\" / \"team:<id>\"), ADR-163 — the platform doc is NOT an org row and stays",
@@ -353,10 +355,31 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	if err := p.stillEligible(ctx, orgID); err != nil {
 		return deleted, err
 	}
+	// Keep the first failed collection attributable: no further deletes and no
+	// identity cascade after failure. State belongs to this invocation, not Purger.
+	var sweepErr error
+	deleteRows := func(ctx context.Context, coll string, filter bson.M) int64 {
+		if sweepErr != nil {
+			return 0
+		}
+		n, err := p.deleteMany(ctx, coll, filter)
+		if err != nil {
+			sweepErr = err
+		}
+		return n
+	}
 	for _, t := range teams {
 		filter := bson.M{"$or": bson.A{bson.M{"tenant_id": t.ID}, bson.M{"team_id": t.ID}}}
 		for _, coll := range teamScopedCollections {
-			deleted += p.deleteMany(ctx, coll, filter)
+			deleted += deleteRows(ctx, coll, filter)
+		}
+	}
+	// Compound counters carry tenant inside the key, in either historical
+	// key order and in every strict birth. Keep the top-level legacy sweep too.
+	// Headerless legacy string keys without tenant remain unattributable here.
+	for _, t := range teams {
+		for _, coll := range []string{"run_seq", "run_data_v1_seq"} {
+			deleted += deleteRows(ctx, coll, bson.M{"_id.tenant_id": t.ID})
 		}
 	}
 	// Sealed credentials owned by a RESERVED scope rather than by a plain
@@ -370,17 +393,17 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	// user, and a user outlives the org (they may hold others). Only the
 	// two owner keys this org actually owns are removed.
 	for _, t := range teams {
-		deleted += p.deleteMany(ctx, secrets.OAuthCollectionName,
+		deleted += deleteRows(ctx, secrets.OAuthCollectionName,
 			bson.M{"user_id": secrets.OrgOwnerKey(t.ID)})
 	}
 	// The tenant routing policies (ADR-121 delivery 2) are keyed by
 	// COMPOSITE _id ("team:<id>" / "org:<id>"), not by a tenant_id field —
 	// the org_usage id-prefix shape, reached the same way. The team records
 	// are enumerated while the team rows are still listed.
-	deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
+	deleted += deleteRows(ctx, platformcfg.ColRoutingPolicies,
 		bson.M{"_id": platformcfg.OrgRoutingPolicyID(orgID)})
 	for _, tm := range teams {
-		deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
+		deleted += deleteRows(ctx, platformcfg.ColRoutingPolicies,
 			bson.M{"_id": platformcfg.TeamRoutingPolicyID(tm.ID)})
 	}
 	// The gateway price feed's tenant state (ADR-163): the feed lists are
@@ -388,27 +411,27 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	// documents key "<scope>/<feed>", reached by prefix. The PLATFORM
 	// document ("platform") and its states ("platform/<feed>") are the
 	// deployment's own: no filter below names them.
-	deleted += p.deleteMany(ctx, pricefeed.ColConfigs,
+	deleted += deleteRows(ctx, pricefeed.ColConfigs,
 		bson.M{"_id": pricefeed.OrgConfigDocID(orgID)})
-	deleted += p.deleteMany(ctx, pricefeed.ColStates,
+	deleted += deleteRows(ctx, pricefeed.ColStates,
 		bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(pricefeed.OrgConfigDocID(orgID)) + "/"}})
 	for _, tm := range teams {
-		deleted += p.deleteMany(ctx, pricefeed.ColConfigs,
+		deleted += deleteRows(ctx, pricefeed.ColConfigs,
 			bson.M{"_id": pricefeed.TeamConfigDocID(tm.ID)})
-		deleted += p.deleteMany(ctx, pricefeed.ColStates,
+		deleted += deleteRows(ctx, pricefeed.ColStates,
 			bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(pricefeed.TeamConfigDocID(tm.ID)) + "/"}})
 	}
 	// The key pools' scope attachments (ADR-164): composite _id documents —
 	// the org doc, each team's doc, each team's bot-scoped docs by prefix.
 	// The PLATFORM doc is the deployment's own (the instance default pool);
 	// an org purge never touches it.
-	deleted += p.deleteMany(ctx, credpool.ColAttachments,
+	deleted += deleteRows(ctx, credpool.ColAttachments,
 		bson.M{"_id": credpool.OrgScopeID(orgID)})
 	for _, tm := range teams {
-		deleted += p.deleteMany(ctx, credpool.ColAttachments,
+		deleted += deleteRows(ctx, credpool.ColAttachments,
 			bson.M{"_id": bson.M{"$in": bson.A{
 				credpool.TeamScopeID(tm.ID),
-				bson.M{"$regex": "^" + regexp.QuoteMeta("bot:"+tm.ID+"/")},
+				bson.Regex{Pattern: "^" + regexp.QuoteMeta("bot:"+tm.ID+"/")},
 			}}})
 	}
 	// A launch intent carries its tenant INSIDE the schedule it embeds
@@ -416,18 +439,18 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	// and an intent is a pending LAUNCH: left behind, it names a schedule of
 	// a team that no longer exists.
 	for _, t := range teams {
-		deleted += p.deleteMany(ctx, "schedule_launch_intents",
+		deleted += deleteRows(ctx, "schedule_launch_intents",
 			bson.M{"schedule.tenant_id": t.ID})
 	}
 	orgTier := secrets.OrgTierTenantID(orgID)
-	deleted += p.deleteMany(ctx, "api_keys",
+	deleted += deleteRows(ctx, "api_keys",
 		bson.M{"$or": bson.A{bson.M{"tenant_id": orgTier}, bson.M{"scope_team": orgTier}}})
-	deleted += p.deleteMany(ctx, secrets.OAuthCollectionName,
+	deleted += deleteRows(ctx, secrets.OAuthCollectionName,
 		bson.M{"user_id": secrets.OrgTierOwnerKey(orgID)})
 
 	orgFilter := bson.M{"$or": bson.A{bson.M{"org_id": orgID}, bson.M{"tenant_id": orgID}}}
 	for _, coll := range orgScopedCollections {
-		deleted += p.deleteMany(ctx, coll, orgFilter)
+		deleted += deleteRows(ctx, coll, orgFilter)
 	}
 	// org_usage holds TWO composite _id kinds, both second-segmented on the
 	// metering id: "org|<orgID>|<month>" (the org's own budget) and
@@ -440,8 +463,14 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	// residue predates this filter and is bounded by the collection's 400-day
 	// TTL; it is named here rather than left for the next reader to discover.
 	// A new kind added to this collection has to be added to the alternation.
-	deleted += p.deleteMany(ctx, "org_usage",
+	deleted += deleteRows(ctx, "org_usage",
 		bson.M{"_id": bson.M{"$regex": "^(org|forkauthor)\\|" + regexp.QuoteMeta(orgID) + "\\|"}})
+	if sweepErr != nil {
+		return deleted, sweepErr
+	}
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
 	// Identity records last — this removes the teams + the org row itself.
 	if err := p.Cascade(ctx, orgID); err != nil {
 		return deleted, err
@@ -562,15 +591,19 @@ func withheldSweep(org identity.Org, failures []error) error {
 	return fmt.Errorf("orgsweep: purge org %s: %d run(s) could not be deleted, the Mongo sweep is withheld until they are%s: %w", org.ID, len(failures), more, errors.Join(shown...))
 }
 
-func (p *Purger) deleteMany(ctx context.Context, coll string, filter bson.M) int64 {
+func (p *Purger) deleteMany(ctx context.Context, coll string, filter bson.M) (int64, error) {
 	res, err := p.DB.Collection(coll).DeleteMany(ctx, filter)
-	if err != nil {
-		if p.Logger != nil {
-			p.Logger.Warn("orgsweep: delete from %s: %v", coll, err)
-		}
-		return 0
+	var deleted int64
+	if res != nil && res.Acknowledged {
+		deleted = res.DeletedCount
 	}
-	return res.DeletedCount
+	if err != nil {
+		return deleted, fmt.Errorf("orgsweep: delete from %s: %w", coll, err)
+	}
+	if res == nil || !res.Acknowledged {
+		return deleted, fmt.Errorf("orgsweep: delete from %s was not acknowledged", coll)
+	}
+	return deleted, nil
 }
 
 // Sweeper runs PurgeOrg for every org whose grace has elapsed, nightly at

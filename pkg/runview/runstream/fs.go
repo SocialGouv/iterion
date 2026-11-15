@@ -3,181 +3,253 @@ package runstream
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
-
+	"fmt"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"sync"
+	"time"
 )
 
-// fileTerminalPollInterval bounds how often a FileSource subscription
-// re-reads run.json to detect a terminal status. The foreign run is
-// driven by a different daemon, so there is no in-process completion
-// signal — without this poll the tail would run forever on a finished
-// run (the file simply stops growing, indistinguishable from "still
-// working" by file watch alone). A var so tests can tighten it.
 var fileTerminalPollInterval = 5 * time.Second
 
-// FileSource implements Source over a foreign filesystem store root —
-// the cross-store observation mode (`?store=`): a run owned by another
-// local daemon whose files this process can read but whose broker it
-// cannot reach. Replay goes through the store's range API; the live
-// tail rides the shared fsnotify tailers; termination is detected by
-// polling run.json.
+// FileSource borrows a store and owns only its subscriptions. Payload IO is
+// selected by the store; the legacy root argument is never an IO authority.
 type FileSource struct {
-	store  store.RunStore
-	root   string
-	logger *iterlog.Logger
-
-	closeOnce sync.Once
-	closed    chan struct{}
+	store   store.RunStore
+	logger  *iterlog.Logger
+	mu      sync.Mutex
+	closed  bool
+	active  map[uint64]context.CancelFunc
+	next    uint64
+	workers sync.WaitGroup
 }
 
-// NewFileSource builds a Source over the store rooted at root. st must
-// be a RunStore opened on that same root (the caller typically has both
-// from resolving the cross-store request).
-func NewFileSource(st store.RunStore, root string, logger *iterlog.Logger) *FileSource {
+func NewFileSource(st store.RunStore, _ string, logger *iterlog.Logger) *FileSource {
 	if logger == nil {
 		logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
-	return &FileSource{store: st, root: root, logger: logger, closed: make(chan struct{})}
+	return &FileSource{store: st, logger: logger}
 }
-
-// Close cancels every subscription spawned from this source.
 func (f *FileSource) Close() error {
-	f.closeOnce.Do(func() { close(f.closed) })
+	f.mu.Lock()
+	f.closed = true
+	for _, cancel := range f.active {
+		cancel()
+	}
+	f.mu.Unlock()
+	f.workers.Wait()
 	return nil
 }
-
-// SubscribeEvents replays the persisted backlog through the store's
-// range API, then tails the foreign events.jsonl (deduping the overlap
-// by seq) until the run reaches a terminal status, the subscription is
-// closed, or ctx is cancelled. On terminal detection a final drain
-// flushes the tail before the channel closes.
-func (f *FileSource) SubscribeEvents(ctx context.Context, runID string, fromSeq int64) (EventSubscription, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+func (f *FileSource) register(ctx context.Context) (context.Context, context.CancelFunc, <-chan struct{}, func(), error) {
+	if ctx == nil {
+		return nil, nil, nil, nil, store.ErrInvalidRunDataIdentity
 	}
-	pipe := NewEventPipe()
-
-	go func() {
-		defer pipe.Finish(nil)
-
-		// Phase 1 — paginated replay. Load errors are non-fatal for a
-		// foreign store (the file tail below is the authoritative
-		// fallback); they just end the replay early.
-		maxReplayed, err := ReplayEvents(ctx, f.store, runID, fromSeq, pipe)
-		if err != nil {
-			f.logger.Warn("runstream: cross-store replay (%s): %v", runID, err)
-		}
-
-		// Phase 2 — live file tail. lastSeq is only touched from the
-		// tailer goroutine (after the replay above completed), so the
-		// dedup needs no lock.
-		lastSeq := maxReplayed
-		emit := func(evt store.Event) {
-			if evt.Seq <= lastSeq {
-				return
-			}
-			e := evt
-			if !pipe.Ship(ctx, []*store.Event{&e}) {
-				return
-			}
-			lastSeq = evt.Seq
-		}
-		eventsPath := filepath.Join(f.root, "runs", runID, "events.jsonl")
-		f.tailUntilTerminal(ctx, runID, pipe.Done(), func(done <-chan struct{}) {
-			TailEventsFile(eventsPath, done, emit, f.logger)
+	if e := ctx.Err(); e != nil {
+		return nil, nil, nil, nil, e
+	}
+	c, cancel := context.WithCancel(ctx)
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		cancel()
+		return nil, nil, nil, nil, errors.New("runstream: file source closed")
+	}
+	if f.active == nil {
+		f.active = make(map[uint64]context.CancelFunc)
+	}
+	f.next++
+	id := f.next
+	f.active[id] = cancel
+	f.workers.Add(1)
+	f.mu.Unlock()
+	done := make(chan struct{})
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			cancel()
+			f.mu.Lock()
+			delete(f.active, id)
+			f.mu.Unlock()
+			close(done)
+			f.workers.Done()
 		})
+	}
+	return c, cancel, done, finish, nil
+}
+func (f *FileSource) SubscribeEvents(ctx context.Context, id string, from int64) (EventSubscription, error) {
+	return f.SubscribeEventsCursor(ctx, id, EventCursor{Seq: from})
+}
+func (f *FileSource) SubscribeEventsCursor(ctx context.Context, id string, position EventCursor) (EventSubscription, error) {
+	c, cancel, done, finish, e := f.register(ctx)
+	if e != nil {
+		return nil, e
+	}
+	cap := store.AsFilesystemStreamStore(f.store)
+	if cap == nil {
+		finish()
+		return nil, store.ErrRunDataCapability
+	}
+	pipe := NewEventPipeWithClose(func() { cancel(); <-done })
+	go func() {
+		defer finish()
+		defer pipe.Finish(nil)
+		selection, observed, e := cap.OpenFilesystemStream(c, id, store.FilesystemStreamOpenOptions{WaitForInitialDirectory: true})
+		if e != nil {
+			if IsPermanentError(e) || c.Err() == nil {
+				pipe.fail(e)
+			}
+			return
+		}
+		if !observed || nilEventSelection(selection) {
+			pipe.fail(store.ErrRunDataCapability)
+			return
+		}
+		defer selection.Close()
+		cursor := newFileEventDrain(selection, pipe, position.Seq)
+		if cursor.admissionErr != nil {
+			pipe.fail(cursor.admissionErr)
+			return
+		}
+		cursor.after = position.After
+		defer cursor.Close()
+		f.runSelectedFile(c, selection, false, cursor.Drain, pipe.Warn, pipe.fail)
 	}()
-
+	return pipe, nil
+}
+func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (LogSubscription, error) {
+	c, cancel, done, finish, e := f.register(ctx)
+	if e != nil {
+		return nil, e
+	}
+	cap := store.AsFilesystemStreamStore(f.store)
+	if cap == nil {
+		finish()
+		return nil, store.ErrRunDataCapability
+	}
+	pipe := NewLogPipeWithClose(func() { cancel(); <-done })
+	go func() {
+		defer finish()
+		defer pipe.Finish(nil)
+		selection, observed, e := cap.OpenFilesystemStream(c, id, store.FilesystemStreamOpenOptions{})
+		if e != nil {
+			if IsPermanentError(e) || c.Err() == nil {
+				pipe.fail(e)
+			}
+			return
+		}
+		if !observed {
+			return
+		}
+		if selection == nil {
+			pipe.fail(store.ErrRunDataCapability)
+			return
+		}
+		defer selection.Close()
+		cursor := newFileLogDrain(selection, pipe, from)
+		defer cursor.Close()
+		// Absence is valid only after the retained observation was checked. A
+		// joined identity/missing error must never be an empty successful log.
+		file, e := selection.OpenLog(c)
+		if IsPermanentError(e) {
+			pipe.fail(e)
+			return
+		}
+		if isFileMissing(e) {
+			return
+		}
+		if e != nil {
+			pipe.fail(e)
+			return
+		}
+		if file == nil {
+			pipe.fail(store.ErrRunDataCapability)
+			return
+		}
+		file.Close()
+		f.runSelectedFile(c, selection, true, cursor.Drain, pipe.Warn, pipe.fail)
+	}()
 	return pipe, nil
 }
 
-// SubscribeLogs streams the foreign run.log from fromOffset. A missing
-// file at subscribe time means it will never exist for this run (every
-// producer that writes run.log creates it before the first event), so
-// the stream closes immediately instead of polling forever.
-func (f *FileSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (LogSubscription, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	pipe := NewLogPipe()
-
-	logPath := filepath.Join(f.root, "runs", runID, "run.log")
-	if _, err := os.Stat(logPath); errors.Is(err, os.ErrNotExist) {
-		pipe.Finish(nil)
-		return pipe, nil
-	}
-
-	go func() {
-		defer pipe.Finish(nil)
-
-		// The tailer drains from byte 0; dedup/slice against the
-		// delivered high-water mark so fromOffset semantics match every
-		// other backend. The chunk aliases the tailer's scratch buffer
-		// (TailLogFile's emit contract) — copy before shipping, since
-		// the pipe retains it.
-		delivered := fromOffset
-		emit := func(off int64, chunk []byte) {
-			if off+int64(len(chunk)) <= delivered {
-				return
-			}
-			cp := make([]byte, len(chunk))
-			copy(cp, chunk)
-			delivered, _ = ShipLogChunk(ctx, pipe, off, cp, delivered)
-		}
-		f.tailUntilTerminal(ctx, runID, pipe.Done(), func(done <-chan struct{}) {
-			TailLogFile(logPath, done, emit, f.logger)
-		})
-	}()
-
-	return pipe, nil
+type fileRound struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	terminal bool
+	err      error
 }
 
-// tailUntilTerminal runs tail (a blocking file tailer parametrised by
-// its stop channel) until the run reaches a terminal status, the
-// subscription closes, the source closes, or ctx ends. Closing the stop
-// channel makes the tailer flush a final drain before returning, so the
-// wait guarantees every byte/event persisted before termination was
-// emitted.
-func (f *FileSource) tailUntilTerminal(ctx context.Context, runID string, subDone <-chan struct{}, tail func(done <-chan struct{})) {
-	tailDone := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
+func newFileRound(ctx context.Context, s store.FilesystemStreamSelection) *fileRound {
+	c, cancel := context.WithCancel(ctx)
+	r := &fileRound{ctx: c, cancel: cancel, done: make(chan struct{})}
 	go func() {
-		defer wg.Done()
-		tail(tailDone)
+		defer close(r.done)
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-timer.C:
+				terminal, e := s.Terminal(c)
+				if e != nil || terminal {
+					r.terminal = terminal
+					r.err = e
+					cancel()
+					return
+				}
+				timer.Reset(fileTerminalPollInterval)
+			}
+		}
 	}()
-	stop := func() {
-		close(tailDone)
-		wg.Wait()
+	return r
+}
+func (r *fileRound) finish(parent context.Context, e error) (bool, error) {
+	r.cancel()
+	<-r.done
+	if mongoContextErrorOnly(e) && errors.Is(e, context.Canceled) && parent.Err() == nil {
+		e = nil
 	}
-
-	ticker := time.NewTicker(fileTerminalPollInterval)
-	defer ticker.Stop()
+	pollErr := r.err
+	if mongoContextErrorOnly(pollErr) && errors.Is(pollErr, context.Canceled) && parent.Err() == nil {
+		pollErr = nil
+	}
+	return r.terminal, errors.Join(e, pollErr)
+}
+func (f *FileSource) runSelectedFile(ctx context.Context, s store.FilesystemStreamSelection, logs bool, drain func(context.Context) error, warn, fail func(error)) {
+	eventDir, logDir := s.WatchHints()
+	dir, name := eventDir, "events.jsonl"
+	if logs {
+		dir, name = logDir, "run.log"
+	}
+	delay := 250 * time.Millisecond
 	for {
-		select {
-		case <-ctx.Done():
-			stop()
+		round := newFileRound(ctx, s)
+		e := watchFileDrains(round.ctx, dir, name, drain, f.logger)
+		terminal, e := round.finish(ctx, e)
+		if IsPermanentError(e) {
+			fail(e)
 			return
-		case <-subDone:
-			stop()
+		}
+		if ctx.Err() != nil || errors.Is(e, errEventDeliveryStopped) {
 			return
-		case <-f.closed:
-			stop()
-			return
-		case <-ticker.C:
-			run, err := f.store.LoadRun(ctx, runID)
-			if err != nil {
-				continue
+		}
+		if terminal && e == nil {
+			e = drain(ctx)
+			if IsPermanentError(e) {
+				fail(e)
+				return
 			}
-			if run.Status.IsTerminal() {
-				stop() // final drain flushes anything written before the flip
+			if e == nil || errors.Is(e, errEventDeliveryStopped) {
 				return
 			}
 		}
+		if e == nil {
+			e = fmt.Errorf("runstream: filesystem watch ended")
+		}
+		if !mongoRetry(ctx, e, delay, warn) {
+			return
+		}
+		delay = nextMongoDelay(delay)
 	}
 }

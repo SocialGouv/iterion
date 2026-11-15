@@ -16,7 +16,7 @@ func (s *Store) SetWatcherCursor(ctx context.Context, id, watcherID string, curs
 	if watcherID == "" {
 		return fmt.Errorf("store/mongo: watcher cursor id is empty")
 	}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(bson.M{
 		"$set": bson.M{
 			"watcher_cursors." + watcherID: cursor,
 			"updated_at":                   time.Now().UTC(),

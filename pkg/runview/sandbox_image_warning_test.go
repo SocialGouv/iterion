@@ -42,7 +42,7 @@ func buildWithBackend(t *testing.T, nodeBackend string, overrides model.ModelOve
 		Logger:         iterlog.New(iterlog.LevelDebug, &buf),
 		SandboxDrivers: drivers,
 	}
-	if _, err := BuildExecutor(spec); err != nil {
+	if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 	return buf.String()

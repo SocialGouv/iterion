@@ -93,6 +93,14 @@ func (r *Runner) executeHoldingLease(runCtx context.Context, runCancel context.C
 	// The engine path carries the admitted identity too: a subbot child
 	// locking its own run under this one takes a lease stamped with the
 	// same admitted identity, which the distributed lock then verifies.
+	var bindErr error
+	runCtx, bindErr = store.BindRunValueFormat(runCtx, preRun)
+	if bindErr != nil {
+		return bindErr
+	}
+	if _, _, err := store.LoadRunWithValueFormat(runCtx, r.cfg.Store, msg.RunID); err != nil {
+		return err
+	}
 	runCtx = store.WithLeaseIdentity(runCtx, msg.TenantID, msg.RunnerPool)
 	hold := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
 	// nil cause: the run has already returned here, so this is teardown — the

@@ -803,7 +803,7 @@ jobs:
           docker run -d --name mongo-rs \
             -p 127.0.0.1:27017:27017 \
             mongo:8.0 \
-            --replSet rs0 --bind_ip_all
+            --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
           for i in $(seq 1 30); do
             if docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; then
               break
@@ -866,6 +866,34 @@ jobs:
           # including tenants that only subscribe to custom/run events.
           go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
+
+      - name: Subbot lease Mongo and NATS witness
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+          ITERION_TEST_NATS_URI: nats://localhost:4222
+        run: |
+          set -euo pipefail
+          test -n "$ITERION_TEST_MONGO_URI"
+          test -n "$ITERION_TEST_NATS_URI"
+          trap 'docker rm -f nats-child-lease >/dev/null 2>&1 || true' EXIT
+          docker run -d --name nats-child-lease \
+            -p 127.0.0.1:4222:4222 nats:2.14-alpine -js
+          ready=0
+          for i in $(seq 1 30); do
+            logs="$(docker logs nats-child-lease 2>&1)"
+            if grep -Fq 'Server is ready' <<<"$logs" && grep -Fq 'JetStream' <<<"$logs"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-child-lease
+            echo 'Owned NATS fixture failed to start' >&2
+            exit 1
+          fi
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo \
+            -run '^TestSubbotLeaseMongoNATS$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the

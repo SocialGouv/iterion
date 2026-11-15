@@ -13,14 +13,22 @@ import (
 var _ store.BackendSessionStore = (*Store)(nil)
 
 func (s *Store) PutBackendSession(ctx context.Context, runID, ref string, body []byte) error {
-	if err := s.blob.PutBackendSession(ctx, runID, ref, body); err != nil {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if err := objects.PutBackendSession(ctx, runID, ref, body); err != nil {
 		return fmt.Errorf("store/mongo: put backend session %s/%s: %w", runID, ref, err)
 	}
-	return nil
+	return s.checkRunObjects(ctx, runID)
 }
 
 func (s *Store) GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error) {
-	b, err := s.blob.GetBackendSession(ctx, runID, ref)
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return nil, runObjectsReadError(err)
+	}
+	b, err := objects.GetBackendSession(ctx, runID, ref)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
 			return nil, fmt.Errorf("store/mongo: backend session %s/%s not found: %w", runID, ref, os.ErrNotExist)
@@ -31,8 +39,12 @@ func (s *Store) GetBackendSession(ctx context.Context, runID, ref string) ([]byt
 }
 
 func (s *Store) DeleteBackendSession(ctx context.Context, runID, ref string) error {
-	if err := s.blob.DeleteBackendSession(ctx, runID, ref); err != nil {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if err := objects.DeleteBackendSession(ctx, runID, ref); err != nil {
 		return fmt.Errorf("store/mongo: delete backend session %s/%s: %w", runID, ref, err)
 	}
-	return nil
+	return s.checkRunObjects(ctx, runID)
 }

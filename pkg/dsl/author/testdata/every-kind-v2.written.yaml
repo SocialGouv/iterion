@@ -392,6 +392,11 @@ workflow:
       default: x
   attachments:
     extra: file
+  business_stores:
+    - id: ledger
+      kind: postgres
+      namespace: finance
+      required: true
   budget:
     max_parallel_branches: 4
     max_duration: 4h

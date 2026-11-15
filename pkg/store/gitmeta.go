@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -157,23 +156,11 @@ func BuildRunGitMeta(repoDir, base string) (*RunGitMeta, error) {
 	return meta, nil
 }
 
-// gitMetaPath validates runID and returns <root>/runs/<runID>/gitmeta.json.
-func (s *FilesystemRunStore) gitMetaPath(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.root, "runs", runID, "gitmeta.json"), nil
-}
-
 // SaveRunGitMeta implements RunGitMetaStore over runs/<id>/gitmeta.json —
 // a single whole-snapshot file rewritten atomically on each save.
-func (s *FilesystemRunStore) SaveRunGitMeta(_ context.Context, runID string, meta *RunGitMeta) error {
+func (s *FilesystemRunStore) SaveRunGitMeta(ctx context.Context, runID string, meta *RunGitMeta) error {
 	if meta == nil {
 		return fmt.Errorf("store: SaveRunGitMeta(%s): nil meta", runID)
-	}
-	p, err := s.gitMetaPath(runID)
-	if err != nil {
-		return err
 	}
 	if meta.UpdatedAt.IsZero() {
 		meta.UpdatedAt = time.Now().UTC()
@@ -182,22 +169,28 @@ func (s *FilesystemRunStore) SaveRunGitMeta(_ context.Context, runID string, met
 	if err != nil {
 		return fmt.Errorf("store: marshal git meta: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(p), dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir run dir for git meta: %w", err)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
 	}
-	return writeFileAtomic(p, data, filePerm)
+	defer unlock()
+	p, err := s.openRunPayloadFile(ctx, runID, "gitmeta.json", true)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	return p.WriteAtomic(ctx, data, filePerm)
 }
 
 // LoadRunGitMeta implements RunGitMetaStore: reads runs/<id>/gitmeta.json,
 // returning (nil, nil) when the run never recorded any git metadata.
-func (s *FilesystemRunStore) LoadRunGitMeta(_ context.Context, runID string) (*RunGitMeta, error) {
-	p, err := s.gitMetaPath(runID)
+func (s *FilesystemRunStore) LoadRunGitMeta(ctx context.Context, runID string) (*RunGitMeta, error) {
+	p, err := s.openRunPayloadFile(ctx, runID, "gitmeta.json", false)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(p)
+	defer p.Close()
+	data, err := p.ReadFile()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

@@ -35,20 +35,30 @@ type runLogChunkDoc struct {
 // as the dedup anchor instead of seqs. The stream closes (after a final
 // backfill) once the run document reaches a terminal status.
 func (m *MongoSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (LogSubscription, error) {
-	if m.runLogs == nil {
-		return nil, ErrLogsUnsupported
-	}
-	if err := ctx.Err(); err != nil {
+	c, cancel, done, finish, err := m.register(ctx)
+	if err != nil {
 		return nil, err
+	}
+	selection, err := m.selectStream(c, runID)
+	if err != nil {
+		finish()
+		return nil, err
+	}
+	if (selection == nil && m.runLogs == nil) || (selection != nil && selection.LogsCollection() == nil) {
+		finish()
+		return nil, ErrLogsUnsupported
 	}
 	if fromOffset < 0 {
 		fromOffset = 0
 	}
-	subCtx, cancel := context.WithCancel(ctx)
-	pipe := NewLogPipeWithClose(cancel)
+	pipe := NewLogPipeWithClose(func() { cancel(); <-done })
 	go func() {
-		defer cancel()
-		m.runLogStream(subCtx, runID, fromOffset, pipe)
+		defer finish()
+		if selection != nil {
+			m.runSelectedLogs(c, selection, fromOffset, pipe)
+		} else {
+			m.runLogStream(c, runID, fromOffset, pipe)
+		}
 	}()
 	return pipe, nil
 }
@@ -79,10 +89,12 @@ func (m *MongoSource) streamLogsOnce(ctx context.Context, runID string, from int
 	delivered = from
 
 	roundCtx, cancelRound := context.WithCancel(ctx)
-	defer cancelRound()
+	pollDone := make(chan struct{})
+	defer func() { cancelRound(); <-pollDone }()
 
 	var isTerminal atomic.Bool
 	go func() {
+		defer close(pollDone)
 		t := time.NewTicker(mongoTerminalPollInterval)
 		defer t.Stop()
 		for {

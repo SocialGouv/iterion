@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func leaseConn(t *testing.T) *Conn {
 			leaseConnErr = fmt.Errorf("kv %s: %w", bucket, err)
 			return
 		}
-		leaseShared = &Conn{nc: nc, js: js, kv: kv, cfg: Config{KVBucket: bucket, Logger: iterlog.Nop()}}
+		leaseShared = &Conn{nc: nc, js: js, kv: kv, cfg: Config{KVBucket: bucket, LockTTL: DefaultLockTTL, Logger: iterlog.Nop()}}
 	})
 	if leaseConnErr != nil {
 		t.Fatalf("lease conn: %v", leaseConnErr)
@@ -227,5 +228,40 @@ func TestRunLeaseReleaseRefusesForeignIdentity(t *testing.T) {
 	info := readLease(t, conn, runID)
 	if info.TenantID != "team-b" || info.RunnerID != "runner-evil" {
 		t.Fatalf("foreign lease was deleted by the refused release: %+v", info)
+	}
+}
+
+func TestRunLeaseSameIdentityStillRequiresCurrentRevision(t *testing.T) {
+	c := leaseConn(t)
+	runID := fmt.Sprintf("lease-cas-%d", time.Now().UnixNano())
+	ctx := store.WithLeaseIdentity(context.Background(), "tenant-test", "pool-test")
+	l, e := c.AcquireLock(ctx, runID, "holder")
+	if e != nil {
+		t.Fatal(e)
+	}
+	forgeLease(t, c, runID, "tenant-test", "pool-test")
+	if e = l.Refresh(ctx); e == nil {
+		t.Fatal("stale refresh accepted")
+	}
+	if e = l.Unlock(); e == nil {
+		t.Fatal("stale release accepted")
+	}
+	got := readLease(t, c, runID)
+	if got.RunnerID != "runner-evil" {
+		t.Fatalf("successor changed: %+v", got)
+	}
+}
+
+func TestRunLeaseRefusesEffectiveTTLMismatch(t *testing.T) {
+	c := leaseConn(t)
+	runID := fmt.Sprintf("lease-ttl-%d", time.Now().UnixNano())
+	ctx := store.WithLeaseIdentity(context.Background(), "tenant-test", "pool-test")
+	other := *c
+	other.cfg.LockTTL = c.cfg.LockTTL / 2
+	if _, e := other.AcquireLock(ctx, runID, "holder"); e == nil || !strings.Contains(e.Error(), "lease TTL mismatch:") {
+		t.Fatalf("want TTL mismatch, got %v", e)
+	}
+	if _, e := c.kv.Get(ctx, runID); !errors.Is(e, jetstream.ErrKeyNotFound) {
+		t.Fatalf("want absent mismatched key, got %v", e)
 	}
 }

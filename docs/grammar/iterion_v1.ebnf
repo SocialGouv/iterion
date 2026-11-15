@@ -428,7 +428,7 @@ use_decl = "use" IDENT "as" IDENT [ with_block ] NEWLINE ;
 workflow_decl = "workflow" IDENT ":" NEWLINE [ INDENT
                   { workflow_member }
                 DEDENT ] ;
-workflow_member = vars_decl | attachments_decl | mcp_config_block
+workflow_member = vars_decl | attachments_decl | mcp_config_block | business_stores_block
                 | "entry" ":" node_ref NEWLINE
                 | "contract" ":" IDENT NEWLINE
                 | "default_backend" ":" str_value NEWLINE
@@ -450,6 +450,13 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "ask" ":" string_list NEWLINE
                 | "deny" ":" string_list NEWLINE
                 | sandbox_decl | edge ;
+
+business_stores_block = "business_stores" ":" NEWLINE [ INDENT
+                         { business_store_entry } DEDENT ] ;
+business_store_entry = str_value ":" NEWLINE [ INDENT { business_store_prop } DEDENT ] ;
+business_store_prop = "kind" ":" str_value NEWLINE
+                    | "namespace" ":" str_value NEWLINE
+                    | "required" ":" BOOL_LIT NEWLINE ;
 
 worktree_mode = "auto" | "none" ;
 

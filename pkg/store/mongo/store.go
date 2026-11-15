@@ -102,6 +102,7 @@ type LockProvider interface {
 
 // Store implements store.RunStore on top of Mongo + a blob backend.
 type Store struct {
+	contextNamespace   *mongoContextNamespace
 	client             *mongo.Client
 	db                 *mongo.Database
 	runs               *mongo.Collection
@@ -200,11 +201,17 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 
-	cli, err := mongo.Connect(options.Client().ApplyURI(cfg.URI).SetRegistry(Registry()))
+	clientOptions := options.Client().ApplyURI(cfg.URI).SetRegistry(Registry())
+	cli, err := mongo.Connect(clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: connect: %w", err)
 	}
 	if err := pingPrimary(ctx, cli, defaultPingPolicy); err != nil {
+		_ = cli.Disconnect(context.Background())
+		return nil, err
+	}
+	identity, err := configuredContextNamespace(clientOptions, cfg.Database)
+	if err != nil {
 		_ = cli.Disconnect(context.Background())
 		return nil, err
 	}
@@ -219,6 +226,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	}
 	db := cli.Database(cfg.Database)
 	s := &Store{
+		contextNamespace:   identity,
 		client:             cli,
 		db:                 db,
 		runs:               db.Collection(colRuns),
@@ -359,6 +367,9 @@ func indexModelName(m mongo.IndexModel) string {
 //
 // eventsTTLDays==0 disables the TTL.
 func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
+	if err := s.ensureStreamIndexes(ctx, eventsTTLDays); err != nil {
+		return err
+	}
 	// runs collection indexes (plan §D.1). Compound (tenant_id, …)
 	// indexes accelerate per-tenant filters; single-field indexes
 	// remain for cross-tenant admin views.
@@ -401,6 +412,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		// Refs #2636.
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "inputs.pr_url", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_pr_url_created").SetPartialFilterExpression(bson.M{"inputs.pr_url": bson.M{"$exists": true}})},
 		retryProbeMarkerIndex(),
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "inputs_pr_url", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_exact_pr_url_created").SetPartialFilterExpression(bson.M{"inputs_pr_url": bson.M{"$exists": true}})},
 	}); err != nil {
 		return err
 	}
@@ -459,6 +471,14 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	if err := s.ensureIndexes(ctx, s.userMessages, "user_messages", []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_queued")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_status_queued")},
+	}); err != nil {
+		return err
+	}
+
+	// Incarnation inbox scans never use historical indexes or collections.
+	if err := s.ensureIndexes(ctx, s.db.Collection(colIncarnationUserMessages), colIncarnationUserMessages, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "data_namespace", Value: 1}, {Key: "run_id", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("namespace_run_queued")},
+		{Keys: bson.D{{Key: "data_namespace", Value: 1}, {Key: "run_id", Value: 1}, {Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("namespace_run_status_queued")},
 	}); err != nil {
 		return err
 	}

@@ -279,23 +279,45 @@ func (c cancelSensitiveStore) UpdateRunMergeIf(ctx context.Context, id string, u
 	return c.RunStore.UpdateRunMergeIf(ctx, id, upd, expectedFrom)
 }
 
+// cancelAfterMergeClaimStore disconnects the request only after the real
+// conditional claim succeeds. It preserves the context-sensitive outcome
+// writer, so dropping WithoutCancel in production still loses the outcome.
+type cancelAfterMergeClaimStore struct {
+	cancelSensitiveStore
+	cancel   context.CancelFunc
+	acquired bool
+}
+
+func (s *cancelAfterMergeClaimStore) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+	ok, prior, token, err := s.RunStore.ClaimMerge(ctx, id, staleBefore)
+	if ok && err == nil {
+		s.acquired = true
+		s.cancel()
+	}
+	return ok, prior, token, err
+}
+
 // The merge outcome must not ride the request context: once the claim
 // is held, a client disconnect (cancelled request ctx) must neither
 // lose the outcome nor leak the claim. Against a ctx-honouring store,
-// a merge driven by an already-cancelled request still lands and
-// persists — proof the state writes are detached.
+// a request cancelled after a successful claim still persists its outcome.
+// Cancellation before the claim must remain a refusal, not authorize a merge.
 func TestPerformMerge_OutcomeSurvivesRequestCancel(t *testing.T) {
 	st, _, runID := seedMergeableRun(t)
 
-	svc, err := NewService("", WithLogger(iterlog.Nop()), WithStore(cancelSensitiveStore{st}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	probe := &cancelAfterMergeClaimStore{cancelSensitiveStore: cancelSensitiveStore{st}, cancel: cancel}
+	svc, err := NewService("", WithLogger(iterlog.Nop()), WithStore(probe))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := svc.PerformMergeCtx(cancelled, runID, MergeRequest{}); err != nil {
+	if _, err := svc.PerformMergeCtx(ctx, runID, MergeRequest{}); err != nil {
 		t.Fatalf("merge under a cancelled request ctx must still persist, got: %v", err)
+	}
+	if !probe.acquired || ctx.Err() != context.Canceled {
+		t.Fatal("fixture did not cancel after the real claim")
 	}
 	r, _ := st.LoadRun(context.Background(), runID)
 	if r.MergeStatus != store.MergeStatusMerged {

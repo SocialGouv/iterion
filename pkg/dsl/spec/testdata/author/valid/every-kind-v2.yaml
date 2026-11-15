@@ -371,6 +371,11 @@ nodes:
     message: "No: {{outputs.verdict.notes}}"
     resumable: true
 workflow:
+  business_stores:
+    - id: ledger
+      kind: postgres
+      namespace: finance
+      required: true
   name: release_readiness
   entry: survey
   contract: public

@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/store/blob"
 	"github.com/aws/smithy-go"
 )
 
-// TestRunFiles_ScratchToS3Bridge models the two-pod cloud reality without
-// a live Mongo: run-file methods touch only the blob backend + the local
-// scratch dir, so a bare Store (no Mongo collections wired) exercises the
-// full seam.
+// TestRunFiles_ScratchToS3Bridge uses the real Mongo format guard. A bare
+// Store can no longer represent this seam: parent format is read authority.
+// The byte backend remains deterministic; no S3 server is required here.
 //
 // A "runner" store owns a scratch dir + shared blob; a "server" store has
 // NO scratch but the SAME blob. Tools write into the runner's scratch,
@@ -23,10 +23,9 @@ import (
 // disk — lists + opens the files from S3. This is exactly how a finished
 // cloud run's Artifacts panel is served.
 func TestRunFiles_ScratchToS3Bridge(t *testing.T) {
-	ctx := context.Background()
 	b := newInMemoryBlob()
-	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
-	server := &Store{blob: b} // no scratch — pure S3 reader
+	runner, ctx := runFilesTestStore(t, b)
+	server := &Store{client: runner.client, db: runner.db, runs: runner.runs, blob: b} // no scratch — pure S3 reader
 
 	const runID = "run_bridge"
 	dir, err := runner.EnsureRunFilesDir(ctx, runID)
@@ -107,9 +106,9 @@ func TestRunFiles_ScratchToS3Bridge(t *testing.T) {
 // governed by the buffered-attachment cap. Review videos commonly exceed that
 // cap; they must be streamed durably before the scratch tree is removed.
 func TestUploadRunFiles_StreamsPastAttachmentCap(t *testing.T) {
-	ctx := context.Background()
 	b := newInMemoryBlob()
-	runner := &Store{blob: b, runFilesScratch: t.TempDir(), maxAttachmentBytes: 8}
+	runner, ctx := runFilesTestStore(t, b)
+	runner.maxAttachmentBytes = 8
 
 	const runID = "run_cap"
 	dir, err := runner.EnsureRunFilesDir(ctx, runID)
@@ -134,7 +133,7 @@ func TestUploadRunFiles_StreamsPastAttachmentCap(t *testing.T) {
 	if n != 2 {
 		t.Errorf("UploadRunFiles count = %d; want 2", n)
 	}
-	server := &Store{blob: b}
+	server := &Store{client: runner.client, db: runner.db, runs: runner.runs, blob: b}
 	files, err := server.ListRunFiles(ctx, runID)
 	if err != nil {
 		t.Fatalf("ListRunFiles: %v", err)
@@ -208,9 +207,8 @@ func (b *probingRunFileBlob) PutRunFile(_ context.Context, _, _, _ string, body 
 // the bytes covered by the file's stat-time size. In particular, an append
 // racing with the PUT must not make the body longer than Content-Length.
 func TestUploadRunFiles_BodyIsRewindableAndBoundedAtStatSize(t *testing.T) {
-	ctx := context.Background()
 	b := &probingRunFileBlob{inMemoryBlob: newInMemoryBlob()}
-	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
+	runner, ctx := runFilesTestStore(t, b)
 
 	const runID = "run_rewind"
 	dir, err := runner.EnsureRunFilesDir(ctx, runID)
@@ -261,14 +259,13 @@ func TestUploadRunFiles_BodyIsRewindableAndBoundedAtStatSize(t *testing.T) {
 // Fail the attempt with io.ErrUnexpectedEOF and retain the scratch tree; the
 // next attempt re-stats the now-quiescent file and can upload its new size.
 func TestUploadRunFiles_TruncateDuringPutIsRetriable(t *testing.T) {
-	ctx := context.Background()
 	b := &probingRunFileBlob{
 		inMemoryBlob: newInMemoryBlob(),
 		// The real S3 client wraps request-body failures in OperationError.
 		// Pin errors.Is propagation through that production wrapper.
 		wrapReadErr: true,
 	}
-	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
+	runner, ctx := runFilesTestStore(t, b)
 
 	const runID = "run_truncate"
 	dir, err := runner.EnsureRunFilesDir(ctx, runID)
@@ -331,12 +328,8 @@ func (b *failingRunFileBlob) PutRunFile(context.Context, string, string, string,
 // this path, so deleting the only copy would turn a temporary outage into a
 // permanent broken attachment.
 func TestUploadRunFiles_FailureKeepsScratch(t *testing.T) {
-	ctx := context.Background()
 	base := newInMemoryBlob()
-	runner := &Store{
-		blob:            &failingRunFileBlob{inMemoryBlob: base},
-		runFilesScratch: t.TempDir(),
-	}
+	runner, ctx := runFilesTestStore(t, &failingRunFileBlob{inMemoryBlob: base})
 
 	const runID = "run_retry"
 	dir, err := runner.EnsureRunFilesDir(ctx, runID)
@@ -363,4 +356,12 @@ func TestUploadRunFiles_FailureKeepsScratch(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("scratch review.mp4 changed: got %q", got)
 	}
+}
+
+func runFilesTestStore(t *testing.T, b blob.Client) (*Store, context.Context) {
+	t.Helper()
+	s, ctx := valueFormatMongo(t, false)
+	s.blob = b
+	s.runFilesScratch = filepath.Join(t.TempDir(), "scratch")
+	return s, ctx
 }

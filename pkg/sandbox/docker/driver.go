@@ -826,7 +826,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// since the plan refuses whatever its shape: the border recreates
 	// nothing the window removed.
 	for _, c := range p.spec.BindSourceChecks {
-		if err := sandbox.AnswerBindSourceCheck(c); err != nil {
+		if err := sandbox.AnswerBindSourceCheckContext(ctx, c); err != nil {
 			return nil, fmt.Errorf("docker: %w; refusing to create the container", err)
 		}
 	}

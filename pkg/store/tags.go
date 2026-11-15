@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -80,21 +79,9 @@ type runTagsFile struct {
 	Tags []string `json:"tags"`
 }
 
-// tagsPath validates runID and returns <root>/runs/<runID>/tags.json.
-func (s *FilesystemRunStore) tagsPath(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.root, "runs", runID, "tags.json"), nil
-}
-
 // SetRunTags implements RunTagStore over runs/<id>/tags.json — a single
 // whole-list file rewritten atomically on each save.
-func (s *FilesystemRunStore) SetRunTags(_ context.Context, runID string, tags []string) error {
-	p, err := s.tagsPath(runID)
-	if err != nil {
-		return err
-	}
+func (s *FilesystemRunStore) SetRunTags(ctx context.Context, runID string, tags []string) error {
 	if tags == nil {
 		tags = []string{}
 	}
@@ -102,22 +89,28 @@ func (s *FilesystemRunStore) SetRunTags(_ context.Context, runID string, tags []
 	if err != nil {
 		return fmt.Errorf("store: marshal run tags: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(p), dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir run dir for tags: %w", err)
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return err
 	}
-	return writeFileAtomic(p, data, filePerm)
+	defer unlock()
+	p, err := s.openRunPayloadFile(ctx, runID, "tags.json", true)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	return p.WriteAtomic(ctx, data, filePerm)
 }
 
 // GetRunTags implements RunTagStore: reads runs/<id>/tags.json, returning
 // an empty slice when the run never recorded any tags.
-func (s *FilesystemRunStore) GetRunTags(_ context.Context, runID string) ([]string, error) {
-	p, err := s.tagsPath(runID)
+func (s *FilesystemRunStore) GetRunTags(ctx context.Context, runID string) ([]string, error) {
+	p, err := s.openRunPayloadFile(ctx, runID, "tags.json", false)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(p)
+	defer p.Close()
+	data, err := p.ReadFile()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []string{}, nil

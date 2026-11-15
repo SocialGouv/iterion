@@ -124,3 +124,9 @@ disabling claw alone still permits the aggregator's local fetch. Restoring
 the helper's old disk-backed constructor fails its planted-cache assertion.
 Provider-supplied costs and explicitly seeded model specs remain available.
 No cleanup retry, timeout increase or production pricing policy changes.
+
+## Sign-out re-presentation
+
+| Test / check | Machine class | Evidence (log / SHA) | Disposition | Re-check |
+|---|---|---|---|---|
+| `signOutMachineTransitions` (studio) — "holds the start while the named session is held" | **Any machine**, loaded or idle | [#3160](https://github.com/SocialGouv/iterion/issues/3160), two occurrences ([T43](https://github.com/SocialGouv/iterion/actions/runs/41243004752), [42842340310](https://github.com/SocialGouv/iterion/actions/runs/42842340310) on a diff of one comment and one markdown file). Reproduced on an **idle 32-core box** with one 2500 ms stall between the sample and the click, giving CI's message verbatim | **Corrected 2026-11-12.** Not load: `findByRole` with no explicit `timeout` is allowed 3000 ms by `studio/src/test/setup.ts` while the machine's declared re-presentation ladder sends at 2000 ms (`LOOP_RETRY_DELAYS_MS`), so the config tolerates a gap longer than the interval in which the machine is obliged to send, and an overshot count is permanent. The ladder has its own witness in the same file, so it is parked for the measured window only, by TIMER ORDER (a 50 ms parker is always due before a 2 s tick) rather than by a margin — never by relaxing the count. The oracle was also **toothless**: deleting the SSO start's `retrySignOut` left this arm green on 4182 tests, because the ladder supplied the send; with the parker the same mutant reddens here AND on `signOutBoundToItsSession` | 2026-11-19, and on the ladder's cadence |

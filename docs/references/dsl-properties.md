@@ -551,6 +551,7 @@ A top-level declaration: `workflow <name>:`.
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
+| `business_stores` | block → [business_stores](#business_stores) | Expected business-store identities, normalized at launch and inherited by children |
 | `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
 | `resources` | block → [resources](#resources) | Named semaphores and pools nodes lease with needs: |
 | `mcp` | block → [mcp](#mcp) | MCP servers active for the run |
@@ -573,6 +574,26 @@ A top-level declaration: `workflow <name>:`.
 | `capabilities` | tool list | Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none |
 | `skills` | skill list | Run-wide skill-library skills |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
+
+### business_stores
+
+Declared business stores; no inference from accessed files. A bare block declares none.
+
+A block opened by `business_stores:` inside `workflow`.
+
+Entries: `<id>:` — One store per entry; the same id may name stores in different namespaces; an entry's sub-block is a [business_store](#business_store).
+
+### business_store
+
+Expected store identity; launch refuses missing id/kind and duplicate kind/namespace/id declarations.
+
+An entry opened by `business_stores:` inside `business_stores`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `kind` | string\|ident | Store kind |
+| `namespace` | string\|ident | Logical namespace |
+| `required` | bool | The declared store is required (default false); does not itself add an admission gate |
 
 ### budget
 

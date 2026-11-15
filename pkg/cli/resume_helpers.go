@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -137,6 +138,7 @@ func resumeSandboxOverride(opts ResumeOptions, r *store.Run) string {
 }
 
 func buildResumeExecutor(
+	ctx context.Context,
 	opts ResumeOptions,
 	wf *ir.Workflow,
 	s store.RunStore,
@@ -176,6 +178,7 @@ func buildResumeExecutor(
 		return nil, err
 	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+		Ctx:      ctx,
 		Workflow: wf,
 		Vars:     nil,
 		Store:    s,

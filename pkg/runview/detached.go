@@ -437,7 +437,11 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// Pre-flight only: the spawned runner compiles its own copy and the
 	// engine it roots resolves its own cwd. The service's effective workdir
 	// is the launch surface's answer for the synchronous checks (#1800).
-	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
+	wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
+	if err != nil {
+		return nil, err
+	}
+	ctxContract, err := s.resolveExecutionContext(parent, runID, spec, wf, cs.Hash)
 	if err != nil {
 		return nil, err
 	}
@@ -459,20 +463,19 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
-	// The runner subprocess (`iterion run`) has no flag to carry either of
-	// these, so they are stamped here or not at all — a dropped SourceRef
+	// The runner subprocess (`iterion run`) reads its context and provenance
+	// from the precreated document — a dropped SourceRef
 	// leaves a scheduled run reading as "manual" and invisible to the
 	// overlap gate's source.schedule_id query.
-	if spec.ParentRunID != "" || spec.SourceRef != nil || spec.Budget != nil {
-		created.ParentRunID = spec.ParentRunID
-		if spec.SourceRef != nil {
-			src := *spec.SourceRef
-			created.Source = &src
-		}
-		created.BudgetOverrides = RunBudgetOverrides(spec.Budget)
-		if err := s.store.SaveRun(context.Background(), created); err != nil {
-			return nil, fmt.Errorf("runview: save run provenance: %w", err)
-		}
+	created.ExecutionContext = ctxContract
+	created.ParentRunID = spec.ParentRunID
+	if spec.SourceRef != nil {
+		src := *spec.SourceRef
+		created.Source = &src
+	}
+	created.BudgetOverrides = RunBudgetOverrides(spec.Budget)
+	if err := s.store.SaveRun(context.Background(), created); err != nil {
+		return nil, fmt.Errorf("runview: save run provenance: %w", err)
 	}
 
 	// The staged uploads the launch names are promoted before the hand-off:

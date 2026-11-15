@@ -1791,8 +1791,9 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		servedSink:     servedSink,
 	}
 	return EventHooks{
-		OnLLMPrompt:  h.onLLMPrompt,
-		OnLLMRequest: h.onLLMRequest,
+		OnStructuredExtraction: h.onStructuredExtraction,
+		OnLLMPrompt:            h.onLLMPrompt,
+		OnLLMRequest:           h.onLLMRequest,
 		// OnLLMResponse is intentionally nil: response data surfaces through
 		// llm_step_finished events with richer per-step detail.
 		OnLLMRetry:           h.onLLMRetry,

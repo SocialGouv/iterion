@@ -790,6 +790,7 @@ func (c *compiler) compile() *Workflow {
 		Secrets:             secrets,
 		Presets:             presets,
 		Attachments:         attachments,
+		BusinessStores:      compileBusinessStores(wf.BusinessStores),
 		Loops:               loops,
 		Foreaches:           foreaches,
 		Budget:              budget,

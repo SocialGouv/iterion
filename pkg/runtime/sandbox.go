@@ -315,6 +315,7 @@ type SandboxParams struct {
 	// the bench repo's worktree with `docs/renovacy/` commits. Empty
 	// disables the mount (cloud mode: cross-machine bind isn't
 	// supportable; needs an S3-backed scratch area instead).
+	RunFilesGrant         store.RunFilesGrant
 	RunFilesHostDir       string
 	RunFilesContainerPath string
 
@@ -724,6 +725,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	botRunFilesDir := ""
 	var readBackDirs []sandbox.ReadBackDir
 	if p.RunFilesHostDir != "" {
+		if p.RunFilesGrant != nil {
+			if p.RunFilesHostDir != p.RunFilesGrant.HostPath() {
+				return nil, store.ErrRunDataIdentityChanged
+			}
+			bound, err := p.RunFilesGrant.Bind(ctx, p.RunID)
+			if err != nil {
+				return nil, err
+			}
+			if err = p.RunFilesGrant.ValidateHostPath(bound); err != nil {
+				return nil, err
+			}
+		}
 		if _, statErr := os.Stat(p.RunFilesHostDir); statErr == nil {
 			target := p.RunFilesContainerPath
 			if target == "" {
@@ -737,6 +750,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			switch {
 			case caps.SupportsHostBindMounts:
 				runFilesContainerPath = addOptionalBindMount(spec, p.RunFilesHostDir, target, target, "run-files", false, logger)
+				if p.RunFilesGrant != nil {
+					if runFilesContainerPath == "" {
+						return nil, store.ErrRunDataIdentityChanged
+					}
+					spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{Root: filepath.Dir(p.RunFilesHostDir), Path: p.RunFilesHostDir, Identity: p.RunFilesGrant})
+				}
 			case !caps.SupportsReadBackDrain:
 				// No host filesystem to bind the path with and no drain to
 				// bring its content back (noop runs its commands on the
@@ -816,6 +835,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				readBackDirs = append(readBackDirs, sandbox.ReadBackDir{
 					ContainerPath: target,
 					HostDir:       p.RunFilesHostDir,
+					RootOpener:    p.RunFilesGrant,
 					CapBytes: sandbox.ReadBackCapFor(servingMount, func(format string, args ...any) {
 						if logger != nil {
 							logger.Warn(format, args...)
@@ -823,6 +843,8 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 					}),
 				})
 			}
+		} else if p.RunFilesGrant != nil {
+			return nil, fmt.Errorf("runtime: retained run-files directory unavailable: %w", statErr)
 		} else if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {
 			// Same report addOptionalBindMount gives its optional mounts.
 			logger.Warn("runtime: sandbox run-files host dir %s: %v — skipping mount", p.RunFilesHostDir, statErr)
@@ -2868,6 +2890,12 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			return noopCleanup, err
 		}
 		if adopt {
+			// A parent's artifact-files mount cannot carry this child's birth.
+			// Until shared placement can serve a child-owned grant, refuse only
+			// incarnation-scoped adoption; legacy placement is unchanged.
+			if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+				return noopCleanup, fmt.Errorf("runtime: shared sandbox cannot serve a child-owned run-files grant: %w", store.ErrRunDataCapability)
+			}
 			// A child adopting the parent's sandbox goes out through the
 			// parent's proxy, whose rewriter is the parent's guard — the
 			// child's secrets are unknown to it — and mounts nothing of its
@@ -2914,26 +2942,17 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			}
 		}
 	}
-	// Pre-create the per-run artifact-files directory so the bind mount
-	// has a source to point at. Both the filesystem store and the Mongo
-	// (cloud) store satisfy RunFilesStore — the filesystem store's dir IS
-	// the read source, while the Mongo store returns a runner-local
-	// scratch dir it later bridges to S3 (see pkg/store/mongo/runfiles.go).
-	// A store that doesn't satisfy the interface leaves runFilesHost empty
-	// and resolveAndStartSandbox skips the mount silently. Errors
-	// from EnsureRunFilesDir are logged but not fatal: the worst case is
-	// in-sandbox tools see ITERION_ARTIFACT_FILES_DIR unset and either
-	// fall back to a tmpdir or skip writing — far less disruptive than
-	// failing the whole sandbox boot over a feature one tool may not use.
-	var runFilesHost string
-	if rfs := store.AsRunFilesStore(e.store); rfs != nil {
-		dir, ensureErr := rfs.EnsureRunFilesDir(ctx, runID)
-		if ensureErr != nil {
-			e.logger.Warn("runtime: ensure run-files dir failed for run %s: %v", runID, ensureErr)
-		} else {
-			runFilesHost = dir
-		}
+	runFilesHost, runFilesGrant, closeRunFiles, grantErr := e.runFilesForSandbox(ctx, runID)
+	if grantErr != nil {
+		localAttachmentsCleanup()
+		return noopCleanup, grantErr
 	}
+	grantTransferred := false
+	defer func() {
+		if !grantTransferred {
+			closeRunFiles()
+		}
+	}()
 
 	bundleHost := e.resourceDirForRun()
 	var secretVars map[string]any
@@ -2961,6 +2980,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		AttachmentsHostDir:       attachHost,
 		AttachmentsContainerPath: attachmentsContainerPath,
 		RunFilesHostDir:          runFilesHost,
+		RunFilesGrant:            runFilesGrant,
 		RunFilesContainerPath:    "/iterion/artifact-files",
 		BundleHostDir:            bundleHost,
 		BundleContainerPath:      "/run/iterion/bundle",
@@ -3071,6 +3091,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 	cleanup := func() {
+		defer closeRunFiles()
 		hostDevboxCleanup()
 		localAttachmentsCleanup()
 		if active == nil {
@@ -3079,13 +3100,14 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
-			drainRunFilesOnCleanup(active.run, e.logger, emitForSandbox)
+			drainRunFilesOnCleanup(ctx, active.run, e.logger, emitForSandbox)
 			e.bankScratchOnCleanup(ctx, runID, active)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
+	grantTransferred = true
 	return cleanup, nil
 }
 
@@ -3231,6 +3253,7 @@ const sandboxRunFilesDrainTimeout = 2 * time.Minute
 // that wrote nothing, and an empty or partial artifact-files panel is
 // exactly the silence this ticket is about.
 func drainRunFilesOnCleanup(
+	originalCtx context.Context,
 	run sandbox.Run,
 	logger *iterlog.Logger,
 	emitEvent func(store.EventType, map[string]any) error,
@@ -3239,7 +3262,7 @@ func drainRunFilesOnCleanup(
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sandboxRunFilesDrainTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), sandboxRunFilesDrainTimeout)
 	defer cancel()
 	if err := exporter.ExportRunFiles(ctx); err != nil {
 		// Every fact is read off the error the driver typed, never off

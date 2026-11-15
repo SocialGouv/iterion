@@ -135,21 +135,20 @@ func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, run
 // SettleCredSlotAdmission implements CredSlotStore: under the store lock,
 // like the flip it settles, so it lands on the document that flip wrote or
 // on none.
-func (s *FilesystemRunStore) SettleCredSlotAdmission(_ context.Context, runID string, queuedAt time.Time) error {
+func (s *FilesystemRunStore) SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error {
 	if runID == "" || queuedAt.IsZero() {
 		return fmt.Errorf("store: settle the cred slot admission of run %q: run id and the flip's queued_at are required (queued_at=%v)", runID, queuedAt)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.loadRunRaw(runID)
+	r, unlock, err := s.lockExistingRunMetadata(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("store: settle the cred slot admission of run %s: %w", runID, err)
 	}
+	defer unlock()
 	if !r.AwaitsCredSlotAdmission() || r.QueuedAt == nil || !r.QueuedAt.Equal(queuedAt) {
 		return nil
 	}
 	r.CredAdmissionPending = false
-	if err := s.writeRun(r); err != nil {
+	if err := s.writeRunLockedContext(ctx, r, false, nil); err != nil {
 		return fmt.Errorf("store: settle the cred slot admission of run %s: %w", runID, err)
 	}
 	return nil

@@ -551,7 +551,8 @@ func isRunInputs(e ast.Expr) bool {
 
 // buildsARunDocument reports whether a composite literal builds the run
 // document whose inputs are a launch's: `Run{…}`, or `store.Run{…}` however
-// the package is imported. A literal whose type is ELIDED — an element of a
+// the package is imported, including its atomic RunCreateSpec birth payload.
+// A literal whose type is ELIDED — an element of a
 // collection of them — is judged as one: no reading here can narrow it, so it
 // falls on the side that judges.
 func buildsARunDocument(typ ast.Expr) bool {
@@ -559,9 +560,9 @@ func buildsARunDocument(typ ast.Expr) bool {
 	case nil:
 		return true
 	case *ast.Ident:
-		return t.Name == "Run"
+		return t.Name == "Run" || t.Name == "RunCreateSpec"
 	case *ast.SelectorExpr:
-		return t.Sel.Name == "Run"
+		return t.Sel.Name == "Run" || t.Sel.Name == "RunCreateSpec"
 	}
 	return false
 }
@@ -651,6 +652,20 @@ func TestARunsLaunchInputsAreWrittenOnlyFromTheLaunchMap(t *testing.T) {
 	// right-hand side, or a second write in the same file, is a new claim and
 	// reddens here.
 	exempt := map[string]string{
+		// These handoffs carry the complete launch map unchanged. They are
+		// judged as Run writers (never exempted as unrelated Inputs fields),
+		// and each exact expression must occur once in its named file.
+		"pkg/botreplay/record.go":         "s.Input",
+		"pkg/cli/run.go":                  "req.Vars",
+		"pkg/dispatcher/engine_runner.go": "spec.Vars",
+		"pkg/dispatcher/subbot.go":        "req.Vars",
+		"pkg/runner/subbot.go":            "req.Vars",
+		"pkg/runview/subbot.go":           "req.Vars",
+
+		// The atomic birth twins carry the already validated launch map from
+		// RunCreateSpec unchanged; neither reconstructs nor rewrites it.
+		"pkg/store/run_create_fs.go":    "spec.Inputs",
+		"pkg/store/mongo/run_create.go": "spec.Inputs",
 		// A redacted COPY for the read surface — a view of a run, never the
 		// document the pre-flight and the engine read.
 		"pkg/store/launch_secrets.go": "RedactLaunchVars(r.Inputs)",

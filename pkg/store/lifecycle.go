@@ -462,6 +462,12 @@ func (s RunStatus) CanOperatorResume() bool {
 		s == RunStatusPausedOperator || s == RunStatusPausedWaitingHuman
 }
 
+// CanStartExecution names the precreated local and queued cloud start lanes.
+// Acquiring a durable execution identity does not bypass their caller's lock.
+func (s RunStatus) CanStartExecution() bool {
+	return s == RunStatusRunning || s == RunStatusQueued
+}
+
 // RequiresResumeAnswers: resuming this status needs the pending human
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }

@@ -53,6 +53,9 @@ func (v *svcSource) Close() error { return nil }
 // events (store.EventAlert, Seq==0, never persisted) bypass the dedup —
 // they only ever arrive on the live tail.
 func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq int64) (runstream.EventSubscription, error) {
+	return v.SubscribeEventsCursor(ctx, runID, runstream.EventCursor{Seq: fromSeq})
+}
+func (v *svcSource) SubscribeEventsCursor(ctx context.Context, runID string, position runstream.EventCursor) (runstream.EventSubscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -84,7 +87,8 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		// tail on a corrupt log); other load errors end the replay but
 		// the live tail still runs (the disk history may be unreadable
 		// while the broker still works).
-		maxReplayed, err := runstream.ReplayEvents(ctx, s.store, runID, fromSeq, sub)
+		progress, err := runstream.ReplayEventsCursor(ctx, s.store, runID, position, sub)
+		position = progress.Cursor
 		if errors.Is(err, store.ErrEventsCorrupted) {
 			sub.Warn(err)
 			return
@@ -101,7 +105,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		// nil) close via broker.CloseRun as before.
 		external := release != nil
 		if external {
-			if _, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
+			if _, done := s.eventTerminalCatchUp(ctx, runID, position, sub); done {
 				return
 			}
 		}
@@ -125,17 +129,17 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 				if !ok {
 					return
 				}
-				if ev.Type != store.EventAlert && ev.Seq <= maxReplayed {
+				if ev.Type != store.EventAlert && !position.Contains(ev.Seq) {
 					continue
 				}
 				if !sub.Ship(ctx, []*store.Event{ev}) {
 					return
 				}
-				if ev.Seq > maxReplayed {
-					maxReplayed = ev.Seq
+				if position.Contains(ev.Seq) {
+					position = runstream.EventCursor{Seq: ev.Seq, After: true}
 				}
 			case <-termC:
-				if _, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
+				if _, done := s.eventTerminalCatchUp(ctx, runID, position, sub); done {
 					return
 				}
 			}
@@ -146,20 +150,20 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 }
 
 // eventTerminalCatchUp reports whether runID has reached a terminal
-// status; when it has, it replays events persisted past maxReplayed
+// status; when it has, it replays events persisted after the current position
 // (stragglers the live broker bridge may not have delivered yet) so the
 // terminal event is never lost before the stream closes. Returns the
-// advanced high-water seq and whether the run is terminal (done=true →
+// advanced cursor and whether the run is terminal (done=true →
 // the caller ends the subscription, which the WS turns into `terminated`).
-func (s *Service) eventTerminalCatchUp(ctx context.Context, runID string, maxReplayed int64, sub runstream.EventPipe) (int64, bool) {
+func (s *Service) eventTerminalCatchUp(ctx context.Context, runID string, position runstream.EventCursor, sub runstream.EventPipe) (runstream.EventCursor, bool) {
 	run, err := s.LoadRun(runID)
 	if err != nil || !run.Status.IsTerminal() {
-		return maxReplayed, false
+		return position, false
 	}
-	if d, rerr := runstream.ReplayEvents(ctx, s.store, runID, maxReplayed+1, sub); rerr == nil {
-		maxReplayed = d
+	if d, rerr := runstream.ReplayEventsCursor(ctx, s.store, runID, position, sub); rerr == nil {
+		position = d.Cursor
 	}
-	return maxReplayed, true
+	return position, true
 }
 
 // SubscribeLogs delivers log bytes from fromOffset. Local resolution

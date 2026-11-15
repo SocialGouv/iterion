@@ -62,7 +62,7 @@ func TestBuildExecutorSetsTheRunsMatcherOnTheLoggerItIsGiven(t *testing.T) {
 	process := iterlog.New(iterlog.LevelInfo, &procBuf)
 	runLogger := process.WithWriter(&runBuf)
 
-	if _, err := BuildExecutor(ExecutorSpec{
+	if _, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Ctx:      context.Background(),
 		Store:    st,
 		RunID:    "run-slot",
@@ -71,7 +71,7 @@ func TestBuildExecutorSetsTheRunsMatcherOnTheLoggerItIsGiven(t *testing.T) {
 		Logger:   runLogger,
 		WorkDir:  t.TempDir(),
 		StoreDir: t.TempDir(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestTwoConcurrentRunsKeepTheirOwnMatcher(t *testing.T) {
 	for _, r := range runs {
 		_, logger := svc.prepareRunLog(r.id)
 		r.logger = logger
-		if _, err := BuildExecutor(ExecutorSpec{
+		if _, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 			Ctx:      context.Background(),
 			Store:    st,
 			RunID:    r.id,
@@ -125,7 +125,7 @@ func TestTwoConcurrentRunsKeepTheirOwnMatcher(t *testing.T) {
 			Logger:   logger,
 			WorkDir:  t.TempDir(),
 			StoreDir: t.TempDir(),
-		}); err != nil {
+		})); err != nil {
 			t.Fatalf("BuildExecutor(%s): %v", r.id, err)
 		}
 	}

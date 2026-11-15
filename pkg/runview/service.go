@@ -1049,6 +1049,8 @@ type Service struct {
 	// handler streams from change streams instead of relying on the
 	// local broker (which only sees this process's writes). ADR-053.
 	streamSrc runstream.Source
+	// observedEvents owns only explicit observed feeds, never the legacy Source.
+	observedEvents *observedEventBridges
 
 	// fileSrcs tracks on-demand events.jsonl tailers started by
 	// ensureEventSource for runs not produced in this process (e.g.
@@ -1514,6 +1516,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.rebuildPipelineQueue()
 		s.startPipelineScheduler()
 	}
+	s.initObservedEventFeeds()
 	return s, nil
 }
 

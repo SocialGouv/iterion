@@ -179,12 +179,24 @@ func (e *Engine) inferredBotOrigin() *store.BotOrigin {
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
+	return e.runPreparedEntry(ctx, runID, inputs, nil, PreparedStopOptions{})
+}
+func (e *Engine) runPreparedEntry(ctx context.Context, runID string, inputs map[string]any, prepared *store.PreparedRunInvocation, stopOptions PreparedStopOptions) (err error) {
+	// Mask inherited execution authority before any cancellable entry check:
+	// a child cancelled during preparation must retire its own birth, never
+	// interpret the parent's grant as a competing acquisition of that child.
+	ctx = e.beginCorrectionEntry(ctx, nil)
+	ctx = e.withPreparedQueuedStart(ctx, prepared)
+	if _, err := store.ValueFormatForWrite(ctx, runID); err != nil {
+		return e.stopPreparedEntry(ctx, runID, prepared, err, stopOptions)
+	}
 	if e.botOrigin == nil {
 		e.botOrigin = e.inferredBotOrigin()
 	}
-	run, err := e.runResolveDoc(ctx, runID, inputs)
+	entryCtx := ctx
+	ctx, run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
-		return err
+		return e.stopPreparedEntry(entryCtx, runID, prepared, err, stopOptions)
 	}
 	// The run's trust is settled here, once, before anything reads it: the
 	// document a pickup or a sub-bot child was built from may carry what no
@@ -202,10 +214,24 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// setup, sandbox startup and the first model call. A denied context is
 	// therefore a durable, actionable failure without external side effects.
 	if err := e.admitRun(ctx, runID, run); err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "execution context admission", err)
+		if errors.Is(err, ErrAdmissionStopped) || errors.Is(err, ErrResumeSuperseded) || isRunValueFormatRefusal(err) {
+			return err
+		}
+		if prepared != nil && preparedCancellation(ctx, err) {
+			return e.stopPreparedEntry(ctx, runID, prepared, err, stopOptions)
+		}
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "execution context admission", err)
 		return setupErrFrom(st, stCode, err)
 	}
 
+	if err := e.prepareCorrectionAccounting(ctx, run); err != nil {
+		return err
+	}
+	if e.correctionProtocolCapable() {
+		if err := e.failSpentBudgetBeforeResume(ctx, run); err != nil {
+			return err
+		}
+	}
 	run, err = e.runPromoteAttachments(ctx, runID, run)
 	if err != nil {
 		return err
@@ -233,7 +259,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// already admitted at launch, and re-judging it would make a run
 	// unresumable because its declaration was tightened afterwards.
 	if err := e.validateVarConstraints(run.Inputs); err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "var validation", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "var validation", err)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
@@ -243,7 +269,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// is spun up for it. The RuntimeError's code rides through
 	// setupFailureCode, so the run is terminal and typed.
 	if err := e.refuseBundleRequiringNewerEngine(); err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "engine requirement", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "engine requirement", err)
 		return setupErrFrom(st, stCode, err)
 	}
 
@@ -301,7 +327,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
-				st, stCode := e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
+				st, stCode, wtErr := e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
 				return setupErrFrom(st, stCode, fmt.Errorf("runtime: worktree setup: %w", wtErr))
 			}
 			e.workDir = wtc.wtPath
@@ -322,7 +348,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, e.parentRunID != "" && !worktreeActive)
 	if resourceErr != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
+		st, stCode, resourceErr := e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
 		return setupErrFrom(st, stCode, resourceErr)
 	}
 	defer func() {
@@ -350,7 +376,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	e.repoRoot = repoRoot
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir, inputs)
 	if sbErr != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
+		st, stCode, sbErr := e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: sandbox: %w", sbErr))
 	}
 	defer sandboxCleanup()
@@ -362,11 +388,22 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// node_started's iteration_path, the bound (max) from here. Literal
 	// caps only; expression / unbounded caps emit 0 (max unknown).
 	if err := e.emit(ctx, runID, store.EventRunStarted, "", runStartedPayload(e.workflow, run)); err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "emit run_started", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "emit run_started", err)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
 
-	rs := e.runInitState(ctx, runID, inputs)
+	if err := e.prepareCorrectionAccounting(ctx, run); err != nil {
+		return err
+	}
+	rs, initErr := e.runInitState(ctx, runID, inputs)
+	if initErr != nil {
+		return initErr
+	}
+	if e.correctionProtocolCapable() {
+		if err := e.restoreCheckpointBudget(rs, run.Checkpoint); err != nil {
+			return err
+		}
+	}
 
 	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
 	e.evictRunSessions(runID, loopErr)
@@ -379,9 +416,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 // run, then stamps any engine-level metadata (workflow hash, file
 // path, parent run, run name, merge strategy, auto-merge, preset, bundle hash)
 // onto the persisted record.
-func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (*store.Run, error) {
+func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (context.Context, *store.Run, error) {
 	var run *store.Run
-	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+	bound, existing, loadErr := store.LoadRunWithValueFormat(ctx, e.store, runID)
+	if loadErr == nil {
+		ctx = bound
+		// A prepared queued birth must still enter through its own acquisition.
+		// A peer already running must not select the historical running path.
+		if start, _ := ctx.Value(preparedQueuedStartKey{}).(*preparedQueuedStart); start != nil && existing.Status != start.original.Status {
+			return nil, nil, ErrAdmissionStopped
+		}
 		// Pickup path: the doc already exists.
 		//   - queued: cloudpublisher pre-created the row before
 		//     publishing on JetStream; transition to running here.
@@ -395,20 +439,40 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		switch existing.Status {
 		case store.RunStatusQueued:
 			var err error
-			existing, err = e.runStartQueued(ctx, runID)
+			if e.correctionProtocolCapable() {
+				existing, err = e.acquireEntryExecution(ctx, existing, store.ExecutionStart)
+			} else if start, _ := ctx.Value(preparedQueuedStartKey{}).(*preparedQueuedStart); start != nil {
+				existing, err = e.acquirePreparedQueuedStart(ctx, existing, start)
+			} else {
+				existing, err = e.runStartQueued(ctx, runID)
+			}
 			if err != nil {
-				return nil, fmt.Errorf("runtime: pickup transition: %w", err)
+				return nil, nil, fmt.Errorf("runtime: pickup transition: %w", err)
 			}
 		case store.RunStatusRunning:
-			// Already running — assume legitimate claim.
+			if e.correctionProtocolCapable() {
+				var err error
+				existing, err = e.acquireEntryExecution(ctx, existing, store.ExecutionStart)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 		default:
-			return nil, fmt.Errorf("runtime: run %s already in status %s, refusing to restart", runID, existing.Status)
+			return nil, nil, fmt.Errorf("runtime: run %s already in status %s, refusing to restart", runID, existing.Status)
 		}
 		if len(inputs) > 0 {
 			existing.Inputs = inputs
 		}
 		run = existing
+	} else if !errors.Is(loadErr, store.ErrRunNotFound) {
+		return nil, nil, fmt.Errorf("runtime: load run: %w", loadErr)
 	} else {
+		// A prepared existing invocation must not resurrect a row that
+		// disappeared after its first read. Only the unbound historical
+		// Engine.Run API retains its direct legacy-birth behavior.
+		if store.RequireRunValueFormat(ctx, runID) == nil {
+			return nil, nil, loadErr
+		}
 		// Direct path: no doc yet, create one. CreateRun is strict
 		// (InsertOne) so a parallel pickup would lose this race —
 		// acceptable: the only callers here are the CLI and tests, both
@@ -422,16 +486,21 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// through here (the runtime spawns them; only Service.Launch
 		// pre-creates its own rows), so the window was reachable on every
 		// `subbot` node. Service.Launch already closed it the same way.
-		var created *store.Run
-		var err error
-		if pc := store.AsParentedRunCreator(e.store); pc != nil && e.parentRunID != "" {
-			created, err = pc.CreateChildRun(ctx, runID, e.workflow.Name, e.parentRunID, inputs)
-		} else {
-			created, err = e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
+		// Runtime direct births remain legacy until the complete birth port is
+		// composed. An explicit exact intent must never degrade to CreateRun.
+		format, formatErr := store.ValueFormatForWrite(ctx, runID)
+		if formatErr != nil {
+			return nil, nil, formatErr
 		}
+		if format != store.LegacyValueFormat {
+			return nil, nil, store.ErrValueFormatCapability
+		}
+		invocation, err := store.PrepareRunInvocation(ctx, e.store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: e.workflow.Name, ParentRunID: e.parentRunID, Inputs: inputs}})
 		if err != nil {
-			return nil, fmt.Errorf("runtime: create run: %w", err)
+			return nil, nil, fmt.Errorf("runtime: create run: %w", err)
 		}
+		ctx = invocation.Context
+		created := invocation.Run
 		// A store may insert a fresh row as `queued` (the cloud store does —
 		// CreateChildRun mirrors the publisher's shape). This engine is about
 		// to execute it, so the row must read `running` now, as the pickup
@@ -439,10 +508,15 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// `queued` for its whole life — judged by the queued-row cutoff,
 		// shown queued in the studio, never given a started_at — and ends
 		// `finished` without ever having been running.
-		if created.Status == store.RunStatusQueued {
+		if e.correctionProtocolCapable() {
+			created, err = e.acquireEntryExecution(ctx, created, store.ExecutionStart)
+			if err != nil {
+				return nil, nil, err
+			}
+		} else if created.Status == store.RunStatusQueued {
 			created, err = e.runStartQueued(ctx, runID)
 			if err != nil {
-				return nil, fmt.Errorf("runtime: created-run transition: %w", err)
+				return nil, nil, fmt.Errorf("runtime: created-run transition: %w", err)
 			}
 		}
 		run = created
@@ -625,7 +699,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.executionContext != nil {
 			ctxContract := e.executionContext.Clone()
 			if err := ctxContract.Normalize(); err != nil {
-				return nil, fmt.Errorf("runtime: invalid execution context: %w", err)
+				return nil, nil, fmt.Errorf("runtime: invalid execution context: %w", err)
 			}
 			// A queued/resumed run already has an authority-owned context
 			// stamped by its launcher. Preserve it; the admission gate compares
@@ -644,20 +718,20 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.workflow.Contract != nil {
 			raw, err := json.Marshal(e.workflow.Contract)
 			if err != nil {
-				return nil, fmt.Errorf("runtime: encode run public contract: %w", err)
+				return nil, nil, fmt.Errorf("runtime: encode run public contract: %w", err)
 			}
 			run.PublicContract = raw
 		} else {
 			run.PublicContract = nil
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
-			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
+			return nil, nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
 	if err := e.seedSubbotCorrections(ctx, run); err != nil {
-		return nil, fmt.Errorf("seed child correction ledger: %w", err)
+		return nil, nil, fmt.Errorf("seed child correction ledger: %w", err)
 	}
-	return run, nil
+	return ctx, run, nil
 }
 
 // effectiveBudgetSnapshot projects the caps THIS engine enforces onto the
@@ -707,7 +781,7 @@ func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, 
 	if !changed {
 		return nil, store.ErrRunConflict
 	}
-	run, err := e.store.LoadRun(ctx, runID)
+	_, run, err := store.LoadRunWithValueFormat(ctx, e.store, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -724,17 +798,25 @@ func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, 
 // stale). On error, marks the run failed best-effort before returning.
 func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *store.Run) (*store.Run, error) {
 	if err := promoteBundleAttachmentDefaults(ctx, e.store, runID, e.workflow, e.bundle, e.logger); err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
+		if isRunValueFormatRefusal(err) {
+			return nil, err
+		}
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
 		return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
 	}
 	if e.attachmentPromote != nil {
 		if err := e.attachmentPromote(ctx, runID); err != nil {
-			st, stCode := e.markFailedBestEffort(ctx, runID, "attachment promote", err)
+			if isRunValueFormatRefusal(err) {
+				return nil, err
+			}
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "attachment promote", err)
 			return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: promote attachments: %w", err))
 		}
 	}
-	if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
+	if _, reloaded, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil {
 		return reloaded, nil
+	} else if isRunValueFormatRefusal(err) {
+		return nil, err
 	}
 	return run, nil
 }
@@ -800,11 +882,11 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			}
 		}
 		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
-			st, stCode := e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
 			return setupErrFrom(st, stCode, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
-			st, stCode := e.markFailedBestEffort(ctx, runID, "save work dir", err)
+			st, stCode, err := e.markFailedBestEffort(ctx, runID, "save work dir", err)
 			return setupErrFrom(st, stCode, fmt.Errorf("runtime: save work dir: %w", err))
 		}
 	}
@@ -849,7 +931,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// must answer the refusal instead.
 	pass, perr := newMirrorPass(e.workDir, e.trust)
 	if perr != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "open workspace handle", perr)
+		st, stCode, perr := e.markFailedBestEffort(ctx, runID, "open workspace handle", perr)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: open workspace handle: %w", perr))
 	}
 	defer pass.Close()
@@ -863,7 +945,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	ClearMirroredTierMarkers(e.workDir, pass, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, pass, e.logger)
 	if err != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "bundle skills", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle skills: %w", err))
 	}
 	// Mirror markdown contributions (skills / commands / agents) from enabled
@@ -884,7 +966,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions: %v", err)
 		}
-		st, stCode := e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
+		st, stCode, err := e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: plugin contributions: %w", err))
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
@@ -903,7 +985,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// "declared and load-bearing".
 	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills(pass)
 	if libraryErr != nil {
-		st, stCode := e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
+		st, stCode, libraryErr := e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: library skills: %w", libraryErr))
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...), pass)
@@ -1188,20 +1270,20 @@ func (e *Engine) applyPresetFocus() {
 // `e.repoRoot = repoRoot` and startSandbox, which is what lets
 // pushExecutorVars resolve the scratch read root the way the nodes
 // about to execute will resolve ${PROJECT_SCRATCH_DIR}.
-func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) *runState {
-	// Settle the run-family root before any var expansion: ${RUN_SCRATCH_DIR}
-	// keys on it (#2869), and a sub-bot child's fan-in subtree is its
-	// family's, not its own.
+func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) (*runState, error) {
+	// Resolve the family root before expanding its scratch variables.
 	e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
 	rs := e.newRunState(runID, inputs)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
-	if r, err := e.store.LoadRun(ctx, runID); err == nil && r != nil {
+	if _, r, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil && r != nil {
 		rs.isWorktree = r.Worktree
+	} else if isRunValueFormatRefusal(err) {
+		return nil, err
 	}
 	e.pushExecutorVars(ctx, runID, rs.vars)
-	return rs
+	return rs, nil
 }
 
 // finalizeOnExit applies the worktree-finalization step at the end of a
@@ -1216,6 +1298,9 @@ func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[stri
 // reachable only via reflog (eligible for `git gc` after ~30 days) —
 // see F-RT-1 in docs/reviews/codebase-2026-05-17.md.
 func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktreeContext, cleanup func(), loopErr error) {
+	if isRunValueFormatRefusal(loopErr) {
+		return
+	}
 	if wtCtx == nil {
 		return
 	}
@@ -1236,7 +1321,11 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 	// ever sets it from empty), so its presence here means the gate already
 	// owns this run's finalize. Re-running finalizeWorktree would create a
 	// duplicate storage branch and possibly re-merge — skip it, just clean up.
-	if r, err := e.store.LoadRun(ctx, runID); err == nil && r.MergeStatus != "" {
+	_, finalizedRun, loadErr := store.LoadRunWithValueFormat(ctx, e.store, runID)
+	if isRunValueFormatRefusal(loadErr) {
+		return
+	}
+	if r := finalizedRun; loadErr == nil && r.MergeStatus != "" {
 		// Staleness check: the recorded finalize (review gate, or an
 		// orphan-recovery pass) captured FinalCommit at ITS moment. If the
 		// worktree HEAD has since moved, later committed work exists that the
@@ -1285,7 +1374,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		autoMerge:     e.autoMerge,
 	}, e.logger)
 	if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" || finRes.FinalBranchError != "" {
-		if r2, err := e.store.LoadRun(ctx, runID); err == nil {
+		if _, r2, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil {
 			r2.FinalCommit = finRes.FinalCommit
 			r2.FinalBranch = finRes.FinalBranch
 			r2.FinalBranchError = finRes.FinalBranchError
@@ -1296,9 +1385,16 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 				r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 			}
 			r2.AutoMerge = e.autoMerge
-			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil && e.logger != nil {
-				e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
+			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil {
+				if isRunValueFormatRefusal(saveErr) {
+					return
+				}
+				if e.logger != nil {
+					e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
+				}
 			}
+		} else if isRunValueFormatRefusal(err) {
+			return
 		}
 	}
 	if finRes.FinalBranchError != "" {

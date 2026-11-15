@@ -21,7 +21,7 @@ func (s *Store) SetRunOutputCorrection(ctx context.Context, id, ledgerKey string
 		"output_corrections." + ledgerKey: episode,
 		"updated_at":                      time.Now().UTC(),
 	}}
-	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, id, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: set output correction: %w", err)
 	}

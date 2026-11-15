@@ -7458,6 +7458,7 @@ export interface components {
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
             budget_unreported_calls?: number;
+            correction_accounting?: components["schemas"]["CorrectionAccounting"];
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -7549,6 +7550,27 @@ export interface components {
             path: string;
             ref: string;
             secret_id?: string;
+        };
+        CorrectionAccounting: {
+            daily_marks?: {
+                [key: string]: number;
+            };
+            daily_scope_cost_usd?: {
+                [key: string]: number;
+            };
+            iteration_marks?: {
+                [key: string]: boolean;
+            };
+            unpriced_marks?: {
+                [key: string]: number;
+            };
+            unpriced_node_marks?: {
+                [key: string]: boolean;
+            };
+            usage_marks?: {
+                [key: string]: components["schemas"]["OutputCorrectionUsage"];
+            };
+            version: number;
         };
         CredentialPreview: {
             candidates: components["schemas"]["CredentialPreviewCandidate"][];
@@ -7872,6 +7894,15 @@ export interface components {
             reason: string;
             spec: string;
         };
+        InvocationUsageRoute: {
+            backend?: string;
+            provider?: string;
+            reported_model?: string;
+            requested_model?: string;
+            scope: string;
+            session_fingerprint?: string;
+            session_id?: string;
+        };
         Issue: {
             assignee?: string;
             awaiting_input?: boolean;
@@ -7984,24 +8015,63 @@ export interface components {
             teams: components["schemas"]["MembershipView"][];
             unavailable?: boolean;
         };
+        OutputCorrectionCause: {
+            kind: string;
+            node_id?: string;
+            provider?: string;
+            /** Format: date-time */
+            reset_at?: string;
+            self_imposed?: boolean;
+            timeout_nanos?: number;
+            version: number;
+            window_kind?: string;
+        };
         OutputCorrectionEpisode: {
             attempts?: number;
             budget?: number;
+            cause?: components["schemas"]["OutputCorrectionCause"];
             episode_id?: string;
+            generation?: string;
             input_fingerprint?: string;
             invocation_id?: string;
             last_error?: string;
             last_output_fingerprint?: string;
             last_violation_fingerprint?: string;
+            ledger_key?: string;
             node_id?: string;
+            reservations?: components["schemas"]["OutputCorrectionReservation"][];
             /** Format: date-time */
             retired_at?: string;
             retired_reason?: string;
+            revision?: number;
             /** Format: date-time */
             started_at?: string;
             status?: string;
+            terminal_kind?: string;
             /** Format: date-time */
             updated_at?: string;
+            usage?: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReceipt: {
+            observation?: components["schemas"]["UsageObservation"];
+            projection?: components["schemas"]["UsageProjection"];
+            usage: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReservation: {
+            execution_epoch: string;
+            id: string;
+            initial_usage_id?: string;
+            logical_invocation_id?: string;
+            origin?: components["schemas"]["UsageOrigin"];
+            receipt?: components["schemas"]["OutputCorrectionReceipt"];
+            scope_key: string;
+            /** Format: date-time */
+            started_at: string;
+        };
+        OutputCorrectionUsage: {
+            cost_usd?: number;
+            tokens?: number;
+            unreported_calls?: number;
         };
         Override: {
             backend?: string;
@@ -8210,6 +8280,11 @@ export interface components {
             preference_order: string[];
             providers: components["schemas"]["ProviderStatus"][];
             resolved_default: string;
+        };
+        ReportedEconomicSession: {
+            backend: string;
+            fingerprint?: string;
+            session_id: string;
         };
         RoutingPolicy: {
             allowed_actions?: string[];
@@ -8441,6 +8516,12 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        SessionCostObservation: {
+            backend: string;
+            cost_usd: number;
+            fingerprint?: string;
+            session_id: string;
+        };
         SessionLedgerEntry: {
             session_id: string;
             tasks: string[];
@@ -8572,6 +8653,67 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        UsageComponent: {
+            call_id?: string;
+            cost_kind: string;
+            cost_known: boolean;
+            cost_usd: number;
+            ordinal: number;
+            outcome?: string;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            source: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens: number;
+            unpriced_tokens: number;
+            unreported_calls: number;
+        };
+        UsageObservation: {
+            collection_id?: string;
+            components?: components["schemas"]["UsageComponent"][];
+            count_iteration?: boolean;
+            other_cost_usd?: number;
+            sessions?: components["schemas"]["SessionCostObservation"][];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+            version: number;
+        };
+        UsageOrigin: {
+            org_id?: string;
+            pool_grantless?: boolean;
+            publication: string;
+            run_id: string;
+            tenant_id: string;
+            version: number;
+        };
+        UsageProjection: {
+            collection_id: string;
+            lines: components["schemas"]["UsageProjectionLine"][];
+            version: number;
+        };
+        UsageProjectionLine: {
+            call_id?: string;
+            cost_known: boolean;
+            cost_usd: number;
+            kind: string;
+            ordinal?: number;
+            previous_max_usd?: number;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            session?: components["schemas"]["SessionCostObservation"];
+            source?: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+        };
+        UsageTokenSplit: {
+            cache_read: number;
+            cache_write: number;
+            input: number;
+            output: number;
         };
         UserView: {
             created_at?: string;

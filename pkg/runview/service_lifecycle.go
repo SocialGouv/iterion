@@ -499,7 +499,8 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 	}
 }
 
-// StopBackground ends every PERIODIC worker the service owns — the orphan
+// StopBackground first cancels and joins explicitly acquired observed event feeds,
+// within ctx, then ends every PERIODIC worker the service owns — the orphan
 // reconcile ticker, the pipeline scheduler, the alert manager's stall poll —
 // and leaves the in-flight runs strictly alone.
 //
@@ -514,6 +515,9 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // stopPeriodicReconcile), so a scan wedged in a store call degrades the
 // promise loudly rather than hanging the caller.
 func (s *Service) StopBackground(ctx context.Context) {
+	if err := s.observedEvents.stop(ctx); err != nil {
+		s.logger.Warn("observed event feeds: shutdown cleanup not joined: %v", err)
+	}
 	s.stopPeriodicReconcile(ctx)
 	// Queued pipelines stay persisted as queued docs and are recovered by the
 	// next service built over that store, so stopping the scheduler here never
@@ -677,8 +681,8 @@ func (s *Service) emitOrphanReaped(ctx context.Context, runID string, status sto
 //
 // Returns the up-to-date run (post-reconcile if it fired) so the caller
 // doesn't have to re-load.
-func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
-	r, err := s.store.LoadRun(context.Background(), runID)
+func (s *Service) reconcileRun(ctx context.Context, runID string) (*store.Run, bool, error) {
+	ctx, r, err := store.LoadRunWithValueFormat(ctx, s.store, runID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -691,16 +695,19 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.manager.Active(runID) {
 		return r, false, nil
 	}
-	lock, err := s.store.LockRun(context.Background(), runID)
+	lock, err := s.store.LockRun(ctx, runID)
 	if err != nil {
 		// Lock held by a real process — skip reconcile.
 		return r, false, nil
 	}
 	// Re-read under the lock in case another writer raced us.
-	r2, err := s.store.LoadRun(context.Background(), runID)
+	_, r2, err := store.LoadRunWithValueFormat(ctx, s.store, runID)
 	if err != nil || r2.Status != store.RunStatusRunning {
 		_ = lock.Unlock()
 		if err != nil {
+			if store.IsValueFormatRefusal(err) {
+				return nil, false, err
+			}
 			return r, false, nil
 		}
 		return r2, false, nil
@@ -710,7 +717,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	// entry — either way the studio can offer the resume button.
 	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.store.UpdateRunStatusCoded(context.Background(), runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}
@@ -718,7 +725,10 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.logger != nil {
 		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, newStatus)
 	}
-	r3, _ := s.store.LoadRun(context.Background(), runID)
+	_, r3, reloadErr := store.LoadRunWithValueFormat(ctx, s.store, runID)
+	if store.IsValueFormatRefusal(reloadErr) {
+		return nil, false, reloadErr
+	}
 	if r3 == nil {
 		return r2, true, nil
 	}

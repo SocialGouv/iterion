@@ -98,6 +98,16 @@ func runSubbotFoldFixtureWithLaunchRows(t *testing.T, childDir, childBot string,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if seedParent {
+		invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+		if prepErr != nil {
+			t.Fatal(prepErr)
+		}
+		ctx = invocation.Context
+	} else {
+		// Model an already captured invocation whose parent document is now absent.
+		ctx = boundLegacySubbotFixture(t, ctx, msg.RunID)
+	}
 	_, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../" + childDir + "/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -267,6 +277,11 @@ func TestSubbotChildDocumentStampsItsFoldedRows(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	if _, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	}); err == nil {
@@ -336,6 +351,11 @@ func TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway(t *testing.T) {
 		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: gw.URL},
 		AmbientRefused: true,
 	})
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	_, cerr := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -389,6 +409,11 @@ func runSubbotLayoutFixture(t *testing.T, lay childLayout, pol *store.RunLLMRout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	_, err := r.subbotRunnerFor(msg, parentDir, dir, logger)(ctx, runtime.SubbotRequest{
 		Source: lay.source, ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -462,6 +487,11 @@ func TestSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	if _, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	}); err == nil {
@@ -537,6 +567,11 @@ func TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned(t *testing.T) {
 				})
 			}
 			var buf bytes.Buffer
+			invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+			if prepErr != nil {
+				t.Fatal(prepErr)
+			}
+			ctx = invocation.Context
 			_, _ = r.subbotRunnerFor(msg, parentDir, dir, iterlog.New(iterlog.LevelWarn, &buf))(ctx, runtime.SubbotRequest{
 				Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 			})
@@ -601,6 +636,11 @@ func TestSubbotChildOfALegacyRootDocWithoutCellsStaysOnTheGateway(t *testing.T) 
 		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: gw.URL},
 		AmbientRefused: true,
 	})
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	_, cerr := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})
@@ -635,6 +675,11 @@ func runSubbotUnderARootDocWithoutLaunchRows(t *testing.T, pol *store.RunLLMRout
 	var buf bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	invocation, prepErr := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if prepErr != nil {
+		t.Fatal(prepErr)
+	}
+	ctx = invocation.Context
 	_, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.New(iterlog.LevelWarn, &buf))(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
 	})

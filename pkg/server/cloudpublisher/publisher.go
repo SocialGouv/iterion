@@ -4149,7 +4149,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// Resolve the same versioned context the local launch authority stamps.
 	// It is persisted before the queued row is published so admission on the
 	// runner and diagnostics on the server read one contract.
-	r.ExecutionContext = runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	if contextErr != nil {
+		return sub, contextErr
+	}
+	r.ExecutionContext = resolvedContext
 	r.ExecutionContext.LaunchSurface = "cloudpublisher"
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the

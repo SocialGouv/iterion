@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -70,25 +69,26 @@ func ValidAttemptID(id string) bool {
 	return err == nil && len(b) == sha256.Size
 }
 
-func (s *FilesystemRunStore) RecordAttempt(_ context.Context, runID string, a *AttemptSnapshot) (RunAttempt, error) {
+func (s *FilesystemRunStore) RecordAttempt(ctx context.Context, runID string, a *AttemptSnapshot) (RunAttempt, error) {
 	meta, body, err := EncodeAttempt(a)
 	if err != nil {
 		return meta, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.loadRunRaw(runID)
+	r, unlock, err := s.lockExistingRunMetadata(ctx, runID)
 	if err != nil {
 		return meta, err
 	}
-	dir := filepath.Join(s.root, "runs", runID, "attempts")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	defer unlock()
+	p, err := s.openRunPayloadPath(ctx, runID, true, "attempts", meta.ID+".json")
+	if err != nil {
 		return meta, err
 	}
+	defer p.Close()
 	// A partial write is never indexed. Retrying the same content is safe.
-	if err := WriteFileAtomic(filepath.Join(dir, meta.ID+".json"), body, 0o600); err != nil {
+	if err := p.WriteAtomic(ctx, body, 0o600); err != nil {
 		return meta, err
 	}
+
 	for _, previous := range r.Attempts {
 		if previous.ID == meta.ID {
 			return meta, nil
@@ -96,7 +96,7 @@ func (s *FilesystemRunStore) RecordAttempt(_ context.Context, runID string, a *A
 	}
 	r.Attempts = append(r.Attempts, meta)
 	r.UpdatedAt = time.Now().UTC()
-	return meta, s.writeRun(r)
+	return meta, s.writeRunLockedContext(ctx, r, false, nil)
 }
 
 func (s *FilesystemRunStore) LoadAttempt(ctx context.Context, runID, id string) (*AttemptSnapshot, error) {
@@ -106,7 +106,12 @@ func (s *FilesystemRunStore) LoadAttempt(ctx context.Context, runID, id string) 
 	if _, err := s.LoadRun(ctx, runID); err != nil {
 		return nil, err
 	}
-	body, err := os.ReadFile(filepath.Join(s.root, "runs", runID, "attempts", id+".json"))
+	path, err := s.openRunPayloadPath(ctx, runID, false, "attempts", id+".json")
+	if err != nil {
+		return nil, err
+	}
+	defer path.Close()
+	body, err := path.ReadFile()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrAttemptNotFound
 	}

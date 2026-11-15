@@ -94,6 +94,9 @@ func TestRunsWS_SubscribeReceivesSnapshot(t *testing.T) {
 	if len(snap.Executions) == 0 {
 		t.Errorf("Executions = 0, want > 0 (seeded events should produce executions)")
 	}
+	// The snapshot precedes replay. Join this finished run's producer before
+	// TempDir cleanup: event reads can still create their stable run lock.
+	_ = readEnvelope(t, c, wsTypeTerminated)
 }
 
 // TestRunsWS_PingElicitsPong guards the application-level heartbeat the

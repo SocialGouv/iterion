@@ -755,6 +755,9 @@
           "budget_unreported_calls": {
             "type": "integer"
           },
+          "correction_accounting": {
+            "$ref": "#/components/schemas/CorrectionAccounting"
+          },
           "cost_usd_total": {
             "type": "number"
           },
@@ -981,6 +984,53 @@
           "git_url",
           "ref",
           "path"
+        ],
+        "type": "object"
+      },
+      "CorrectionAccounting": {
+        "properties": {
+          "daily_marks": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "daily_scope_cost_usd": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "iteration_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "unpriced_marks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "unpriced_node_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "usage_marks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionUsage"
+            },
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
         ],
         "type": "object"
       },
@@ -2088,6 +2138,35 @@
         ],
         "type": "object"
       },
+      "InvocationUsageRoute": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reported_model": {
+            "type": "string"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session_fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
       "Issue": {
         "properties": {
           "assignee": {
@@ -2462,6 +2541,40 @@
         ],
         "type": "object"
       },
+      "OutputCorrectionCause": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reset_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "self_imposed": {
+            "type": "boolean"
+          },
+          "timeout_nanos": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "window_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "kind"
+        ],
+        "type": "object"
+      },
       "OutputCorrectionEpisode": {
         "properties": {
           "attempts": {
@@ -2470,7 +2583,13 @@
           "budget": {
             "type": "integer"
           },
+          "cause": {
+            "$ref": "#/components/schemas/OutputCorrectionCause"
+          },
           "episode_id": {
+            "type": "string"
+          },
+          "generation": {
             "type": "string"
           },
           "input_fingerprint": {
@@ -2488,8 +2607,17 @@
           "last_violation_fingerprint": {
             "type": "string"
           },
+          "ledger_key": {
+            "type": "string"
+          },
           "node_id": {
             "type": "string"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionReservation"
+            },
+            "type": "array"
           },
           "retired_at": {
             "format": "date-time",
@@ -2498,6 +2626,9 @@
           "retired_reason": {
             "type": "string"
           },
+          "revision": {
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -2505,9 +2636,82 @@
           "status": {
             "type": "string"
           },
+          "terminal_kind": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "type": "object"
+      },
+      "OutputCorrectionReceipt": {
+        "properties": {
+          "observation": {
+            "$ref": "#/components/schemas/UsageObservation"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/UsageProjection"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "required": [
+          "usage"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionReservation": {
+        "properties": {
+          "execution_epoch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial_usage_id": {
+            "type": "string"
+          },
+          "logical_invocation_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/UsageOrigin"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/OutputCorrectionReceipt"
+          },
+          "scope_key": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "execution_epoch",
+          "scope_key",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionUsage": {
+        "properties": {
+          "cost_usd": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3215,6 +3419,24 @@
           "resolved_default",
           "backends",
           "providers"
+        ],
+        "type": "object"
+      },
+      "ReportedEconomicSession": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id"
         ],
         "type": "object"
       },
@@ -3936,6 +4158,28 @@
         ],
         "type": "object"
       },
+      "SessionCostObservation": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
       "SessionLedgerEntry": {
         "properties": {
           "session_id": {
@@ -4325,6 +4569,227 @@
           "name",
           "token_last4",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "UsageComponent": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_kind": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "source",
+          "tokens",
+          "unpriced_tokens",
+          "unreported_calls",
+          "cost_known",
+          "cost_kind",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageObservation": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/UsageComponent"
+            },
+            "type": "array"
+          },
+          "count_iteration": {
+            "type": "boolean"
+          },
+          "other_cost_usd": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionCostObservation"
+            },
+            "type": "array"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "UsageOrigin": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "pool_grantless": {
+            "type": "boolean"
+          },
+          "publication": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "publication",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "UsageProjection": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/UsageProjectionLine"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection_id",
+          "version",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "UsageProjectionLine": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "previous_max_usd": {
+            "type": "number"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionCostObservation"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "cost_known",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageTokenSplit": {
+        "properties": {
+          "cache_read": {
+            "type": "integer"
+          },
+          "cache_write": {
+            "type": "integer"
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "cache_read",
+          "cache_write"
         ],
         "type": "object"
       },

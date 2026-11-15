@@ -558,6 +558,23 @@ func AsPIDStore(s RunStore) PIDStore {
 	return capability[PIDStore](s)
 }
 
+// ContextPIDStore supplies PID operations for an existing bound invocation.
+// Every method requires its original format in ctx and compares it under the
+// metadata lock. It does not grant execution authority. Legacy PIDStore remains
+// available for historical orphan-sidecar callers. Cloud stores have neither.
+type ContextPIDStore interface {
+	WritePIDFileContext(context.Context, string, int) error
+	ReadPIDFileContext(context.Context, string) (int, error)
+	RemovePIDFileContext(context.Context, string) error
+	RemovePIDFileIfContext(context.Context, string, int) (bool, error)
+}
+
+// AsContextPIDStore discovers the contextual capability through decorators.
+// A bound invocation must not fall back to PIDStore when it is absent.
+func AsContextPIDStore(s RunStore) ContextPIDStore {
+	return capability[ContextPIDStore](s)
+}
+
 // QueuedRunCreator is the optional interface for stores that can persist
 // a run document directly in the `queued` state (so it surfaces on the
 // pipeline board's TODO lane while it waits for a local concurrency

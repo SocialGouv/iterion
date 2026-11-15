@@ -127,9 +127,16 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		}
 	}
 	// Team-scoped, both tenant_id and team_id key variants.
-	ins("runs", bson.M{"_id": "r-a1", "tenant_id": teamA})
+	ins("runs", bson.M{"_id": "r-a1", "tenant_id": teamA, "birth_id": "active", "data_protocol": 1})
 	ins("runs", bson.M{"_id": "r-a2", "team_id": teamA})
 	ins("runs", bson.M{"_id": "r-b1", "tenant_id": teamB})
+	// Incarnation inbox rows include retired/orphan births with no live header.
+	// The tenant sweep must reach them independently of DeleteRun.
+	for _, row := range []struct{ tenant, run, birth string }{{teamA, "r-a1", "active"}, {teamA, "r-a1", "retired"}, {teamA, "r-orphan", "orphan"}, {teamB, "r-a1", "other-tenant-birth"}} {
+		namespace := "run-data-v1/f1/" + row.run + "/" + row.birth + "/"
+		ins("run_data_v1_user_messages", bson.M{"_id": bson.D{{Key: "run_id", Value: row.run}, {Key: "message_id", Value: "same-message"}, {Key: "namespace", Value: namespace}}, "tenant_id": row.tenant, "run_id": row.run, "data_namespace": namespace})
+	}
+
 	// The same runs as the run store knows them, each with objects in the
 	// bucket: the purge must take A's through DeleteRun (blobs and all)
 	// and leave B's untouched.
@@ -202,6 +209,12 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		return bson.M{"$or": bson.A{bson.M{"tenant_id": id}, bson.M{"team_id": id}}}
 	}
 
+	if n := count("run_data_v1_user_messages", bson.M{"tenant_id": teamA}); n != 0 {
+		t.Errorf("incarnation inbox of purged team: got %d, want 0 (all births)", n)
+	}
+	if n := count("run_data_v1_user_messages", bson.M{"tenant_id": teamB}); n != 1 {
+		t.Errorf("incarnation inbox of other team: got %d, want 1", n)
+	}
 	// A's data is gone… the runs' objects first, through the run store.
 	if n := runs.objects(); n != 1 {
 		t.Errorf("objects left in the bucket: %d, want 1 (B's run only) — A's blobs survived the purge of A", n)

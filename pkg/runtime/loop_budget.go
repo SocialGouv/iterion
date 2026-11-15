@@ -383,16 +383,19 @@ const loopBudgetMarksVersion = 2
 // until measured and the session baseline prices it from the resume point.
 // Provenance decides, never the mark's shape: a version-2 checkpoint keeps
 // a zero that a loop legitimately entered at zero consumption.
-func (e *Engine) restoreCheckpointBudget(rs *runState, cp *store.Checkpoint) {
-	restoreBudgetAccounting(rs, cp)
+func (e *Engine) restoreCheckpointBudget(rs *runState, cp *store.Checkpoint) error {
+	if err := restoreBudgetAccounting(rs, cp); err != nil {
+		return err
+	}
 	if cp == nil || cp.LoopBudgetMarksV >= loopBudgetMarksVersion {
-		return
+		return nil
 	}
 	for loopName, mark := range rs.loopBudgetMarks {
 		if isRunStartBaseline(mark) && !loopHoldsEntry(e.workflow.Loops[loopName], e.workflow.Entry) {
 			delete(rs.loopBudgetMarks, loopName)
 		}
 	}
+	return nil
 }
 
 // isRunStartBaseline reports a mark taken before the run consumed anything:

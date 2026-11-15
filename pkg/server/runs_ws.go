@@ -316,13 +316,12 @@ type runConn struct {
 	// per-connection FileSource, closed with the conn.
 	src runstream.Source
 
-	mu            sync.Mutex
-	subscribed    bool
-	eventSub      runstream.EventSubscription
-	logSubscribed bool
-	logSub        runstream.LogSubscription
-	closeOnce     sync.Once
-	closed        chan struct{}
+	mu                  sync.Mutex
+	eventOwner          *wsSubscriptionOwner
+	logOwner            *wsSubscriptionOwner
+	subscriptionWorkers sync.WaitGroup
+	closeOnce           sync.Once
+	closed              chan struct{}
 	// closeFrame is what the write pump writes when it reads the empty item
 	// sendCh carries as the close marker. Set once — the first reason is the
 	// one that decided — under mu, which the pump takes to read it.
@@ -367,7 +366,7 @@ func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
 }
 
 func (c *runConn) run() {
-	defer c.close()
+	defer c.finishConnection()
 	errtrack.Go("server.runWS.writePump", c.writePump)
 	errtrack.Go("server.runWS.watchLifetime", c.watchLifetime)
 	errtrack.Go("server.runWS.watchStanding", c.watchStanding)
@@ -423,7 +422,7 @@ func (c *runConn) watchStanding() {
 		case <-t.C:
 		}
 		c.mu.Lock()
-		idle := !c.subscribed && !c.logSubscribed
+		idle := c.eventOwner == nil && c.logOwner == nil
 		c.mu.Unlock()
 		if idle {
 			continue
@@ -489,21 +488,20 @@ func (c *runConn) closeWithReason(code int, token, cause string) {
 
 func (c *runConn) close() {
 	c.closeOnce.Do(func() {
-		close(c.closed)
 		c.mu.Lock()
-		if c.eventSub != nil {
-			_ = c.eventSub.Close()
-			c.eventSub = nil
-		}
-		if c.logSub != nil {
-			_ = c.logSub.Close()
-			c.logSub = nil
-		}
+		close(c.closed)
+		events, logs := c.eventOwner, c.logOwner
+		c.eventOwner, c.logOwner = nil, nil
 		c.mu.Unlock()
-		if c.xStore != nil && c.src != nil {
-			_ = c.src.Close() // per-connection cross-store FileSource
+		if events != nil {
+			events.cancel()
 		}
-		_ = c.conn.Close()
+		if logs != nil {
+			logs.cancel()
+		}
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
 		if c.server.cfg.Metrics != nil {
 			c.server.cfg.Metrics.WSConnections.Dec()
 		}
@@ -681,86 +679,103 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 			return
 		}
 	}
-
-	c.mu.Lock()
-	if c.subscribed {
-		c.mu.Unlock()
-		c.sendAck(env.AckID)
+	owner, created := c.reserveSubscription(c.authCtx(), false)
+	if !created {
+		if owner != nil {
+			c.sendAck(env.AckID)
+		}
 		return
 	}
-	c.subscribed = true
-	c.mu.Unlock()
-
-	snap, err := c.snapshot()
+	var sub runstream.EventSubscription
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			if sub != nil {
+				_ = sub.Close()
+			}
+			c.clearFailedSubscription(owner, false)
+			c.finishSubscription(owner)
+		}
+	}()
+	snap, err := c.snapshotCtx(owner.ctx)
 	if err != nil {
-		c.mu.Lock()
-		c.subscribed = false
-		c.mu.Unlock()
-		c.sendError("snapshot_failed", err.Error(), env.AckID)
+		if owner.ctx.Err() == nil {
+			c.sendError("snapshot_failed", err.Error(), env.AckID)
+		}
 		return
 	}
-	// The caller's standing for THIS run (the ADR-148 review's F4): the
-	// upgrade resolved it; the studio derives its action affordances
-	// from it. Server-attached after the deterministic build, like the
-	// REST path.
+	if owner.ctx.Err() != nil {
+		return
+	}
 	if c.identity.Role != "" {
 		snap.Viewer = &runview.RunViewer{Role: string(c.identity.Role), Via: c.identity.Via}
 	}
-	c.sendEnvelope(wsTypeSnapshot, snap, env.AckID)
-
-	// Lazy mode: advance the effective replay floor past the snapshot
-	// so the source sees "nothing to replay". Live tail still flows
-	// unaffected. The frontend pulls history on demand via
-	// /api/runs/{id}/events.
-	effectiveFromSeq := req.FromSeq
-	if !req.ReplayHistory && snap.LastSeq != runview.NoEventsSeq {
-		effectiveFromSeq = snap.LastSeq + 1
-	}
-
-	sub, err := c.src.SubscribeEvents(c.authCtx(), c.runID, effectiveFromSeq)
-	if err != nil {
-		c.mu.Lock()
-		c.subscribed = false
-		c.mu.Unlock()
-		c.sendError("event_stream_failed", err.Error(), "")
+	if !c.sendEnvelope(wsTypeSnapshot, snap, env.AckID) {
 		return
 	}
-	c.mu.Lock()
-	c.eventSub = sub
-	c.mu.Unlock()
-	errtrack.Go("server.runWS.pumpEvents", func() { c.pumpEvents(sub) })
+	position := runstream.EventCursor{Seq: req.FromSeq}
+	if !req.ReplayHistory && snap.LastSeq != runview.NoEventsSeq {
+		position = runstream.EventCursor{Seq: snap.LastSeq, After: true}
+	}
+	sub, err = runstream.SubscribeEventsCursor(owner.ctx, c.src, c.runID, position)
+	if err != nil {
+		if owner.ctx.Err() == nil {
+			c.sendError("event_stream_failed", err.Error(), "")
+		}
+		return
+	}
+	if sub == nil {
+		c.sendError("event_stream_failed", "source returned no subscription", "")
+		return
+	}
+	if !c.ownsSubscription(owner, false) {
+		return
+	}
+	handedOff = true
+	errtrack.Go("server.runWS.pumpEvents", func() { defer c.finishSubscription(owner); c.pumpEventsCtx(owner.ctx, sub) })
 }
 
 // snapshot builds the subscribe-time snapshot from whichever store this
 // connection observes — the only remaining storage difference in the
 // WS layer (the foreign store has no Service wrapper to ask).
-func (c *runConn) snapshot() (*runview.RunSnapshot, error) {
+func (c *runConn) snapshotCtx(ctx context.Context) (*runview.RunSnapshot, error) {
 	if c.xStore != nil {
-		return runview.BuildSnapshot(context.Background(), c.xStore, c.runID)
+		return runview.BuildSnapshot(ctx, c.xStore, c.runID)
 	}
-	return c.server.runs.SnapshotCtx(c.authCtx(), c.runID)
+	return c.server.runs.SnapshotCtx(ctx, c.runID)
 }
 
 // pumpEvents forwards the subscription to the WS: replay pages ship as
 // event_batch envelopes (one frame per page instead of one per event),
 // live deliveries as single event envelopes. The Events channel closing
-// means the stream ended — a corrupted event log (surfaced on Errors
-// right before the close) becomes an events_corrupted error envelope,
-// any other end becomes terminated. Transient source errors (e.g. a
+// means the stream ended. Already-published permanent errors become error
+// envelopes (preserving events_corrupted); clean completion becomes terminated.
+// Transient source errors (e.g. a
 // change-stream reconnect notice) are logged and the stream stays open.
 func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
+	c.pumpEventsCtx(c.authCtx(), sub)
+}
+func (c *runConn) pumpEventsCtx(ctx context.Context, sub runstream.EventSubscription) {
 	defer func() { _ = sub.Close() }()
 	events := sub.Events()
 	errs := sub.Errors()
 	var fatal error
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
+		case <-ctx.Done():
+			return
 		case <-c.closed:
 			return
 		case batch, ok := <-events:
 			if !ok {
+				fatal = drainRunStreamFatal(fatal, errs)
 				if errors.Is(fatal, store.ErrEventsCorrupted) {
 					c.sendError("events_corrupted", fatal.Error(), "")
+				} else if fatal != nil {
+					c.sendError("event_stream_failed", fatal.Error(), "")
 				} else {
 					c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
 				}
@@ -783,7 +798,7 @@ func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
 				errs = nil
 				continue
 			}
-			fatal = err
+			fatal = retainRunStreamFatal(fatal, err)
 			if c.server.logger != nil {
 				c.server.logger.Warn("server: ws event stream %s: %v", c.runID, err)
 			}
@@ -792,13 +807,7 @@ func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
 }
 
 func (c *runConn) handleUnsubscribe(env runWSEnvelope) {
-	c.mu.Lock()
-	if c.eventSub != nil {
-		_ = c.eventSub.Close()
-		c.eventSub = nil
-	}
-	c.subscribed = false
-	c.mu.Unlock()
+	c.unsubscribe(false)
 	c.sendAck(env.AckID)
 }
 

@@ -142,12 +142,17 @@ func (b *StoreInboxBinder) Bind(ctx context.Context, runID string) InboxHook {
 	if b == nil || b.Store == nil || runID == "" {
 		return nil
 	}
+	binding, bound := store.RunDataBindingFrom(ctx)
+	scoped, _ := b.Store.(store.ScopedQueuedInboxVersioner)
 	return &storeInboxHook{
-		store:      b.Store,
-		publish:    b.Publish,
-		runID:      runID,
-		activeNode: NodeIDFromContext(ctx),
-		versioner:  asInboxVersioner(b.Store),
+		binding:         binding,
+		bound:           bound,
+		scopedVersioner: scoped,
+		store:           b.Store,
+		publish:         b.Publish,
+		runID:           runID,
+		activeNode:      NodeIDFromContext(ctx),
+		versioner:       asInboxVersioner(b.Store),
 	}
 }
 
@@ -164,14 +169,17 @@ func asInboxVersioner(s store.RunStore) store.QueuedInboxVersioner {
 // stable home for the cross-iteration state (last delivered IDs +
 // last observed inbox version) so the closures stay garbage-free.
 type storeInboxHook struct {
-	store         store.RunStore
-	publish       func(store.Event)
-	runID         string
-	activeNode    string
-	versioner     store.QueuedInboxVersioner
-	lastDelivered []string
-	lastVersion   uint64
-	versionSeen   bool
+	store           store.RunStore
+	publish         func(store.Event)
+	runID           string
+	activeNode      string
+	versioner       store.QueuedInboxVersioner
+	scopedVersioner store.ScopedQueuedInboxVersioner
+	binding         store.RunDataBinding
+	bound           bool
+	lastDelivered   []string
+	lastVersion     uint64
+	versionSeen     bool
 }
 
 // Drain transitions queued→delivered and returns texts in FIFO order.
@@ -179,23 +187,59 @@ type storeInboxHook struct {
 // fast-skips loading the JSONL when the counter is unchanged — the
 // common case for a busy tool loop on a run with no queued messages.
 func (h *storeInboxHook) Drain(ctx context.Context) []string {
-	if h.versioner != nil {
-		v := h.versioner.QueuedInboxVersion(h.runID)
-		if h.versionSeen && v == h.lastVersion {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return nil
+	}
+	var version uint64
+	versioned := false
+	if h.scopedVersioner != nil {
+		version, err = h.scopedVersioner.QueuedInboxVersionContext(ctx, h.runID)
+		if err != nil {
 			return nil
 		}
-		h.lastVersion = v
-		h.versionSeen = true
+		versioned = true
+	} else if _, bound := store.RunDataBindingFrom(ctx); !bound && h.versioner != nil {
+		version = h.versioner.QueuedInboxVersion(h.runID)
+		versioned = true
 	}
-	texts, ids, _ := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if versioned && h.versionSeen && version == h.lastVersion {
+		return nil
+	}
+	texts, ids, err := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if err != nil {
+		return nil
+	}
+	if versioned {
+		h.lastVersion, h.versionSeen = version, true
+	}
 	if len(ids) > 0 {
 		h.lastDelivered = ids
 	}
 	return texts
 }
 
+// operationContext keeps the Bind-time observation but the current operation's
+// cancellation. A different binding cannot silently retarget an existing hook.
+func (h *storeInboxHook) operationContext(ctx context.Context) (context.Context, error) {
+	if h.bound {
+		return store.WithRunDataBinding(ctx, h.binding)
+	}
+	if ctx == nil {
+		return nil, store.ErrRunDataBindingRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return ctx, nil
+}
+
 // Consume marks the previously-drained messages as consumed.
 func (h *storeInboxHook) Consume(ctx context.Context) {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return
+	}
 	if len(h.lastDelivered) == 0 {
 		return
 	}
