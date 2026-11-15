@@ -146,13 +146,6 @@ func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 		{"sec-audit-source/run_generic_scanners (scanners absent -> errors listed)", "bots/sec-audit-source/main.bot", "run_generic_scanners",
 			func(t *testing.T) map[string]any { return map[string]any{"workspace_dir": r2repo(t)} },
 			func(t *testing.T) map[string]any { return map[string]any{"scan_dir": t.TempDir()} }},
-		{"dep-update-guard/verify_run (MASKED EXIT STATUS refusal)", "bots/dep-update-guard/main.bot", "verify_run",
-			func(t *testing.T) map[string]any {
-				scratch := t.TempDir()
-				_ = os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte("#!/bin/sh\nmake test | tail -5\n"), 0o755)
-				return map[string]any{"workspace_dir": r2repo(t), "scratch_dir": scratch, "verify_timeout_s": "60"}
-			},
-			func(*testing.T) map[string]any { return nil }},
 	}
 	for _, c := range cases {
 		for _, off := range []bool{false, true} {
@@ -185,6 +178,31 @@ func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 			}
 			t.Logf("%s | %s: code=%s status=%s storedFailureCode=%s err=%.240v", c.name, mode, code, status, fcode, err)
 		}
+	}
+}
+
+// Vetty's MASKED EXIT STATUS refusal used to leave precheck_rejected and
+// precheck_reason out of verify_result, so it sat in the list above. It is an
+// authorship defect that loops back to verify_build, and the loop-back edge
+// reads precheck_rejected: the refusal now carries the whole schema, and strict
+// validation accepts it under the production executor.
+func TestR2VettyMaskedRefusalConformsUnderStrictValidation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	scratch := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte("#!/bin/sh\nmake test | tail -5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]any{"workspace_dir": r2repo(t), "scratch_dir": scratch, "verify_timeout_s": "60"}
+	r, err := r2RunCatalogNode(t, "../../bots/dep-update-guard/main.bot", "verify_run", vars, nil, true)
+	if err != nil {
+		t.Fatalf("strict validation rejected the masked-exit refusal: %v", err)
+	}
+	if r == nil || r.Status != "finished" {
+		t.Fatalf("the run did not finish: %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "verify.sh.rejected")); err != nil {
+		t.Errorf("the refusal did not run: the masked script was not moved aside (%v)", err)
 	}
 }
 
