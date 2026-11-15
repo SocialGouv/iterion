@@ -364,6 +364,19 @@ func (c *MemoryCounter) Allow(_ context.Context, tenantID, webhookID string, whe
 	return true, nil
 }
 
+func (c *MemoryCounter) Release(_ context.Context, tenantID, webhookID string, when time.Time, _ Limits) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := monthKey(when)
+	if ok := tenantID + "|" + m; c.org[ok] > 0 {
+		c.org[ok]--
+	}
+	if wk := tenantID + "|" + webhookID + "|" + m; c.wh[wk] > 0 {
+		c.wh[wk]--
+	}
+	return nil
+}
+
 func (c *MemoryCounter) OrgCount(_ context.Context, tenantID string, when time.Time) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

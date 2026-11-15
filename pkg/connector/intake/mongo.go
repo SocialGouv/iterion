@@ -91,6 +91,14 @@ func (s *MongoStore) GetIntake(ctx context.Context, tenantID, id string) (Intake
 	return in, nil
 }
 
+func (s *MongoStore) CountBacklog(ctx context.Context, tenantID string) (int, error) {
+	n, err := s.intakes.CountDocuments(ctx, bson.M{"tenant_id": tenantID, "state": bson.M{"$in": bson.A{IntakePending, IntakeClaimed}}})
+	if err != nil {
+		return 0, fmt.Errorf("intake: count backlog: %w", err)
+	}
+	return int(n), nil
+}
+
 func (s *MongoStore) ListIntakes(ctx context.Context, tenantID, state string, limit int) ([]Intake, error) {
 	filter := bson.M{"tenant_id": tenantID}
 	if state != "" {

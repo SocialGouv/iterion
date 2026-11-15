@@ -540,6 +540,23 @@ func (s *MongoCounter) bump(ctx context.Context, key string, limit int) (bool, e
 	return true, nil
 }
 
+// Release undoes a granted Allow: the org unit, and the per-webhook one when
+// a per-webhook cap made Allow count it. Detached from ctx, like Allow's own
+// rollback, so a cancelled request does not leak the unit.
+func (s *MongoCounter) Release(ctx context.Context, tenantID, webhookID string, when time.Time, lim Limits) error {
+	ctx = context.WithoutCancel(ctx)
+	m := monthKey(when)
+	if _, err := s.col.UpdateOne(ctx, bson.M{"_id": "org|" + tenantID + "|" + m, "count": bson.M{"$gt": 0}}, bson.M{"$inc": bson.M{"count": -1}}); err != nil {
+		return fmt.Errorf("webhooks: counter release: %w", err)
+	}
+	if lim.PerWebhookMonthly > 0 {
+		if _, err := s.col.UpdateOne(ctx, bson.M{"_id": "wh|" + tenantID + "|" + webhookID + "|" + m, "count": bson.M{"$gt": 0}}, bson.M{"$inc": bson.M{"count": -1}}); err != nil {
+			return fmt.Errorf("webhooks: counter release: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *MongoCounter) OrgCount(ctx context.Context, tenantID string, when time.Time) (int, error) {
 	var doc struct {
 		Count int `bson:"count"`

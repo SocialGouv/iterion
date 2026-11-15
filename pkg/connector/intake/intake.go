@@ -123,10 +123,18 @@ type Intake struct {
 // source names the intake's source within its tenant.
 func (in Intake) source() string {
 	if in.IngressID != "" {
-		return "ingress:" + in.IngressID
+		return IngressSource(in.IngressID)
 	}
-	return "poller:" + in.PollerID
+	return PollerSource(in.PollerID)
 }
+
+// IngressSource and PollerSource name an intake's source for IntakeID: a
+// lane that looks for the row a delivery would open derives its id exactly
+// as Accept does.
+func IngressSource(ingressID string) string { return "ingress:" + ingressID }
+
+// PollerSource names a poller as an intake's source (IngressSource).
+func PollerSource(pollerID string) string { return "poller:" + pollerID }
 
 // IntakeID derives an intake's id. The fields are length-prefixed so no two
 // tuples share a digest.
@@ -210,6 +218,9 @@ type Store interface {
 	// wrote it.
 	Accept(ctx context.Context, in Intake) (Intake, bool, error)
 	GetIntake(ctx context.Context, tenantID, id string) (Intake, error)
+	// CountBacklog counts a tenant's unprocessed intakes — pending or
+	// claimed — the figure the lane's backlog cap reads before it accepts.
+	CountBacklog(ctx context.Context, tenantID string) (int, error)
 	// ListIntakes lists a tenant's intakes in state ("" for every state),
 	// newest first, at most limit (0 = no bound).
 	ListIntakes(ctx context.Context, tenantID, state string, limit int) ([]Intake, error)

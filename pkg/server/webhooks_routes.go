@@ -88,6 +88,18 @@ type webhookConfigReq struct {
 	// set, the inbound handler is the connector lane (#2761). An explicit
 	// empty string clears the binding.
 	ConnectorConnectionID *string `json:"connector_connection_id,omitempty"`
+	// Installation is the installation value a connector ingress is bound
+	// to, required exactly when its package reads one (ADR-168 §3).
+	Installation *string `json:"installation,omitempty"`
+	// VendorSecret is the vendor's secret a connector ingress verifies with,
+	// when its package declares `secret: vendor`: accepted at creation and
+	// rotation, sealed, never answered back.
+	VendorSecret *string `json:"vendor_secret,omitempty"`
+	// ContractDigest is the operator's consent to a connector ingress's
+	// contract: the digest of the package's `ingress:` block they read. On a
+	// create it must be the contract the package resolves to; on an update
+	// it moves the pin to it — the only way it moves.
+	ContractDigest *string `json:"contract_digest,omitempty"`
 	// ForkLane opts the config into the fork review lane at CREATION
 	// (ADR-162 decision 1). Github-only, checked at creation with a typed
 	// refusal per other provider; IMMUTABLE afterwards — the PATCH arm
@@ -154,6 +166,9 @@ var supportedProviders = map[webhooks.Provider]bool{
 	webhooks.ProviderGitHub:  true,
 	webhooks.ProviderForgejo: true,
 	webhooks.ProviderGeneric: true,
+	// A connector ingress (ADR-168 §6): its package says how a delivery is
+	// verified and read.
+	webhooks.ProviderConnector: true,
 }
 
 // defaultSignMode picks the right SignatureMode for a provider when the
@@ -162,6 +177,12 @@ var supportedProviders = map[webhooks.Provider]bool{
 // caller explicitly opts in to HMAC (generic-only). Centralised here so
 // the create handler stays readable.
 func defaultSignMode(provider webhooks.Provider, req *string) (webhooks.SignatureMode, error) {
+	if provider == webhooks.ProviderConnector {
+		if req != nil && *req != "" {
+			return "", fmt.Errorf("sign_mode does not apply to a connector ingress: its package's `ingress:` block declares how a delivery is verified")
+		}
+		return webhooks.SignModeToken, nil
+	}
 	if req != nil && *req != "" {
 		mode := webhooks.SignatureMode(*req)
 		switch mode {
@@ -315,7 +336,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		provider = webhooks.Provider(*req.Provider)
 	}
 	if !supportedProviders[provider] {
-		httpError(w, http.StatusBadRequest, "unsupported provider %q (gitlab|github|forgejo|generic)", provider)
+		httpError(w, http.StatusBadRequest, "unsupported provider %q (gitlab|github|forgejo|generic|connector)", provider)
 		return
 	}
 	signMode, err := defaultSignMode(provider, req.SignMode)
@@ -345,8 +366,16 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wildcard := req.WildcardBots != nil && *req.WildcardBots
-	botIDs, wildcard, err := normalizeBotScope(req.BotIDs, wildcard)
-	if err != nil {
+	var botIDs []string
+	if provider == webhooks.ProviderConnector {
+		// A connector ingress launches no bot itself: a subscription binds a
+		// bot to its triggers (ADR-168 §6), so a bot scope here would be a
+		// setting nothing reads.
+		if len(req.BotIDs) > 0 || wildcard || deref(req.DefaultBotID) != "" {
+			httpError(w, http.StatusBadRequest, "bot_ids, wildcard_bots and default_bot_id do not apply to a connector ingress: a trigger subscription binds a bot to its events")
+			return
+		}
+	} else if botIDs, wildcard, err = normalizeBotScope(req.BotIDs, wildcard); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -413,12 +442,29 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.ForgeBaseURL = normalized
 	}
-	if req.ConnectorConnectionID != nil && *req.ConnectorConnectionID != "" {
-		if err := s.validateConnectorBinding(r.Context(), teamID, provider, *req.ConnectorConnectionID); err != nil {
-			httpError(w, http.StatusBadRequest, "%s", err.Error())
+	shown := plaintext
+	if provider == webhooks.ProviderConnector {
+		pkg, err := s.bindConnectorIngress(r.Context(), teamID, &cfg, deref(req.ConnectorConnectionID), deref(req.Installation), req.ContractDigest)
+		if err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
 			return
 		}
-		cfg.ConnectorConnectionID = *req.ConnectorConnectionID
+		if shown, err = s.sealIngressSecret(&cfg, pkg.Ingress.Credential.Secret, plaintext, req.VendorSecret); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	} else {
+		if req.Installation != nil || req.VendorSecret != nil || req.ContractDigest != nil {
+			httpError(w, http.StatusBadRequest, "installation, vendor_secret and contract_digest apply to a connector ingress only (provider connector)")
+			return
+		}
+		if req.ConnectorConnectionID != nil && *req.ConnectorConnectionID != "" {
+			if _, err := s.validateConnectorBinding(r.Context(), teamID, provider, *req.ConnectorConnectionID); err != nil {
+				httpError(w, connectorBindingStatus(err), "%s", err.Error())
+				return
+			}
+			cfg.ConnectorConnectionID = *req.ConnectorConnectionID
+		}
 	}
 	if req.ForkLane != nil {
 		cfg.ForkLane = *req.ForkLane
@@ -474,7 +520,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	pins.strip(cfg.KeyOverrides)
 	pins.strip(cfg.SecretOverrides)
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext, PinsUnreconciled: pins.Unreconciled})
+	writeJSON(w, webhookWithToken{Config: cfg, Token: shown, PinsUnreconciled: pins.Unreconciled})
 }
 
 // sealWebhookHMAC is the thin wrapper around webhooks.SealHMACSecret —
@@ -775,12 +821,28 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.ForgeBaseURL = normalized
 	}
-	if req.ConnectorConnectionID != nil {
+	if req.VendorSecret != nil {
+		httpError(w, http.StatusBadRequest, "vendor_secret is set at creation and changed by a rotation (POST …/rotate), never by an update")
+		return
+	}
+	if cfg.Provider == webhooks.ProviderConnector {
+		if req.BotIDs != nil || req.WildcardBots != nil || req.DefaultBotID != nil {
+			httpError(w, http.StatusBadRequest, "bot_ids, wildcard_bots and default_bot_id do not apply to a connector ingress: a trigger subscription binds a bot to its events")
+			return
+		}
+		if err := s.rebindConnectorIngress(r.Context(), teamID, &cfg, req.ConnectorConnectionID, req.Installation, req.ContractDigest); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	} else if req.Installation != nil || req.ContractDigest != nil {
+		httpError(w, http.StatusBadRequest, "installation and contract_digest apply to a connector ingress only (provider connector)")
+		return
+	} else if req.ConnectorConnectionID != nil {
 		// An explicit empty string clears the binding — the webhook returns
 		// to the legacy provider lane.
 		if *req.ConnectorConnectionID != "" {
-			if err := s.validateConnectorBinding(r.Context(), teamID, cfg.Provider, *req.ConnectorConnectionID); err != nil {
-				httpError(w, http.StatusBadRequest, "%s", err.Error())
+			if _, err := s.validateConnectorBinding(r.Context(), teamID, cfg.Provider, *req.ConnectorConnectionID); err != nil {
+				httpError(w, connectorBindingStatus(err), "%s", err.Error())
 				return
 			}
 		}
@@ -885,6 +947,24 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "this webhook is managed by a forge integration — rotate it by disabling and re-enabling the bot in the Integrations tab")
 		return
 	}
+	// A connector ingress's secret comes from where its package declares:
+	// a vendor's is pasted again, a minted one is minted again below.
+	var origin string
+	var vendorSecret *string
+	if cfg.Provider == webhooks.ProviderConnector {
+		var err error
+		if origin, err = s.ingressSecretOrigin(cfg); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+		var req struct {
+			VendorSecret *string `json:"vendor_secret,omitempty"`
+		}
+		if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+			return
+		}
+		vendorSecret = req.VendorSecret
+	}
 	plaintext, hash, last4, fp, err := webhooks.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint token: %v", err)
@@ -893,6 +973,12 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	cfg.TokenHash, cfg.TokenLast4, cfg.Fingerprint = hash, last4, fp
 	cfg.RotatedAt = &now
+	if cfg.Provider == webhooks.ProviderConnector {
+		if plaintext, err = s.sealIngressSecret(&cfg, origin, plaintext, vendorSecret); err != nil {
+			httpError(w, ingressWriteStatus(err), "%s", err.Error())
+			return
+		}
+	}
 	cfg.UpdatedAt = now
 	// Reseal the HMAC plaintext under the new token so an hmac-mode
 	// webhook keeps verifying after rotate. The operator must update

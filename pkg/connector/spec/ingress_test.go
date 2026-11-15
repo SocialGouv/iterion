@@ -129,6 +129,9 @@ func TestAnIngressDeclarationNoLaneCouldHonourIsRefused(t *testing.T) {
 		{"a listed Authorization header", `headers: [X-Probe-Event, X-Probe-Delivery]`, `headers: [X-Probe-Event, Authorization]`, "", "carries a credential"},
 		{"the credential header listed", `headers: [X-Probe-Event, X-Probe-Delivery]`, `headers: [X-Probe-Event, x-probe-signature]`, "", "carries a credential"},
 		{"an event located twice", `event: { header: X-Probe-Event }`, `event: { header: X-Probe-Event, from: 'payload.action' }`, "", "one value has one source"},
+		{"an event read from the credential header", `event: { header: X-Probe-Event }`, `event: { header: X-Probe-Signature }`, "", "carries a credential"},
+		{"a delivery id read from Cookie", `delivery_id: { header: X-Probe-Delivery }`, `delivery_id: { header: cookie }`, "", "carries a credential"},
+		{"an installation read from a header", `  event: { header: X-Probe-Event }`, "  installation: 'headers[\"X-Probe-Event\"]'\n  event: { header: X-Probe-Event }", "", `reads namespace "headers"`},
 		{"a non-2xx ack", `ack: { status: 200 }`, `ack: { status: 302 }`, "", "is not a 2xx"},
 		{"an output reading the implicit input", `from: 'payload.sender.login' }`, `from: 'sender.login' }`, "", `reads namespace "sender"`},
 		{"a reserved output with the wrong type", `from: 'map(payload.issue.labels, l => l.name)', type: list }`, `from: 'payload.action' }`, "", `"labels" is reserved as a list`},
@@ -178,5 +181,40 @@ triggers:
 	_, err := spec.Load(dir)
 	if err == nil || !strings.Contains(err.Error(), "declares no ingress: block") {
 		t.Fatalf("want the no-ingress refusal, got %v", err)
+	}
+}
+
+// The digest is the contract's identity: stable for one block, different for
+// any change an operator would have to consent to again.
+func TestIngressDigest(t *testing.T) {
+	block := func() *spec.Ingress {
+		return &spec.Ingress{
+			Credential: spec.IngressCredential{Scheme: spec.SchemeHMACSHA256, In: "header", Name: "X-Sig", Encoding: "hex", Signed: "v0:{timestamp}:{body}", Secret: "vendor"},
+			Timestamp:  &spec.IngressTimestamp{In: "header", Name: "X-Ts", Unit: "s", Tolerance: "5m"},
+			Event:      spec.IngressLocator{Header: "X-Event"},
+		}
+	}
+	a, err := spec.IngressDigest(block())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := spec.IngressDigest(block()); a != b || !strings.HasPrefix(a, "sha256:") {
+		t.Fatalf("one block, two digests: %s, %s", a, b)
+	}
+	for name, change := range map[string]func(*spec.Ingress){
+		"the replay window dropped": func(in *spec.Ingress) { in.Timestamp = nil },
+		"the window widened":        func(in *spec.Ingress) { in.Timestamp.Tolerance = "24h" },
+		"the scheme weakened":       func(in *spec.Ingress) { in.Credential.Scheme = spec.SchemeToken },
+		"an installation removed":   func(in *spec.Ingress) { in.Installation = "payload.team" },
+		"a header listed":           func(in *spec.Ingress) { in.Headers = []string{"X-Event"} },
+	} {
+		in := block()
+		change(in)
+		if got, _ := spec.IngressDigest(in); got == a {
+			t.Errorf("%s: the digest did not change", name)
+		}
+	}
+	if _, err := spec.IngressDigest(nil); err == nil {
+		t.Error("a missing block was digested")
 	}
 }

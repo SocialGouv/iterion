@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -63,6 +65,26 @@ func SealHMACSecret(sealer secrets.Sealer, webhookID, plaintext string) ([]byte,
 		return nil, secrets.ErrSealedFormat // surfaces as a server error; never reached in tests because the test sealer is always wired.
 	}
 	return sealer.Seal([]byte(plaintext), hmacSecretAAD(webhookID))
+}
+
+// OpenHMACSecret unseals a webhook's secret under the AAD binding it to
+// webhookID — the key a connector ingress verifies a delivery with, whatever
+// the package's scheme.
+func OpenHMACSecret(sealer secrets.Sealer, webhookID string, sealed []byte) ([]byte, error) {
+	if sealer == nil {
+		return nil, errors.New("webhooks: no sealer to open the secret of webhook " + webhookID)
+	}
+	if len(sealed) == 0 {
+		return nil, errors.New("webhooks: webhook " + webhookID + " holds no sealed secret")
+	}
+	plaintext, err := sealer.Open(sealed, hmacSecretAAD(webhookID))
+	if err != nil {
+		return nil, fmt.Errorf("webhooks: open the secret of webhook %s: %w", webhookID, err)
+	}
+	if len(plaintext) == 0 {
+		return nil, errors.New("webhooks: webhook " + webhookID + " holds an empty secret")
+	}
+	return plaintext, nil
 }
 
 // VerifyHMACSignature recomputes HMAC-SHA256(body, plaintext) and

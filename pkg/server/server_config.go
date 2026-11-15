@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
@@ -181,6 +182,16 @@ type Config struct {
 	// window (the push debounce, ITERION_WEBHOOK_SYNC_DEBOUNCE). nil →
 	// every push launches immediately, as before.
 	WebhookDeferred webhooks.DeferredLaunchStore
+	// ConnectorIntakes is the durable intake a connector ingress writes an
+	// accepted delivery to (ADR-168 §8). Non-nil alongside WebhookConfigs →
+	// POST /api/webhooks/c/{id} is registered.
+	ConnectorIntakes intake.Store
+	// ConnectorIntakeRetention is how long an intake row is kept, its dedup
+	// window included (ITERION_CONNECTOR_INTAKE_RETENTION; 0 keeps rows).
+	ConnectorIntakeRetention time.Duration
+	// ConnectorIntakeBacklogMax caps a tenant's unprocessed intakes
+	// (ITERION_CONNECTOR_INTAKE_BACKLOG_MAX; 0 = no cap).
+	ConnectorIntakeBacklogMax int
 
 	// OrgUsage is the per-org monthly run/cost metering counter. When
 	// non-nil, every launch (REST, resume, webhook) passes the

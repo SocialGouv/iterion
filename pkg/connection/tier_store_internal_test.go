@@ -2,6 +2,7 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"strings"
 	"testing"
@@ -98,5 +99,26 @@ func BenchmarkStoreTierResolution(b *testing.B) {
 		if _, tier, err := cat.Package("forgejo"); err != nil || tier.Kind != TierPlatform {
 			b.Fatalf("tier=%v err=%v", tier.Kind, err)
 		}
+	}
+}
+
+// unreadablePackages is a package store that cannot be read.
+type unreadablePackages struct{ *MemoryPackageStore }
+
+func (unreadablePackages) Get(context.Context, string, string) (StoredPackage, error) {
+	return StoredPackage{}, errors.New("server selection error: context deadline exceeded")
+}
+
+// A store that cannot be read is an outage, typed apart from the two
+// verdicts about the catalog's content: an absent connector, and a package
+// held that does not load.
+func TestAnUnreadableStoreTierIsAnOutageNotAVerdict(t *testing.T) {
+	_, _, err := TeamCatalog(unreadablePackages{NewMemoryPackageStore()}, "t1").Package("forge")
+	if !IsCatalogUnavailable(err) || IsNoSuchConnector(err) {
+		t.Fatalf("an unreadable store = %v, want a CatalogUnavailableError", err)
+	}
+	_, _, err = TeamCatalog(NewMemoryPackageStore(), "t1").Package("forge")
+	if IsCatalogUnavailable(err) || !IsNoSuchConnector(err) {
+		t.Fatalf("an absent connector = %v, want no-such-connector", err)
 	}
 }

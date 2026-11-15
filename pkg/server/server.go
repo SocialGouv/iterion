@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -253,7 +254,10 @@ type Server struct {
 	syncDebounce      time.Duration
 	webhookDeliveries webhooks.DeliveryStore
 	webhookCounter    webhooks.Counter
-	orgUsage          orgusage.Counter
+	// connectorIntakes is the connector ingress lane's durable intake; nil
+	// leaves POST /api/webhooks/c/{id} unregistered.
+	connectorIntakes intake.Store
+	orgUsage         orgusage.Counter
 	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
 	// leaves the /credentials/usage views unregistered.
 	credUsage           credusage.Counter
@@ -444,6 +448,11 @@ type Server struct {
 	// usage-window wait across the days its wall stands). nil →
 	// time.Now().UTC().
 	retryClock func() time.Time
+	// ingressClock overrides the wall clock the connector ingress lane reads
+	// a delivery's replay window and stamps its intake by (test seam — a
+	// vendor's documented request is signed at its own instant). nil →
+	// time.Now().UTC().
+	ingressClock func() time.Time
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
 	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration
@@ -994,6 +1003,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookConfigs:       cfg.WebhookConfigs,
 		webhookDeliveries:    cfg.WebhookDeliveries,
 		webhookCounter:       cfg.WebhookCounter,
+		connectorIntakes:     cfg.ConnectorIntakes,
 		webhookDeferred:      cfg.WebhookDeferred,
 		syncDebounce:         webhookSyncDebounceFromEnv(),
 		orgUsage:             cfg.OrgUsage,

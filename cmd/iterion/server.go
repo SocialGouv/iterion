@@ -790,6 +790,17 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// The connector ingress lane's dials: a value that does not parse
+	// refuses to start the server rather than read as the default — the
+	// operator stated a bound.
+	intakeRetention, err := intake.RetentionFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	intakeBacklogMax, err := intake.BacklogMaxFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 
 	srv := server.New(server.Config{
 		Port:        serverOpts.port,
@@ -887,6 +898,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookDeliveries:           stores.webhooks.Deliveries,
 		WebhookCounter:              stores.webhooks.Counter,
 		WebhookDeferred:             stores.webhooks.Deferred,
+		ConnectorIntakes:            intake.NewMongoStore(st.DB()),
+		ConnectorIntakeRetention:    intakeRetention,
+		ConnectorIntakeBacklogMax:   intakeBacklogMax,
 		ConfigShares:                stores.configShares,
 		OrgUsage:                    stores.orgUsage,
 		CredUsage:                   stores.credUsage,

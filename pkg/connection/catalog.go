@@ -26,6 +26,32 @@ import (
 // wrong connector, which is worse than failing.
 var errNoSuchConnector = errors.New("connection: no such connector in this catalog")
 
+// IsNoSuchConnector reports whether a catalog answered that it holds no such
+// connector — a verdict about the catalog's content, as opposed to a tier
+// that could not be read or a package that could not be loaded.
+func IsNoSuchConnector(err error) bool { return errors.Is(err, errNoSuchConnector) }
+
+// CatalogUnavailableError is a tier whose store could not be read: a retry
+// may succeed, unlike a package the tier holds and cannot load.
+type CatalogUnavailableError struct {
+	Tier      TierKind
+	Connector string
+	Err       error
+}
+
+func (e *CatalogUnavailableError) Error() string {
+	return fmt.Sprintf("read connector %q in the %s tier: %v", e.Connector, e.Tier, e.Err)
+}
+
+func (e *CatalogUnavailableError) Unwrap() error { return e.Err }
+
+// IsCatalogUnavailable reports whether a catalog failed because a store
+// could not be read.
+func IsCatalogUnavailable(err error) bool {
+	var e *CatalogUnavailableError
+	return errors.As(err, &e)
+}
+
 // TierKind says what KIND of catalog answered. A plain name rather than an
 // int, because it is printed: the one reader of a tier is a person debugging
 // an operation they did not expect.

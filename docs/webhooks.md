@@ -1160,6 +1160,87 @@ filtered naming the status; the webhook's own `project_allowlist` and
 declared; and the hold-label veto applies, this being an auto-launch lane —
 a delivery whose issue carries a hold label is filtered, not launched.
 
+## <a name="connector-ingress"></a>A connector ingress: `POST /api/webhooks/c/{id}`
+
+A webhook with `provider: connector` is a connector package's **ingress**
+([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §6): the
+vendor is the bound connection's, and the package's `ingress:` block in
+`triggers.yaml` says how a delivery is verified and read — no vendor's name
+lives in the lane ([pkg/server/webhooks_ingress.go](../pkg/server/webhooks_ingress.go),
+the reader [pkg/connector/ingress](../pkg/connector/ingress/read.go)). An
+ingress launches nothing: it writes an accepted delivery to the durable
+intake and answers; matching and launching run after the answer.
+
+**Creating one** (`POST /api/teams/{id}/webhooks`):
+
+| Field | Rule |
+|---|---|
+| `provider` | `connector` |
+| `connector_connection_id` | Required: a connection of the team holding the `trigger` grant, live, whose package declares an `ingress:` block and at least one trigger. |
+| `installation` | Required exactly when the package reads one (`installation:` — a Slack `team_id`): the value the connection's installation carries. A delivery carrying another is refused. |
+| `vendor_secret` | Required when the package's credential is `secret: vendor` (the vendor generates it — a Slack signing secret): one token, at least 16 characters, no whitespace. Refused when the credential is `minted`, where the answer shows the minted secret once instead. Sealed, never answered back, and no piece of it (last four, fingerprint) is shown. |
+| `contract_digest` | Optional: the digest of the package's `ingress:` block the operator read. When stated it must be the contract the package resolves to (409 otherwise). |
+| `bot_ids`, `wildcard_bots`, `default_bot_id`, `sign_mode` | Refused: a trigger subscription binds a bot to its events, and the package declares the verification. |
+
+The row records `connector` (the vendor, from the connection), `contract_digest`
+(the pinned contract), `installation` and `secret_origin` (`minted` or
+`vendor`). A PATCH that changes `connector_connection_id` or `installation`
+re-validates them against the package as it resolves now; a restated value is
+no change, so a client that echoes the row back re-pins nothing. **The pin
+moves only by consent**: a PATCH carrying `contract_digest` equal to the
+contract the package resolves to — the digest a refused delivery's 409 names.
+A contract whose secret origin differs from the ingress's needs a rotation
+first. An ingress cannot be unbound (`""`) nor moved to another vendor's
+connection, even once its connection is gone: it holds that vendor's secret.
+**Rotation** (`POST …/rotate`) mints a new secret, or takes the vendor's new
+one as `{"vendor_secret": …}`, as the package declares now; it works while the
+connection is revoked — rotating a leaked secret is incident response.
+
+**A delivery**, in order — every refusal before the intake write changes no
+durable state (no intake row, no monthly count):
+
+1. The ingress resolves — an unknown id and another provider's id answer the
+   same 401, after one read and with no rate-limit state created for them.
+2. A per-(client address, ingress) limit, the only one before the sender is
+   proven: junk aimed at other ingresses from a vendor's shared address does
+   not starve this one. The body is read under the 5 MiB cap (413 above it);
+   before the proof nothing decodes it into a tree — a credential or
+   timestamp in the body is read by a top-level scan of at most 10000
+   members.
+3. The binding can vouch — the connection exists, names the ingress's
+   connector, holds `trigger` and is live, and the package resolves to the
+   pinned contract — or **409** naming what to fix; a changed contract names
+   both digests until consented to. A store that cannot answer is **503**,
+   never a binding verdict.
+4. The package's reader authenticates the delivery: the declared scheme over
+   the raw bytes, the replay window, then — after a handshake, which carries
+   none — the installation, read from the signed body only. Failing answers
+   **401**, with the reason (bounded) in the server log only. An event past
+   12 MiB, Mongo's document bound less the row, answers **413**.
+5. Admission, as on every lane: enabled (410), the provisioning epoch, the
+   per-webhook rate bucket (429), the team may launch (403).
+6. A handshake is answered with its challenge; a delivery no trigger declares,
+   or that a trigger's loop guard drops, gets the package's ack. Neither is
+   stored nor counted.
+7. A redelivery — the same signed body, including a vendor's retry re-signed
+   at a later instant — meets its stored row and gets the ack, charged
+   nothing; the vendor's delivery-id header is unsigned and never part of
+   that identity.
+8. Over the team's backlog cap (`ITERION_CONNECTOR_INTAKE_BACKLOG_MAX`) the
+   answer is **503** with `Retry-After` — a soft bound: concurrent deliveries
+   that each read room may overshoot it by the deliveries in flight. Then the
+   monthly quota is charged (429 past it), the intake row written, and the
+   package's `ack` answers (200 and an empty body by default). The write runs
+   detached from the request; a write that meets a row a concurrent twin
+   wrote first gives the quota unit back, and so does a failed write whose
+   row is then proven absent — a lost answer over a stored row is acked and
+   keeps its unit. Only an answered delivery marks the ingress
+   `last_used_at`.
+
+What is stored is the **sanitized event**: the trigger's outputs, the body
+without the credential field and the `redact:` fields, and only the headers
+the package lists — never `Authorization`, `Cookie` or the credential header.
+
 ## Matching: project + event + author allowlists, bot scope
 
 Every webhook carries four selection filters plus a bot-agnostic hold gate

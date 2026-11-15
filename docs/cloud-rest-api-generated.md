@@ -738,6 +738,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 
 | Method | Path | Auth | Spec |
 |---|---|---|---|
+| `POST` | `/api/webhooks/c/{id}` | open | yes |
 | `POST` | `/api/webhooks/deliveries/{id}/retry` | platform admin | yes |
 | `POST` | `/api/webhooks/forgejo/{id}` | open | yes |
 | `POST` | `/api/webhooks/generic/{id}` | open | yes |

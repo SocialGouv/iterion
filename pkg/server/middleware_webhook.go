@@ -140,107 +140,170 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 			httpError(w, http.StatusUnauthorized, "invalid webhook token")
 			return
 		}
-		if !cfg.Enabled {
-			httpError(w, http.StatusGone, "webhook disabled")
+		if !s.webhookLive(w, r, cfg) || !s.webhookRateAllowed(w, cfg) || !s.webhookQuotaAllowed(w, r, cfg) {
 			return
 		}
-		if cfg.ProvisionIntegrationID != "" {
-			if s.forgeIntegrations == nil {
-				httpError(w, http.StatusServiceUnavailable, "webhook activation store unavailable")
-				return
-			}
-			ri, err := s.forgeIntegrations.Get(r.Context(), cfg.ProvisionIntegrationID)
-			if errors.Is(err, forge.ErrIntegrationNotFound) || err == nil && (ri.TenantID != cfg.TenantID || ri.WebhookID != cfg.ID) {
-				httpError(w, http.StatusGone, "webhook epoch retired or pending")
-				return
-			}
-			if err != nil {
-				httpError(w, http.StatusServiceUnavailable, "webhook activation unavailable")
-				return
-			}
+		team, ok := s.webhookTenantActive(w, r, cfg)
+		if !ok {
+			return
 		}
-		// Per-webhook rate limit.
-		if s.authLimiter != nil {
-			bucket := authBucketCfg{rate: cfg.RateLimit.Rate, burst: cfg.RateLimit.Burst}
-			if bucket.rate <= 0 || bucket.burst <= 0 {
-				bucket = authBucketCfg{rate: defaultWebhookRate.Rate, burst: defaultWebhookRate.Burst}
-			}
-			if ok, retry := s.authLimiter.allow("wh:"+cfg.ID, bucket); !ok {
-				if s.cfg.Metrics != nil {
-					s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "rate_limited").Inc()
-				}
-				w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
-				httpError(w, http.StatusTooManyRequests, "rate limited")
-				return
-			}
+		next.ServeHTTP(w, s.webhookActing(r, cfg, team))
+	})
+}
+
+// The admission of an AUTHENTICATED delivery, one helper per step so every
+// inbound lane — the provider routes behind webhookAuth and the connector
+// ingress lane — applies the same step the same way, each in its own order.
+// Every helper answers the refusal itself and reports whether the delivery
+// may go on; none may run before the sender is proven: the rate bucket and
+// the monthly quota are the tenant's, and a step that charges them before
+// the proof lets anyone holding the hook's URL spend them.
+
+// webhookLive refuses a webhook that is disabled, or whose provisioning
+// epoch is retired or pending.
+func (s *Server) webhookLive(w http.ResponseWriter, r *http.Request, cfg webhooks.Config) bool {
+	if !cfg.Enabled {
+		httpError(w, http.StatusGone, "webhook disabled")
+		return false
+	}
+	if cfg.ProvisionIntegrationID != "" {
+		if s.forgeIntegrations == nil {
+			httpError(w, http.StatusServiceUnavailable, "webhook activation store unavailable")
+			return false
 		}
-		// Per-org monthly quota (and optional per-webhook monthly cap).
-		if s.webhookCounter != nil {
-			lim := webhooks.Limits{
-				PerOrgMonthly:     defaultOrgMonthlyWebhookCalls,
-				PerWebhookMonthly: cfg.MonthlyCallLimit,
-			}
-			ok, qerr := s.webhookCounter.Allow(r.Context(), cfg.TenantID, cfg.ID, time.Now().UTC(), lim)
-			if qerr != nil {
-				httpError(w, http.StatusInternalServerError, "quota check failed")
-				return
-			}
-			if !ok {
-				if s.cfg.Metrics != nil {
-					s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "quota_exceeded").Inc()
-				}
-				httpError(w, http.StatusTooManyRequests, "monthly call quota exceeded")
-				return
-			}
+		ri, err := s.forgeIntegrations.Get(r.Context(), cfg.ProvisionIntegrationID)
+		if errors.Is(err, forge.ErrIntegrationNotFound) || err == nil && (ri.TenantID != cfg.TenantID || ri.WebhookID != cfg.ID) {
+			httpError(w, http.StatusGone, "webhook epoch retired or pending")
+			return false
 		}
-		// Org must be active. The loaded Team is stashed on ctx below so
-		// the launch gate downstream reuses it instead of re-fetching.
-		var loadedTeam *identity.Team
-		if st := s.authStore(); st != nil {
-			t, terr := st.GetTeam(r.Context(), cfg.TenantID)
-			switch {
-			case errors.Is(terr, identity.ErrNotFound):
-				// A tenant that no longer exists is not "no constraint to
-				// check" — it is a webhook outliving its team. Falling
-				// through left a signed delivery launching runs nobody owns
-				// and skipping the team-keyed half of the launch gate, which
-				// is worse than the suspension this branch guards.
-				httpError(w, http.StatusForbidden, "tenant no longer exists")
-				return
-			case terr != nil:
-				// A degraded identity read must not open the door either;
-				// the caller is a machine that will redeliver.
-				httpError(w, http.StatusServiceUnavailable, "tenant lookup unavailable")
-				return
-			case !t.CanLaunch():
-				httpError(w, http.StatusForbidden, "org suspended")
-				return
-			default:
-				loadedTeam = &t
-			}
+		if err != nil {
+			httpError(w, http.StatusServiceUnavailable, "webhook activation unavailable")
+			return false
 		}
-		// Stamp the tenant identity (synthetic webhook actor) + config.
-		actor := webhookActor(cfg.ID)
-		ctx := auth.WithIdentity(r.Context(), auth.Identity{
-			UserID: actor,
-			TeamID: cfg.TenantID,
-			Role:   identity.RoleMember,
-			Kind:   auth.KindWebhook,
-		})
-		ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
-		ctx = context.WithValue(ctx, webhookCtxKey{}, cfg)
-		if loadedTeam != nil {
-			ctx = withTeam(ctx, *loadedTeam)
+	}
+	return true
+}
+
+// webhookRateAllowed applies the per-webhook rate bucket.
+func (s *Server) webhookRateAllowed(w http.ResponseWriter, cfg webhooks.Config) bool {
+	if s.authLimiter == nil {
+		return true
+	}
+	bucket := authBucketCfg{rate: cfg.RateLimit.Rate, burst: cfg.RateLimit.Burst}
+	if bucket.rate <= 0 || bucket.burst <= 0 {
+		bucket = authBucketCfg{rate: defaultWebhookRate.Rate, burst: defaultWebhookRate.Burst}
+	}
+	if ok, retry := s.authLimiter.allow("wh:"+cfg.ID, bucket); !ok {
+		if s.cfg.Metrics != nil {
+			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "rate_limited").Inc()
 		}
-		// last_used_at is observability, not on the inbound critical
-		// path — write it detached (bounded, survives request cancel) so
-		// the handler isn't serialised behind a Mongo round-trip.
-		id, now := cfg.ID, time.Now().UTC()
-		s.goSafe("webhook-markused", func() {
-			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.webhookConfigs.MarkUsed(store.WithIdentity(bg, cfg.TenantID, actor), id, now)
-		})
-		next.ServeHTTP(w, r.WithContext(ctx))
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		httpError(w, http.StatusTooManyRequests, "rate limited")
+		return false
+	}
+	return true
+}
+
+// webhookQuotaAllowed charges the per-org monthly quota (and the optional
+// per-webhook monthly cap): the one step that WRITES, so a lane that must
+// write nothing on a refusal runs it last.
+func (s *Server) webhookQuotaAllowed(w http.ResponseWriter, r *http.Request, cfg webhooks.Config) bool {
+	_, ok := s.chargeWebhookQuota(w, r, cfg)
+	return ok
+}
+
+// chargeWebhookQuota is webhookQuotaAllowed for a lane that may not keep the
+// unit it charged: release gives it back (a write that then fails, a
+// delivery that meets the row a concurrent twin wrote).
+func (s *Server) chargeWebhookQuota(w http.ResponseWriter, r *http.Request, cfg webhooks.Config) (release func(), ok bool) {
+	release = func() {}
+	if s.webhookCounter == nil {
+		return release, true
+	}
+	lim := webhooks.Limits{
+		PerOrgMonthly:     defaultOrgMonthlyWebhookCalls,
+		PerWebhookMonthly: cfg.MonthlyCallLimit,
+	}
+	now := time.Now().UTC()
+	allowed, qerr := s.webhookCounter.Allow(r.Context(), cfg.TenantID, cfg.ID, now, lim)
+	if qerr != nil {
+		httpError(w, http.StatusInternalServerError, "quota check failed")
+		return release, false
+	}
+	if !allowed {
+		if s.cfg.Metrics != nil {
+			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "quota_exceeded").Inc()
+		}
+		httpError(w, http.StatusTooManyRequests, "monthly call quota exceeded")
+		return release, false
+	}
+	return func() {
+		if err := s.webhookCounter.Release(r.Context(), cfg.TenantID, cfg.ID, now, lim); err != nil && s.logger != nil {
+			s.logger.Warn("webhooks: release the monthly quota unit of %s: %v", cfg.ID, err)
+		}
+	}, true
+}
+
+// webhookTenantActive refuses a delivery for a tenant that no longer exists
+// or may not launch, and returns the loaded Team so the launch gate
+// downstream reuses it instead of re-fetching (nil without an auth store).
+func (s *Server) webhookTenantActive(w http.ResponseWriter, r *http.Request, cfg webhooks.Config) (*identity.Team, bool) {
+	st := s.authStore()
+	if st == nil {
+		return nil, true
+	}
+	t, terr := st.GetTeam(r.Context(), cfg.TenantID)
+	switch {
+	case errors.Is(terr, identity.ErrNotFound):
+		// A tenant that no longer exists is not "no constraint to
+		// check" — it is a webhook outliving its team. Falling
+		// through left a signed delivery launching runs nobody owns
+		// and skipping the team-keyed half of the launch gate, which
+		// is worse than the suspension this branch guards.
+		httpError(w, http.StatusForbidden, "tenant no longer exists")
+		return nil, false
+	case terr != nil:
+		// A degraded identity read must not open the door either;
+		// the caller is a machine that will redeliver.
+		httpError(w, http.StatusServiceUnavailable, "tenant lookup unavailable")
+		return nil, false
+	case !t.CanLaunch():
+		httpError(w, http.StatusForbidden, "org suspended")
+		return nil, false
+	}
+	return &t, true
+}
+
+// webhookActing stamps the tenant identity (the synthetic webhook actor),
+// the config and the loaded team on the request, and records the webhook's
+// last use.
+func (s *Server) webhookActing(r *http.Request, cfg webhooks.Config, team *identity.Team) *http.Request {
+	actor := webhookActor(cfg.ID)
+	ctx := auth.WithIdentity(r.Context(), auth.Identity{
+		UserID: actor,
+		TeamID: cfg.TenantID,
+		Role:   identity.RoleMember,
+		Kind:   auth.KindWebhook,
+	})
+	ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
+	ctx = context.WithValue(ctx, webhookCtxKey{}, cfg)
+	if team != nil {
+		ctx = withTeam(ctx, *team)
+	}
+	s.markWebhookUsed(cfg)
+	return r.WithContext(ctx)
+}
+
+// markWebhookUsed records the webhook's last use. last_used_at is
+// observability, not on the inbound critical path — written detached
+// (bounded, survives request cancel) so the handler isn't serialised behind
+// a Mongo round-trip.
+func (s *Server) markWebhookUsed(cfg webhooks.Config) {
+	actor := webhookActor(cfg.ID)
+	id, now := cfg.ID, time.Now().UTC()
+	s.goSafe("webhook-markused", func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.webhookConfigs.MarkUsed(store.WithIdentity(bg, cfg.TenantID, actor), id, now)
 	})
 }

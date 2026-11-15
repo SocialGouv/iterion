@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -255,28 +256,36 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 // webhook may bind only a connection it could be believed through, checked
 // when the operator entrusts the binding rather than discovered per
 // delivery. Every refusal here is a 400 an operator can act on; the lane's
-// own re-checks are for the record that changed since.
-func (s *Server) validateConnectorBinding(ctx context.Context, teamID string, provider webhooks.Provider, connID string) error {
+// own re-checks are for the record that changed since. A connector ingress
+// (ProviderConnector) binds a connection of any connector — the vendor is
+// the connection's — and every other provider binds its own.
+func (s *Server) validateConnectorBinding(ctx context.Context, teamID string, provider webhooks.Provider, connID string) (connection.Connection, error) {
 	if s.connectionStore == nil || s.connectorCatalog == nil {
-		return fmt.Errorf("a connector binding needs the connection plane (connections store + catalog), which this deployment does not wire")
+		return connection.Connection{}, fmt.Errorf("a connector binding needs the connection plane (connections store + catalog), which this deployment does not wire")
 	}
 	conn, err := s.connectionStore.Get(ctx, teamID, connID)
-	if err != nil {
-		return fmt.Errorf("connection %q not found for this team", connID)
+	switch {
+	case errors.Is(err, connection.ErrNotFound):
+		return connection.Connection{}, fmt.Errorf("connection %q not found for this team", connID)
+	case err != nil:
+		if s.logger != nil {
+			s.logger.Warn("webhooks: read connection %s of team %s: %v", connID, teamID, err)
+		}
+		return connection.Connection{}, fmt.Errorf("%w: the connections store is unavailable; retry", errIngressStoreUnavailable)
 	}
-	if conn.Connector != string(provider) {
-		return fmt.Errorf("connection %q (%s) is a %q connection; a %s webhook's deliveries can only be believed through a %s connection",
+	if provider != webhooks.ProviderConnector && conn.Connector != string(provider) {
+		return connection.Connection{}, fmt.Errorf("connection %q (%s) is a %q connection; a %s webhook's deliveries can only be believed through a %s connection",
 			connID, conn.Alias, conn.Connector, provider, provider)
 	}
 	if !conn.Has(connection.CapTrigger) {
-		return fmt.Errorf("connection %q (%s) holds no `trigger` grant — an operator grants it deliberately (`iterion connections add --capabilities …,trigger`), which is what decides this vendor's events may be believed on its word",
+		return connection.Connection{}, fmt.Errorf("connection %q (%s) holds no `trigger` grant — an operator grants it deliberately (`iterion connections add --capabilities …,trigger`), which is what decides this vendor's events may be believed on its word",
 			connID, conn.Alias)
 	}
 	if !conn.Status.Usable() {
-		return fmt.Errorf("connection %q (%s) is %s — a revoked or reauth-pending connection vouches for no delivery; reconnect it first, then bind",
+		return connection.Connection{}, fmt.Errorf("connection %q (%s) is %s — a revoked or reauth-pending connection vouches for no delivery; reconnect it first, then bind",
 			connID, conn.Alias, conn.Status)
 	}
-	return nil
+	return conn, nil
 }
 
 // triggerEventNames renders the declared vendor events for a refusal: the

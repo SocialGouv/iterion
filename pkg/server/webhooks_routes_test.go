@@ -518,6 +518,19 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	if code, _, _, _ := runWebhookAuth(s, "mq", pt3); code != http.StatusTooManyRequests {
 		t.Fatalf("mq second should be 429 (monthly quota): code=%d", code)
 	}
+
+	// a suspended team → 403, the handler never runs
+	if _, err := s.authStore().CreateTeam(ctx, identity.Team{
+		ID: "tsus", Name: "tsus", Slug: "webhook-tsus", Status: identity.TeamStatusSuspended, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pt4, h4, l44, fp4, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
+	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "sus", TenantID: "tsus", Provider: webhooks.ProviderGitLab,
+		Enabled: true, TokenHash: h4, TokenLast4: l44, Fingerprint: fp4, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 100, Burst: 100}})
+	if code, ran, _, _ := runWebhookAuth(s, "sus", pt4); code != http.StatusForbidden || ran {
+		t.Fatalf("suspended team: code=%d ran=%v, want 403 and no handler", code, ran)
+	}
 }
 
 // TestWebhookHoldLabelsRoundTrip pins the config INGRESS for hold_labels.

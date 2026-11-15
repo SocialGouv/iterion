@@ -82,11 +82,34 @@ const (
 	// EnvRetention is how long an intake and its pairs are kept (a Go
 	// duration; 0 keeps them).
 	EnvRetention = "ITERION_CONNECTOR_INTAKE_RETENTION"
+	// EnvBacklogMax caps a tenant's unprocessed intakes — pending or claimed
+	// — past which the lane answers 503 and writes nothing (0 removes it).
+	EnvBacklogMax = "ITERION_CONNECTOR_INTAKE_BACKLOG_MAX"
 )
 
 // DefaultRetention keeps an intake and its pairs thirty days: the dedup
 // window a vendor's redelivery meets, and the dead-letter view's horizon.
 const DefaultRetention = 30 * 24 * time.Hour
+
+// DefaultBacklogMax is the per-tenant cap on unprocessed intakes: a vendor
+// flooding one tenant meets 503 and retries later, instead of growing a
+// backlog no worker drains.
+const DefaultBacklogMax = 10000
+
+// BacklogMaxFromEnv reads EnvBacklogMax over DefaultBacklogMax; 0 removes the
+// cap. A value that is not a non-negative count is an error, never the
+// default: the operator stated a bound.
+func BacklogMaxFromEnv(getenv func(string) string) (int, error) {
+	v := strings.TrimSpace(getenv(EnvBacklogMax))
+	if v == "" {
+		return DefaultBacklogMax, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("intake: %s=%q: want a count, 0 for no cap", EnvBacklogMax, v)
+	}
+	return n, nil
+}
 
 // PolicyFromEnv reads prefix + MAX_ATTEMPTS, BACKOFF, BACKOFF_MAX and
 // CLAIM_TTL over DefaultPolicy. A value that does not parse is an error

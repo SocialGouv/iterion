@@ -79,6 +79,19 @@ func (m *MemoryStore) GetIntake(_ context.Context, tenantID, id string) (Intake,
 	return copyIntake(*in), nil
 }
 
+func (m *MemoryStore) CountBacklog(_ context.Context, tenantID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	n := 0
+	for _, in := range m.intakes {
+		if in.TenantID == tenantID && (in.State == IntakePending || in.State == IntakeClaimed) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryStore) ListIntakes(_ context.Context, tenantID, state string, limit int) ([]Intake, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

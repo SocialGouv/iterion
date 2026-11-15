@@ -334,6 +334,27 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
+	t.Run("the backlog counts a tenant's pending and claimed intakes", func(t *testing.T) {
+		s := newStore(t)
+		for _, d := range []string{"a", "b", "c", "d"} {
+			mustAccept(t, s, delivery("t1", "ing-1", d, t0))
+		}
+		c, _ := s.ClaimIntakes(ctx, "w", t0, ttl, 2)
+		if err := s.MarkIntakeMatched(ctx, c[0].ID, c[0].Generation, t0); err != nil {
+			t.Fatal(err)
+		}
+		// Another tenant's row, accepted after the claim so the claim
+		// (which drains every tenant) cannot take it.
+		mustAccept(t, s, delivery("t2", "ing-1", "x", t0))
+		// t1: two pending, one claimed, one matched.
+		if n, err := s.CountBacklog(ctx, "t1"); err != nil || n != 3 {
+			t.Fatalf("t1 backlog = (%d, %v), want 3", n, err)
+		}
+		if n, err := s.CountBacklog(ctx, "t3"); err != nil || n != 0 {
+			t.Fatalf("an empty tenant's backlog = (%d, %v), want 0", n, err)
+		}
+	})
+
 	t.Run("lists newest first, filtered by state, bounded", func(t *testing.T) {
 		s := newStore(t)
 		a := mustAccept(t, s, delivery("t1", "ing-1", "a", t0))
