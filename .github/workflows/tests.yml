@@ -788,8 +788,8 @@ jobs:
           # No Go cache (#1839, like fmt-check): -mod=vendor needs no module
           # cache, the build cache it restores is another job's, and on the
           # scale set a slow restore of that ~400 MB archive has taken eleven
-          # minutes of this fifteen-minute budget (nats-conformance, the same
-          # setup, cancelled twice on 2026-09-29).
+          # minutes of a fifteen-minute job (nats-conformance, the same setup,
+          # cancelled twice on 2026-09-29).
           cache: false
 
       - name: Start mongo as a replica set
@@ -851,7 +851,7 @@ jobs:
           # five minutes without Mongo and reached the old 10m package budget
           # with it under queue load (600.6s, #3390). The budget stays below
           # the job's ceiling without shortening any test coverage.
-          go test -mod=vendor -count=1 -v -timeout 20m ./pkg/store/mongo/... \
+          go test -mod=vendor -count=1 -v -timeout 20m \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
@@ -862,6 +862,10 @@ jobs:
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/... \
             ./pkg/connector/intake/... ./pkg/connector/poller/...
+          # The store harness runs alone on the replica set: its transactions
+          # and change streams saturate a shared mongod, which starves the
+          # suites beside it, so it carries its own budget.
+          go test -mod=vendor -count=1 -v -timeout 20m ./pkg/store/mongo/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
           go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
