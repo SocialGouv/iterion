@@ -155,6 +155,7 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("PUT /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleUpdateTrigger)))
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleDeleteTrigger)))
 	s.mux.Handle("POST /api/v1/triggers/emit", s.triggerWriteAuth(http.HandlerFunc(s.handleEmitTrigger)))
+	s.mux.Handle("POST /api/v1/triggers/preview", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggerPreview)))
 	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
 	s.mux.Handle("GET /api/v1/triggers/health", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggersHealth)))
 }

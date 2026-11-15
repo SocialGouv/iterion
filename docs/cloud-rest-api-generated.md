@@ -733,6 +733,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/triggers` | session + write rung | yes |
 | `POST` | `/api/v1/triggers/emit` | session + write rung | yes |
 | `GET` | `/api/v1/triggers/health` | session + write rung | yes |
+| `POST` | `/api/v1/triggers/preview` | session + write rung | yes |
 | `DELETE` | `/api/v1/triggers/{id}` | session + write rung | yes |
 | `GET` | `/api/v1/triggers/{id}` | session + write rung | yes |
 | `PUT` | `/api/v1/triggers/{id}` | session + write rung | yes |

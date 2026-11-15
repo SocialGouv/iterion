@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ErrUnauthenticated is the class of every refusal before the sender is
@@ -174,21 +175,35 @@ func Read(req Request) (Delivery, error) {
 		return d, nil
 	}
 	d.TriggerID = trig.ID
+	raw, filtered, err := extract(*trig, event, headers, ctx)
+	if err != nil {
+		return Delivery{}, err
+	}
+	d.Filtered = filtered
+	d.Event = raw
+	return d, nil
+}
+
+// extract is what a delivery becomes once its trigger is located: dropped
+// by the trigger's loop guard (filtered says why), or the sanitized event —
+// its outputs, its payload, its listed headers — a subscription is judged
+// against. The lane and the preview share it, so a preview reads a payload
+// exactly as a delivery is read.
+func extract(trig spec.Trigger, event map[string]any, headers map[string]string, ctx *expr.Context) (json.RawMessage, string, error) {
 	if trig.Ignore != "" {
 		drop, err := spec.EvalDelivery(trig.Ignore, ctx)
 		if err != nil {
-			return Delivery{}, fmt.Errorf("%w: %s.ignore: %v", ErrMalformed, trig.ID, err)
+			return nil, "", fmt.Errorf("%w: %s.ignore: %v", ErrMalformed, trig.ID, err)
 		}
 		if drop == true {
-			d.Filtered = fmt.Sprintf("trigger %s's loop guard dropped it", trig.ID)
-			return d, nil
+			return nil, fmt.Sprintf("trigger %s's loop guard dropped it", trig.ID), nil
 		}
 	}
 	outputs := map[string]any{}
 	for _, o := range trig.Outputs {
 		v, err := spec.EvalDelivery(o.From, ctx)
 		if err != nil {
-			return Delivery{}, fmt.Errorf("%w: %s output %s: %v", ErrMalformed, trig.ID, o.Name, err)
+			return nil, "", fmt.Errorf("%w: %s output %s: %v", ErrMalformed, trig.ID, o.Name, err)
 		}
 		if v != nil {
 			outputs[o.Name] = v
@@ -196,10 +211,25 @@ func Read(req Request) (Delivery, error) {
 	}
 	raw, err := encodeEvent(map[string]any{"outputs": outputs, "payload": event, "headers": headers})
 	if err != nil {
-		return Delivery{}, err
+		return nil, "", err
 	}
-	d.Event = raw
-	return d, nil
+	return raw, "", nil
+}
+
+// Preview reads a payload and its headers through a trigger the way the
+// lane reads an authenticated delivery, without verifying, storing or
+// answering anything: the sanitized event a subscription would be judged
+// against — the redact fields and the credential gone from the payload,
+// only the listed headers kept — or why the trigger's loop guard drops it.
+func Preview(in *spec.Ingress, trig spec.Trigger, payload map[string]any, header http.Header) (json.RawMessage, string, error) {
+	if in == nil {
+		return nil, "", fmt.Errorf("%w: the package declares no ingress", ErrMalformed)
+	}
+	normalizeNumbers(payload)
+	event := sanitize(in, payload)
+	visible := visibleHeaders(in)
+	headers := listedHeaders(visible, header)
+	return extract(trig, event, headers, spec.NewDeliveryContext(event, header, visible))
 }
 
 // encodeEvent encodes the event without HTML escaping — a "<" stored as

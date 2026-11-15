@@ -41,9 +41,15 @@ func newConnectorTriggerWorld(t *testing.T) *connectorTriggerWorld {
 	t.Helper()
 	pkg := &spec.Package{
 		Connector: spec.Connector{ID: "chat"},
+		Ingress: &spec.Ingress{
+			Credential: spec.IngressCredential{Scheme: spec.SchemeToken, In: "body", Name: "token", Secret: "vendor"},
+			Headers:    []string{"X-Chat-Listed"},
+		},
 		Triggers: []spec.Trigger{{ID: "chat.message.posted", Event: "deploy",
-			Filters: []spec.TriggerFilter{{ID: "room", From: "payload.room", Type: "enum", Options: []string{"ops", "dev"}}},
-			Outputs: []spec.TriggerOutput{{Name: "prompt", From: "payload.text"}},
+			Filters:    []spec.TriggerFilter{{ID: "room", From: "payload.room", Type: "enum", Options: []string{"ops", "dev", "bots"}}},
+			Outputs:    []spec.TriggerOutput{{Name: "prompt", From: "payload.text"}},
+			Ignore:     "payload.room == 'bots'",
+			SampleBody: []byte(`{"headers":{"X-Chat-Listed":"sampled"},"payload":{"room":"ops","text":"from the sample","token":"CANARY-SAMPLE"}}`),
 		}},
 	}
 	f := newIngressFixture(t, pkg)
@@ -175,5 +181,48 @@ func TestAConnectorInvocationIsEnabledOntoAConnection(t *testing.T) {
 	}
 	if rec := post(`{"index":0,"connection_id":"conn-mail"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("enable onto another connector's connection = %d, want 400", rec.Code)
+	}
+}
+
+func (w *connectorTriggerWorld) preview(body string) (*httptest.ResponseRecorder, triggerPreview) {
+	rec := httptest.NewRecorder()
+	w.s.handleTriggerPreview(rec, teamT1(httptest.NewRequest(http.MethodPost, "/api/v1/triggers/preview", bytes.NewBufferString(body))))
+	var out triggerPreview
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec, out
+}
+
+// The preview reads a delivery as the lane, the matcher and the launch
+// would — the credential never in what it answers — and writes nothing.
+func TestThePreviewReadsADeliveryAndWritesNothing(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	base := `"bot_id":"chatbot","connection_id":"conn-chat","trigger_id":"chat.message.posted","filters":{"room":["ops"]}`
+	rec, out := w.preview(`{` + base + `,"payload":{"room":"ops","text":"ship it","token":"CANARY-PASTED"},"headers":{"X-Chat-Listed":"yes","X-Other":"CANARY-HEADER"}}`)
+	if rec.Code != http.StatusOK || !out.Matched || out.Vars["prompt"] != "ship it" {
+		t.Fatalf("a matching delivery = %d %s, want matched with its vars", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(string(out.Event), `"X-Chat-Listed":"yes"`) {
+		t.Fatalf("the event = %s, want the pasted listed header", out.Event)
+	}
+	for _, canary := range []string{"CANARY-PASTED", "CANARY-HEADER"} {
+		if strings.Contains(rec.Body.String(), canary) {
+			t.Fatalf("the preview answered %s: %s", canary, rec.Body.String())
+		}
+	}
+	if _, out := w.preview(`{` + base + `,"payload":{"room":"dev","text":"x"}}`); out.Matched || out.Reason == "" {
+		t.Fatalf("a delivery for another room = %+v, want not matched with its reason", out)
+	}
+	if _, out := w.preview(`{` + base + `,"payload":{"room":"bots","text":"x"}}`); out.Filtered == "" {
+		t.Fatalf("a delivery the loop guard drops = %+v, want filtered", out)
+	}
+	rec, out = w.preview(`{` + base + `}`)
+	if rec.Code != http.StatusOK || !out.Sample || !out.Matched || out.Vars["prompt"] != "from the sample" || strings.Contains(rec.Body.String(), "CANARY-SAMPLE") {
+		t.Fatalf("no payload = %d %s, want the sample read and judged, its credential gone", rec.Code, rec.Body.String())
+	}
+	if rec, _ := w.preview(`{"bot_id":"chatbot","connection_id":"conn-chat","trigger_id":"chat.message.posted","var_map":{"tone":"event.prompt"}}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a subscription the save would refuse = %d, want 400", rec.Code)
+	}
+	if rows, _ := w.s.cfg.TriggerStore.ListByTenant(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("the preview stored %d subscription(s)", len(rows))
 	}
 }

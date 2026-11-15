@@ -19322,6 +19322,20 @@
         ]
       }
     },
+    "/api/v1/triggers/preview": {
+      "post": {
+        "operationId": "postV1TriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/triggers/preview",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
     "/api/v1/triggers/{id}": {
       "delete": {
         "operationId": "deleteV1TriggersById",

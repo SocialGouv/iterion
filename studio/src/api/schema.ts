@@ -6703,6 +6703,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/triggers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/triggers/preview */
+        post: operations["postV1TriggersPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers/{id}": {
         parameters: {
             query?: never;
@@ -20176,6 +20193,24 @@ export interface operations {
         };
     };
     getV1TriggersHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1TriggersPreview: {
         parameters: {
             query?: never;
             header?: never;
