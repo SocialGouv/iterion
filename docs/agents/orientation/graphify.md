@@ -11,8 +11,29 @@ truth.
 
 | Question | Tool |
 |---|---|
-| How does X work, which docs explain this code, what is central | graphify |
+| How does X work, which docs explain this code | grep over `docs/` and `docs/adr/`, the [doc map](../../references/map-docs.md) — not the graph, see [Measured value](#measured-value-for-agents) |
 | Where is X, who implements Y, what breaks if Z changes, path A→B, anything about bots or `.bot` files | the deterministic map — [repo-map-and-graph.md](../../repo-map-and-graph.md) |
+| What is central, which communities, a visual tour of an unfamiliar area | graphify, for the operator — `GRAPH_REPORT.md`, `graph.html` |
+
+## Measured value for agents
+
+A blind A/B bench (2026-11-15) set the graph against grep and the
+deterministic map on eight discoverability questions — concept → docs,
+ADR → code, code → docs, the link between two concepts. Same model, same
+questions, one arm starting every question with graphify by the recipe below,
+a judge scoring the pooled files without knowing their arm.
+
+- 47 of the 64 files each arm returned were the same; for code → docs
+  (`pkg/runtime/resume.go`) both arms returned the identical eight.
+- The graph alone surfaced 2 files, scored irrelevant and secondary; no
+  central file came from it. Each arm found 15 files the other missed, mostly
+  grep's run-to-run variance; the graph arm missed a central file grep found.
+- Cost was the same: tokens and tool calls within 2 %.
+- Usage agreed: five organic graph calls in seven weeks of sessions, none after
+  subagents were nudged toward it.
+
+Point agents at grep, the map and the doc indexes. The graph stays an operator
+tool: the report, the visual graph, the CLI.
 
 ## Querying it
 
@@ -53,8 +74,8 @@ sent to the LLM API.
 
 **Nothing committed to this repository refreshes the graph** — refresh is
 operator-local. On this machine a Claude Code session-start hook does it:
-compare the built commit with HEAD, start `graphify update` through
-`systemd-run --user`, and print the position in the session context. The
+compare the built commit with HEAD and start `graphify update` through
+`systemd-run --user`; it adds nothing to the session context. The
 built commit is the last key of `graph.json`
 (`tail -c 200 <primary-checkout>/graphify-out/graph.json` — a linked worktree
 has no `graphify-out/` of its own; read the primary checkout's copy, first
