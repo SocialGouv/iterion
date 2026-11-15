@@ -110,6 +110,14 @@ func (e *ClawExecutor) UnpackSession(ctx context.Context, backend, sessionID str
 		if reduced && e.logger != nil {
 			e.logger.Warn("persist: compacted oversized inbound claw replay slot %q (%d -> %d bytes)", env.Slot, before, len(bounded))
 		}
+		if e.sessions.anchorOf(runID, env.Slot) != nil {
+			// A node execution on this slot is still running — it failed and
+			// the engine re-runs it: the anchor kept beside the session lives
+			// until the node succeeds, pauses or the run ends. The re-run
+			// replays the conversation the dead attempt left, never the slot
+			// as the last success persisted it.
+			return nil
+		}
 		e.sessions.save(runID, env.Slot, replay)
 		return nil
 	}

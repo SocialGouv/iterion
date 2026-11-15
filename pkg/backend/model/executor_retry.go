@@ -282,9 +282,9 @@ func (e *ClawExecutor) EndToolStepBudget(runID, nodeID string) {
 
 // EndNodeExecution ends nodeID's execution in runID at a recovery pause:
 // the session it left and its tool-step budget are dropped, so the node
-// re-executed once the operator acknowledges starts from no conversation
-// with the whole bound — as a cold resume, whose executor holds neither,
-// re-executes it.
+// re-executed once the operator acknowledges starts from what it started
+// from — no conversation, or the slot the engine restores — with the whole
+// bound, as a cold resume, whose executor holds neither, re-executes it.
 func (e *ClawExecutor) EndNodeExecution(runID, nodeID string) {
 	if e.sessions == nil || runID == "" {
 		return

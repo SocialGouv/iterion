@@ -39,8 +39,8 @@ import (
 // retryable 5xx answers, crossing deaths, results large enough to force
 // compaction, a provider that names every response's calls call_0, call_1…,
 // a pause on an operator question with or without a call beside it, then
-// its resume, the session the node's own or persisted in a slot — and every
-// run must hold:
+// its resume, the session the node's own or persisted in a slot, a slot an
+// earlier node filled with tool turns of its own — and every run must hold:
 //
 //	(a) the tool executions of a node execution never exceed
 //	    tool_max_steps, counted at the tool, not from requests — before the
@@ -79,6 +79,9 @@ type guaranteePlan struct {
 	MaxFailures   int   `json:"max_failures"`
 	ReuseIDs      bool  `json:"reuse_ids"`
 	Slot          bool  `json:"slot"`
+	// Prior is the tool turns an earlier node, survey, runs on the slot
+	// the judge then starts from; 0 for no earlier node.
+	Prior int `json:"prior"`
 }
 
 func drawGuaranteePlan(seed int64) guaranteePlan {
@@ -101,8 +104,15 @@ func drawGuaranteePlan(seed int64) guaranteePlan {
 	// call of the conversation bears (sanitizeClawPersistResume), before any
 	// tool step: no world pairs the two.
 	p.Slot = p.Pause && !p.ReuseIDs && r.Intn(2) == 0
+	if r.Intn(2) == 0 && (!p.Pause || !p.ReuseIDs) {
+		p.Prior = 1 + r.Intn(3)
+	}
 	return p
 }
+
+// guaranteeSurveyPrompt is the earlier node's prompt, which tells its
+// requests from the judge's.
+const guaranteeSurveyPrompt = "Survey the repository."
 
 // guaranteeAnswer is the operator's answer to the world's question.
 const guaranteeAnswer = "yes, go on (the operator)"
@@ -189,6 +199,10 @@ func (w *guaranteeWorld) probe() delegate.ToolDef {
 				ID string `json:"id"`
 			}
 			_ = json.Unmarshal(input, &in)
+			if strings.HasPrefix(in.ID, "su_") {
+				// The earlier node's call: never one of the judge's.
+				return "surveyed " + in.ID, nil
+			}
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			w.appendLine("executions", w.execution()+":"+in.ID)
@@ -289,6 +303,17 @@ func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEven
 		w.appendLine("requests.log", string(line))
 	}()
 
+	if strings.Contains(req.System, guaranteeSurveyPrompt) {
+		// The earlier node fails nothing: its plan's turns, then its answer.
+		record.Loop, record.Outcome = false, "survey"
+		if surveyed := w.counter("surveyed"); surveyed < w.plan.Prior {
+			w.setCounter("surveyed", surveyed+1)
+			id := fmt.Sprintf("su_%d", n)
+			return guaranteeEvents(api.ContentBlock{Type: "tool_use", ID: w.callID(0, id), Name: "read_file", Input: map[string]any{"id": id}}), nil
+		}
+		return guaranteeEvents(api.ContentBlock{Type: "text", Text: `{"verdict":"surveyed"}`}), nil
+	}
+
 	if failures := w.counter("failures"); failures < w.plan.MaxFailures && r.Float64() < 0.3 {
 		w.setCounter("failures", failures+1)
 		switch kind := r.Intn(3); {
@@ -363,8 +388,25 @@ func (s guaranteeSandbox) Command(ctx context.Context, argv []string, _ sandbox.
 	if len(argv) == 0 {
 		return exec.CommandContext(ctx, "false")
 	}
+	if len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], guaranteeSweepHead) {
+		// The crossing's node-session sweep would scan this host's /proc,
+		// not a container's: on a loaded host that runs to the sweep's own
+		// bound and outlives the test. The world's runner starts nothing,
+		// so the sweep is answered as one that found nothing.
+		f, err := os.OpenFile(filepath.Join(s.dir, "sweeps"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = f.WriteString("sweep\n")
+			_ = f.Close()
+		}
+		return exec.CommandContext(ctx, "sh", "-c", "echo '"+guaranteeSweepHead+"done'")
+	}
 	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
+
+// guaranteeSweepHead opens every line a node-session sweep prints
+// (proc.NodeSessionSweepScript); the line it ends on, "<head>done", is a
+// sweep that ran to its end.
+const guaranteeSweepHead = "iterion-node-session "
 
 func (s guaranteeSandbox) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
 	return sandbox.ExecResult{}, nil
@@ -470,14 +512,30 @@ func guaranteeSource(plan guaranteePlan) string {
 	if plan.Pause {
 		interaction = "  interaction: human\n"
 	}
-	if plan.Slot {
-		interaction += "  session: persist\n  session_slot: conversation\n"
+	const slot = "  session: persist\n  session_slot: conversation\n"
+	if plan.Slot || plan.Prior > 0 {
+		interaction += slot
+	}
+	survey, entry, edge := "", "judge", ""
+	if plan.Prior > 0 {
+		survey = fmt.Sprintf(`prompt s:
+  %s
+agent survey:
+  backend: claw
+  model: %q
+  system: s
+  user: s
+  output: out
+  tools: [read_file]
+  tool_max_steps: %d
+%s`, guaranteeSurveyPrompt, modelSpec, plan.Prior+1, slot)
+		entry, edge = "survey", "  survey -> judge\n"
 	}
 	return fmt.Sprintf(`schema out:
   verdict: string
 prompt p:
   Judge the diff.
-agent judge:
+%sagent judge:
   backend: claw
   model: %q
   system: p
@@ -486,10 +544,10 @@ agent judge:
   tools: [read_file]
   tool_max_steps: %d
 %sworkflow w:
-  entry: judge
+  entry: %s
   worktree: none
-  judge -> done
-`, modelSpec, plan.Bound, interaction)
+%s  judge -> done
+`, survey, modelSpec, plan.Bound, interaction, entry, edge)
 }
 
 // guaranteeOutcome is what one world's run showed.
@@ -500,6 +558,8 @@ type guaranteeOutcome struct {
 	executed     []guaranteeExecution
 	answering    *guaranteeRequest
 	requests     []guaranteeRequest
+	// sweeps counts the node-session sweeps the world's sandbox answered.
+	sweeps int
 }
 
 // guaranteeExecution is one tool execution: the node execution it ran in
@@ -563,7 +623,7 @@ func runGuaranteeWorld(t *testing.T, seed int64) guaranteeOutcome {
 		runErr = engine().Resume(t.Context(), runID, map[string]any{delegate.AskUserQuestionKey: guaranteeAnswer})
 	}
 
-	out := guaranteeOutcome{plan: plan, runErr: runErr, perExecution: map[string]int{}}
+	out := guaranteeOutcome{plan: plan, runErr: runErr, perExecution: map[string]int{}, sweeps: len(w.lines("sweeps"))}
 	for _, line := range w.lines("executions") {
 		execution, id, _ := strings.Cut(line, ":")
 		out.perExecution[execution]++
@@ -609,6 +669,9 @@ func readFileOr(path string) string {
 // violations is what a world's run breaks of (a), (a'), (b), (b') and (c).
 func (o guaranteeOutcome) violations() []string {
 	var v []string
+	if o.plan.Sandbox && o.sweeps == 0 {
+		v = append(v, "the world's sandbox answered no node-session sweep: its stub no longer matches the sweep, which then scans this host's /proc")
+	}
 	for execution, n := range o.perExecution {
 		if n > o.plan.Bound {
 			v = append(v, fmt.Sprintf("(a) node execution %s (pause segment.attempt) ran %d tool executions for tool_max_steps %d", execution, n, o.plan.Bound))
@@ -703,7 +766,7 @@ func TestClawStepBudgetGuarantee(t *testing.T) {
 			guaranteeWorlds <- struct{}{}
 			defer func() { <-guaranteeWorlds }()
 			out := runGuaranteeWorld(t, seed)
-			t.Logf("plan %+v\n  executions per node execution %v, run err %v\n  requests%s", out.plan, out.perExecution, out.runErr, out.trace())
+			t.Logf("plan %+v\n  executions per node execution %v, run err %v, sweeps %d\n  requests%s", out.plan, out.perExecution, out.runErr, out.sweeps, out.trace())
 			if v := out.violations(); len(v) > 0 {
 				t.Errorf("%s\n  plan %+v\n  requests%s", strings.Join(v, "\n  "), out.plan, out.trace())
 			}

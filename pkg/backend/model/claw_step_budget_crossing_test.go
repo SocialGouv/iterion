@@ -2,13 +2,17 @@ package model
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // The tool-step bound across a sandboxed node's crossings (#3283). The
@@ -296,5 +300,101 @@ func TestClawStepBudget_ARouteChangeRestartsWithTheWholeBound(t *testing.T) {
 	}
 	if got := toolResultsIn(client.calls[len(client.calls)-1]); got != 5 {
 		t.Errorf("the rescue answers with %d tool results in view, want its own 5", got)
+	}
+}
+
+// priorTurns is a session's completed probe turns under ids, each result
+// size random hex characters ("observed" when size is 0).
+func priorTurns(ids []string, size int, seed int64) []api.Message {
+	r := rand.New(rand.NewSource(seed))
+	var out []api.Message
+	for _, id := range ids {
+		content := "observed"
+		if size > 0 {
+			buf := make([]byte, size/2)
+			r.Read(buf)
+			content = hex.EncodeToString(buf)
+		}
+		out = append(out,
+			api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: id, Name: "probe", Input: map[string]any{}}}},
+			api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: id, Content: content}.ToContentBlock()}})
+	}
+	return out
+}
+
+// A sandboxed node whose session already holds 3 tool turns — a persisted
+// slot revisited — is seeded with them, and its first crossing is handed
+// the anchor at the last of them: it is charged none and runs the whole
+// bound. Crossing 1 completes 2 turns, its capture reaches the host, it
+// fails; crossing 2 is handed the same anchor and left the 3 the bound
+// allows. Unique ids, a provider reusing one id, and a session so large the
+// wire compacts its seed (the summary's record names the folded turns) all
+// account the same.
+//
+// Mutant: start the launcher's account from nothing rather than from the
+// seed it replays: crossing 1 is charged the 3 earlier turns (2 for 5), and
+// crossing 2 the 5 it replays (none left).
+func TestClawStepBudget_ACrossingOverAPriorSessionIsChargedItsOwnTurns(t *testing.T) {
+	t.Parallel()
+	const bound = 5
+	for _, arm := range []struct {
+		name  string
+		prior []string
+		dead  []string
+		size  int
+	}{
+		{name: "unique ids", prior: []string{"tu_p1", "tu_p2", "tu_p3"}, dead: []string{"tu_d1", "tu_d2"}},
+		{name: "a reused id", prior: []string{"functions.probe:0", "functions.probe:0", "functions.probe:0"}, dead: []string{"functions.probe:0", "functions.probe:0"}},
+		{name: "a seed the wire compacts", prior: []string{"tu_p1", "tu_p2", "tu_p3"}, dead: []string{"tu_d1", "tu_d2"}, size: 1600 * 1024},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			prior := append([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Earlier visit."}}}}, priorTurns(arm.prior, arm.size, 1)...)
+			host := newNodeSessionStore()
+			host.save("run-crossing", "judge", prior)
+			// What crossing 1's runner captures: its seed, then its own 2 turns.
+			raw, _ := json.Marshal(prior)
+			seeded, _, err := constrainSessionSnapshotForWire(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var captured []api.Message
+			if err := json.Unmarshal(seeded, &captured); err != nil {
+				t.Fatal(err)
+			}
+			if arm.size > 0 && !hasFoldRecord(captured) {
+				t.Fatal("scenario broken: the wire did not compact the seed")
+			}
+			captured = append(append(captured, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Judge the diff."}}}), priorTurns(arm.dead, 0, 2)...)
+			raw, _ = json.Marshal(captured)
+			capture, _, err := constrainSessionSnapshotForWire(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			writeEnvelopes(t, filepath.Join(dir, "first.ndjson"), delegate.NewSessionCaptureEnvelope(capture),
+				resultOf(t, delegate.IOResult{Error: "read tcp: connection reset by peer", ToolTurns: len(arm.dead)}))
+			writeEnvelopes(t, filepath.Join(dir, "second.ndjson"), resultOf(t, delegate.IOResult{Output: map[string]any{"verdict": "done"}}))
+			box := &scriptedSandbox{script: crossingScript, args: []string{dir, "exit"}}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaw, newTestClawBackend())
+			e := newFallbackExecutor(reg, EventHooks{})
+			build := e.newElementBuilder("judge", delegate.BackendClaw, nil,
+				func(context.Context, string) (*delegate.Task, error) {
+					return &delegate.Task{
+						NodeID: "judge", Model: "openai/gpt-5", UserPrompt: "Judge the diff.",
+						HasTools: true, ToolMaxSteps: bound, OutputSchema: json.RawMessage(budgetSchema),
+						WorkDir: dir, Sandbox: box,
+					}, nil
+				})
+			out, err := e.dispatchChain(withRuntimeContext(context.Background(), "run-crossing", host), "judge", []chainElement{{Label: "primary"}}, "openai/gpt-5", build)
+			requireVerdict(t, out.Result, err)
+			for n, want := range map[int]int{1: bound, 2: bound - len(arm.dead)} {
+				ioTask, replay := crossingInput(t, filepath.Join(dir, fmt.Sprintf("in.%d", n)))
+				if ran, _ := runInContainer(t, ioTask, replay); ran != want {
+					t.Errorf("crossing %d ran %d tool turns over the earlier session's %d, want %d for tool_max_steps %d", n, ran, len(arm.prior), want, bound)
+				}
+			}
+		})
 	}
 }

@@ -2383,11 +2383,14 @@ loop is charged the completed tool turns its conversation already holds. A
 resume after an operator pause (an `ask_user` question, a permission
 decision) gets the whole bound again, charged only the turns after the
 pause; a node a recovery pause parks (a failure the recovery recipes hand to
-the operator) re-executes, once acknowledged, from no conversation with the
-whole bound, whichever process resumes it. The backend's own stream retries,
-the tool-use nudge, the executor's in-place retries and the engine's
-recovery re-runs each replay the conversation the dead attempt left: the
-session store holds it, and a sandboxed runner captures each tool turn as it
+the operator) re-executes, once acknowledged, from what it started from — no
+conversation, or the slot its session persists in — with the whole bound,
+whichever process resumes it. The backend's own stream retries, the tool-use
+nudge, the executor's in-place retries and the engine's recovery re-runs each
+replay the conversation the dead attempt left: the session store holds it,
+for a node whose session persists in a slot too — the engine restores the
+slot before every dispatch, but never over the conversation of an execution
+still running — and a sandboxed runner captures each tool turn as it
 completes, so one that dies mid-loop has already left its turns on the host.
 Each of those captures is the whole conversation so far, so the bytes a node
 sends over the runner's channel grow with the square of its tool turns.

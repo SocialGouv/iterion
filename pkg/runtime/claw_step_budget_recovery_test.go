@@ -557,3 +557,225 @@ workflow w:
 		})
 	}
 }
+
+// The engine's recovery re-run of a node whose session persists in a slot
+// that already holds a conversation — a slot an earlier node filled, or the
+// node's own on a later visit — replays what the dead attempt left: the
+// slot the engine restores before each dispatch does not overwrite a
+// conversation whose node execution is still running. The earlier visit
+// runs 2 tool turns; the failing one runs 3, then two 502s spend the claw
+// backend's and the dispatch's attempts and the recipes re-run the node,
+// which is charged the 3 it replays and runs the 1 left. A recovery pause
+// is no re-run: the node re-executes from the slot alone, with the whole
+// bound after the 3 its dead execution ran, whichever process resumes it.
+//
+// Mutant: restore the slot over the running execution's conversation, and
+// the re-run replays none of its turns and runs the whole bound again: 7
+// for 4.
+func TestClawStepBudget_AnEngineRerunOfAPersistedSlotReplaysTheDeadAttempt(t *testing.T) {
+	t.Parallel()
+	const bound = 4
+	const shared = "  session: persist\n  session_slot: conversation\n"
+	for _, arm := range []struct {
+		name      string
+		workflow  string
+		pause     bool
+		warm      bool
+		after     int // the failing visit's tool turns, the dead attempt's included
+		dead      int // the dead turns the first request after the failure carries
+		earlier   int // the earlier visit's results it carries
+		earlyTool string
+	}{
+		{name: "re-run, the slot an earlier node filled", earlyTool: "survey_file", after: bound, dead: 3, earlier: 2, workflow: `agent survey:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [survey_file]
+  tool_max_steps: 4
+` + shared + `agent judge:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [read_file]
+  tool_max_steps: 4
+` + shared + `workflow w:
+  entry: survey
+  worktree: none
+  survey -> judge
+  judge -> done
+`},
+		{name: "re-run, the node's own slot on its second visit", earlyTool: "read_file", after: bound, dead: 3, earlier: 2, workflow: `agent judge:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [read_file]
+  tool_max_steps: 4
+  session: persist
+workflow w:
+  entry: judge
+  worktree: none
+  judge -> judge as again(1)
+  judge -> done
+`},
+		{name: "recovery pause, warm", pause: true, warm: true, earlyTool: "survey_file", after: 3 + bound, dead: 0, earlier: 2},
+		{name: "recovery pause, cold", pause: true, earlyTool: "survey_file", after: 3 + bound, dead: 0, earlier: 2},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			src := arm.workflow
+			if src == "" {
+				src = `agent survey:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [survey_file]
+  tool_max_steps: 4
+` + shared + `agent judge:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [read_file]
+  tool_max_steps: 4
+` + shared + `workflow w:
+  entry: survey
+  worktree: none
+  survey -> judge
+  judge -> done
+`
+			}
+			wf := compileGuaranteeBot(t, "schema out:\n  verdict: string\nprompt p:\n  Do the work.\n"+src)
+			var mu sync.Mutex
+			verdicts, earlyCalls, failures, after, dead, earlier := 0, 0, 0, 0, -1, -1
+			failed := false
+			client := &recoveryClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				loop := slices.ContainsFunc(req.Tools, func(t api.Tool) bool { return t.Name == arm.earlyTool || t.Name == "read_file" })
+				if !loop {
+					verdicts++
+					return guaranteeEvents(api.ContentBlock{Type: "tool_use", ID: fmt.Sprintf("so_%d", n), Name: "structured_output", Input: map[string]any{"verdict": "done"}}), nil
+				}
+				if verdicts == 0 {
+					// The earlier visit: 2 tool turns, then its answer.
+					if earlyCalls < 2 {
+						earlyCalls++
+						return guaranteeEvents(api.ContentBlock{Type: "tool_use", ID: fmt.Sprintf("pre_%d", n), Name: arm.earlyTool, Input: map[string]any{"id": fmt.Sprintf("pre_%d", n)}}), nil
+					}
+					return guaranteeEvents(api.ContentBlock{Type: "text", Text: "Surveyed."}), nil
+				}
+				if failed && dead < 0 {
+					dead, earlier = 0, 0
+					for _, m := range req.Messages {
+						for _, b := range m.Content {
+							if b.Type != "tool_result" {
+								continue
+							}
+							for _, inner := range b.Content {
+								switch {
+								case strings.HasPrefix(inner.Text, "observed tu_"):
+									dead++
+								case strings.HasPrefix(inner.Text, "observed pre_"):
+									earlier++
+								}
+							}
+						}
+					}
+				}
+				if !failed && after == 3 {
+					failures++
+					if !arm.pause {
+						failed = failures >= 2
+						return nil, &api.APIError{Provider: "test", StatusCode: 502, Message: "bad gateway", Retryable: true}
+					}
+					failed = true
+					return nil, &api.APIError{Provider: "test", StatusCode: 401, Message: "invalid api key"}
+				}
+				return guaranteeEvents(probeCall(fmt.Sprintf("tu_%d", n))), nil
+			}}
+			executor := func() *model.ClawExecutor {
+				tr := tool.NewRegistry()
+				for _, name := range []string{"read_file", "survey_file"} {
+					if err := tr.RegisterBuiltin(name, "read the workspace", json.RawMessage(`{"type":"object"}`),
+						func(_ context.Context, input json.RawMessage) (string, error) {
+							var in struct {
+								ID string `json:"id"`
+							}
+							_ = json.Unmarshal(input, &in)
+							mu.Lock()
+							defer mu.Unlock()
+							if strings.HasPrefix(in.ID, "tu_") {
+								after++
+							}
+							return "observed " + in.ID, nil
+						}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := tool.RegisterClawTodo(tr); err != nil {
+					t.Fatal(err)
+				}
+				reg := model.NewRegistry()
+				reg.Register("test", func(string) (api.APIClient, error) { return client, nil })
+				br := delegate.NewRegistry()
+				br.Register(delegate.BackendClaw, model.NewClawBackend(reg, model.EventHooks{}, model.RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}))
+				cexec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(br), model.WithToolRegistry(tr),
+					model.WithLogger(iterlog.Nop()), model.WithWorkDir(t.TempDir()),
+					model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}))
+				t.Cleanup(func() { _ = cexec.Close() })
+				return cexec
+			}
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			recipes := recovery.Dispatch(recovery.DefaultRecipes())
+			var decisions []runtime.ErrorCode
+			dispatch := func(ctx context.Context, err error, prior func(runtime.ErrorCode) int) (runtime.RecoveryAction, runtime.ErrorCode) {
+				action, code := recipes(ctx, err, prior)
+				decisions = append(decisions, code)
+				action.Delay = 0
+				return action, code
+			}
+			workspace := t.TempDir()
+			engine := func(cexec *model.ClawExecutor) *runtime.Engine {
+				return runtime.New(wf, st, cexec, runtime.WithWorkDir(workspace), runtime.WithLogger(iterlog.Nop()), runtime.WithRecoveryDispatch(dispatch))
+			}
+			first := executor()
+			runErr := engine(first).Run(t.Context(), "persist-slot", nil)
+			if arm.pause {
+				if !errors.Is(runErr, runtime.ErrRunPaused) {
+					t.Fatalf("scenario broken: the refused key must pause the run (err %v, recovery %v)", runErr, decisions)
+				}
+				again := first
+				if !arm.warm {
+					again = executor()
+				}
+				runErr = engine(again).Resume(t.Context(), "persist-slot", map[string]any{"acknowledge_recovery": "continue"})
+			}
+			if runErr != nil {
+				t.Fatalf("the node must answer: %v (recovery %v)", runErr, decisions)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !failed || len(decisions) == 0 {
+				t.Fatalf("scenario broken: the failing visit never failed (recovery %v)", decisions)
+			}
+			if earlier != arm.earlier || dead != arm.dead {
+				t.Errorf("the first request after the failure carries %d results of the earlier visit and %d of the dead attempt, want %d and %d", earlier, dead, arm.earlier, arm.dead)
+			}
+			if after != arm.after {
+				t.Errorf("the failing visit ran %d tool turns for tool_max_steps %d, want %d", after, bound, arm.after)
+			}
+		})
+	}
+}

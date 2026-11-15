@@ -466,3 +466,88 @@ func TestAPersistedSessionCarriesNoFoldRecord(t *testing.T) {
 		}
 	})
 }
+
+// A retry of an execution that started from a session already holding
+// turns under the call id the provider reuses: the anchor names the
+// occurrence of that id the execution started at, so the retry — which
+// replays 3 earlier turns and the execution's own 2, all under one id —
+// is charged the 2 and runs the 3 the bound leaves.
+//
+// Mutant: resolve the anchor at the LAST occurrence of its key, and the
+// retry is charged nothing: 7 for 5.
+func TestClawStepBudget_ARetryOverAPriorSessionsReusedIDsIsChargedItsOwnTurns(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"call_0", "functions.probe:0"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			probe, ran := budgetProbe()
+			client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				if n == 3 {
+					return cutStream(), nil
+				}
+				if offersTool(req, "probe") {
+					return toolUseEvents(id, "probe", `{}`, 10, 5), nil
+				}
+				return toolUseEvents("so_1", "structured_output", `{"verdict":"done"}`, 10, 5), nil
+			}}
+			store := newNodeSessionStore()
+			store.save("run-budget", "judge", storedRoundsWithIDs(slices.Repeat([]string{id}, 3)...))
+			res, err := budgetBackend(client, 2).Execute(withRuntimeContext(context.Background(), "run-budget", store), budgetTask(probe, 5))
+			requireVerdict(t, res, err)
+			if got := ran.Load(); got != 5 {
+				t.Fatalf("%d tool turns ran in one execution for tool_max_steps 5 (requests %s)", got, requestKinds(client))
+			}
+		})
+	}
+}
+
+// An execution that starts from a session holding tools that ran — a
+// persisted slot revisited, as it was or as a compaction summarised it —
+// has grounded nothing of its own: when its only turn is a call answered
+// with an error and a cut retries it, an always-thinking model's contract
+// to run a tool before it answers still holds.
+//
+// Mutants: count the anchor turn's own result as after it, or scan every
+// result from the start (the earlier session's tools lift the force);
+// count the turns without those a summary folded (the anchor is never
+// found, every result counts).
+func TestClawStepBudget_APriorSessionsToolsLiftNothing(t *testing.T) {
+	t.Parallel()
+	summarised := func() []api.Message {
+		compacted := compactMessagesToolSafe(storedRoundsWithIDs("tu_prior_1", "tu_prior_2", "tu_prior_3", "tu_prior_4", "tu_prior_5", "tu_prior_6"),
+			clawrt.CompactionConfig{PreserveRecentMessages: 4, MaxEstimatedTokens: 1}, nil)
+		if compacted == nil || !hasFoldRecord(compacted.CompactedMessages) || completedToolRounds(compacted.CompactedMessages) != 6 {
+			t.Fatal("scenario broken: the earlier session is not summarised with its 6 turns recorded")
+		}
+		return compacted.CompactedMessages
+	}
+	for _, tc := range []struct {
+		name  string
+		prior func() []api.Message
+	}{
+		{name: "the session as it was", prior: func() []api.Message { return storedRoundsWithIDs("tu_prior_1", "tu_prior_2") }},
+		{name: "the session a compaction summarised", prior: summarised},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe, ran := budgetProbe()
+			client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				switch n {
+				case 1:
+					return toolUseEvents("tu_nope", "no_such_tool", `{}`, 10, 5), nil
+				case 2:
+					return cutStream(), nil
+				}
+				return textEvents("The diff is fine.", 10, 5), nil
+			}}
+			task := budgetTask(probe, 5)
+			task.OutputSchema, task.Model = nil, "test/claude-opus-5-5"
+			store := newNodeSessionStore()
+			store.save("run-budget", "judge", tc.prior())
+			_, err := budgetBackend(client, 2).Execute(withRuntimeContext(context.Background(), "run-budget", store), task)
+			if err == nil || !strings.Contains(err.Error(), "returned before executing a required initial tool") {
+				t.Fatalf("err = %v, want the contract's refusal: no tool of this execution ran (%d probe runs)", err, ran.Load())
+			}
+		})
+	}
+}
