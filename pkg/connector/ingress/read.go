@@ -330,9 +330,13 @@ func notJSON(err error) error {
 	return fmt.Errorf("%w: the body is not JSON", ErrMalformed)
 }
 
-// normalizeNumbers turns the decoder's json.Number into int64 when integral,
+// NormalizeNumbers turns the decoder's json.Number into int64 when integral,
 // float64 otherwise, so expressions compare numbers as numbers. An integer
 // past int64 keeps its literal: through float64 two ids would read as one.
+// A stored event is decoded through it again, so a matcher reads the numbers
+// the extraction read.
+func NormalizeNumbers(v any) any { return normalizeNumbers(v) }
+
 func normalizeNumbers(v any) any {
 	switch c := v.(type) {
 	case map[string]any:

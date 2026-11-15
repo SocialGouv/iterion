@@ -136,6 +136,8 @@ func TestAnIngressDeclarationNoLaneCouldHonourIsRefused(t *testing.T) {
 		{"an output reading the implicit input", `from: 'payload.sender.login' }`, `from: 'sender.login' }`, "", `reads namespace "sender"`},
 		{"a reserved output with the wrong type", `from: 'map(payload.issue.labels, l => l.name)', type: list }`, `from: 'payload.action' }`, "", `"labels" is reserved as a list`},
 		{"a duplicate output", `- { name: event_name,`, `- { name: actor,`, "", "duplicate output"},
+		{"an output shadowing event.payload", `- { name: event_name,`, `- { name: payload,`, "", `output name "payload" is reserved`},
+		{"an output shadowing event.headers", `- { name: event_name,`, `- { name: headers,`, "", `output name "headers" is reserved`},
 		{"an enum default outside its options", `default: [created]`, `default: [opened]`, "", "is not an option"},
 		{"a selector naming no operation", `default: [created] }`, `default: [created], selector: probe.nothing.list }`, "", "is not an operation of this package"},
 		{"a sample of another event", "", "", strings.Replace(ingressSample, `"X-Probe-Event": "issue_comment"`, `"X-Probe-Event": "push"`, 1), `the sample's event is "push"`},

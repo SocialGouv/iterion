@@ -185,6 +185,10 @@ func NewDeliveryContext(payload map[string]any, headers http.Header, listed []st
 	}}
 }
 
+// Descend walks maps (and lists, by index) along a dotted path: the one
+// path reading every site's expression namespaces share.
+func Descend(v any, p []string) any { return descend(v, p) }
+
 // descend walks maps (and lists, by index) along a dotted path.
 func descend(v any, p []string) any {
 	for _, seg := range p {
@@ -433,6 +437,11 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 		typ := outputType(o)
 		if !slices.Contains(outputTypes, typ) {
 			return fmt.Errorf("connector %q: trigger %q: output %q has type %q, not one of %s", id, t.ID, o.Name, typ, strings.Join(outputTypes, ", "))
+		}
+		if o.Name == NamespacePayload || o.Name == NamespaceHeaders {
+			// event.<output> shares the event namespace with event.payload and
+			// event.headers (ADR-168 §4): an output so named would shadow them.
+			return fmt.Errorf("connector %q: trigger %q: output name %q is reserved — event.%s reads the delivery's own %s", id, t.ID, o.Name, o.Name, o.Name)
 		}
 		if want, ok := reservedOutputs[o.Name]; ok && typ != want {
 			return fmt.Errorf("connector %q: trigger %q: output %q is reserved as a %s", id, t.ID, o.Name, want)
