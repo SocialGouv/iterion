@@ -22,6 +22,15 @@ func SubscriptionTenant(intakeTenant string) string {
 	return intakeTenant
 }
 
+// ConnectionTenant is the tenant a subscription's connection is stored
+// under: SubscriptionTenant's inverse.
+func ConnectionTenant(subscriptionTenant string) string {
+	if subscriptionTenant == "" {
+		return connection.LocalTenant
+	}
+	return subscriptionTenant
+}
+
 // Matcher judges an intake against its candidate subscriptions
 // (intake.Matcher): the connection's subscriptions to the intake's trigger
 // and source, in the subscription-id order every twin of

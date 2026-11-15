@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -184,6 +185,9 @@ func (s *Server) triggerTenant(r *http.Request) string {
 type triggerFromInvocationReq struct {
 	Index int    `json:"index"`
 	Cron  string `json:"cron,omitempty"`
+	// ConnectionID is the connection a kind=connector invocation is bound
+	// to: the manifest suggests, the operator binds (ADR-168 §6).
+	ConnectionID string `json:"connection_id,omitempty"`
 }
 
 // handleTriggerFromInvocation is the bot home's one-click "enable this
@@ -277,6 +281,33 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 				errors.New("keepalive invocation has no valid interval — check the keepalive: block"))
 			return
 		}
+	case bundle.InvocationKindConnector:
+		if inv.Connector == nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("a connector invocation declares its connector: block"))
+			return
+		}
+		// One connector invocation, one connection: the id is theirs.
+		sub = trigger.Subscription{
+			ID:           trigger.DerivedSubscriptionID(tenant, entry.Name, inv.Kind, trigger.DerivedInvocationKey(entry.Invocations, req.Index), req.ConnectionID),
+			TenantID:     tenant,
+			BotID:        entry.Name,
+			Invocation:   inv.Kind,
+			Mode:         inv.Mode,
+			Origin:       botHomeTriggerOrigin,
+			Enabled:      true,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			ConnectionID: req.ConnectionID,
+			TriggerID:    inv.Connector.Trigger,
+			Filters:      copyFilterValues(inv.Connector.Filters),
+			VarMap:       maps.Clone(inv.Connector.Vars),
+		}
+		judged, status, err := s.validateConnectorSubscription(r.Context(), tenant, sub)
+		if err != nil {
+			dispatcher.WriteErr(w, status, err)
+			return
+		}
+		sub = judged
 	default:
 		dispatcher.WriteErr(w, http.StatusBadRequest,
 			fmt.Errorf("invocation kind %q is not enabled from here — wire it through the forge integration flow", inv.Kind))
@@ -483,6 +514,17 @@ type triggerSubscriptionReq struct {
 	Guard        *string `json:"guard,omitempty"`
 	GuardTimeout *string `json:"guard_timeout,omitempty"`
 	GuardVar     *string `json:"guard_var,omitempty"`
+
+	// The connector binding (invocation "connector", ADR-168 §6), validated
+	// at save against the connection, its package and the bot. The match a
+	// connector subscription listens on is the server's, never the request's.
+	ConnectionID string              `json:"connection_id,omitempty"`
+	TriggerID    string              `json:"trigger_id,omitempty"`
+	Poller       string              `json:"poller,omitempty"`
+	Filters      map[string][]string `json:"filters,omitempty"`
+	When         string              `json:"when,omitempty"`
+	VarMap       map[string]string   `json:"var_map,omitempty"`
+	NoLiveRun    string              `json:"no_live_run,omitempty"`
 }
 
 // guardOf returns the guard this request asks for, and whether it says
@@ -577,6 +619,12 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
+	judged, status, err := s.judgeConnectorEdit(r.Context(), tenant, nil, sub)
+	if err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
+	sub = judged
 	// Who may pin before what may be pinned: a create that pins anything is
 	// a team admin's credential decision.
 	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {
@@ -671,6 +719,14 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A connector binding the edit changes is judged again; a pause or a
+	// pin is not (judgeConnectorEdit).
+	judged, status, err := s.judgeConnectorEdit(r.Context(), tenant, &cur, next)
+	if err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
+	next = judged
 	// Who may pin before what may be pinned, judged on the row the edit
 	// would store against the row it read: changing a pin, or what a pinned
 	// subscription launches, is a team admin's credential decision; pausing
@@ -781,6 +837,13 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	}
 	base.Mode = bundle.ExecutionMode(req.Mode)
 	base.Match = req.Match
+	base.ConnectionID = req.ConnectionID
+	base.TriggerID = req.TriggerID
+	base.Poller = req.Poller
+	base.Filters = req.Filters
+	base.When = req.When
+	base.VarMap = req.VarMap
+	base.NoLiveRun = req.NoLiveRun
 	base.Vars = req.Vars
 	base.ArgsVar = req.ArgsVar
 	base.Cron = req.Cron

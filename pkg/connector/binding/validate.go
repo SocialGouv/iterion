@@ -1,0 +1,137 @@
+package binding
+
+import (
+	"fmt"
+	"slices"
+	"sort"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/trigger"
+)
+
+// BotVar is a bot's declared var as the save validation reads it.
+type BotVar struct {
+	Name string
+	// Required: the var declares no default, so a launch that leaves it
+	// unset fails.
+	Required bool
+}
+
+// ValidateSubscription holds a connector subscription to the trigger it
+// listens to and the bot it launches, at save (ADR-168 §6, §9) — what the
+// matcher and the launch would otherwise discover one event at a time:
+//
+//   - the mode is one a connector run honours (direct), and no field of
+//     another kind is set (args_var, cron), nor a poller before polling
+//     ships (L2);
+//   - every chosen filter is declared, an enum's values are its options, a
+//     bool's are true/false; a declared default fills a filter left unset;
+//   - `when` and every var_map expression read the event namespace only;
+//   - every var_map target is a var the bot declares, and every var the bot
+//     requires is filled — by the var_map, else by a same-named output, or
+//     by a constant.
+//
+// It answers the subscription as it will be stored: the defaults filled,
+// the invocation kind set, and the match the server owns.
+func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []BotVar) (trigger.Subscription, error) {
+	if sub.TriggerID != trig.ID {
+		return sub, fmt.Errorf("trigger_id %q is not the declared trigger %q", sub.TriggerID, trig.ID)
+	}
+	// ResolveMode refuses board on a connector, and deliver and any unknown
+	// mode on every kind: what passes is direct.
+	if _, err := bundle.ResolveMode(bundle.InvocationKindConnector, sub.Mode, "a connector subscription"); err != nil {
+		return sub, err
+	}
+	switch {
+	case sub.ArgsVar != "":
+		return sub, fmt.Errorf("args_var does not apply to a connector subscription: its var_map names what each var reads")
+	case sub.Cron != "":
+		return sub, fmt.Errorf("cron does not apply to a connector subscription")
+	case sub.Poller != "":
+		return sub, fmt.Errorf("poller %q: a polled trigger ships with polling (L2, #3274)", sub.Poller)
+	}
+	switch sub.NoLiveRun {
+	case "", "launch", "drop":
+	default:
+		return sub, fmt.Errorf("no_live_run %q is not one of launch, drop", sub.NoLiveRun)
+	}
+
+	filters := make(map[string][]string, len(sub.Filters))
+	for id, values := range sub.Filters {
+		f, ok := filterOf(trig, id)
+		if !ok {
+			return sub, fmt.Errorf("filter %q is not declared by trigger %s", id, trig.ID)
+		}
+		for _, v := range values {
+			switch f.Type {
+			case "enum":
+				if !slices.Contains(f.Options, v) {
+					return sub, fmt.Errorf("filter %s: %q is not one of its options %q", id, v, f.Options)
+				}
+			case "bool":
+				if v != "true" && v != "false" {
+					return sub, fmt.Errorf("filter %s: %q is not true or false", id, v)
+				}
+			}
+		}
+		filters[id] = append([]string(nil), values...)
+	}
+	for _, f := range trig.Filters {
+		if _, chosen := filters[f.ID]; !chosen && len(f.Default) > 0 {
+			filters[f.ID] = append([]string(nil), f.Default...)
+		}
+	}
+	if len(filters) == 0 {
+		filters = nil
+	}
+
+	if sub.When != "" {
+		if err := CheckEventExpr(sub.When); err != nil {
+			return sub, fmt.Errorf("when: %w", err)
+		}
+	}
+	declared := map[string]BotVar{}
+	for _, v := range bot {
+		declared[v.Name] = v
+	}
+	targets := make([]string, 0, len(sub.VarMap))
+	for name := range sub.VarMap {
+		targets = append(targets, name)
+	}
+	sort.Strings(targets)
+	for _, name := range targets {
+		if _, ok := declared[name]; !ok {
+			return sub, fmt.Errorf("var_map %s: the bot declares no var %q", name, name)
+		}
+		if err := CheckEventExpr(sub.VarMap[name]); err != nil {
+			return sub, fmt.Errorf("var_map %s: %w", name, err)
+		}
+	}
+	outputs := map[string]bool{}
+	for _, o := range trig.Outputs {
+		outputs[o.Name] = true
+	}
+	for _, v := range bot {
+		if !v.Required {
+			continue
+		}
+		_, constant := sub.Vars[v.Name]
+		filled := constant
+		if len(sub.VarMap) > 0 {
+			_, mapped := sub.VarMap[v.Name]
+			filled = filled || mapped
+		} else {
+			filled = filled || outputs[v.Name]
+		}
+		if !filled {
+			return sub, fmt.Errorf("the bot requires var %q and nothing fills it: map it in var_map, or set it in vars", v.Name)
+		}
+	}
+
+	sub.Invocation = bundle.InvocationKindConnector
+	sub.ConnectorKey = trigger.ConnectorKey(sub.ConnectionID, sub.TriggerID)
+	sub.Filters = filters
+	sub.Match = trigger.Matcher{Sources: []trigger.Source{trigger.SourceConnector}, Kinds: []string{trig.ID}}
+	return sub, nil
+}

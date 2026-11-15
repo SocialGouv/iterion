@@ -105,6 +105,16 @@ export interface SubscriptionInput {
   invocation?: TriggerInvocation;
   mode?: TriggerMode;
   match: TriggerMatcher;
+  // Connector binding (invocation "connector"): validated at save against
+  // the connection, its package's trigger and the bot; the server owns the
+  // match and the connector_key.
+  connection_id?: string;
+  trigger_id?: string;
+  poller?: string;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  no_live_run?: "" | "launch" | "drop";
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
@@ -127,6 +137,13 @@ export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput
     invocation: sub.invocation,
     mode: sub.mode,
     match: sub.match,
+    connection_id: sub.connection_id,
+    trigger_id: sub.trigger_id,
+    poller: sub.poller,
+    filters: sub.filters,
+    when: sub.when,
+    var_map: sub.var_map,
+    no_live_run: sub.no_live_run,
     vars: sub.vars,
     args_var: sub.args_var,
     cron: sub.cron,
