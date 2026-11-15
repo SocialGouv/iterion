@@ -2,62 +2,56 @@ package dryrun
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 // #3291: the dry run renders a sh script the way the run does — each data
-// reference written for the quoting the shell reads it in — and names the
-// run's refusal of a reference standing where no quoting holds a value, as
-// a failing finding at that node.
+// reference a read of the variable the run hands the interpreter, the value
+// never in the text — so the text it holds to `sh -n` is the run's.
 const shellScriptDataBot = `tool quoted:
   language: sh
   script: |
     printf '%s' {{vars.note}} "[{{vars.note}}]" {{vars.langs}}
-
-tool counted:
-  language: bash
-  script: "echo $(( {{vars.n}} + 1 ))"
+    echo $(( {{vars.n}} + 1 ))
+    cat <<EOF
+    {{vars.note}}
+    EOF
 
 workflow shelldata:
   worktree: none
   sandbox: none
   vars:
-    note: string = "a'b"
+    note: string = "a'b $(touch pwned)"
     langs: json = "[1, 2]"
     n: string = "1"
   entry: quoted
-  quoted -> counted
-  counted -> done
+  quoted -> done
 `
 
 func TestADryRunRendersAShellScriptsDataAsTheRunDoes(t *testing.T) {
 	t.Parallel()
 	rec := &bodyRecorder{}
-	r, err := Run(context.Background(), compileBot(t, shellScriptDataBot), Options{Shell: rec})
-	if err != nil {
+	if _, err := Run(context.Background(), compileBot(t, shellScriptDataBot), Options{Shell: rec}); err != nil {
 		t.Fatal(err)
 	}
-	// The declared `json` var is one token, as in a command: the preview
-	// reads the workflow's declarations as the run does.
-	want := `printf '%s' 'a'\''b' "["'a'\''b'"]" '[1,2]'` + "\n"
+	read := regexp.MustCompile(`\$\{__ITERION_DATA_[0-9a-f]{16}_[0-9]+(_JSON)?__\}`)
+	want := "printf '%s' \"${V}\" \"[${V}]\" \"${V}\"\necho $(( ${V} + 1 ))\ncat <<EOF\n${J}\nEOF\n"
 	rendered := false
 	for _, body := range rec.bodies() {
-		rendered = rendered || strings.HasPrefix(body, want)
+		if strings.Contains(body, "a'b") || strings.Contains(body, "touch") || strings.Contains(body, "[1,2]") {
+			t.Errorf("a value is in the previewed script's text:\n%s", body)
+		}
+		shape := read.ReplaceAllStringFunc(body, func(m string) string {
+			if strings.HasSuffix(m, "_JSON__}") {
+				return "${J}"
+			}
+			return "${V}"
+		})
+		rendered = rendered || strings.HasPrefix(shape, want)
 	}
 	if !rendered {
-		t.Errorf("the preview rendered %q, want the run's rendering %q", rec.bodies(), want)
-	}
-	var refused []Finding
-	for _, f := range findingsOf(r, KindShellSyntax) {
-		if f.Node == "counted" && f.Where == "script" && strings.Contains(f.Detail, "the run refuses this script") && strings.Contains(f.Detail, "{{vars.n}} stands inside arithmetic") {
-			refused = append(refused, f)
-		}
-	}
-	if len(refused) == 0 {
-		t.Fatalf("the run's refusal of {{vars.n}} in arithmetic was not named: %+v", r.Findings)
-	}
-	if !r.Failing() {
-		t.Fatal("a script the run refuses reads as not failing")
+		t.Errorf("the preview rendered %q, want the run's reads %q", rec.bodies(), want)
 	}
 }

@@ -318,17 +318,14 @@ func RenderCommand(command string, refs []*ir.Ref, input, vars map[string]any, t
 
 // RenderScript renders a tool node's `script:` written in language as the
 // executor does before the interpreter: in js/py each reference a JSON
-// literal, in a sh/bash script each data reference written for the quoting
-// the shell reads it in, a reference that resolves to nothing the
-// language's null (`null`) — and said to unresolved when a caller listens,
-// since the null hides it from the text. shapes carries the workflow's
-// declarations, which a shell script's unquoted words read as a command's
-// do (RenderCommand); nil renders every reference undeclared.
+// literal, in a sh/bash script each data reference a read of the variable
+// the run hands the interpreter (the value is not in the text), a reference
+// that resolves to nothing the language's null — and said to unresolved when
+// a caller listens, since the null hides it from the text.
 //
-// The error is the run's refusal: a shell script holding data where no
-// quoting holds a value (arithmetic, a `${ … }` word, backquotes, …) does
-// not run, whatever the value. The text returned with it keeps those
-// references as written.
-func RenderScript(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, shapes *Shapes, unresolved func(ref string)) (string, error) {
-	return renderScriptIn(script, language, refs, input, vars, td, runID, nil, shapes, unresolved, nil)
+// The error is the run's refusal: a value no form carries (a NUL byte in a
+// shell script's data) fails the node, naming the reference.
+func RenderScript(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, runID string, unresolved func(ref string)) (string, error) {
+	text, _, err := renderScriptIn(script, language, refs, input, vars, td, runID, nil, unresolved, nil)
+	return text, err
 }

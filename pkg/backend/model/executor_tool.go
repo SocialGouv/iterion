@@ -937,9 +937,11 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // the Verified Action ladder share one source of truth.
 func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
 	// The rendering resolve reports and buildCmd writes, the author's own
-	// text it was rendered from, and the rendering's refusal.
+	// text it was rendered from, what a shell script's data references hand
+	// the interpreter, and the rendering's refusal.
 	var body authoredBody
 	var authored string
+	var data scriptData
 	var renderErr error
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
@@ -947,20 +949,21 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// injected values from inputs/vars stay inert. A js/py body
 			// renders values as JSON literals — shell-escape's single-quote
 			// wrapping breaks script-language string parsers when the value
-			// contains embedded apostrophes — and a sh/bash body writes each
-			// for the quoting the shell reads it in (renderScriptIn). No
-			// compression: a script body is not a shell command line.
+			// contains embedded apostrophes — and a sh/bash body reads each
+			// from its environment, the value never in its text
+			// (renderShellScript). No compression: a script body is not a
+			// shell command line.
 			expanded, _ := ToolBodyEnv(node, node.Script, lookupToolEnv)
 			// Same single pass over one snapshot as the shell recipe:
 			// {{run.*}} and {{outputs.*}} beside {{input.*}}.
 			td := TemplateDataFromContext(ctx)
 			authored = expanded
-			body, renderErr = renderScriptBodyIn(expanded, node.Language, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard, e.nodeShapes(node))
+			body, data, renderErr = renderScriptBodyIn(expanded, node.Language, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 			return body.shown()
 		},
 		func(resolved string) (toolCommand, func(), error) {
-			// Before any temp file exists: a shell script holding data where
-			// no quoting holds a value is refused, whatever the value.
+			// Before any temp file exists: a value no form carries (a NUL
+			// byte in a shell script's data) is refused, naming the reference.
 			if renderErr != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, renderErr)
 			}
@@ -978,6 +981,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}
+			// A shell script's data: the values its variable reads name, in
+			// the interpreter's environment, or assigned ahead of the
+			// author's text where the environment cannot hold them.
+			dataEnv, prologue := data.deliver()
+			script = prologue + script
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
@@ -1022,11 +1030,13 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// And the values of the author's references the script reads
 			// from its environment (bodySecrets.script): a shell script
 			// names them as variables instead of holding them in its text.
-			for name, value := range refEnv {
-				if scriptEnv == nil {
-					scriptEnv = make(map[string]string, len(refEnv))
+			for _, env := range []map[string]string{refEnv, dataEnv} {
+				for name, value := range env {
+					if scriptEnv == nil {
+						scriptEnv = make(map[string]string, len(refEnv)+len(dataEnv))
+					}
+					scriptEnv[name] = value
 				}
-				scriptEnv[name] = value
 			}
 			if _, werr := tmpFile.WriteString(script); werr != nil {
 				_ = tmpFile.Close()
@@ -1613,7 +1623,7 @@ func renderCommandBody(command string, refs []*ir.Ref, input, vars map[string]an
 //
 // A sh/bash body is not one of these: a JSON literal is a double-quoted word
 // a shell expands, so a tool node's script goes through renderScriptIn,
-// which writes a shell script's data for the quoting it stands in.
+// which hands a shell script its data through the environment.
 func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
@@ -1637,13 +1647,14 @@ func renderScriptBody(script string, refs []*ir.Ref, input, vars map[string]any,
 
 // renderScriptBodyIn is the run's rendering of a tool node's `script:`
 // written in language under guard: renderScriptIn's reading — a sh/bash
-// script's data written for the quoting it stands in — with each secret
-// reference the author wrote as a marker of this one rendering
-// (bodySecrets). The error is a shell script's refusal (renderShellScript).
-func renderScriptBodyIn(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes) (authoredBody, error) {
+// script's data read from its environment — with each secret reference the
+// author wrote as a marker of this one rendering (bodySecrets). The
+// scriptData is what the interpreter must receive for the data; the error
+// names a reference no form carries (renderShellScript).
+func renderScriptBodyIn(script, language string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard) (authoredBody, scriptData, error) {
 	secrets := newBodySecrets(guard)
-	text, err := renderScriptIn(script, language, refs, input, vars, td, ctxRunID, guard, shapes, nil, secrets.markFunc())
-	return authoredBody{text: text, secrets: secrets}, err
+	text, data, err := renderScriptIn(script, language, refs, input, vars, td, ctxRunID, guard, nil, secrets.markFunc())
+	return authoredBody{text: text, secrets: secrets}, data, err
 }
 
 // renderCommand and renderScript are the two readings of a tool body —

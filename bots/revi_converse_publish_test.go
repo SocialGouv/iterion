@@ -111,7 +111,7 @@ func renderReviConversePublish(t *testing.T, input, vars map[string]any, runURL,
 	}
 	td := &model.TemplateData{RunID: publishRunID, Run: map[string]any{"id": publishRunID, "url": runURL}}
 	var unresolved []string
-	script, err := model.RenderScript(tn.Script, tn.Language, tn.ScriptRefs, input, all, td, publishRunID, nil, func(ref string) {
+	script, err := model.RenderScript(tn.Script, tn.Language, tn.ScriptRefs, input, all, td, publishRunID, func(ref string) {
 		unresolved = append(unresolved, ref)
 	})
 	if err != nil {

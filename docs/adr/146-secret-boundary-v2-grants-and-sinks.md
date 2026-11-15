@@ -313,8 +313,9 @@ body does.
   it can still reach the environment — `$(env)`, or in bash a name
   enumerated with `${!prefix@}` and read with `${!x}` — the pre-existing
   data-in-a-shell-script class, open on its own ticket (#3291). #3291
-  closed it: a sh or bash script's data is written for the quoting it
-  stands in, and the shell expands nothing in it ([dsl.md](../dsl.md)).
+  closed it: a sh or bash script's data rides the environment too, read
+  through variables the engine names for the rendering, and the value never
+  enters the script's text, so no data runs as code ([dsl.md](../dsl.md)).
   Where the shell expands nothing — single
   quotes, a heredoc whose delimiter is quoted — the script therefore reads
   the variable's name and not the value; `C342` warns on those positions,

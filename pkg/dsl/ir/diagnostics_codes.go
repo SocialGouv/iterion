@@ -218,7 +218,7 @@ const (
 	DiagUnknownRunMember DiagCode = "C153" // {{run.<member>.…}} names a member the namespace has not (warning; the runtime renders no value for it — and an exclusion list that renders empty turns a tree gate off in silence, #1464)
 	// The tree-noise channel in an EXECUTABLE body (#1555, the #1464/#1530
 	// class): the prompt rendering lands as ONE word no file matches
-	// (shell-escaped in a command and at a shell script's word position), and the
+	// (shell-escaped in a command, one quoted variable read in a shell script), and the
 	// quoted env var collapses the same way — or never expands at all under
 	// single quotes. Both shell bodies only: a js/py script consumes the ref
 	// as data. Both warnings — the catalogue carries zero instances (the
@@ -510,4 +510,8 @@ const (
 	DiagSecretNameReserved DiagCode = "C341" // a secret name whose placeholder spells another's redact-only form (`<name>_redacted`), which the guard writes where that secret must resolve nowhere (error)
 
 	DiagSecretInShellLiteral DiagCode = "C342" // a value secret's default-form reference in a shell script where the shell expands nothing (single quotes, a quoted heredoc) — the script reads the variable's name, not the value (warning)
+
+	DiagShellScriptDataNotArriving DiagCode = "C343" // a data reference in a sh/bash script where the shell reads nothing (single quotes, $'…', a quoted heredoc, a comment) — the text holds the environment variable's read, not the value (warning)
+
+	DiagShellScriptDataArith DiagCode = "C344" // a data reference in a sh/bash script where bash evaluates the value as arithmetic ($(( )), (( )), [[ -gt ]], let, declare -i, a subscript) — a crafted value runs code (warning)
 )

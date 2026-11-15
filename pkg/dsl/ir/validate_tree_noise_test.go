@@ -173,9 +173,9 @@ func TestTreeNoiseRefInANonShellScriptStaysSilent(t *testing.T) {
 				t.Fatalf("no C157 on a shell script body\ndiagnostics: %v", r.Diagnostics)
 			}
 			// The script message names the mechanism that actually applies
-			// at a shell script's word position: one shell-quoted word.
-			if !strings.Contains(got.Message, "shell-quoted as ONE word") {
-				t.Errorf("script message %q does not name the shell-quoting mechanism", got.Message)
+			// at a shell script's word position: one quoted variable read.
+			if !strings.Contains(got.Message, "from its environment as one quoted word") {
+				t.Errorf("script message %q does not name the environment read", got.Message)
 			}
 			for _, want := range []string{"{{!run.tree_noise}}", "$ITERION_TREE_NOISE"} {
 				if !strings.Contains(got.Message, want) {
