@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -133,17 +134,19 @@ workflow w:
 
 // A pause for a human is a supervised checkpoint: the node execution
 // resumed from it gets the whole bound again, charged only the turns after
-// the pause — and a retry after the resume (a stream cut the claw backend
-// retries, a 502 the dispatch retries in place) is still charged those. A
-// failure the resumed run's own retries do not absorb fails the run: the
+// the pause. A retry of the resumed run (a stream cut the claw backend
+// retries, a 502 the dispatch retries in place) replays the conversation it
+// resumed with alone: it is charged nothing and runs the whole bound again.
+// A failure the resumed run's own retries do not absorb fails the run: the
 // engine does not re-run a resume's re-invocation.
 // The agent spends bound−1 turns, asks the operator, is answered, then
-// works on: every arm runs the whole bound after the pause, no more.
+// works on: the resumed run runs the whole bound after the pause, and one
+// retried 2 turns in runs those 2 and the whole bound — a node whose
+// session persists in a slot of another name as well.
 //
 // Mutants: keep the anchor across the pause (the resumed run is charged the
-// turns before it and has none left); start the dispatch's retry after the
-// resume from nothing (it runs the whole bound again on top of the turns it
-// replays).
+// turns before it and has none left); drop it under the node's id rather
+// than its session key (the slot's anchor survives the pause).
 func TestClawStepBudget_AResumeAfterAHumanPauseGetsTheWholeBound(t *testing.T) {
 	t.Parallel()
 	const bound = 4
@@ -153,10 +156,14 @@ func TestClawStepBudget_AResumeAfterAHumanPauseGetsTheWholeBound(t *testing.T) {
 		dispatchTries int
 		failAt        map[int]bool // failing requests, counted after the resume
 		cut           bool         // a stream cut, else a 502
+		session       string       // the agent's session lines
+		after         int          // the tool turns that run after the pause
 	}{
-		{name: "resumed", clawTries: 1, dispatchTries: 1},
-		{name: "a stream cut after the resume", clawTries: 2, dispatchTries: 1, failAt: map[int]bool{3: true}, cut: true},
-		{name: "a dispatch retry after the resume", clawTries: 1, dispatchTries: 2, failAt: map[int]bool{3: true}},
+		{name: "resumed", clawTries: 1, dispatchTries: 1, after: bound},
+		{name: "a stream cut after the resume", clawTries: 2, dispatchTries: 1, failAt: map[int]bool{3: true}, cut: true, after: 2 + bound},
+		{name: "a dispatch retry after the resume", clawTries: 1, dispatchTries: 2, failAt: map[int]bool{3: true}, after: 2 + bound},
+		{name: "resumed, session persisted in a slot", clawTries: 1, dispatchTries: 1, session: "  session: persist\n  session_slot: conversation\n", after: bound},
+		{name: "a dispatch retry after the resume, session persisted in a slot", clawTries: 1, dispatchTries: 2, failAt: map[int]bool{3: true}, session: "  session: persist\n  session_slot: conversation\n", after: 2 + bound},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
 			t.Parallel()
@@ -173,11 +180,11 @@ agent judge:
   tools: [read_file]
   tool_max_steps: %d
   interaction: human
-workflow w:
+%sworkflow w:
   entry: judge
   worktree: none
   judge -> done
-`, bound))
+`, bound, arm.session))
 			var mu sync.Mutex
 			paused, before, after, resumedRequests := false, 0, 0, 0
 			tr := tool.NewRegistry()
@@ -250,8 +257,302 @@ workflow w:
 			if before != bound-1 {
 				t.Fatalf("scenario broken: %d tool turns before the pause, want %d", before, bound-1)
 			}
+			if after != arm.after {
+				t.Fatalf("%d tool turns ran after the pause, want %d for a bound of %d", after, arm.after, bound)
+			}
+		})
+	}
+}
+
+// A recovery pause — a failure the recipes hand to the operator (an
+// authentication failure here) — ends the node execution: the node the
+// operator's acknowledgement re-executes starts from no conversation with
+// the whole bound, whether the same executor resumes it (warm) or a fresh
+// one does (cold), and whether its session is its own or persisted in a
+// slot of another name. The agent spends bound−1 turns, then its provider
+// refuses the key.
+//
+// Mutants: leave the executor's state alone at a recovery pause (warm, the
+// re-execution replays the dead turns and is charged them: 1 for 4); drop
+// the budget alone (warm, it replays the dead turns); key the eviction on
+// the node's id rather than its session key (the slot's state survives).
+func TestClawStepBudget_ARecoveryPauseEndsTheNodeExecution(t *testing.T) {
+	t.Parallel()
+	const bound = 4
+	for _, arm := range []struct {
+		name    string
+		warm    bool
+		session string
+	}{
+		{name: "warm", warm: true},
+		{name: "cold"},
+		{name: "warm, session persisted in a slot", warm: true, session: "  session: persist\n  session_slot: conversation\n"},
+		{name: "cold, session persisted in a slot", session: "  session: persist\n  session_slot: conversation\n"},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf(`schema out:
+  verdict: string
+prompt p:
+  Judge the diff.
+agent judge:
+  backend: claw
+  model: "test/test-model"
+  system: p
+  user: p
+  output: out
+  tools: [read_file]
+  tool_max_steps: %d
+%sworkflow w:
+  entry: judge
+  worktree: none
+  judge -> done
+`, bound, arm.session)
+			wf := compileGuaranteeBot(t, src)
+			var mu sync.Mutex
+			resumed, before, after, firstAfterResults := false, 0, 0, -1
+			client := &recoveryClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if !slices.ContainsFunc(req.Tools, func(t api.Tool) bool { return t.Name == "read_file" }) {
+					return guaranteeEvents(api.ContentBlock{Type: "tool_use", ID: "so_1", Name: "structured_output", Input: map[string]any{"verdict": "done"}}), nil
+				}
+				if !resumed {
+					if before < bound-1 {
+						return guaranteeEvents(probeCall(fmt.Sprintf("tu_%d", n))), nil
+					}
+					return nil, &api.APIError{Provider: "test", StatusCode: 401, Message: "invalid api key"}
+				}
+				if firstAfterResults < 0 {
+					firstAfterResults = 0
+					for _, m := range req.Messages {
+						for _, b := range m.Content {
+							if b.Type == "tool_result" {
+								firstAfterResults++
+							}
+						}
+					}
+				}
+				return guaranteeEvents(probeCall(fmt.Sprintf("tu_%d", n))), nil
+			}}
+			executor := func() *model.ClawExecutor {
+				tr := tool.NewRegistry()
+				if err := tr.RegisterBuiltin("read_file", "read the workspace", json.RawMessage(`{"type":"object"}`),
+					func(context.Context, json.RawMessage) (string, error) {
+						mu.Lock()
+						defer mu.Unlock()
+						if resumed {
+							after++
+						} else {
+							before++
+						}
+						return "observed", nil
+					}); err != nil {
+					t.Fatal(err)
+				}
+				if err := tool.RegisterClawTodo(tr); err != nil {
+					t.Fatal(err)
+				}
+				reg := model.NewRegistry()
+				reg.Register("test", func(string) (api.APIClient, error) { return client, nil })
+				br := delegate.NewRegistry()
+				br.Register(delegate.BackendClaw, model.NewClawBackend(reg, model.EventHooks{}, model.RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}))
+				cexec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(br), model.WithToolRegistry(tr),
+					model.WithLogger(iterlog.Nop()), model.WithWorkDir(t.TempDir()),
+					model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}))
+				t.Cleanup(func() { _ = cexec.Close() })
+				return cexec
+			}
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			recipes := recovery.Dispatch(recovery.DefaultRecipes())
+			var paused []runtime.ErrorCode
+			dispatch := func(ctx context.Context, err error, prior func(runtime.ErrorCode) int) (runtime.RecoveryAction, runtime.ErrorCode) {
+				action, code := recipes(ctx, err, prior)
+				if action.Kind == runtime.RecoveryPauseForHuman {
+					paused = append(paused, code)
+				}
+				action.Delay = 0
+				return action, code
+			}
+			workspace := t.TempDir()
+			engine := func(cexec *model.ClawExecutor) *runtime.Engine {
+				return runtime.New(wf, st, cexec, runtime.WithWorkDir(workspace), runtime.WithLogger(iterlog.Nop()), runtime.WithRecoveryDispatch(dispatch))
+			}
+			first := executor()
+			if runErr := engine(first).Run(t.Context(), "recovery-pause", nil); !errors.Is(runErr, runtime.ErrRunPaused) || len(paused) != 1 {
+				t.Fatalf("scenario broken: the refused key must pause the run for the operator (err %v, pauses %v)", runErr, paused)
+			}
+			mu.Lock()
+			resumed = true
+			mu.Unlock()
+			again := first
+			if !arm.warm {
+				again = executor()
+			}
+			if runErr := engine(again).Resume(t.Context(), "recovery-pause", map[string]any{"acknowledge_recovery": "continue"}); runErr != nil {
+				t.Fatalf("the re-executed node must answer: %v", runErr)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if before != bound-1 {
+				t.Fatalf("scenario broken: %d tool turns before the pause, want %d", before, bound-1)
+			}
+			if firstAfterResults != 0 {
+				t.Errorf("the re-execution's first request replays %d tool results of the dead execution, want none", firstAfterResults)
+			}
 			if after != bound {
-				t.Fatalf("%d tool turns ran after the pause, want the whole bound %d", after, bound)
+				t.Errorf("%d tool turns ran after the pause, want the whole bound %d", after, bound)
+			}
+		})
+	}
+}
+
+// A fan-out branch runs without the run's identity, so the executor keeps
+// no session for a node inside it: a retry there replays nothing and gets
+// the whole bound again — on the trunk, the same retry is charged the turns
+// it replays. Each node runs 2 tool turns, its third request answers a 502,
+// the dispatch retries in place, and the node calls its tool until its
+// bound: 3 on the trunk, 2 + 3 in a branch.
+//
+// Mutant: hand a branch the run's identity, and its retry replays the dead
+// attempt's turns: 3 in the branch too.
+func TestClawStepBudget_ARetryInAFanOutBranchGetsTheWholeBoundAgain(t *testing.T) {
+	t.Parallel()
+	const bound = 3
+	for _, arm := range []struct {
+		name   string
+		fanOut bool
+		want   int
+	}{
+		{name: "trunk", want: bound},
+		{name: "fan_out_all branch", fanOut: true, want: 2 + bound},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			executions, loopRequests := map[string]int{}, map[string]int{}
+			tr := tool.NewRegistry()
+			if err := tr.RegisterBuiltin("read_file", "read the workspace", json.RawMessage(`{"type":"object"}`),
+				func(_ context.Context, input json.RawMessage) (string, error) {
+					var in struct {
+						ID string `json:"id"`
+					}
+					_ = json.Unmarshal(input, &in)
+					node, _, _ := strings.Cut(strings.TrimPrefix(in.ID, "tu_"), "_")
+					mu.Lock()
+					defer mu.Unlock()
+					executions[node]++
+					return "observed " + in.ID, nil
+				}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tool.RegisterClawTodo(tr); err != nil {
+				t.Fatal(err)
+			}
+			client := &recoveryClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				prompt := fmt.Sprint(req.System)
+				for _, m := range req.Messages {
+					for _, b := range m.Content {
+						prompt += b.Text
+					}
+				}
+				node := "collect"
+				switch {
+				case strings.Contains(prompt, "NODE-A"):
+					node = "a"
+				case strings.Contains(prompt, "NODE-B"):
+					node = "b"
+				}
+				if !slices.ContainsFunc(req.Tools, func(t api.Tool) bool { return t.Name == "read_file" }) {
+					return guaranteeEvents(api.ContentBlock{Type: "tool_use", ID: "so_" + node, Name: "structured_output", Input: map[string]any{"verdict": "done"}}), nil
+				}
+				mu.Lock()
+				loopRequests[node]++
+				k := loopRequests[node]
+				mu.Unlock()
+				if k == 3 {
+					return nil, &api.APIError{Provider: "test", StatusCode: 502, Message: "bad gateway", Retryable: true}
+				}
+				return guaranteeEvents(probeCall(fmt.Sprintf("tu_%s_%d", node, n))), nil
+			}}
+			src := fmt.Sprintf(`schema out:
+  verdict: string
+prompt pa:
+  NODE-A judge the diff.
+prompt pb:
+  NODE-B judge the diff.
+prompt pc:
+  Collect the verdicts.
+agent a:
+  backend: claw
+  model: "test/test-model"
+  system: pa
+  user: pa
+  output: out
+  tools: [read_file]
+  tool_max_steps: %d
+agent b:
+  backend: claw
+  model: "test/test-model"
+  system: pb
+  user: pb
+  output: out
+  tools: [read_file]
+  tool_max_steps: %d
+`, bound, bound)
+			if arm.fanOut {
+				src += `router fan:
+  mode: fan_out_all
+agent collect:
+  backend: claw
+  model: "test/test-model"
+  system: pc
+  user: pc
+  output: out
+  await: wait_all
+workflow w:
+  entry: fan
+  worktree: none
+  fan -> a
+  fan -> b
+  a -> collect
+  b -> collect
+  collect -> done
+`
+			} else {
+				src += `workflow w:
+  entry: a
+  worktree: none
+  a -> b
+  b -> done
+`
+			}
+			wf := compileGuaranteeBot(t, src)
+			reg := model.NewRegistry()
+			reg.Register("test", func(string) (api.APIClient, error) { return client, nil })
+			br := delegate.NewRegistry()
+			br.Register(delegate.BackendClaw, model.NewClawBackend(reg, model.EventHooks{}, model.RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}))
+			workspace := t.TempDir()
+			cexec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(br), model.WithToolRegistry(tr),
+				model.WithLogger(iterlog.Nop()), model.WithWorkDir(workspace),
+				model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}))
+			t.Cleanup(func() { _ = cexec.Close() })
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runErr := runtime.New(wf, st, cexec, runtime.WithWorkDir(workspace), runtime.WithLogger(iterlog.Nop())).Run(t.Context(), "fan", nil); runErr != nil {
+				t.Fatalf("the run must finish: %v", runErr)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, node := range []string{"a", "b"} {
+				if executions[node] != arm.want {
+					t.Errorf("node %s ran %d tool executions for tool_max_steps %d, want %d", node, executions[node], bound, arm.want)
+				}
 			}
 		})
 	}

@@ -37,15 +37,24 @@ import (
 // a real process running the claw backend the way the iterion runner does.
 // Each seed draws a world from a PRNG — stream cuts at random requests,
 // retryable 5xx answers, crossing deaths, results large enough to force
-// compaction, a pause on an operator question with or without a call beside
-// it, then its resume — and every run must hold:
+// compaction, a provider that names every response's calls call_0, call_1…,
+// a pause on an operator question with or without a call beside it, then
+// its resume, the session the node's own or persisted in a slot — and every
+// run must hold:
 //
 //	(a) the tool executions of a node execution never exceed
 //	    tool_max_steps, counted at the tool, not from requests — before the
 //	    pause, and after it: a resume after a human pause gets the whole
-//	    bound again;
-//	(b) the request that answers carries the result of every execution the
-//	    run completed, but for the oldest a compaction folded;
+//	    bound again, and so does each retry of the resumed conversation,
+//	    which replays that conversation alone;
+//	(a') a node execution the loop ended by no longer offering its tools —
+//	    the request that answers is the recovery pass — ran exactly
+//	    tool_max_steps: no retry, no pause starves it;
+//	(b) the request that answers carries the result of every execution
+//	    its conversation holds — the run's, but for the oldest a compaction
+//	    folded and those a dead retry of a resumed conversation ran;
+//	(b') after a resume, the first request and the one that answers carry
+//	    the operator's answer, but where a compaction folded it;
 //	(c) the node answers — unless the world's own failures outlast every
 //	    retry budget (the claw backend's, the dispatch's, the engine's
 //	    recovery recipes), which no bound decides.
@@ -68,6 +77,8 @@ type guaranteePlan struct {
 	Pause         bool  `json:"pause"`
 	PauseSibling  bool  `json:"pause_sibling"`
 	MaxFailures   int   `json:"max_failures"`
+	ReuseIDs      bool  `json:"reuse_ids"`
+	Slot          bool  `json:"slot"`
 }
 
 func drawGuaranteePlan(seed int64) guaranteePlan {
@@ -85,8 +96,16 @@ func drawGuaranteePlan(seed int64) guaranteePlan {
 		p.Pause = r.Intn(3) == 0
 		p.PauseSibling = p.Pause && r.Intn(2) == 0
 	}
+	p.ReuseIDs = r.Intn(3) == 0
+	// A persisted slot's resume refuses a pending call whose id an earlier
+	// call of the conversation bears (sanitizeClawPersistResume), before any
+	// tool step: no world pairs the two.
+	p.Slot = p.Pause && !p.ReuseIDs && r.Intn(2) == 0
 	return p
 }
+
+// guaranteeAnswer is the operator's answer to the world's question.
+const guaranteeAnswer = "yes, go on (the operator)"
 
 // guaranteeWorld is the shared state of a world, on disk.
 type guaranteeWorld struct {
@@ -120,6 +139,25 @@ func (w *guaranteeWorld) appendLine(name, line string) {
 	}
 }
 
+func (w *guaranteeWorld) text(name string) (string, bool) {
+	raw, err := os.ReadFile(w.path(name))
+	return string(raw), err == nil
+}
+
+func (w *guaranteeWorld) setText(name, text string) {
+	if err := os.WriteFile(w.path(name), []byte(text), 0o600); err != nil {
+		panic(err)
+	}
+}
+
+// execution names the node execution a tool call runs in: the pause
+// segment, counted from the last resume, then the attempt within it — a
+// retry of a resumed conversation replays that conversation alone, so it
+// starts a node execution of its own.
+func (w *guaranteeWorld) execution() string {
+	return fmt.Sprintf("%d.%d", w.counter("segment"), w.counter("attempt"))
+}
+
 func (w *guaranteeWorld) lines(name string) []string {
 	raw, _ := os.ReadFile(w.path(name))
 	return strings.Fields(strings.TrimSpace(string(raw)))
@@ -127,17 +165,20 @@ func (w *guaranteeWorld) lines(name string) []string {
 
 // guaranteeRequest is one request the world's model answered.
 type guaranteeRequest struct {
-	N        int      `json:"n"`
-	Loop     bool     `json:"loop"`
-	Outcome  string   `json:"outcome"`
-	Results  []string `json:"results"`
-	Answered bool     `json:"answered"`
+	N         int      `json:"n"`
+	Execution string   `json:"execution"`
+	Loop      bool     `json:"loop"`
+	Outcome   string   `json:"outcome"`
+	Results   []string `json:"results"`
+	Answer    bool     `json:"answer"`
+	Answered  bool     `json:"answered"`
 }
 
 // probe is the node's tool, read_file (a tool a sandboxed node runs in the
-// container): its input names the call, it records the execution under the
-// world's current node execution, and answers a result large enough to
-// force compaction when the world says so.
+// container): its input names the call — an id of its own, whatever id the
+// provider gave the call — it records the execution under the world's
+// current node execution, and answers a result that names the call, large
+// enough to force compaction when the world says so.
 func (w *guaranteeWorld) probe() delegate.ToolDef {
 	return delegate.ToolDef{
 		Name:        "read_file",
@@ -150,7 +191,7 @@ func (w *guaranteeWorld) probe() delegate.ToolDef {
 			_ = json.Unmarshal(input, &in)
 			w.mu.Lock()
 			defer w.mu.Unlock()
-			w.appendLine("executions", fmt.Sprintf("%d:%s", w.counter("segment"), in.ID))
+			w.appendLine("executions", w.execution()+":"+in.ID)
 			if !w.plan.BigResults {
 				return "observed " + in.ID, nil
 			}
@@ -190,6 +231,37 @@ func probeCall(id string) api.ContentBlock {
 	return api.ContentBlock{Type: "tool_use", ID: id, Name: "read_file", Input: map[string]any{"id": id}}
 }
 
+// callID is the id the world's provider gives a response's call at
+// position: the call's own name, or call_<position> when the provider
+// reuses ids from one response to the next.
+func (w *guaranteeWorld) callID(position int, own string) string {
+	if w.plan.ReuseIDs {
+		return fmt.Sprintf("call_%d", position)
+	}
+	return own
+}
+
+// carried reads what a request carries: the probe results, by the name each
+// result gives its call, and whether the operator's answer is among them.
+func carried(req api.CreateMessageRequest) (results []string, answer bool) {
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if b.Type != "tool_result" {
+				continue
+			}
+			var text strings.Builder
+			for _, inner := range b.Content {
+				text.WriteString(inner.Text)
+			}
+			if fields := strings.Fields(text.String()); len(fields) >= 2 && fields[0] == "observed" {
+				results = append(results, fields[1])
+			}
+			answer = answer || strings.Contains(text.String(), guaranteeAnswer)
+		}
+	}
+	return results, answer
+}
+
 // respond is the world's model: a function of the seed, the request's rank
 // in the world and what the request carries.
 func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEvent, error) {
@@ -199,15 +271,19 @@ func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEven
 	w.setCounter("requests", n)
 	r := rand.New(rand.NewSource(w.plan.Seed*7919 + int64(n)))
 	loop := slices.ContainsFunc(req.Tools, func(t api.Tool) bool { return t.Name == "read_file" })
-	var results []string
-	for _, m := range req.Messages {
-		for _, b := range m.Content {
-			if b.Type == "tool_result" && strings.HasPrefix(b.ToolUseID, "tu_") {
-				results = append(results, b.ToolUseID)
-			}
+	results, answer := carried(req)
+	if w.counter("segment") > 0 && loop {
+		// After a resume, a loop request that carries what the resumed
+		// conversation's first one carried, and is not that one, is a
+		// retry's: it replays the resumed conversation alone.
+		key, name := strings.Join(results, " "), fmt.Sprintf("resumed-%d", w.counter("segment"))
+		if first, ok := w.text(name); !ok {
+			w.setText(name, key)
+		} else if first == key {
+			w.setCounter("attempt", w.counter("attempt")+1)
 		}
 	}
-	record := guaranteeRequest{N: n, Loop: loop, Results: results}
+	record := guaranteeRequest{N: n, Execution: w.execution(), Loop: loop, Results: results, Answer: answer}
 	defer func() {
 		line, _ := json.Marshal(record)
 		w.appendLine("requests.log", string(line))
@@ -231,6 +307,11 @@ func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEven
 		}
 	}
 	id := fmt.Sprintf("tu_%d", n)
+	call := func(position int) api.ContentBlock {
+		c := probeCall(id)
+		c.ID = w.callID(position, id)
+		return c
+	}
 	switch {
 	case !loop:
 		record.Outcome, record.Answered = "verdict", true
@@ -238,9 +319,9 @@ func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEven
 	case w.plan.Pause && w.counter("pauses") == 0 && len(results) >= 1 && r.Intn(2) == 0:
 		w.setCounter("pauses", 1)
 		record.Outcome = "pause"
-		ask := api.ContentBlock{Type: "tool_use", ID: "ask_" + id, Name: "ask_user", Input: map[string]any{"question": "go on?"}}
+		ask := api.ContentBlock{Type: "tool_use", ID: w.callID(0, "ask_"+id), Name: "ask_user", Input: map[string]any{"question": "go on?"}}
 		if w.plan.PauseSibling {
-			return guaranteeEvents(ask, probeCall(id)), nil
+			return guaranteeEvents(ask, call(1)), nil
 		}
 		return guaranteeEvents(ask), nil
 	case len(results) >= 2 && r.Intn(7) == 0:
@@ -248,7 +329,7 @@ func (w *guaranteeWorld) respond(req api.CreateMessageRequest) ([]api.StreamEven
 		return guaranteeEvents(api.ContentBlock{Type: "text", Text: `{"verdict":"done"}`}), nil
 	}
 	record.Outcome = "call"
-	return guaranteeEvents(probeCall(id)), nil
+	return guaranteeEvents(call(0)), nil
 }
 
 // StreamResponse makes the world an api.APIClient.
@@ -389,6 +470,9 @@ func guaranteeSource(plan guaranteePlan) string {
 	if plan.Pause {
 		interaction = "  interaction: human\n"
 	}
+	if plan.Slot {
+		interaction += "  session: persist\n  session_slot: conversation\n"
+	}
 	return fmt.Sprintf(`schema out:
   verdict: string
 prompt p:
@@ -410,13 +494,17 @@ agent judge:
 
 // guaranteeOutcome is what one world's run showed.
 type guaranteeOutcome struct {
-	plan       guaranteePlan
-	runErr     error
-	perSegment map[string]int
-	executed   []string
-	answering  *guaranteeRequest
-	requests   []guaranteeRequest
+	plan         guaranteePlan
+	runErr       error
+	perExecution map[string]int
+	executed     []guaranteeExecution
+	answering    *guaranteeRequest
+	requests     []guaranteeRequest
 }
+
+// guaranteeExecution is one tool execution: the node execution it ran in
+// and the call it ran.
+type guaranteeExecution struct{ execution, call string }
 
 func runGuaranteeWorld(t *testing.T, seed int64) guaranteeOutcome {
 	t.Helper()
@@ -471,14 +559,15 @@ func runGuaranteeWorld(t *testing.T, seed int64) guaranteeOutcome {
 	runErr := engine().Run(t.Context(), runID, nil)
 	for resumes := 0; errors.Is(runErr, runtime.ErrRunPaused) && resumes < 3; resumes++ {
 		w.setCounter("segment", w.counter("segment")+1)
-		runErr = engine().Resume(t.Context(), runID, map[string]any{delegate.AskUserQuestionKey: "yes"})
+		w.setCounter("attempt", 0)
+		runErr = engine().Resume(t.Context(), runID, map[string]any{delegate.AskUserQuestionKey: guaranteeAnswer})
 	}
 
-	out := guaranteeOutcome{plan: plan, runErr: runErr, perSegment: map[string]int{}}
+	out := guaranteeOutcome{plan: plan, runErr: runErr, perExecution: map[string]int{}}
 	for _, line := range w.lines("executions") {
-		segment, id, _ := strings.Cut(line, ":")
-		out.perSegment[segment]++
-		out.executed = append(out.executed, id)
+		execution, id, _ := strings.Cut(line, ":")
+		out.perExecution[execution]++
+		out.executed = append(out.executed, guaranteeExecution{execution: execution, call: id})
 	}
 	for _, line := range strings.Split(strings.TrimSpace(readFileOr(w.path("requests.log"))), "\n") {
 		var req guaranteeRequest
@@ -517,12 +606,12 @@ func readFileOr(path string) string {
 	return string(raw)
 }
 
-// violations is what a world's run breaks of (a), (b) and (c).
+// violations is what a world's run breaks of (a), (a'), (b), (b') and (c).
 func (o guaranteeOutcome) violations() []string {
 	var v []string
-	for segment, n := range o.perSegment {
+	for execution, n := range o.perExecution {
 		if n > o.plan.Bound {
-			v = append(v, fmt.Sprintf("(a) node execution %s (counted from the last pause before it) ran %d tool executions for tool_max_steps %d", segment, n, o.plan.Bound))
+			v = append(v, fmt.Sprintf("(a) node execution %s (pause segment.attempt) ran %d tool executions for tool_max_steps %d", execution, n, o.plan.Bound))
 		}
 	}
 	if o.runErr != nil {
@@ -534,12 +623,29 @@ func (o guaranteeOutcome) violations() []string {
 	if o.answering == nil {
 		return append(v, "(b) no request answered")
 	}
+	if n := o.perExecution[o.answering.Execution]; !o.answering.Loop && n != o.plan.Bound {
+		v = append(v, fmt.Sprintf("(a') node execution %s ended its loop after %d tool executions for tool_max_steps %d", o.answering.Execution, n, o.plan.Bound))
+	}
+	// The conversation that answers holds the executions of the pause
+	// segments before its own, and those of its own node execution.
+	segmentOf := func(execution string) int {
+		s, _, _ := strings.Cut(execution, ".")
+		n, _ := strconv.Atoi(s)
+		return n
+	}
+	segment := segmentOf(o.answering.Execution)
+	var held []string
+	for _, e := range o.executed {
+		if segmentOf(e.execution) < segment || e.execution == o.answering.Execution {
+			held = append(held, e.call)
+		}
+	}
 	missing := 0
-	for i, id := range o.executed {
+	for i, id := range held {
 		if slices.Contains(o.answering.Results, id) {
 			continue
 		}
-		folded := o.plan.BigResults && !slices.ContainsFunc(o.executed[:i], func(earlier string) bool {
+		folded := o.plan.BigResults && !slices.ContainsFunc(held[:i], func(earlier string) bool {
 			return slices.Contains(o.answering.Results, earlier)
 		})
 		if !folded {
@@ -547,8 +653,14 @@ func (o guaranteeOutcome) violations() []string {
 		}
 	}
 	if missing > 0 {
-		v = append(v, fmt.Sprintf("(b) the answering request %d misses %d of the %d results the run completed (it carries %v, the run executed %v)",
-			o.answering.N, missing, len(o.executed), o.answering.Results, o.executed))
+		v = append(v, fmt.Sprintf("(b) the answering request %d misses %d of the %d results its conversation holds (it carries %v, the conversation executed %v)",
+			o.answering.N, missing, len(held), o.answering.Results, held))
+	}
+	if segment > 0 && !o.plan.BigResults {
+		first := slices.IndexFunc(o.requests, func(r guaranteeRequest) bool { return segmentOf(r.Execution) > 0 })
+		if !o.answering.Answer || first < 0 || !o.requests[first].Answer {
+			v = append(v, "(b') the operator's answer misses the first request after the resume or the one that answers")
+		}
 	}
 	return v
 }
@@ -569,7 +681,7 @@ func (o guaranteeOutcome) trace() string {
 		if r.Loop {
 			kind = "L"
 		}
-		fmt.Fprintf(&b, " %d%s:%s/%d", r.N, kind, r.Outcome, len(r.Results))
+		fmt.Fprintf(&b, " %d%s@%s:%s/%d", r.N, kind, r.Execution, r.Outcome, len(r.Results))
 	}
 	return b.String()
 }
@@ -591,7 +703,7 @@ func TestClawStepBudgetGuarantee(t *testing.T) {
 			guaranteeWorlds <- struct{}{}
 			defer func() { <-guaranteeWorlds }()
 			out := runGuaranteeWorld(t, seed)
-			t.Logf("plan %+v\n  executions per node execution %v, run err %v\n  requests%s", out.plan, out.perSegment, out.runErr, out.trace())
+			t.Logf("plan %+v\n  executions per node execution %v, run err %v\n  requests%s", out.plan, out.perExecution, out.runErr, out.trace())
 			if v := out.violations(); len(v) > 0 {
 				t.Errorf("%s\n  plan %+v\n  requests%s", strings.Join(v, "\n  "), out.plan, out.trace())
 			}

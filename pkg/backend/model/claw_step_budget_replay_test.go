@@ -13,13 +13,14 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
-	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 // The charge read from the replay, where the replay is not the conversation
-// it started from: compacted, healed, or answered from (#3283).
+// it started from — compacted, captured across a runner, its call ids reused
+// — and the fold record that keeps it countable (#3283).
 
 // sizedStoredRounds is a persisted session of n completed probe turns whose
 // tool results are size random bytes in hex — incompressible, so a large
@@ -85,121 +86,7 @@ func pausedConversation(blocks ...api.ContentBlock) json.RawMessage {
 	return prior
 }
 
-var (
-	askBlock     = api.ContentBlock{Type: "tool_use", ID: "tu_ask", Name: "ask_user", Input: map[string]any{"question": "go?"}}
-	siblingBlock = api.ContentBlock{Type: "tool_use", ID: "tu_sib", Name: "probe", Input: map[string]any{}}
-)
-
-// A resumed conversation is healed by the loop before its first request —
-// a call left beside the paused one without a result is dropped, a
-// command narrowing the conversation no longer states is restated — so its
-// capture begins with the healed form. The retry must still recognise the
-// capture as its own: it replays it, sees the 4 turns, and is charged them.
-//
-// Mutants: recognise a resumed capture by its prefix as carried, and every
-// healed resume restarts from the pause point with the whole bound — 8 for
-// 4; compare a continued conversation as carried only, and the narrowed one
-// restarts the same way.
-func TestClawStepBudget_AHealedResumeIsRetriedFromItsCapture(t *testing.T) {
-	t.Parallel()
-	continued, _ := json.Marshal([]api.Message{
-		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Judge the diff."}}},
-		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "verdict: maybe"}}},
-	})
-	for _, tc := range []struct {
-		name      string
-		prior     json.RawMessage
-		continued bool
-		narrowed  bool
-	}{
-		{name: "a sibling before the paused call", prior: pausedConversation(siblingBlock, askBlock)},
-		{name: "a sibling after the paused call", prior: pausedConversation(askBlock, siblingBlock)},
-		{name: "a narrowing the conversation no longer states", prior: pausedConversation(askBlock), narrowed: true},
-		{name: "a continued conversation the loop restates a narrowing in", prior: continued, continued: true, narrowed: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			probe, ran := budgetProbe()
-			client := budgetModel(map[int]bool{5: true}, nil)
-			task := budgetTask(probe, 4)
-			if tc.continued {
-				task.ContinueConversation = tc.prior
-			} else {
-				task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = tc.prior, "tu_ask", "yes"
-			}
-			if tc.narrowed {
-				task.ResumeCommandNarrowing = &delegate.CommandNarrowingState{Command: "review", Names: []string{"probe"}}
-			}
-			res, err := budgetBackend(client, 3).Execute(budgetCtx(), task)
-			requireVerdict(t, res, err)
-			if got := ran.Load(); got != 4 {
-				t.Fatalf("%d tool turns ran for tool_max_steps 4 (requests %s)", got, requestKinds(client))
-			}
-			if got := requestKinds(client); got != "LLLLRR" {
-				t.Errorf("requests = %s, want the 4 turns, the cut recovery pass and its retry", got)
-			}
-		})
-	}
-}
-
-// A permission pause approved once, its gated call paused beside a sibling:
-// the resumed attempt runs the approved deploy, probes, and its final
-// answer is cut. The retry replays that attempt's capture — the deploy's
-// result in view — so the approved action runs once.
-//
-// Mutant: the carried history compared as carried only — the retry restarts
-// at the approval and runs the deploy again.
-func TestClawStepBudget_AnApprovedActionRunsOnceAcrossARetry(t *testing.T) {
-	t.Parallel()
-	for _, sibling := range []bool{false, true} {
-		t.Run(fmt.Sprint("sibling=", sibling), func(t *testing.T) {
-			t.Parallel()
-			probe, _ := budgetProbe()
-			deploys := 0
-			deploy := delegate.ToolDef{Name: "deploy", Description: "deploy to prod", InputSchema: json.RawMessage(`{"type":"object"}`),
-				Execute: func(context.Context, json.RawMessage) (string, error) { deploys++; return "deployed", nil }}
-			cut := false
-			client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
-				if !offersTool(req, "probe") {
-					return toolUseEvents("so_1", "structured_output", `{"verdict":"done"}`, 10, 5), nil
-				}
-				seen := func(id string) bool {
-					return slices.ContainsFunc(req.Messages, func(m api.Message) bool {
-						return slices.ContainsFunc(m.Content, func(b api.ContentBlock) bool { return b.Type == "tool_result" && b.ToolUseID == id })
-					})
-				}
-				switch {
-				case !seen("tu_redeploy"):
-					return toolUseEvents("tu_redeploy", "deploy", `{}`, 10, 5), nil
-				case !seen("tu_probe"):
-					return toolUseEvents("tu_probe", "probe", `{}`, 10, 5), nil
-				case !cut:
-					cut = true
-					return cutStream(), nil
-				}
-				return textEvents(`{"verdict":"done"}`, 10, 5), nil
-			}}
-			pol, err := permission.NewPolicy(permission.ModeAsk, []string{"probe"}, []string{"deploy"}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			pol.AddGrantRule("deploy")
-			blocks := []api.ContentBlock{{Type: "tool_use", ID: "tu_dep", Name: "deploy", Input: map[string]any{}}}
-			if sibling {
-				blocks = append([]api.ContentBlock{siblingBlock}, blocks...)
-			}
-			task := delegate.Task{NodeID: "judge", Model: "test/test-model", UserPrompt: "Ship it.",
-				HasTools: true, ToolDefs: []delegate.ToolDef{probe, deploy}, ToolMaxSteps: 6,
-				OutputSchema: json.RawMessage(budgetSchema), Permission: pol,
-				ResumeConversation: pausedConversation(blocks...), ResumePendingToolUseID: "tu_dep", ResumeAnswer: "allow once"}
-			res, err := budgetBackend(client, 3).Execute(budgetCtx(), task)
-			requireVerdict(t, res, err)
-			if deploys != 1 {
-				t.Fatalf("the approved deploy ran %d times across the retry (requests %s), want once", deploys, requestKinds(client))
-			}
-		})
-	}
-}
+var askBlock = api.ContentBlock{Type: "tool_use", ID: "tu_ask", Name: "ask_user", Input: map[string]any{"question": "go?"}}
 
 // A retry whose replay already holds a completed tool turn of this node
 // execution has its grounding in view: it is not forced to call a tool
@@ -218,7 +105,6 @@ func TestClawStepBudget_AReplayedRetryIsNotForcedToCallAToolAgain(t *testing.T) 
 		resumed bool
 	}{
 		{"test/claude-opus-5-5", false},
-		{"test/claude-opus-5-5", true},
 		{"test/test-model", false},
 	} {
 		t.Run(fmt.Sprintf("%s resumed=%v", tc.model, tc.resumed), func(t *testing.T) {
@@ -344,27 +230,239 @@ func TestClawStepBudget_TurnsACompactionFoldsStayCharged(t *testing.T) {
 	}
 }
 
-// A resumed attempt whose large turns the compaction folded leaves a
-// capture that no longer begins with the carried history; the paused
-// call's answer, named in it, still marks it as this execution's. The
-// retry replays it and is charged the 4 turns it completed.
+// storedRoundsWithIDs is a stored conversation whose completed probe turns
+// use the given tool call ids, in order, each turn narrated.
+func storedRoundsWithIDs(ids ...string) []api.Message {
+	conversation := []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Earlier node of the slot."}}}}
+	for i, id := range ids {
+		conversation = append(conversation,
+			api.Message{Role: "assistant", Content: []api.ContentBlock{
+				{Type: "text", Text: fmt.Sprintf("previous execution narration %d", i+1)},
+				{Type: "tool_use", ID: id, Name: "probe", Input: map[string]any{}}}},
+			api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: id, Content: "observed"}.ToContentBlock()}},
+		)
+	}
+	return conversation
+}
+
+// A provider may reuse a call id from one response to the next ("call_0" on
+// every turn): the anchor names the LAST occurrence of its key, so a fresh
+// execution on a conversation that holds earlier turns under the reused id
+// is charged none of them — it runs the whole bound, forced to ground its
+// first turn, whether the node answers through the recovery pass or ends
+// at the bound. A resume after a human pause on such a route gets the
+// whole bound as well.
 //
-// Mutant: recognise a resumed capture by its prefix alone, and the
-// compacted capture is not recognised: the retry restarts from the pause
-// with the whole bound.
-func TestClawStepBudget_ACompactedResumeIsRetriedFromItsCapture(t *testing.T) {
+// Mutant: resolve the anchor at the FIRST occurrence of its key, and every
+// reused-id case is charged the earlier turns: starved, the schemaless one
+// answering with the previous execution's text without a request.
+func TestClawStepBudget_AReusedCallIDStarvesNoExecution(t *testing.T) {
 	t.Parallel()
-	const bound = 6
-	probe, ran := bigProbe()
-	client := budgetModel(map[int]bool{5: true}, nil)
-	task := budgetTask(probe, bound)
-	task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = pausedConversation(askBlock), "tu_ask", "yes"
-	res, err := budgetBackend(client, 2).Execute(budgetCtx(), task)
-	requireVerdict(t, res, err)
-	if visible := toolResultsIn(client.calls[4]); visible >= 5 {
-		t.Fatalf("scenario broken: the cut request still carries %d tool results — nothing was folded", visible)
+	reused := func(n int) []string { return slices.Repeat([]string{"call_0"}, n) }
+	for _, tc := range []struct {
+		name   string
+		stored []string
+		reuse  bool
+		schema bool
+	}{
+		{name: "unique ids", stored: []string{"a1", "a2", "a3"}, schema: true},
+		{name: "a reused id, 3 earlier turns", stored: reused(3), reuse: true, schema: true},
+		{name: "a reused id, 7 earlier turns", stored: reused(7), reuse: true, schema: true},
+		{name: "a reused id, 7 earlier turns, no output schema", stored: reused(7), reuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe, ran := budgetProbe()
+			client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+				if offersTool(req, "probe") {
+					id := fmt.Sprintf("tu_new_%d", n)
+					if tc.reuse {
+						id = "call_0"
+					}
+					return toolUseEvents(id, "probe", `{}`, 10, 5), nil
+				}
+				return toolUseEvents("so_1", "structured_output", `{"verdict":"done"}`, 10, 5), nil
+			}}
+			task := budgetTask(probe, 5)
+			if !tc.schema {
+				task.OutputSchema = nil
+			}
+			store := newNodeSessionStore()
+			store.save("run-budget", "judge", storedRoundsWithIDs(tc.stored...))
+			if _, err := budgetBackend(client, 1).Execute(withRuntimeContext(context.Background(), "run-budget", store), task); err != nil {
+				t.Fatalf("the node failed: %v", err)
+			}
+			if got := ran.Load(); got != 5 {
+				t.Fatalf("a fresh execution with tool_max_steps 5 ran %d tool turns (requests %s)", got, requestKinds(client))
+			}
+			if choice := client.calls[0].ToolChoice; choice == nil || choice.Type != "any" {
+				t.Errorf("the first request is not forced to call a tool (tool_choice %v): nothing of this execution grounds it yet", choice)
+			}
+		})
 	}
-	if got := ran.Load(); got != bound {
-		t.Fatalf("%d tool turns ran for tool_max_steps %d (requests %s)", got, bound, requestKinds(client))
+	t.Run("a resume after a human pause, ids reused", func(t *testing.T) {
+		t.Parallel()
+		probe, ran := budgetProbe()
+		conversation := storedRoundsWithIDs(reused(4)...)
+		conversation = append(conversation, api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "call_0", Name: "ask_user", Input: map[string]any{"question": "go?"}}}})
+		prior, _ := json.Marshal(conversation)
+		client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+			if offersTool(req, "probe") {
+				return toolUseEvents("call_0", "probe", `{}`, 10, 5), nil
+			}
+			return toolUseEvents("so_1", "structured_output", `{"verdict":"done"}`, 10, 5), nil
+		}}
+		task := budgetTask(probe, 5)
+		task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = prior, "call_0", "yes"
+		res, err := budgetBackend(client, 1).Execute(budgetCtx(), task)
+		requireVerdict(t, res, err)
+		if got := ran.Load(); got != 5 {
+			t.Fatalf("the resume ran %d tool turns, want the whole bound 5 (requests %s)", got, requestKinds(client))
+		}
+	})
+}
+
+// A compaction over turns that reuse a call id records each folded turn,
+// the reused key as often as it was folded: the count of a conversation's
+// turns survives the fold.
+//
+// Mutant: record the keys the compaction no longer shows by identity, and
+// every folded turn whose key a kept turn reuses vanishes from the count.
+func TestACompactionRecordsEveryFoldedTurnOfAReusedID(t *testing.T) {
+	t.Parallel()
+	conversation := sizedStoredRounds(0, 0)
+	for range 8 {
+		conversation = append(conversation,
+			api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "call_0", Name: "probe", Input: map[string]any{}}}},
+			api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "call_0", Content: strings.Repeat("observed ", 400)}.ToContentBlock()}})
 	}
+	res := compactMessagesToolSafe(conversation, clawrt.CompactionConfig{PreserveRecentMessages: 4, MaxEstimatedTokens: 1}, nil)
+	if res == nil || len(res.CompactedMessages) >= len(conversation) {
+		t.Fatal("scenario broken: nothing was compacted")
+	}
+	if got := completedToolRounds(res.CompactedMessages); got != 8 {
+		t.Fatalf("the compacted conversation counts %d completed tool turns, want the 8 it held", got)
+	}
+}
+
+// A turn whose call executed nothing — an unknown tool, answered with an
+// error — grounds nothing: a retry that replays only that turn keeps an
+// always-thinking model's contract to run a tool before it answers, as
+// its first attempt would.
+//
+// Mutant: lift the force on any completed turn of this execution, and the
+// retry answers without a tool ever having run.
+func TestClawStepBudget_ATurnThatRanNoToolLiftsNothing(t *testing.T) {
+	t.Parallel()
+	probe, ran := budgetProbe()
+	client := &funcClient{fn: func(n int, req api.CreateMessageRequest) ([]api.StreamEvent, error) {
+		switch n {
+		case 1:
+			return toolUseEvents("tu_nope", "no_such_tool", `{}`, 10, 5), nil
+		case 2:
+			return cutStream(), nil
+		}
+		return textEvents("The diff is fine.", 10, 5), nil
+	}}
+	task := budgetTask(probe, 5)
+	task.OutputSchema, task.Model = nil, "test/claude-opus-5-5"
+	_, err := budgetBackend(client, 2).Execute(budgetCtx(), task)
+	if err == nil || !strings.Contains(err.Error(), "returned before executing a required initial tool") {
+		t.Fatalf("err = %v, want the contract's refusal: no tool ran (%d probe runs)", err, ran.Load())
+	}
+}
+
+// hasFoldRecord reports whether a conversation carries a compaction's fold
+// record.
+func hasFoldRecord(conversation []api.Message) bool {
+	return slices.ContainsFunc(conversation, func(m api.Message) bool {
+		return slices.ContainsFunc(m.Content, func(b api.ContentBlock) bool {
+			return b.Type == "text" && strings.HasPrefix(b.Text, foldedToolTurnsMarker)
+		})
+	})
+}
+
+// A persisted session outlives the node execution whose tool steps its fold
+// records count, so it carries none, written or read: a slot conversation
+// compacted visit after visit does not re-record every turn it ever folded.
+//
+// Mutants: keep the record a persisted conversation arrives with, and the
+// visits and the inbound envelope carry it; keep the record the replay
+// clamp's own compaction writes, and the oversized replay carries it.
+func TestAPersistedSessionCarriesNoFoldRecord(t *testing.T) {
+	t.Parallel()
+	const runID, slot, sessionID = "run-persist", "assistant_conversation", "session-1"
+	// The subtests share one seeded source, so they run in turn.
+	r := rand.New(rand.NewSource(3283))
+	turns := func(visit, n, size int) []api.Message {
+		var out []api.Message
+		for i := range n {
+			buf := make([]byte, size)
+			r.Read(buf)
+			id := fmt.Sprintf("tu_%d_%d", visit, i)
+			out = append(out,
+				api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: id, Name: "probe", Input: map[string]any{}}}},
+				api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: id, Content: hex.EncodeToString(buf)}.ToContentBlock()}})
+		}
+		return out
+	}
+	t.Run("visits of a slot", func(t *testing.T) {
+		conversation := []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Help me with the repo."}}}}
+		for visit := 1; visit <= 4; visit++ {
+			conversation = append(conversation, turns(visit, 12, 3000)...)
+			// The visit's own loop compacts, as a long loop does.
+			compacted, ok := forceCompactToTokens(conversation, 8000, 4)
+			if !ok || !hasFoldRecord(compacted) {
+				t.Fatalf("visit %d: scenario broken, the loop's compaction recorded nothing", visit)
+			}
+			source := &ClawExecutor{sessions: newNodeSessionStore()}
+			source.sessions.save(runID, slot, compacted)
+			blob := source.packClawSession(runID, slot, sessionID, "claw:anthropic")
+			var envelope clawPersistEnvelope
+			if err := json.Unmarshal(blob, &envelope); err != nil {
+				t.Fatalf("visit %d: decode the packed envelope: %v", visit, err)
+			}
+			if hasFoldRecord(envelope.Messages) {
+				t.Fatalf("visit %d: the persisted session carries a fold record", visit)
+			}
+			target := &ClawExecutor{sessions: newNodeSessionStore()}
+			if err := target.UnpackSession(WithRunID(context.Background(), runID), "claw", sessionID, blob); err != nil {
+				t.Fatalf("visit %d: unpack: %v", visit, err)
+			}
+			conversation = target.sessions.load(runID, slot)
+		}
+	})
+	t.Run("an oversized replay", func(t *testing.T) {
+		conversation := append([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Inspect the workflow."}}}}, turns(0, 3, 30000)...)
+		source := &ClawExecutor{sessions: newNodeSessionStore()}
+		source.sessions.save(runID, slot, conversation)
+		blob := source.packClawSession(runID, slot, sessionID, "claw:anthropic")
+		var envelope clawPersistEnvelope
+		if err := json.Unmarshal(blob, &envelope); err != nil {
+			t.Fatalf("decode the packed envelope: %v", err)
+		}
+		if len(envelope.Messages) >= len(conversation) {
+			t.Fatalf("scenario broken: the replay clamp compacted nothing (%d messages)", len(envelope.Messages))
+		}
+		if hasFoldRecord(envelope.Messages) {
+			t.Fatal("the clamped replay carries the fold record of its own compaction")
+		}
+	})
+	t.Run("an inbound envelope", func(t *testing.T) {
+		compacted, ok := forceCompactToTokens(append([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Help me."}}}}, turns(9, 12, 3000)...), 8000, 4)
+		if !ok || !hasFoldRecord(compacted) {
+			t.Fatal("scenario broken: no fold record to read")
+		}
+		blob, err := marshalClawPersistEnvelope(slot, sessionID, "claw:anthropic", compacted)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		target := &ClawExecutor{sessions: newNodeSessionStore()}
+		if err := target.UnpackSession(WithRunID(context.Background(), runID), "claw", sessionID, blob); err != nil {
+			t.Fatalf("unpack: %v", err)
+		}
+		if got := target.sessions.load(runID, slot); len(got) == 0 || hasFoldRecord(got) {
+			t.Fatalf("the restored session is empty or carries a fold record (%d messages)", len(got))
+		}
+	})
 }

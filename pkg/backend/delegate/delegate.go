@@ -571,12 +571,14 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
-	// ToolTurnsAnchor anchors this node execution's tool-step budget: the
-	// id of the last completed tool call of the conversation its first
-	// attempt started from ("" when that conversation held none). The claw
-	// backend charges a loop the completed tool turns its conversation
-	// holds after the anchor — every visible one when a compaction folded
-	// the anchor away — and hands the loop what is left of ToolMaxSteps.
+	// ToolTurnsAnchor anchors this node execution's tool-step budget at the
+	// last completed tool turn of the conversation its first attempt
+	// started from — its key and that key's occurrence, "<n>:<key>", as a
+	// provider may reuse a call id — "" when that conversation held none.
+	// The claw backend charges a loop the completed tool turns its
+	// conversation holds after the anchor — those a compaction folded
+	// included, as its summary names them; every one when the anchor is not
+	// among them — and hands the loop what is left of ToolMaxSteps.
 	// Nil on a first attempt: the backend fixes it from the conversation its
 	// first loop starts from and reports it in Result.ToolTurnsAnchor, which
 	// a retry of the same node execution carries back here.

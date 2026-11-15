@@ -1,11 +1,9 @@
 package model
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
@@ -577,68 +575,14 @@ func applySessionMessages(ctx context.Context, sessKey string, opts GenerationOp
 // its schema retry replayed 91 stored messages followed by the 11 it was
 // resuming from.
 //
-// A retry of such a task replays the store's capture instead when the
-// capture continues the carried history (capturedContinues): the
-// conversation an earlier attempt of this execution went on with, whose
-// tool turns the retry then sees — and is charged for
-// (claw_step_budget.go). Any other capture is another conversation's, and
-// stays out.
+// A retry of such a task therefore replays its carried history alone: none
+// of a dead attempt's turns, so the tool-step budget charges it none and it
+// runs the whole bound again from what it carries (claw_step_budget.go).
 func applySessionMessagesForTask(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
 	if len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0 {
-		return continueCarriedHistory(ctx, task, opts)
+		return opts
 	}
 	return applySessionMessages(ctx, taskSessionKey(task), opts)
-}
-
-// continueCarriedHistory replaces the carried history in opts with the
-// store's capture of the task's session when that capture continues it.
-func continueCarriedHistory(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
-	runID, store := runtimeContextFrom(ctx)
-	sessKey := taskSessionKey(task)
-	if store == nil || runID == "" || sessKey == "" {
-		return opts
-	}
-	captured := store.load(runID, sessKey)
-	if !capturedContinues(ctx, task, captured, opts.Messages) {
-		return opts
-	}
-	opts.Messages = append([]api.Message(nil), captured...)
-	return opts
-}
-
-// capturedContinues reports whether captured is a conversation an earlier
-// attempt of this execution went on with from carried:
-//
-//   - for a resumed pause, one in which the paused call is answered — that
-//     call's id is the pause's own, so it holds whatever compaction folded
-//     or the loop healed (loopConversation) of the rest; the conversation
-//     the pause was taken from holds the call unanswered;
-//   - for a continued conversation, one that strictly extends it, as carried
-//     or as the loop healed it before its first request, the form a capture
-//     of it begins with.
-func capturedContinues(ctx context.Context, task delegate.Task, captured, carried []api.Message) bool {
-	if len(task.ResumeConversation) > 0 {
-		return task.ResumePendingToolUseID != "" && slices.Contains(toolTurnKeys(captured), task.ResumePendingToolUseID)
-	}
-	return conversationExtends(captured, carried) ||
-		conversationExtends(captured, loopConversation(ctx, append([]api.Message(nil), carried...)))
-}
-
-// conversationExtends reports whether longer holds every message of prefix,
-// in order and unchanged, and at least one more. An empty prefix carries no
-// history, and nothing extends it.
-func conversationExtends(longer, prefix []api.Message) bool {
-	if len(prefix) == 0 || len(longer) <= len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		a, errA := json.Marshal(prefix[i])
-		b, errB := json.Marshal(longer[i])
-		if errA != nil || errB != nil || !bytes.Equal(a, b) {
-			return false
-		}
-	}
-	return true
 }
 
 // captureSessionMessages writes back the final accumulated messages

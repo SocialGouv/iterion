@@ -236,15 +236,16 @@ func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string
 
 // toolTurnsAnchorCarry hands every attempt of a node execution the anchor
 // of its tool-step budget (delegate.Task.ToolTurnsAnchor): the last
-// completed tool call of the conversation its first attempt started from,
+// completed tool turn of the conversation its first attempt started from,
 // as the first attempt that reports one fixes it. A retry replays what the
 // dead attempt left (claw's session store holds it) and is charged the turns
 // that replay holds after this anchor, so the anchor must be the first
 // attempt's, never one a retry fixes from its own replay.
 //
 // A carry over the run's session store (newToolTurnsAnchorCarry) keeps the
-// anchor beside the session until the node succeeds or pauses for a human
-// (EndToolStepBudget): the engine's recovery re-runs a failed node through a
+// anchor beside the session until the node succeeds, pauses for a human
+// (EndToolStepBudget) or a recovery pause ends its execution
+// (EndNodeExecution): the engine's recovery re-runs a failed node through a
 // fresh dispatch, on the session the executor keeps on error, and that
 // re-run is a retry of the same execution.
 type toolTurnsAnchorCarry struct {
@@ -277,6 +278,18 @@ func (e *ClawExecutor) EndToolStepBudget(runID, nodeID string) {
 		return
 	}
 	e.sessions.dropAnchor(runID, e.sessionKeyOf(nodeID))
+}
+
+// EndNodeExecution ends nodeID's execution in runID at a recovery pause:
+// the session it left and its tool-step budget are dropped, so the node
+// re-executed once the operator acknowledges starts from no conversation
+// with the whole bound — as a cold resume, whose executor holds neither,
+// re-executes it.
+func (e *ClawExecutor) EndNodeExecution(runID, nodeID string) {
+	if e.sessions == nil || runID == "" {
+		return
+	}
+	e.sessions.evict(runID, e.sessionKeyOf(nodeID))
 }
 
 // attempt is task as the next attempt runs it.

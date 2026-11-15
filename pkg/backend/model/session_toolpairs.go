@@ -158,17 +158,14 @@ func compactMessagesToolSafe(messages []api.Message, cfg clawrt.CompactionConfig
 	}
 	res.CompactedMessages, _ = sanitizeToolPairs(res.CompactedMessages, allowedPending, false)
 	if len(res.CompactedMessages) > 0 {
-		kept := toolTurnKeys(res.CompactedMessages)
-		var folded []string
-		for _, key := range toolTurnKeys(messages) {
-			if !slices.Contains(kept, key) {
-				folded = append(folded, key)
-			}
-		}
-		if len(folded) > 0 {
+		// The compactor keeps a suffix of the conversation, so the turns it
+		// folded are the leading ones, counted by position: a key a provider
+		// reused stays in the record as often as it was folded.
+		all := toolTurnKeys(messages)
+		if folded := len(all) - len(toolTurnKeys(res.CompactedMessages)); folded > 0 {
 			summary := res.CompactedMessages[0]
 			summary.Content = append(append([]api.ContentBlock(nil), summary.Content...),
-				api.ContentBlock{Type: "text", Text: foldedToolTurnsMarker + strings.Join(folded, " ") + "]"})
+				api.ContentBlock{Type: "text", Text: foldedToolTurnsMarker + strings.Join(all[:folded], " ") + "]"})
 			res.CompactedMessages[0] = summary
 		}
 	}
@@ -179,6 +176,26 @@ func compactMessagesToolSafe(messages []api.Message, cfg clawrt.CompactionConfig
 // summary: the completed tool turns it folded, in order, each named by the
 // id of its last call.
 const foldedToolTurnsMarker = "[iterion: this summary folds the completed tool turns "
+
+// withoutFoldRecord returns the conversation without the fold records its
+// compaction summaries carry. A record serves the node execution whose tool
+// steps it counts; a conversation that outlives the execution — a persisted
+// session — drops it, or every later compaction re-records every turn ever
+// folded and the record grows for as long as the session lives.
+func withoutFoldRecord(conversation []api.Message) []api.Message {
+	out := make([]api.Message, 0, len(conversation))
+	for _, message := range conversation {
+		kept := slices.DeleteFunc(slices.Clone(message.Content), func(block api.ContentBlock) bool {
+			return block.Type == "text" && strings.HasPrefix(block.Text, foldedToolTurnsMarker)
+		})
+		if len(kept) == 0 && len(message.Content) > 0 {
+			continue
+		}
+		message.Content = kept
+		out = append(out, message)
+	}
+	return out
+}
 
 // toolTurnKeys names the completed tool turns of a conversation, in order:
 // those a compaction summary records as folded, then each visible one — an

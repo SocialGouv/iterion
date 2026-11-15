@@ -128,11 +128,17 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		ctx = tool.WithCommandScope(ctx, &tool.CommandScope{})
 	}
 
-	// Copy messages to avoid mutating caller's slice, healed the way every
-	// request heals them (loopConversation).
+	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
-	messages = loopConversation(ctx, messages)
+
+	// A retry whose replay starts from the bare prompt, a resume whose
+	// checkpoint compaction summarised the invocation away, or a delegated
+	// child's fresh conversation leaves this generation bounded by a command
+	// its conversation never invoked — re-state the bound, or the next
+	// refusal names a command the model cannot place (#2905). No-op when
+	// the notice already rides the conversation.
+	messages = tool.EnsureNarrowingNotice(ctx, messages)
 
 	// Always-thinking models reject tool_choice:any. Keep the grounding
 	// contract in the executor: an announced, malformed or denied call is
@@ -246,25 +252,6 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
 	}
 	return result(), nil
-}
-
-// loopConversation is the conversation a tool loop sends first, from the
-// one it is handed — the ONE healing the loop applies and the comparison of
-// a carried history with its capture reads (continueCarriedHistory), so the
-// two cannot drift:
-//
-//   - A retry whose replay starts from the bare prompt, a resume whose
-//     checkpoint compaction summarised the invocation away, or a delegated
-//     child's fresh conversation leaves the generation bounded by a command
-//     its conversation never invoked — the bound is re-stated, or the next
-//     refusal names a command the model cannot place (#2905). No-op when the
-//     notice already rides the conversation.
-//   - A tool call left without its result (a sibling of the call a pause
-//     stopped at) is healed out, as callWithContextRetry heals every request.
-func loopConversation(ctx context.Context, messages []api.Message) []api.Message {
-	messages = tool.EnsureNarrowingNotice(ctx, messages)
-	messages, _ = sanitizeToolPairs(messages, nil, false)
-	return messages
 }
 
 // forcedInitialToolChoice is the agentic-parity lever: while

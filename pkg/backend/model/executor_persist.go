@@ -165,7 +165,12 @@ func (e *ClawExecutor) packClawSession(runID, slot, sessionID, fingerprint strin
 // prompt. It is used for both newly written and legacy inbound envelopes: a
 // persist slot can outlive a node-id rewind, so save-time enforcement alone
 // would replay a stale oversized blob once before it was ever repacked.
+//
+// A persisted conversation outlives the node execution whose tool steps its
+// fold records count, so it carries none, written or read
+// (withoutFoldRecord).
 func constrainClawPersistReplay(slot, sessionID, fingerprint string, messages []api.Message) ([]byte, []api.Message, int, bool, error) {
+	messages = withoutFoldRecord(messages)
 	blob, err := marshalClawPersistEnvelope(slot, sessionID, fingerprint, messages)
 	if err != nil {
 		return nil, nil, 0, false, err
@@ -186,7 +191,7 @@ func constrainClawPersistReplay(slot, sessionID, fingerprint string, messages []
 	if compacted == nil {
 		return nil, nil, before, false, fmt.Errorf("%d-byte replay could not compact to %d bytes", before, clawPersistReplayBlobBytes)
 	}
-	replay, _ := sanitizeToolPairs(compacted.CompactedMessages, nil, false)
+	replay, _ := sanitizeToolPairs(withoutFoldRecord(compacted.CompactedMessages), nil, false)
 	blob, err = marshalClawPersistEnvelope(slot, sessionID, fingerprint, replay)
 	if err != nil {
 		return nil, nil, before, false, err

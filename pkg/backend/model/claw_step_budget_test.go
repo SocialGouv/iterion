@@ -308,9 +308,9 @@ func TestClawStepBudget_ARetryIsChargedWhatItsReplayHolds(t *testing.T) {
 	}{
 		{name: "3 replayed of 5", anchor: anchor(""), stored: 3, want: 2, kinds: "LLR", results: 5},
 		{name: "the whole bound replayed", anchor: anchor(""), stored: 5, want: 0, kinds: "R", results: 5},
-		{name: "an anchor inside the replay", anchor: anchor("tu_stored_2"), stored: 5, want: 2, kinds: "LLR", results: 7},
-		{name: "an anchor a compaction folded", anchor: anchor("tu_folded"), stored: 3, want: 2, kinds: "LLR", results: 5},
-		{name: "the replay lost", anchor: anchor("tu_stored_4"), stored: 0, want: 5, kinds: "LLLLLR", results: 5},
+		{name: "an anchor inside the replay", anchor: anchor("1:tu_stored_2"), stored: 5, want: 2, kinds: "LLR", results: 7},
+		{name: "an anchor a compaction folded", anchor: anchor("1:tu_folded"), stored: 3, want: 2, kinds: "LLR", results: 5},
+		{name: "the replay lost", anchor: anchor("1:tu_stored_4"), stored: 0, want: 5, kinds: "LLLLLR", results: 5},
 		{name: "no anchor: the first conversation fixes it", anchor: nil, stored: 5, want: 5, kinds: "LLLLLR", results: 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -336,7 +336,7 @@ func TestClawStepBudget_ARetryIsChargedWhatItsReplayHolds(t *testing.T) {
 			if res.ToolTurns != tc.want {
 				t.Errorf("Result.ToolTurns = %d, want this invocation's %d", res.ToolTurns, tc.want)
 			}
-			wantAnchor := lastCompletedToolCall(storedRounds(tc.stored))
+			wantAnchor := lastToolTurnAnchor(storedRounds(tc.stored))
 			if tc.anchor != nil {
 				wantAnchor = *tc.anchor
 			}
@@ -378,21 +378,18 @@ func TestClawStepBudget_ASchemalessNodeWithTheBoundReplayedEndsAtTheBound(t *tes
 }
 
 // A task that carries its own history — a resumed pause, a continued
-// conversation — skips the store's replay, so a retry used to restart from
-// that history while being charged the dead attempt's turns: the recovery
-// pass answered with none of them in view. A retry now replays the dead
-// attempt's capture when the store holds one that extends the carried
-// history, and sees the turns it is charged for; with no store nothing is
-// replayed, nothing is charged, and the retry answers from turns it ran
-// itself.
+// conversation — replays that history alone, never the store's capture of a
+// dead attempt: a retry of it replays none of the dead attempt's turns, is
+// charged none, and runs the whole bound again from what it carries, its
+// answer grounded in the turns it ran itself. The store holding the dead
+// attempt's capture changes nothing.
 //
 // Each case completes the 4 turns of its bound, then the recovery pass is
 // cut and the turn retried.
 //
-// Mutants: keep the carried history over its capture (the store case runs
-// 4 more turns); charge the invocation's own count instead of the replay
-// (the case without a store answers with none of its turns in view).
-func TestClawStepBudget_ACarriedHistoryIsRetriedFromItsCapture(t *testing.T) {
+// Mutant: replay the store's capture under the carried history, and the
+// retry is charged the dead attempt's turns it cannot place.
+func TestClawStepBudget_ARetryOfACarriedHistoryReplaysItAloneWithTheWholeBound(t *testing.T) {
 	t.Parallel()
 	resumed := func(task *delegate.Task) {
 		prior, _ := json.Marshal([]api.Message{
@@ -412,14 +409,12 @@ func TestClawStepBudget_ACarriedHistoryIsRetriedFromItsCapture(t *testing.T) {
 		name    string
 		carry   func(*delegate.Task)
 		store   bool
-		ran     int64
-		kinds   string
 		results int // tool results the answering request carries
 	}{
-		{name: "resumed, with its capture", carry: resumed, store: true, ran: 4, kinds: "LLLLRR", results: 5},
-		{name: "continued, with its capture", carry: continued, store: true, ran: 4, kinds: "LLLLRR", results: 4},
-		{name: "resumed, no store", carry: resumed, ran: 8, kinds: "LLLLRLLLLR", results: 5},
-		{name: "continued, no store", carry: continued, ran: 8, kinds: "LLLLRLLLLR", results: 4},
+		{name: "resumed, the store holding the dead attempt", carry: resumed, store: true, results: 5},
+		{name: "continued, the store holding the dead attempt", carry: continued, store: true, results: 4},
+		{name: "resumed, no store", carry: resumed, results: 5},
+		{name: "continued, no store", carry: continued, results: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -433,45 +428,16 @@ func TestClawStepBudget_ACarriedHistoryIsRetriedFromItsCapture(t *testing.T) {
 			}
 			res, err := budgetBackend(client, 3).Execute(ctx, task)
 			requireVerdict(t, res, err)
-			if got := ran.Load(); got != tc.ran {
-				t.Fatalf("%d tool turns ran, want %d (requests %s)", got, tc.ran, requestKinds(client))
+			if got := ran.Load(); got != 8 {
+				t.Fatalf("%d tool turns ran, want the bound's 4 and the retry's whole 4 (requests %s)", got, requestKinds(client))
 			}
-			if got := requestKinds(client); got != tc.kinds {
-				t.Errorf("requests = %s, want %s", got, tc.kinds)
+			if got := requestKinds(client); got != "LLLLRLLLLR" {
+				t.Errorf("requests = %s, want 4 turns, the cut recovery pass, then 4 turns and the recovery pass", got)
 			}
 			if got := toolResultsIn(client.calls[len(client.calls)-1]); got != tc.results {
 				t.Errorf("the answering request carries %d tool results, want %d — the answer is grounded in turns it cannot see", got, tc.results)
 			}
 		})
-	}
-}
-
-// The prefix test the carried-history replay rests on: a capture replaces
-// the carried history only when it holds every message of it unchanged,
-// and more.
-func TestConversationExtends(t *testing.T) {
-	t.Parallel()
-	text := func(s string) api.Message {
-		return api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: s}}}
-	}
-	carried := []api.Message{text("a"), text("b")}
-	for _, tc := range []struct {
-		name   string
-		longer []api.Message
-		want   bool
-	}{
-		{"one more", []api.Message{text("a"), text("b"), text("c")}, true},
-		{"the same", []api.Message{text("a"), text("b")}, false},
-		{"shorter", []api.Message{text("a")}, false},
-		{"a changed message", []api.Message{text("a"), text("B"), text("c")}, false},
-		{"none", nil, false},
-	} {
-		if got := conversationExtends(tc.longer, carried); got != tc.want {
-			t.Errorf("%s: conversationExtends = %v, want %v", tc.name, got, tc.want)
-		}
-	}
-	if conversationExtends([]api.Message{text("a")}, nil) {
-		t.Error("an empty carried history is extended by a stored conversation — the store's turns would replace a history the task never had")
 	}
 }
 
@@ -499,15 +465,15 @@ func TestCarriedConversationMatchesTheComposedConversation(t *testing.T) {
 	}{
 		{"resumed", func(task *delegate.Task) {
 			task.ResumeConversation, task.ResumePendingToolUseID, task.ResumeAnswer = resume, "tu_ask", "yes"
-		}, "tu_ask"},
-		{"continued", func(task *delegate.Task) { task.ContinueConversation = cont }, "tu_stored_2"},
+		}, "1:tu_ask"},
+		{"continued", func(task *delegate.Task) { task.ContinueConversation = cont }, "1:tu_stored_2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			probe, _ := budgetProbe()
 			task := budgetTask(probe, 4)
 			tc.carry(&task)
-			if got := lastCompletedToolCall(carriedConversation(task)); got != tc.want {
+			if got := lastToolTurnAnchor(carriedConversation(task)); got != tc.want {
 				t.Fatalf("the launcher's anchor = %q, want %q", got, tc.want)
 			}
 			res, err := budgetBackend(budgetModel(nil, nil), 1).Execute(context.Background(), task)

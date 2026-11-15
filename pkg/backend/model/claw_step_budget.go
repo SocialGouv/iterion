@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -44,8 +45,9 @@ type toolStepBudget struct {
 	// limit is the bound the loop applies: the node's tool_max_steps, or the
 	// default a loop gets when the node names none.
 	limit int
-	// anchor is the id of the last completed tool call of the conversation
-	// the node execution started from ("" when it held none); anchored says
+	// anchor names the last completed tool turn of the conversation the
+	// node execution started from (lastToolTurnAnchor, "" when it held
+	// none); anchored says
 	// it is known — carried by the task (delegate.Task.ToolTurnsAnchor), or
 	// fixed by this invocation's first loop.
 	anchor   string
@@ -79,7 +81,7 @@ func newToolStepBudget(maxSteps int, anchor *string) *toolStepBudget {
 // sees fixes the anchor when none was carried.
 func (b *toolStepBudget) charge(conversation []api.Message) int {
 	if !b.anchored {
-		b.anchor, b.anchored = lastCompletedToolCall(conversation), true
+		b.anchor, b.anchored = lastToolTurnAnchor(conversation), true
 	}
 	return completedToolRoundsAfter(conversation, b.anchor)
 }
@@ -143,14 +145,42 @@ func answeredCalls(calls, answers api.Message) []string {
 	return ids
 }
 
-// lastCompletedToolCall names the last completed tool turn of conversation
-// (toolTurnKeys), "" when it holds none.
-func lastCompletedToolCall(conversation []api.Message) string {
+// lastToolTurnAnchor anchors at the last completed tool turn of
+// conversation (toolTurnKeys), "" when it holds none. The anchor names the
+// turn by its key and the occurrence of that key — a provider may reuse a
+// call id from one response to the next ("call_0", "functions.x:0"), and the
+// anchor is the LAST occurrence the conversation holds, never the first.
+func lastToolTurnAnchor(conversation []api.Message) string {
 	keys := toolTurnKeys(conversation)
 	if len(keys) == 0 {
 		return ""
 	}
-	return keys[len(keys)-1]
+	last := keys[len(keys)-1]
+	occurrence := 0
+	for _, key := range keys {
+		if key == last {
+			occurrence++
+		}
+	}
+	return strconv.Itoa(occurrence) + ":" + last
+}
+
+// anchorIndex is the index in keys of the turn anchor names, -1 when anchor
+// is "", unreadable, or names no turn of keys.
+func anchorIndex(keys []string, anchor string) int {
+	ordinal, key, ok := strings.Cut(anchor, ":")
+	occurrence, err := strconv.Atoi(ordinal)
+	if !ok || err != nil || occurrence < 1 {
+		return -1
+	}
+	for i, k := range keys {
+		if k == key {
+			if occurrence--; occurrence == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // completedToolRoundsAfter counts the completed tool turns of conversation
@@ -159,10 +189,46 @@ func lastCompletedToolCall(conversation []api.Message) string {
 // conversation.
 func completedToolRoundsAfter(conversation []api.Message, anchor string) int {
 	keys := toolTurnKeys(conversation)
-	if i := slices.Index(keys, anchor); anchor != "" && i >= 0 {
+	if i := anchorIndex(keys, anchor); i >= 0 {
 		return len(keys) - i - 1
 	}
 	return len(keys)
+}
+
+// executedToolAfter reports whether conversation holds, after the turn
+// anchor names, a tool result that is not an error: a tool that RAN. A
+// malformed, refused or unknown call completes a turn with an error result
+// and executes nothing; a tool that ran and failed reads the same and is
+// not counted either, the transcript cannot tell the two apart. When anchor
+// is "" or names no visible turn, every visible result is after it.
+func executedToolAfter(conversation []api.Message, anchor string) bool {
+	keys := toolTurnKeys(conversation)
+	target := anchorIndex(keys, anchor)
+	from, seen := 0, 0
+	for i, message := range conversation {
+		for _, block := range message.Content {
+			if block.Type == "text" && strings.HasPrefix(block.Text, foldedToolTurnsMarker) {
+				seen += len(strings.Fields(strings.TrimSuffix(strings.TrimPrefix(block.Text, foldedToolTurnsMarker), "]")))
+			}
+		}
+		if i+1 < len(conversation) && len(answeredCalls(message, conversation[i+1])) > 0 {
+			if seen == target {
+				from = i + 2
+			}
+			seen++
+		}
+	}
+	for _, message := range conversation[min(from, len(conversation)):] {
+		if message.Role != "user" {
+			continue
+		}
+		for _, block := range message.Content {
+			if block.Type == "tool_result" && !block.IsError {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // runToolLoop runs a tool loop of the invocation within the budget pinned on
@@ -174,10 +240,12 @@ func completedToolRoundsAfter(conversation []api.Message, anchor string) int {
 // the loop is decided to run, before its first request — where a caller
 // announces it.
 //
-// A loop whose conversation already holds a completed tool turn of this
-// node execution is not forced to call a tool first (ForceInitialToolUse):
-// the grounding that force exists for is already in view, and a model that
-// answers from it would otherwise be refused or made to call a tool again.
+// A loop whose conversation already holds a tool this node execution ran
+// is not forced to call a tool first (ForceInitialToolUse): the grounding
+// that force exists for is already in view, and a model that answers from it
+// would otherwise be refused or made to call a tool again. A turn answered
+// with an error — a call malformed, refused or unknown — grounds nothing,
+// and lifts nothing (executedToolAfter).
 //
 // Options without tools, or a ctx with no budget (a direct caller), run as
 // given.
@@ -190,7 +258,7 @@ func runToolLoop(ctx context.Context, client api.APIClient, opts GenerationOptio
 			return nil, false, nil
 		}
 		opts.MaxSteps = left
-		if charged > 0 {
+		if charged > 0 && executedToolAfter(opts.Messages, budget.anchor) {
 			opts.ForceInitialToolUse = false
 		}
 		opts.OnTurnCapture = captureToolRounds(ctx, budget.sessKey, opts.OnTurnCapture)
@@ -287,9 +355,10 @@ func carriedConversation(task delegate.Task) []api.Message {
 // without one — has already mirrored the captures it sent to the host
 // (session_capture), and the next crossing replays them.
 //
-// start is the last completed tool call of the conversation the crossing's
-// first loop starts from, as the launcher hands it over: the session replay
-// it sends, or the history the task carries. anchor is the node
+// start anchors at the last completed tool turn of the conversation the
+// crossing's first loop starts from (lastToolTurnAnchor), as the launcher
+// hands it over: the session replay it sends, or the history the task
+// carries. anchor is the node
 // execution's (delegate.Task.ToolTurnsAnchor), start itself on a first
 // crossing — the anchor the runner is handed, so it never fixes one from a
 // replay that already holds a dead crossing's turns.
@@ -307,11 +376,11 @@ func newCrossingTurns(task delegate.Task, seed sessionSeed) *crossingTurns {
 	c := &crossingTurns{captured: -1}
 	switch {
 	case len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0:
-		c.start = lastCompletedToolCall(carriedConversation(task))
+		c.start = lastToolTurnAnchor(carriedConversation(task))
 	case len(seed.replay) > 0:
 		var replay []api.Message
 		if json.Unmarshal(seed.replay, &replay) == nil {
-			c.start = lastCompletedToolCall(replay)
+			c.start = lastToolTurnAnchor(replay)
 		}
 	}
 	c.anchor = c.start
