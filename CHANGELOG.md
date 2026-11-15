@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [6.3.0](https://github.com/SocialGouv/iterion/compare/v6.2.0...v6.3.0) (2026-11-15)
+
+### Features
+
+* **connectors:** intake and pair stores, the pair machine, and an idempotent submission by key (L1b, [#3271](https://github.com/SocialGouv/iterion/issues/3271)) ([#3294](https://github.com/SocialGouv/iterion/issues/3294)) ([ca11375](https://github.com/SocialGouv/iterion/commit/ca113757300dae48ba3fafe534d8fc511419ab76)), references [#3269](https://github.com/SocialGouv/iterion/issues/3269)
+
+    <details><summary>why</summary>
+
+    L1b of #3271 (ADR-168 §6, §8). What a connector source owes once it answered a vendor, durable on every twin, and the launch property the pair machine needs from the run service.
+
+    </details>
+
 ## [6.2.0](https://github.com/SocialGouv/iterion/compare/v6.1.1...v6.2.0) (2026-11-14)
 
 ### Features
