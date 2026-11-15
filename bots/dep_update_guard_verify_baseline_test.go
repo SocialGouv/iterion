@@ -95,12 +95,16 @@ func TestDepUpdateGuardVerifyBaseline(t *testing.T) {
 		return strings.TrimSpace(string(b))
 	}
 
-	// repo builds the PR branch: base commit, then the bump commit on
-	// renovate/controller-tools — the head the run read.
-	repo := func(t *testing.T) (ws, head string) {
+	// repoIgnoring builds the PR branch: base commit, then the bump commit on
+	// renovate/controller-tools — the head the run read. gitignore is the
+	// repository's own .gitignore, committed with the base ("" for none).
+	repoIgnoring := func(t *testing.T, gitignore string) (ws, head string) {
 		t.Helper()
 		ws = t.TempDir()
 		gittest.Run(t, ws, "init", "-q")
+		if gitignore != "" {
+			write(t, ws, ".gitignore", gitignore)
+		}
 		write(t, ws, "gen/crd.yaml", "version: v0.21.0\n")
 		write(t, ws, "devbox.lock", "plugin_version: old\n")
 		write(t, ws, "Taskfile.yml", "vars:\n  CONTROLLER_GEN: v0.21.0\n")
@@ -113,6 +117,7 @@ func TestDepUpdateGuardVerifyBaseline(t *testing.T) {
 		gittest.Run(t, ws, "commit", "-q", "-am", "chore(deps): update controller-tools to v0.23.0")
 		return ws, gittest.Run(t, ws, "rev-parse", "HEAD")
 	}
+	repo := func(t *testing.T) (ws, head string) { return repoIgnoring(t, "") }
 	// align leaves what align leaves: the regenerated output and a new file,
 	// uncommitted, plus the engine's own noise — a rewritten devbox.lock and
 	// the .claude/ mirror.
@@ -197,6 +202,38 @@ func TestDepUpdateGuardVerifyBaseline(t *testing.T) {
 		if got := read(t, filepath.Join(ws, "gen/crd.yaml")); got != "version: v0.23.0" {
 			t.Errorf("the working tree changed: gen/crd.yaml reads %q", got)
 		}
+	})
+
+	// buildkit-operator#65, live on 2.12.1 (run 01a1dfbb-046c): the repository
+	// ignores .claude, and `git add` exits 1 on an exclusion whose path it
+	// already ignores ("The following paths are ignored by one of your
+	// .gitignore files"). The baseline was never built, and verify.sh read
+	// the alignment as drift again.
+	t.Run("a repository that ignores the mirror still gets its baseline", func(t *testing.T) {
+		ws, head := repoIgnoring(t, ".claude\n")
+		align(t, ws)
+		scratch := t.TempDir()
+		before := snapshot(t, ws)
+		script("version: v0.23.0", "")(t, scratch)
+
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("the alignment itself was read as drift (exit %d):\n%s", res.ExitCode, res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "VERIFY BASELINE: verify.sh ran on ") {
+			t.Errorf("the log must say the script ran on a baseline:\n%s", res.LogTail)
+		}
+		if got := read(t, filepath.Join(scratch, "seen-parent")); got != head {
+			t.Errorf("the baseline's parent is %s, want the head the run read %s", got, head)
+		}
+		tree := read(t, filepath.Join(scratch, "seen-tree"))
+		if !strings.Contains(tree, "gen/new.yaml") || strings.Contains(tree, ".claude/") {
+			t.Errorf("the baseline must carry align's new file and not the mirror:\n%s", tree)
+		}
+		if got := read(t, filepath.Join(scratch, "seen-devbox")); got != "plugin_version: old" {
+			t.Errorf("tree noise rode into the baseline: devbox.lock there reads %q", got)
+		}
+		restored(t, ws, scratch, before)
 	})
 
 	t.Run("a regeneration that departs from the alignment is still drift", func(t *testing.T) {
