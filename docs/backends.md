@@ -2377,28 +2377,32 @@ retryable:
   (the inflated default only applies when neither is set). Each retry logs
   `network connectivity issue — delegate retry k/n … (backoff …)`.
 
-On `claw`, `tool_max_steps` bounds one node execution, and every tool loop
-is charged the completed tool turns its conversation already holds. The
-backend's own stream retries, the tool-use nudge and the executor's
-in-place retries each replay the conversation the dead attempt left: the
-session store holds it, and a sandboxed crossing's captures reach the host
-as the runner sends them, so one that dies before its result has already
-left them there. Each loop is
-handed the bound minus the completed tool turns its replay holds beyond the
-conversation the node execution started from. A stream cut before a turn
-completes spends nothing. A retry that replays none of the dead attempt's
-turns gets the whole bound back, so it answers from turns it can see. A
-retry of a resumed or continued conversation replays the dead attempt's
-capture when the store holds one that extends it. A retry whose replay
-already holds the whole bound makes no loop request: a node with an output
-schema goes straight to the schema-forced recovery pass, those turns in
-view, and one without fails and says why. A route change in the fallback
-chain restarts from the last-good conversation, with the whole bound. A
-sandbox runner older than its launcher reads no seed, so each of its
-crossings runs under the whole bound; the launcher logs the skew.
-`claude_code` maps the bound to `--max-turns`, which the CLI counts per
-query: a retry that resumes the session, and the formatting pass, each run
-under the whole bound again.
+On `claw`, `tool_max_steps` bounds one node execution — from its first
+attempt until the node completes, a pause for an operator included — and
+every tool loop is charged the completed tool turns its conversation already
+holds. The backend's own stream retries, the tool-use nudge, the executor's
+in-place retries and the engine's recovery re-runs each replay the
+conversation the dead attempt left: the session store holds it, and a
+sandboxed runner captures each tool turn as it completes, so one that dies
+mid-loop has already left its turns on the host. Each loop is handed the
+bound minus the completed tool turns its replay holds after the last one of
+the conversation the node execution started from; the summary a compaction
+leaves names the turns it folded, so those count too. A stream cut before a
+turn completes spends nothing. A retry that replays none of the dead
+attempt's turns gets the whole bound back, so it answers from turns it can
+see. A retry of a resumed conversation replays the dead attempt's capture —
+the one in which the paused call is answered — and a retry of a continued
+conversation the capture that extends it. A retry whose replay already holds
+the whole bound makes no loop request: a node with an output schema goes
+straight to the schema-forced recovery pass, those turns in view, and one
+without ends as its loop ends at the bound, with the text of the last turn.
+A loop whose replay holds a tool turn of this execution is not forced to
+call a tool first. A route change in the fallback chain restarts from the
+last-good conversation, with the whole bound. A sandbox runner older than
+its launcher reads no anchor, so each of its crossings runs under the whole
+bound; the launcher logs the skew. `claude_code` maps the bound to
+`--max-turns`, which the CLI counts per query: a retry that resumes the
+session, and the formatting pass, each run under the whole bound again.
 
 Only after a provider exhausts this budget does the run fall through to the
 next entry in the `provider:` chain (above).

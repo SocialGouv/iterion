@@ -571,14 +571,16 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
-	// ToolTurnsSeed is how many completed tool turns the conversation of
-	// this node execution held when its first attempt started. The claw
-	// backend charges a loop the completed tool turns the conversation it
-	// replays holds beyond it, and hands the loop what is left of
-	// ToolMaxSteps. Nil on a first attempt: the backend fixes it from the
-	// conversation its first loop starts from and reports it in
-	// Result.ToolTurnsSeed, which an in-place retry carries back here.
-	ToolTurnsSeed *int
+	// ToolTurnsAnchor anchors this node execution's tool-step budget: the
+	// id of the last completed tool call of the conversation its first
+	// attempt started from ("" when that conversation held none). The claw
+	// backend charges a loop the completed tool turns its conversation
+	// holds after the anchor — every visible one when a compaction folded
+	// the anchor away — and hands the loop what is left of ToolMaxSteps.
+	// Nil on a first attempt: the backend fixes it from the conversation its
+	// first loop starts from and reports it in Result.ToolTurnsAnchor, which
+	// a retry of the same node execution carries back here.
+	ToolTurnsAnchor *string
 
 	// MaxTokens caps the LLM response length per call. Honored by API-based
 	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
@@ -2179,13 +2181,14 @@ type Result struct {
 	// ToolTurns is how many tool turns this invocation completed, every
 	// internal attempt included. Attempts are disjoint, so a fold sums it.
 	// Zero for a backend that does not count them. It reports; it charges
-	// nothing (Task.ToolTurnsSeed).
+	// nothing (Task.ToolTurnsAnchor).
 	ToolTurns int
 
-	// ToolTurnsSeed is the seed the invocation's tool-step budget charged
-	// against — the task's, or the one it fixed — and nil when it fixed
-	// none: what an in-place retry hands the next attempt.
-	ToolTurnsSeed *int
+	// ToolTurnsAnchor is the anchor the invocation's tool-step budget
+	// charged against — the task's, or the one it fixed — and nil when it
+	// fixed none: what a retry of the same node execution hands its next
+	// attempt.
+	ToolTurnsAnchor *string
 
 	// GatewaySpec is the invocation's catalog provenance on an
 	// OpenAI-compatible gateway route (ADR-122 §resolution): which table

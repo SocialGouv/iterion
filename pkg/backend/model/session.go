@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -183,10 +184,50 @@ type nodeSession struct {
 type nodeSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*nodeSession
+	// anchors keeps, beside a session, the tool-step anchor of the node
+	// execution that conversation belongs to (toolTurnsAnchorCarry), until
+	// the node succeeds or the session is evicted.
+	anchors map[string]string
 }
 
 func newNodeSessionStore() *nodeSessionStore {
-	return &nodeSessionStore{sessions: map[string]*nodeSession{}}
+	return &nodeSessionStore{sessions: map[string]*nodeSession{}, anchors: map[string]string{}}
+}
+
+// anchorOf is the tool-step anchor kept beside the session, nil when none.
+func (s *nodeSessionStore) anchorOf(runID, key string) *string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	anchor, ok := s.anchors[sessionKey(runID, key)]
+	if !ok {
+		return nil
+	}
+	return &anchor
+}
+
+// keepAnchor keeps anchor beside the session unless one is kept already.
+func (s *nodeSessionStore) keepAnchor(runID, key, anchor string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.anchors[sessionKey(runID, key)]; !ok {
+		s.anchors[sessionKey(runID, key)] = anchor
+	}
+}
+
+// dropAnchor drops the anchor kept beside the session.
+func (s *nodeSessionStore) dropAnchor(runID, key string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.anchors, sessionKey(runID, key))
 }
 
 func sessionKey(runID, key string) string {
@@ -279,6 +320,7 @@ func (s *nodeSessionStore) evict(runID, key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionKey(runID, key))
+	delete(s.anchors, sessionKey(runID, key))
 }
 
 // evictRun drops every session belonging to the given runID. The
@@ -295,6 +337,11 @@ func (s *nodeSessionStore) evictRun(runID string) {
 	for k := range s.sessions {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(s.sessions, k)
+		}
+	}
+	for k := range s.anchors {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.anchors, k)
 		}
 	}
 }
@@ -530,31 +577,51 @@ func applySessionMessages(ctx context.Context, sessKey string, opts GenerationOp
 // its schema retry replayed 91 stored messages followed by the 11 it was
 // resuming from.
 //
-// A retry of such a task replays the store's capture instead when it
-// extends the carried history: the conversation an earlier attempt of this
-// execution continued from it, whose tool turns the retry then sees — and is
-// charged for (claw_step_budget.go). A capture that does not extend it is
-// another conversation's, and stays out.
+// A retry of such a task replays the store's capture instead when the
+// capture continues the carried history (capturedContinues): the
+// conversation an earlier attempt of this execution went on with, whose
+// tool turns the retry then sees — and is charged for
+// (claw_step_budget.go). Any other capture is another conversation's, and
+// stays out.
 func applySessionMessagesForTask(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
 	if len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0 {
-		return continueCarriedHistory(ctx, taskSessionKey(task), opts)
+		return continueCarriedHistory(ctx, task, opts)
 	}
 	return applySessionMessages(ctx, taskSessionKey(task), opts)
 }
 
 // continueCarriedHistory replaces the carried history in opts with the
-// store's capture under sessKey when the capture strictly extends it.
-func continueCarriedHistory(ctx context.Context, sessKey string, opts GenerationOptions) GenerationOptions {
+// store's capture of the task's session when that capture continues it.
+func continueCarriedHistory(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
 	runID, store := runtimeContextFrom(ctx)
+	sessKey := taskSessionKey(task)
 	if store == nil || runID == "" || sessKey == "" {
 		return opts
 	}
 	captured := store.load(runID, sessKey)
-	if !conversationExtends(captured, opts.Messages) {
+	if !capturedContinues(ctx, task, captured, opts.Messages) {
 		return opts
 	}
 	opts.Messages = append([]api.Message(nil), captured...)
 	return opts
+}
+
+// capturedContinues reports whether captured is a conversation an earlier
+// attempt of this execution went on with from carried:
+//
+//   - for a resumed pause, one in which the paused call is answered — that
+//     call's id is the pause's own, so it holds whatever compaction folded
+//     or the loop healed (loopConversation) of the rest; the conversation
+//     the pause was taken from holds the call unanswered;
+//   - for a continued conversation, one that strictly extends it, as carried
+//     or as the loop healed it before its first request, the form a capture
+//     of it begins with.
+func capturedContinues(ctx context.Context, task delegate.Task, captured, carried []api.Message) bool {
+	if len(task.ResumeConversation) > 0 {
+		return task.ResumePendingToolUseID != "" && slices.Contains(toolTurnKeys(captured), task.ResumePendingToolUseID)
+	}
+	return conversationExtends(captured, carried) ||
+		conversationExtends(captured, loopConversation(ctx, append([]api.Message(nil), carried...)))
 }
 
 // conversationExtends reports whether longer holds every message of prefix,

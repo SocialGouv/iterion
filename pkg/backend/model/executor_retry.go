@@ -230,29 +230,56 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // transport retries the re-ask itself pays carry the reask marker, so a
 // timeline reader keys them to the re-ask's work instead of mistaking them
 // for first-attempt retries.
-func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask, carryForward...)
+func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string, backendName string, sharedSession bool, reask string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask)
 }
 
-// toolTurnsSeedCarry hands every attempt of one in-place retry loop the
-// tool-turn seed of the conversation its first attempt started from, as the
-// first attempt that reports one fixes it (delegate.Task.ToolTurnsSeed). A
-// retry replays what the dead attempt left (claw's session store holds it)
-// and is charged the turns that replay holds beyond this seed, so the seed
-// must be the first attempt's, never one a retry fixes from its own replay.
-type toolTurnsSeedCarry struct{ seed *int }
+// toolTurnsAnchorCarry hands every attempt of a node execution the anchor
+// of its tool-step budget (delegate.Task.ToolTurnsAnchor): the last
+// completed tool call of the conversation its first attempt started from,
+// as the first attempt that reports one fixes it. A retry replays what the
+// dead attempt left (claw's session store holds it) and is charged the turns
+// that replay holds after this anchor, so the anchor must be the first
+// attempt's, never one a retry fixes from its own replay.
+//
+// A carry over the run's session store (newToolTurnsAnchorCarry) keeps the
+// anchor beside the session until the node succeeds: the engine's recovery
+// re-runs a failed node through a fresh dispatch, on the session the
+// executor keeps on error, and that re-run is a retry of the same execution.
+type toolTurnsAnchorCarry struct {
+	anchor *string
+	// store, runID and key address the session the anchor is kept beside;
+	// a nil store keeps it for this carry alone.
+	store      *nodeSessionStore
+	runID, key string
+}
+
+// newToolTurnsAnchorCarry is the carry of task's session in ctx's store,
+// starting from the anchor kept beside it.
+func newToolTurnsAnchorCarry(ctx context.Context, task *delegate.Task) toolTurnsAnchorCarry {
+	runID, store := runtimeContextFrom(ctx)
+	if runID == "" {
+		store = nil
+	}
+	key := taskSessionKey(*task)
+	return toolTurnsAnchorCarry{anchor: store.anchorOf(runID, key), store: store, runID: runID, key: key}
+}
 
 // attempt is task as the next attempt runs it.
-func (c *toolTurnsSeedCarry) attempt(task delegate.Task) delegate.Task {
-	task.ToolTurnsSeed = c.seed
+func (c *toolTurnsAnchorCarry) attempt(task delegate.Task) delegate.Task {
+	task.ToolTurnsAnchor = c.anchor
 	return task
 }
 
-// observe reads the attempt that just failed.
-func (c *toolTurnsSeedCarry) observe(prev delegate.Result) {
-	if c.seed == nil {
-		c.seed = prev.ToolTurnsSeed
+// observe reads an attempt's result: the first anchor reported is the
+// execution's, kept beside the session.
+func (c *toolTurnsAnchorCarry) observe(res delegate.Result) {
+	if c.anchor != nil || res.ToolTurnsAnchor == nil {
+		return
 	}
+	anchor := *res.ToolTurnsAnchor
+	c.anchor = &anchor
+	c.store.keepAnchor(c.runID, c.key, anchor)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
@@ -1434,15 +1461,14 @@ func (e *ClawExecutor) dispatchChain(
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
-		// Scoped to the element, and never written to the CACHED task: a
-		// route change restarts from the last-good conversation
-		// (rollbackTaskSession below), and its first attempt fixes a seed of
-		// its own.
-		var turnsSeed toolTurnsSeedCarry
+		// The anchor of this element's attempts, from the one kept beside
+		// the session, and never written to the CACHED task.
+		turnsAnchor := newToolTurnsAnchorCarry(ctx, task)
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			return e.executeDelegate(ctx, backend, turnsSeed.attempt(*task))
+			res, err := e.executeDelegate(ctx, backend, turnsAnchor.attempt(*task))
+			turnsAnchor.observe(res)
+			return res, err
 		}, "", func(prev delegate.Result) {
-			turnsSeed.observe(prev)
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
 			// called from engine_run and resume only) — so the CLI session
@@ -1842,7 +1868,11 @@ func (e *ClawExecutor) snapshotTaskSession(ctx context.Context, task *delegate.T
 
 // rollbackTaskSession restores the last-good state captured before a failed
 // route. A named persistent slot therefore keeps the user's conversation while
-// partial output from the failed provider is discarded.
+// partial output from the failed provider is discarded. The tool-step anchor
+// kept beside the session stays: the conversation goes back to the state the
+// node execution's first route started from — whose last completed tool turn
+// is that anchor — or, on the engine's re-run, to the state the dead
+// execution left, which the anchor still charges.
 func (e *ClawExecutor) rollbackTaskSession(ctx context.Context, snapshot taskSessionSnapshot) {
 	runID, sessions := runtimeContextFrom(ctx)
 	if runID == "" || sessions == nil || snapshot.key == "" {

@@ -787,11 +787,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// The tool-step budget the node execution shares (claw_step_budget.go):
 	// pinned once the loop's tools are final — codemode adds its own — so the
 	// first pass, every retryLoop attempt and the tool-use nudge are each
-	// charged the turns their conversation holds beyond the seed the
-	// execution started from, carried here by an in-place retry.
+	// charged the turns their conversation holds after the anchor the
+	// execution started from, carried here by a retry of the execution.
 	var stepBudget *toolStepBudget
 	if len(opts.Tools) > 0 {
-		stepBudget = newToolStepBudget(opts.MaxSteps, task.ToolTurnsSeed)
+		stepBudget = newToolStepBudget(opts.MaxSteps, task.ToolTurnsAnchor)
+		stepBudget.sessKey = taskSessionKey(task)
 		ctx = withToolStepBudget(ctx, stepBudget)
 	}
 
@@ -838,10 +839,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// was built (ADR-161 decision 8): the delegate events' credential keys.
 	res.Credential = spend
 	// The tool turns every attempt of this invocation completed, and the
-	// seed they were charged against: an in-place retry of the executor
-	// hands the seed to its next attempt.
+	// anchor they were charged against: a retry of the execution hands the
+	// anchor to its next attempt.
 	res.ToolTurns = stepBudget.turnsRun()
-	res.ToolTurnsSeed = stepBudget.seedReport()
+	res.ToolTurnsAnchor = stepBudget.anchorReport()
 	return res, genErr
 }
 
@@ -1184,10 +1185,19 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	result, ran, err := runToolLoop(ctx, client, opts, nil)
 	if !ran {
 		// The conversation this attempt replays already holds every tool
-		// turn the bound allows beyond the node execution's start. A node
-		// without an output schema has no recovery pass to answer from, and
-		// running the loop again would spend past the bound.
-		return delegate.Result{}, fmt.Errorf("claw backend: node %q: the conversation this retry replays already holds the %d tool turns its tool_max_steps allows, and a node without an output schema has no recovery pass to answer from", task.NodeID, toolStepBudgetFrom(ctx).limit)
+		// turn the bound allows since the node execution's start: the loop
+		// would have ended there on its own, with the text of its last turn,
+		// and so does the retry — running the loop again would spend past
+		// the bound.
+		b.logger.Warn("[%s] the conversation this retry replays already holds the %d tool turns of tool_max_steps — the node ends as its loop ends at the bound, with the text of the last turn",
+			task.NodeID, toolStepBudgetFrom(ctx).limit)
+		output := map[string]any{"text": lastAssistantText(opts.Messages)}
+		return delegate.Result{
+			EffectiveModel: task.Model,
+			Output:         output,
+			Tokens:         annotateUsage(ctx, output, task.Model, Usage{}),
+			BackendName:    delegate.BackendClaw,
+		}, nil
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), result)
 	if err != nil {
@@ -1809,17 +1819,17 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// envelope — the runner stashes it, then loads it into its local store
 	// once the task arrives, so applySessionMessages prepends the replayed
 	// history to the LLM's first call. Resolved before the task envelope
-	// because the tool-step seed the task carries is read from it, and
+	// because the tool-step anchor the task carries is read from it, and
 	// before the multiplexer because the mirror in the other direction needs
 	// its outcome (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 	// The crossing's tool turns, accounted from what crosses
-	// (claw_step_budget.go): the runner is handed the node execution's seed,
-	// and every result this crossing returns from here on — a death before
-	// the result envelope included — carries that seed and the turns its
-	// captures show, so an in-place retry is charged what it replays.
+	// (claw_step_budget.go): the runner is handed the node execution's
+	// anchor, and every result this crossing returns from here on — a death
+	// before the result envelope included — carries that anchor and the
+	// turns its captures show, so a retry is charged what it replays.
 	turns := newCrossingTurns(task, seed)
-	task.ToolTurnsSeed = &turns.seed
+	task.ToolTurnsAnchor = &turns.anchor
 	defer func() { turns.stamp(&out) }()
 
 	// The task envelope is built and SIZED before anything is spawned. It is
@@ -2280,7 +2290,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// verbatim, never stamped here.
 	res := delegate.FromIOResult(ioRes)
 	// A runner that reports no tool turn while its own captures show some
-	// predates the shared tool-step bound: it reads no seed from the task,
+	// predates the shared tool-step bound: it reads no anchor from the task,
 	// so each crossing's loop runs under the node's whole bound again.
 	if res.ToolTurns == 0 && turns.counted() > 0 {
 		b.logger.Warn("[%s#%d/claw] the sandbox runner reported no tool turn while its captures show %d: it is an older iterion that does not share the node's tool_max_steps across retries — every crossing runs under the whole bound until the sandbox image is rolled",

@@ -2,6 +2,8 @@ package model
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
@@ -145,11 +147,56 @@ func validateToolPairs(messages []api.Message) error {
 // compactor. claw deliberately slices by raw message count; the sanitizer
 // restores the provider protocol invariant without growing the retained
 // window, so forced compaction still guarantees shrink under a tight budget.
+//
+// The summary also names the completed tool turns it folds
+// (foldedToolTurnsMarker), so a count of a conversation's tool turns — what
+// a tool loop is charged (claw_step_budget.go) — survives the fold.
 func compactMessagesToolSafe(messages []api.Message, cfg clawrt.CompactionConfig, allowedPending map[string]struct{}) *clawrt.CompactionResult {
 	res := clawrt.CompactMessages(messages, cfg)
 	if res == nil {
 		return nil
 	}
 	res.CompactedMessages, _ = sanitizeToolPairs(res.CompactedMessages, allowedPending, false)
+	if len(res.CompactedMessages) > 0 {
+		kept := toolTurnKeys(res.CompactedMessages)
+		var folded []string
+		for _, key := range toolTurnKeys(messages) {
+			if !slices.Contains(kept, key) {
+				folded = append(folded, key)
+			}
+		}
+		if len(folded) > 0 {
+			summary := res.CompactedMessages[0]
+			summary.Content = append(append([]api.ContentBlock(nil), summary.Content...),
+				api.ContentBlock{Type: "text", Text: foldedToolTurnsMarker + strings.Join(folded, " ") + "]"})
+			res.CompactedMessages[0] = summary
+		}
+	}
 	return res
+}
+
+// foldedToolTurnsMarker opens the text block a compaction adds to its
+// summary: the completed tool turns it folded, in order, each named by the
+// id of its last call.
+const foldedToolTurnsMarker = "[iterion: this summary folds the completed tool turns "
+
+// toolTurnKeys names the completed tool turns of a conversation, in order:
+// those a compaction summary records as folded, then each visible one — an
+// assistant message carrying tool calls, followed by the user message that
+// carries a result for one of them — by the id of its last answered call.
+func toolTurnKeys(conversation []api.Message) []string {
+	var keys []string
+	for i, message := range conversation {
+		for _, block := range message.Content {
+			if block.Type == "text" && strings.HasPrefix(block.Text, foldedToolTurnsMarker) {
+				keys = append(keys, strings.Fields(strings.TrimSuffix(strings.TrimPrefix(block.Text, foldedToolTurnsMarker), "]"))...)
+			}
+		}
+		if i+1 < len(conversation) {
+			if ids := answeredCalls(message, conversation[i+1]); len(ids) > 0 {
+				keys = append(keys, ids[len(ids)-1])
+			}
+		}
+	}
+	return keys
 }

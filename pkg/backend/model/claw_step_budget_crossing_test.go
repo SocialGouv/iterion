@@ -14,7 +14,7 @@ import (
 // The tool-step bound across a sandboxed node's crossings (#3283). The
 // launcher accounts a crossing's turns from what crossed — the captures the
 // runner mirrored to the host before it ended — and hands every crossing
-// the seed its node execution started from, so the in-container loop is
+// the anchor its node execution started from, so the in-container loop is
 // charged what it replays.
 
 // crossingScript drives two crossings from the files in $1: each records
@@ -140,12 +140,12 @@ func crossingDispatch(t *testing.T, dir, ending string, bound int) (chainOutcome
 // Crossing 1 completes 4 of 6 turns, its capture reaches the host, then the
 // runner dies before its result envelope (an OOM kill). The executor's
 // in-place retry takes crossing 2, which is replayed those 4 turns AND
-// handed the seed the node execution started from (0), so its loop is left
-// the 2 turns the bound allows. The control arm ends crossing 1 on an error
+// handed the anchor the node execution started from ("": no tool turn), so
+// its loop is left the 2 turns the bound allows. The control arm ends crossing 1 on an error
 // envelope instead: the same account either way.
 //
 // Mutants: return a death's result without the crossing's account (the
-// seed lost, crossing 2 fixes its own from the replay and runs 6 more); or
+// anchor lost, crossing 2 fixes its own from the replay and runs 6 more); or
 // count no turn from the captures (the dispatch reports 0 for the dead
 // crossing's 4).
 func TestClawStepBudget_ACrossingThatDiesKeepsItsTurnsCharged(t *testing.T) {
@@ -169,8 +169,8 @@ func TestClawStepBudget_ACrossingThatDiesKeepsItsTurnsCharged(t *testing.T) {
 			}
 
 			ioTask, replay := crossingInput(t, filepath.Join(dir, "in.2"))
-			if ioTask.ToolTurnsSeed == nil || *ioTask.ToolTurnsSeed != 0 {
-				t.Fatalf("crossing 2 carries ToolTurnsSeed %v, want the node execution's 0", ioTask.ToolTurnsSeed)
+			if ioTask.ToolTurnsAnchor == nil || *ioTask.ToolTurnsAnchor != "" {
+				t.Fatalf("crossing 2 carries ToolTurnsAnchor %v, want the node execution's \"\" (it started from no tool turn)", ioTask.ToolTurnsAnchor)
 			}
 			ran, results := runInContainer(t, ioTask, replay)
 			if total := 4 + ran; total != bound {
@@ -197,8 +197,8 @@ func TestClawStepBudget_ACrossingWithoutAResultStillReportsItsTurns(t *testing.T
 	if err == nil {
 		t.Fatal("a runner that exits 1 without a result must fail the crossing")
 	}
-	if res.ToolTurns != 3 || res.ToolTurnsSeed == nil || *res.ToolTurnsSeed != 0 {
-		t.Fatalf("result ToolTurns=%d ToolTurnsSeed=%v, want the captures' 3 and the seed 0 (err: %v)", res.ToolTurns, res.ToolTurnsSeed, err)
+	if res.ToolTurns != 3 || res.ToolTurnsAnchor == nil || *res.ToolTurnsAnchor != "" {
+		t.Fatalf("result ToolTurns=%d ToolTurnsAnchor=%v, want the captures' 3 and the anchor \"\" (err: %v)", res.ToolTurns, res.ToolTurnsAnchor, err)
 	}
 }
 
@@ -206,11 +206,6 @@ func TestClawStepBudget_ACrossingWithoutAResultStillReportsItsTurns(t *testing.T
 // reached the host (no capture). Crossing 2 replays nothing, so it is
 // charged nothing: its loop runs the bound again and answers from turns it
 // sees, instead of formatting a verdict from the bare prompt.
-//
-// Mutant: carry the turns the result envelope reports as spent and charge
-// them unread (the launcher stamps the envelope's count into the seed, the
-// loop charges the seed): crossing 2 goes straight to the recovery pass
-// with no tool result in view.
 func TestClawStepBudget_ACrossingWhoseTurnsNeverCrossedRunsTheBound(t *testing.T) {
 	t.Parallel()
 	const bound = 4
@@ -230,7 +225,7 @@ func TestClawStepBudget_ACrossingWhoseTurnsNeverCrossedRunsTheBound(t *testing.T
 	}
 }
 
-// A runner that predates the shared bound reads no seed and reports no tool
+// A runner that predates the shared bound reads no anchor and reports no tool
 // turn: the launcher names the skew when its captures show turns, and stays
 // silent when the runner reports its own.
 //

@@ -26,7 +26,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		Model:                  "anthropic/claude-sonnet-4-6",
 		HasTools:               true,
 		ToolMaxSteps:           10,
-		ToolTurnsSeed:          ptrInt(7),
+		ToolTurnsAnchor:        ptrString("tu_7"),
 		MaxTokens:              8192,
 		WorkDir:                "/workspace",
 		BaseDir:                "/workspace",
@@ -101,12 +101,12 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	if got.MaxTokens != original.MaxTokens {
 		t.Errorf("MaxTokens = %d, want %d", got.MaxTokens, original.MaxTokens)
 	}
-	// An in-place retry of a sandboxed node re-crosses with the seed its
-	// node execution started from: lost on the wire, the in-container loop
-	// takes the replayed conversation — dead turns included — for its seed
-	// and hands the loop the whole bound again.
-	if got.ToolTurnsSeed == nil || *got.ToolTurnsSeed != *original.ToolTurnsSeed {
-		t.Errorf("ToolTurnsSeed = %v, want %d — the runner would charge the replayed turns nothing", got.ToolTurnsSeed, *original.ToolTurnsSeed)
+	// A retry of a sandboxed node re-crosses with the anchor its node
+	// execution started from: lost on the wire, the in-container loop takes
+	// the replayed conversation — dead turns included — for its start and
+	// hands the loop the whole bound again.
+	if got.ToolTurnsAnchor == nil || *got.ToolTurnsAnchor != *original.ToolTurnsAnchor {
+		t.Errorf("ToolTurnsAnchor = %v, want %q — the runner would charge the replayed turns nothing", got.ToolTurnsAnchor, *original.ToolTurnsAnchor)
 	}
 	if got.Ultracode != original.Ultracode {
 		t.Errorf("Ultracode = %v, want %v", got.Ultracode, original.Ultracode)
@@ -307,14 +307,14 @@ func TestR2ParseDiagnosticCrossesSandboxApartFromAnswer(t *testing.T) {
 	}
 }
 
-func ptrInt(n int) *int { return &n }
+func ptrString(s string) *string { return &s }
 
-// A seed of zero is a seed: the node execution started from a conversation
-// holding no tool turn. It must cross as 0, never as absent — an absent
-// seed tells the runner to fix its own from the conversation it replays,
-// which on a retry already holds the dead attempt's turns.
-func TestIOTaskCarriesAZeroToolTurnsSeed(t *testing.T) {
-	data, err := json.Marshal(ToIOTask(Task{NodeID: "n", ToolMaxSteps: 4, ToolTurnsSeed: ptrInt(0)}))
+// An empty anchor is an anchor: the node execution started from a
+// conversation holding no tool turn. It must cross as "", never as absent —
+// an absent anchor tells the runner to fix its own from the conversation it
+// replays, which on a retry already holds the dead attempt's turns.
+func TestIOTaskCarriesAnEmptyToolTurnsAnchor(t *testing.T) {
+	data, err := json.Marshal(ToIOTask(Task{NodeID: "n", ToolMaxSteps: 4, ToolTurnsAnchor: ptrString("")}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,15 +322,15 @@ func TestIOTaskCarriesAZeroToolTurnsSeed(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if got := FromIOTask(decoded).ToolTurnsSeed; got == nil || *got != 0 {
-		t.Fatalf("ToolTurnsSeed = %v after the wire (%s), want 0", got, data)
+	if got := FromIOTask(decoded).ToolTurnsAnchor; got == nil || *got != "" {
+		t.Fatalf("ToolTurnsAnchor = %v after the wire (%s), want \"\"", got, data)
 	}
 	data, _ = json.Marshal(ToIOTask(Task{NodeID: "n"}))
-	var unseeded IOTask
-	if err := json.Unmarshal(data, &unseeded); err != nil {
+	var unanchored IOTask
+	if err := json.Unmarshal(data, &unanchored); err != nil {
 		t.Fatal(err)
 	}
-	if got := FromIOTask(unseeded).ToolTurnsSeed; got != nil {
-		t.Fatalf("an unseeded task crossed with ToolTurnsSeed = %d", *got)
+	if got := FromIOTask(unanchored).ToolTurnsAnchor; got != nil {
+		t.Fatalf("an unanchored task crossed with ToolTurnsAnchor = %q", *got)
 	}
 }
