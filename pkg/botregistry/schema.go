@@ -34,9 +34,10 @@ type EntryWithSchema struct {
 	Presets     *PresetsBlock `json:"presets,omitempty"`
 	SchemaError string        `json:"schema_error,omitempty"`
 
-	// InvocationWarnings flags manifest invocations whose args_var names a
-	// var the bot's workflow doesn't declare — a soft authoring mistake the
-	// studio surfaces, never a hard error. Empty when the schema couldn't
+	// InvocationWarnings flags manifest invocations whose args_var or
+	// connector vars name a var the bot's workflow doesn't declare, or whose
+	// mode no effect honours — soft authoring mistakes the studio surfaces,
+	// never a hard error. Empty when the schema couldn't
 	// be parsed (vars unknown) so a parse failure isn't reported as a
 	// missing-var warning.
 	InvocationWarnings []string `json:"invocation_warnings,omitempty"`
@@ -254,9 +255,10 @@ func ListWithSchemaDiagnostics(opts ListOptions) ([]EntryWithSchema, []Discovery
 	return out, diags, nil
 }
 
-// invocationVarWarnings flags each invocation whose ArgsVar names a var the
-// bot's workflow does not declare — a manifest authoring mistake that would
-// silently drop the trigger payload. Soft: surfaced to the studio, never
+// invocationVarWarnings flags each invocation whose ArgsVar or connector
+// vars name a var the bot's workflow does not declare — a manifest authoring
+// mistake that would silently drop the trigger payload — or whose mode no
+// effect honours (every path refuses it). Soft: surfaced to the studio, never
 // fails the list. Only called when the schema parsed cleanly, so a nil vars
 // block here means the bot genuinely declares no vars.
 func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
@@ -266,8 +268,7 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 	// Delegate to bundlelint so args_var checking has a single implementation
 	// shared with `iterion validate`. Build the minimal manifest + workflow
 	// shapes the check needs — the invocations to scan and the declared var
-	// names to resolve against — then keep only the args_var findings (the
-	// surface the studio has always shown here).
+	// names to resolve against — then keep only the invocation findings.
 	w := &ir.Workflow{Vars: map[string]*ir.Var{}}
 	if vars != nil {
 		for _, f := range vars.Fields {
@@ -277,7 +278,8 @@ func invocationVarWarnings(e Entry, vars *VarsBlock) []string {
 	m := &bundle.Manifest{Invocations: e.Invocations}
 	var warns []string
 	for _, d := range bundlelint.CheckConsistency(bundlelint.Input{Manifest: m, Workflow: w}) {
-		if d.Code == bundlelint.DiagArgsVarUnknown {
+		switch d.Code {
+		case bundlelint.DiagArgsVarUnknown, bundlelint.DiagConnectorVarUnknown, bundlelint.DiagInvocationModeUnsupported:
 			warns = append(warns, d.Message)
 		}
 	}

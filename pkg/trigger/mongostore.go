@@ -34,6 +34,9 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "repo", Value: 1}}, Options: options.Index().SetName("tenant_repo")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}}, Options: options.Index().SetName("tenant_bot")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "origin", Value: 1}}, Options: options.Index().SetName("tenant_origin")},
+		// The connector candidate query: three scalar fields (two array
+		// fields cannot share one compound index — ADR-168 §6).
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "enabled", Value: 1}, {Key: "connector_key", Value: 1}}, Options: options.Index().SetName("tenant_enabled_connector_key")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("trigger: ensure subscriptions indexes: %w", err)
@@ -42,6 +45,7 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) error {
+	sub.normalize()
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
 		return fmt.Errorf("trigger: insert subscription: %w", err)
 	}
@@ -74,6 +78,7 @@ var subscriptionHealthFields = []string{
 // the stored stamps (absent ones stay absent), as the webhooks twin keeps
 // last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
+	sub.normalize()
 	filter := storekit.VersionCAS(sub.ID, sub.Version)
 	sub.Version++
 	raw, err := bson.Marshal(sub)
@@ -222,10 +227,29 @@ func (s *MongoSubscriptionStore) ListByOrigin(ctx context.Context, tenantID, ori
 }
 
 func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) ([]Subscription, error) {
+	if ev.Source == SourceConnector {
+		key := ConnectorKey(ev.ConnectionID, ev.Kind)
+		if key == "" {
+			return nil, nil
+		}
+		poller := any(ev.PollerID)
+		if ev.PollerID == "" {
+			// An ingress intake: the subscriptions that name no poller,
+			// whose field is absent (omitempty).
+			poller = bson.M{"$in": bson.A{"", nil}}
+		}
+		return mongoutil.FindAllSorted[Subscription](ctx, s.coll, bson.M{
+			"tenant_id":     ev.TenantID,
+			"enabled":       true,
+			"connector_key": key,
+			"poller":        poller,
+		}, "_id", "trigger: list connector candidates", "trigger: decode connector candidates")
+	}
 	return s.find(ctx, bson.M{
-		"tenant_id": ev.TenantID,
-		"enabled":   true,
-		"repo":      bson.M{"$in": bson.A{ev.Repo, "", nil}},
+		"tenant_id":     ev.TenantID,
+		"enabled":       true,
+		"repo":          bson.M{"$in": bson.A{ev.Repo, "", nil}},
+		"connector_key": bson.M{"$in": bson.A{"", nil}},
 	})
 }
 

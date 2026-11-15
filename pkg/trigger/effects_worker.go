@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
@@ -70,6 +71,13 @@ func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
 func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 	err := w.applyClaimedEffect(ctx, row)
 	switch {
+	case errors.Is(err, bundle.ErrUnsupported):
+		// Permanent: retrying cannot make the mode supported. Warned and
+		// retired, never a launch.
+		w.warn("trigger: effect %s (%s) refused: %v", row.ID, row.Owner(), err)
+		if merr := w.Outbox.MarkDone(ctx, row.ID, row.ClaimID); merr != nil {
+			w.warn("trigger: effect %s done-write failed: %v", row.ID, merr)
+		}
 	case err == nil, errors.Is(err, errEffectOneShotSpent), errors.Is(err, errEffectMachineCaused):
 		if merr := w.Outbox.MarkDone(ctx, row.ID, row.ClaimID); merr != nil {
 			// The effect ran; a failed done-write means one redundant retry

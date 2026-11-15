@@ -32,6 +32,8 @@ const INVOCATION_KIND_LABELS: Record<Invocation["kind"], string> = {
   command: "Slash command",
   schedule: "Schedule",
   board: "Board event",
+  keepalive: "Keepalive",
+  connector: "Connector event",
 };
 
 function invocationKindLabel(kind: Invocation["kind"]): string {
@@ -240,6 +242,32 @@ function SuggestedInvocationRow({
           Enable
         </Button>
         {note && <span className="w-full text-caption text-warning">{note}</span>}
+      </li>
+    );
+  }
+  if (inv.kind === "keepalive") {
+    return (
+      <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
+        <Badge variant="info">{invocationKindLabel("keepalive")}</Badge>
+        <span className="min-w-0 flex-1 text-xs text-fg-default">
+          Relaunched every {inv.keepalive?.interval ?? "interval"}
+        </span>
+        <Button variant="secondary" size="sm" onClick={onEnable} disabled={busy} loading={busy}>
+          Enable
+        </Button>
+        {note && <span className="w-full text-caption text-warning">{note}</span>}
+      </li>
+    );
+  }
+  if (inv.kind === "connector") {
+    // A connector trigger listens to one connection: an operator binds it,
+    // nothing here can pick the connection — informational only.
+    return (
+      <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
+        <Badge>{invocationKindLabel("connector")}</Badge>
+        <span className="min-w-0 flex-1 text-xs text-fg-muted">
+          {inv.connector?.trigger ?? "trigger"} — bound to a connection by an operator.
+        </span>
       </li>
     );
   }

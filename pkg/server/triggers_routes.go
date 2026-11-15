@@ -241,6 +241,12 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		inv.Schedule = &schedule
 	}
 
+	// A mode no effect honours is refused typed before anything is built
+	// (bundle.ResolveMode) — the builders below derive nothing from it.
+	if _, err := inv.EffectiveMode(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	now := time.Now().UTC()
 	id := uuid.NewString()
 	var (
@@ -543,6 +549,12 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, req)
+	// A mode no effect honours (bundle.ResolveMode) never lands: every
+	// firing of such a row would be refused.
+	if _, err := sub.EffectiveMode(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// Who may pin before what may be pinned: a create that pins anything is
 	// a team admin's credential decision.
 	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {
@@ -628,6 +640,15 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := applyTriggerReq(cur, req)
+	// A mode the edit CHANGES is judged, not one it carries back: the studio
+	// builds its payload from the stored row, so a row stored with a mode no
+	// effect honours must still be pausable and mendable.
+	if next.Mode != cur.Mode || next.Invocation != cur.Invocation {
+		if _, err := next.EffectiveMode(); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	// Who may pin before what may be pinned, judged on the row the edit
 	// would store against the row it read: changing a pin, or what a pinned
 	// subscription launches, is a team admin's credential decision; pausing

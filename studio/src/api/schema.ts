@@ -8101,12 +8101,17 @@ export interface components {
         Subscription: {
             args_var?: string;
             bot_id: string;
+            connection_id?: string;
+            connector_key?: string;
             consume_labels?: boolean;
             /** Format: date-time */
             created_at: string;
             created_by?: string;
             cron?: string;
             enabled: boolean;
+            filters?: {
+                [key: string]: string[];
+            };
             guard?: string;
             guard_timeout?: string;
             guard_var?: string;
@@ -8128,8 +8133,10 @@ export interface components {
             match: components["schemas"]["Matcher"];
             max_concurrent?: number;
             mode?: string;
+            no_live_run?: string;
             origin?: string;
             overlap?: string;
+            poller?: string;
             repo?: string;
             retry_jitter?: string;
             retry_max_attempts?: number;
@@ -8141,11 +8148,16 @@ export interface components {
             };
             stale_after?: string;
             tenant_id?: string;
+            trigger_id?: string;
             /** Format: date-time */
             updated_at: string;
+            var_map?: {
+                [key: string]: string;
+            };
             vars?: {
                 [key: string]: string;
             };
+            when?: string;
         };
         SyncOutcome: {
             changes?: components["schemas"]["EntryChange"][];

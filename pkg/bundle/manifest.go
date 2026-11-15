@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -860,6 +861,10 @@ const (
 	// requires the resident in-process scheduler (host crontab floors at 1m).
 	// The bot's own supervisor: block, if any, attaches per launched run.
 	InvocationKindKeepalive InvocationKind = "keepalive"
+	// InvocationKindConnector fires on an event a connector package declares
+	// (ADR-168 §6): the manifest suggests the trigger, an operator binds it
+	// to a connection.
+	InvocationKindConnector InvocationKind = "connector"
 )
 
 var knownInvocationKinds = map[InvocationKind]bool{
@@ -868,6 +873,7 @@ var knownInvocationKinds = map[InvocationKind]bool{
 	InvocationKindSchedule:  true,
 	InvocationKindBoard:     true,
 	InvocationKindKeepalive: true,
+	InvocationKindConnector: true,
 }
 
 // KeepaliveMinInterval is the floor on a keepalive invocation's interval: a
@@ -887,12 +893,54 @@ type ExecutionMode string
 const (
 	ExecutionDirect ExecutionMode = "direct"
 	ExecutionBoard  ExecutionMode = "board"
+	// ExecutionDeliver hands the event to the bot's parked run (ADR-168 §6,
+	// #3136). Accepted by the parser so every builder can refuse it typed;
+	// nothing honours it until #3136 ships.
+	ExecutionDeliver ExecutionMode = "deliver"
 )
 
 var knownExecutionModes = map[ExecutionMode]bool{
-	"":              true,
-	ExecutionDirect: true,
-	ExecutionBoard:  true,
+	"":               true,
+	ExecutionDirect:  true,
+	ExecutionBoard:   true,
+	ExecutionDeliver: true,
+}
+
+// ErrUnsupported is the class of a kind and mode no builder or dispatcher can
+// honour: refused, typed, before any subscription is built or run launched —
+// never defaulted to a launch.
+var ErrUnsupported = errors.New("unsupported")
+
+// UnsupportedError names the refused kind and mode and the site that refused.
+type UnsupportedError struct {
+	Kind   InvocationKind
+	Mode   ExecutionMode
+	Site   string
+	Reason string
+}
+
+func (e *UnsupportedError) Error() string {
+	return fmt.Sprintf("unsupported: %s refuses kind %q in mode %q — %s", e.Site, e.Kind, e.Mode, e.Reason)
+}
+
+func (e *UnsupportedError) Is(target error) bool { return target == ErrUnsupported }
+
+// ResolveMode is the one reading of a declared mode every builder and
+// dispatcher shares: "" and direct launch, board materialises a card, and
+// deliver — or anything else — is refused typed, never defaulted to a launch.
+func ResolveMode(kind InvocationKind, mode ExecutionMode, site string) (ExecutionMode, error) {
+	switch mode {
+	case "", ExecutionDirect:
+		return ExecutionDirect, nil
+	case ExecutionBoard:
+		if kind == InvocationKindConnector {
+			return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "the board effect promotes an existing native card; turning an external event into a card is a contract of its own (ADR-168 §6)"}
+		}
+		return ExecutionBoard, nil
+	case ExecutionDeliver:
+		return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "delivering to a parked run ships with #3136"}
+	}
+	return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "not a known execution mode"}
 }
 
 // Invocation declares one way this bot can be triggered, plus the execution
@@ -922,15 +970,14 @@ type Invocation struct {
 	Schedule  *InvocationSchedule  `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	Board     *InvocationBoard     `yaml:"board,omitempty" json:"board,omitempty"`
 	Keepalive *InvocationKeepalive `yaml:"keepalive,omitempty" json:"keepalive,omitempty"`
+	Connector *InvocationConnector `yaml:"connector,omitempty" json:"connector,omitempty"`
 }
 
-// EffectiveMode returns the execution mode, defaulting an empty value to
-// ExecutionDirect (the safe, PR-bound behaviour).
-func (i Invocation) EffectiveMode() ExecutionMode {
-	if i.Mode == ExecutionBoard {
-		return ExecutionBoard
-	}
-	return ExecutionDirect
+// EffectiveMode returns the execution mode, an empty value being
+// ExecutionDirect; a mode no path honours is a typed ErrUnsupported
+// (ResolveMode), never a launch.
+func (i Invocation) EffectiveMode() (ExecutionMode, error) {
+	return ResolveMode(i.Kind, i.Mode, "invocation")
 }
 
 // InvocationForge is the payload of a kind=forge invocation.
@@ -986,6 +1033,25 @@ type InvocationSchedule struct {
 }
 
 // InvocationKeepalive is the payload of a kind=keepalive invocation.
+// InvocationConnector is the payload of a kind=connector invocation
+// (ADR-168 §6): the trigger a connector package declares, the filter values
+// the bot suggests, and its var map — a bot var to an expression over
+// `event`. The manifest suggests; an operator binds it to a connection.
+type InvocationConnector struct {
+	// Trigger is the package trigger id, `<connector>.<resource>.<verb>`.
+	Trigger string `yaml:"trigger" json:"trigger"`
+	// Filters are suggested values per filter id the trigger declares.
+	Filters map[string][]string `yaml:"filters,omitempty" json:"filters,omitempty"`
+	// Vars maps a bot var to an expression over the event.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+}
+
+var (
+	connectorTriggerRe = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9_-]*)+$`)
+	connectorFilterRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	connectorVarRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
 type InvocationKeepalive struct {
 	// Interval is how often to relaunch the bot (Go duration, e.g. "30s",
 	// "5m"). Required, must be >= KeepaliveMinInterval. Sub-minute values
@@ -1057,10 +1123,13 @@ func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
 	for idx, inv := range invs {
 		if !knownInvocationKinds[inv.Kind] {
-			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive)", idx, inv.Kind)
+			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive, connector)", idx, inv.Kind)
 		}
 		if !knownExecutionModes[inv.Mode] {
-			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct or board)", idx, inv.Mode)
+			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct, board or deliver)", idx, inv.Mode)
+		}
+		if inv.Connector != nil && inv.Kind != InvocationKindConnector {
+			return fmt.Errorf("invocations[%d]: only kind=connector takes a connector: block", idx)
 		}
 		switch inv.Kind {
 		case InvocationKindForge:
@@ -1149,6 +1218,46 @@ func validateInvocations(invs []Invocation) error {
 			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil {
 				return fmt.Errorf("invocations[%d]: kind=keepalive must not set a forge:/command:/schedule:/board: block", idx)
 			}
+		case InvocationKindConnector:
+			if err := validateConnectorInvocation(inv); err != nil {
+				return fmt.Errorf("invocations[%d]: %w", idx, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateConnectorInvocation checks a kind=connector invocation's shape. What
+// its trigger, filters and expressions mean is the package's to say, checked
+// when an operator binds it to a connection.
+func validateConnectorInvocation(inv Invocation) error {
+	c := inv.Connector
+	if c == nil {
+		return fmt.Errorf("kind=connector requires a connector: block")
+	}
+	if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil || inv.Keepalive != nil {
+		return fmt.Errorf("kind=connector must not set a forge:/command:/schedule:/board:/keepalive: block")
+	}
+	if inv.ArgsVar != "" {
+		return fmt.Errorf("kind=connector takes no args_var: its vars map names what each var reads")
+	}
+	if !connectorTriggerRe.MatchString(c.Trigger) {
+		return fmt.Errorf("connector.trigger %q is not a <connector>.<resource>.<verb> trigger id", c.Trigger)
+	}
+	for id, values := range c.Filters {
+		if !connectorFilterRe.MatchString(id) {
+			return fmt.Errorf("connector.filters: %q is not a filter id", id)
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("connector.filters.%s: no value", id)
+		}
+	}
+	for name, from := range c.Vars {
+		if !connectorVarRe.MatchString(name) {
+			return fmt.Errorf("connector.vars: %q is not a var name", name)
+		}
+		if strings.TrimSpace(from) == "" {
+			return fmt.Errorf("connector.vars.%s: empty expression", name)
 		}
 	}
 	return nil

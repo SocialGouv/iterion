@@ -124,6 +124,10 @@ invocations:
   - kind: command
     command:
       name: trig
+  - kind: board
+    mode: deliver
+    board:
+      to_states: [ready]
 `)
 	srv := New(Config{DisableAuth: true, WorkDir: workdir, TriggerStore: trigger.NewMemorySubscriptionStore()}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux
@@ -199,8 +203,8 @@ func TestTriggerFromInvocation_Board(t *testing.T) {
 	if len(sub.Match.SubjectStates) != 1 || sub.Match.SubjectStates[0] != "ready" {
 		t.Errorf("matcher states = %+v, want [ready]", sub.Match.SubjectStates)
 	}
-	if sub.EffectiveMode() != "board" {
-		t.Errorf("mode = %q, want board", sub.EffectiveMode())
+	if mode, err := sub.EffectiveMode(); err != nil || mode != "board" {
+		t.Errorf("mode = %q (%v), want board", mode, err)
 	}
 }
 
@@ -225,12 +229,78 @@ func TestTriggerFromInvocation_Rejections(t *testing.T) {
 	}
 }
 
+// An invocation whose mode no effect honours is refused typed — the answer
+// names the refusal, not a generic "cannot derive" — and stores nothing.
+func TestTriggerFromInvocation_AModeNoEffectHonoursIsRefusedTyped(t *testing.T) {
+	srv := newFromInvocationServer(t)
+	rec := postFromInvocation(t, srv, "trig-bot", `{"index":3}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported") {
+		t.Fatalf("a deliver invocation = %d %s, want 400 with the typed refusal", rec.Code, rec.Body.String())
+	}
+	if subs, _ := srv.cfg.TriggerStore.ListByTenant(context.Background(), ""); len(subs) != 0 {
+		t.Fatalf("a refused invocation stored %d rows", len(subs))
+	}
+}
+
 func TestTriggers_CreateRequiresBot(t *testing.T) {
 	srv := newTriggerTestServer(t)
 	rec := httptest.NewRecorder()
 	srv.handleCreateTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers", bytes.NewBufferString(`{"match":{}}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("create without bot_id status = %d; want 400", rec.Code)
+	}
+}
+
+// A mode no effect honours never lands through the routes — not as a new
+// row, not as an edit — while a row already holding one stays pausable.
+func TestTriggers_AModeNoEffectHonoursIsRefusedAtSave(t *testing.T) {
+	srv := newTriggerTestServer(t)
+	for _, body := range []string{
+		`{"bot_id":"b","invocation":"forge","mode":"deliver","match":{}}`,
+		`{"bot_id":"b","invocation":"forge","mode":"launch","match":{}}`,
+		`{"bot_id":"b","invocation":"connector","mode":"board","match":{}}`,
+	} {
+		rec := httptest.NewRecorder()
+		srv.handleCreateTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers", bytes.NewBufferString(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("create %s = %d, want 400; body=%s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if subs, _ := srv.cfg.TriggerStore.ListByTenant(context.Background(), ""); len(subs) != 0 {
+		t.Fatalf("a refused create stored %d rows", len(subs))
+	}
+
+	stored := trigger.Subscription{ID: "sub-1", BotID: "b", Invocation: "forge", Enabled: true}
+	if err := srv.cfg.TriggerStore.Create(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string) int {
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/triggers/sub-1", bytes.NewBufferString(body))
+		req.SetPathValue("id", "sub-1")
+		rec := httptest.NewRecorder()
+		srv.handleUpdateTrigger(rec, req)
+		return rec.Code
+	}
+	if code := put(`{"bot_id":"b","invocation":"forge","mode":"deliver","match":{}}`); code != http.StatusBadRequest {
+		t.Errorf("an edit setting mode deliver = %d, want 400", code)
+	}
+	if got, _ := srv.cfg.TriggerStore.Get(context.Background(), "sub-1"); got.Mode != "" {
+		t.Errorf("a refused edit stored mode %q", got.Mode)
+	}
+
+	// A row stored with such a mode before the refusal existed: the payload
+	// the studio sends carries it back, and pausing it must still work.
+	legacy := trigger.Subscription{ID: "sub-legacy", BotID: "b", Invocation: "forge", Mode: "launch", Enabled: true}
+	if err := srv.cfg.TriggerStore.Create(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/triggers/sub-legacy",
+		bytes.NewBufferString(`{"bot_id":"b","invocation":"forge","mode":"launch","match":{},"enabled":false}`))
+	req.SetPathValue("id", "sub-legacy")
+	rec := httptest.NewRecorder()
+	srv.handleUpdateTrigger(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pausing a row that holds a refused mode = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

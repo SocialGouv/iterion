@@ -186,8 +186,10 @@ export interface BotLaunchHints {
 /** Invocation mirrors the manifest `invocations:` entry. The payload field
  *  that applies is selected by `kind`. */
 export interface Invocation {
-  kind: "forge" | "command" | "schedule" | "board";
-  mode?: "direct" | "board";
+  kind: "forge" | "command" | "schedule" | "board" | "keepalive" | "connector";
+  /** "deliver" parses but no effect honours it before #3136: the server
+   *  refuses it typed (bundle.ResolveMode), never launches on it. */
+  mode?: "direct" | "board" | "deliver";
   args_var?: string;
   context_vars?: Record<string, string>;
   forge?: { event: string; actions?: string[] };
@@ -200,6 +202,30 @@ export interface Invocation {
   };
   schedule?: { suggested_cron?: string; default_vars?: Record<string, string> };
   board?: InvocationBoard;
+  keepalive?: InvocationKeepalive;
+  connector?: InvocationConnector;
+}
+
+/** InvocationKeepalive mirrors the manifest keepalive: block — the cadence
+ *  a resident bot is relaunched at. */
+export interface InvocationKeepalive {
+  /** Go duration, e.g. "30s", "5m". */
+  interval: string;
+  stale_after?: string;
+  default_vars?: Record<string, string>;
+}
+
+/** InvocationConnector mirrors the manifest connector: block on a
+ *  kind=connector invocation — the package trigger the bot suggests binding
+ *  (ADR-168). The operator binds it to a connection; nothing subscribes on
+ *  its own. */
+export interface InvocationConnector {
+  /** Package trigger id, `<connector>.<resource>.<verb>`. */
+  trigger: string;
+  /** Suggested values per filter id the trigger declares. */
+  filters?: Record<string, string[]>;
+  /** Bot var → expression over `event`. */
+  vars?: Record<string, string>;
 }
 
 /** InvocationBoard mirrors the manifest board: block on a kind=board

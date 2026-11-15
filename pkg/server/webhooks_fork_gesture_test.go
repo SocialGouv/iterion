@@ -555,6 +555,28 @@ func TestForkGesture_BoardModeRouteRefused(t *testing.T) {
 	}
 }
 
+// TestForkGesture_AModeNoEffectHonoursIsRefused: a stored route whose mode
+// no effect honours (deliver until #3136, or a value no build knows) is
+// refused typed — never read as direct and launched.
+func TestForkGesture_AModeNoEffectHonoursIsRefused(t *testing.T) {
+	for _, mode := range []string{"deliver", "launch"} {
+		t.Run(mode, func(t *testing.T) {
+			fx := newForkGestureFixture(t)
+			fx.cfg.CommandMap = map[string][]webhooks.CommandRoute{
+				"revi": {{BotID: "review-pr", Mode: mode, Scope: "pr"}},
+			}
+			fx.replay(t, 1400, "/revi")
+			if fx.launchedCount() != 0 {
+				t.Fatalf("a %s-mode route launched %d run(s)", mode, fx.launchedCount())
+			}
+			rowsOut, _ := fx.s.webhookDeliveries.ListByWebhook(context.Background(), "t1", fx.cfg.ID, 10)
+			if len(rowsOut) != 1 || !strings.Contains(rowsOut[0].Error, "unsupported") {
+				t.Fatalf("rows=%+v, want the typed refusal", rowsOut)
+			}
+		})
+	}
+}
+
 // TestForkGesture_BotOutOfScopeRefused: the delivery-row table's bot-scope
 // row — the default route names review-pr and the config's scope omits it,
 // so the gesture is filtered naming the bot, never launched on a bot the

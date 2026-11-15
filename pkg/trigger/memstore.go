@@ -31,6 +31,7 @@ func NewMemorySubscriptionStore() *MemorySubscriptionStore {
 }
 
 func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) error {
+	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.items[s.ID] = storekit.Snapshot(s)
@@ -48,6 +49,7 @@ func (m *MemorySubscriptionStore) Get(_ context.Context, id string) (Subscriptio
 }
 
 func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) error {
+	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.items[s.ID]
@@ -168,9 +170,23 @@ func (m *MemorySubscriptionStore) ListByOrigin(_ context.Context, tenantID, orig
 }
 
 func (m *MemorySubscriptionStore) ListCandidates(_ context.Context, ev Event) ([]Subscription, error) {
+	if ev.Source == SourceConnector {
+		key := ConnectorKey(ev.ConnectionID, ev.Kind)
+		out := m.filter(func(s Subscription) bool {
+			return s.Enabled && s.TenantID == ev.TenantID && key != "" && s.ConnectorKey == key && s.Poller == ev.PollerID
+		})
+		sortByID(out)
+		return out, nil
+	}
 	return m.filter(func(s Subscription) bool {
-		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "")
+		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "") && s.ConnectorKey == ""
 	}), nil
+}
+
+// sortByID is the stable order connector candidates are judged in (ADR-168
+// §8.2): one pair per candidate, written in an order every replica shares.
+func sortByID(subs []Subscription) {
+	sort.Slice(subs, func(i, j int) bool { return subs[i].ID < subs[j].ID })
 }
 
 func (m *MemorySubscriptionStore) filter(keep func(Subscription) bool) []Subscription {

@@ -13,12 +13,27 @@ function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // Source classifies where a trigger event originates (mirrors trigger.Source).
-export type TriggerSource = "forge" | "schedule" | "board" | "run" | "manual" | "custom";
+export type TriggerSource =
+  | "forge"
+  | "schedule"
+  | "board"
+  | "run"
+  | "manual"
+  | "custom"
+  | "connector";
 
 // InvocationKind mirrors bundle.InvocationKind.
-export type TriggerInvocation = "forge" | "command" | "schedule" | "board";
+export type TriggerInvocation =
+  | "forge"
+  | "command"
+  | "schedule"
+  | "board"
+  | "keepalive"
+  | "connector";
 
-export type TriggerMode = "direct" | "board" | "";
+// ExecutionMode mirrors bundle.ExecutionMode. "deliver" is accepted in a
+// manifest but refused by every effect until #3136 (bundle.ResolveMode).
+export type TriggerMode = "direct" | "board" | "deliver" | "";
 
 // Matcher mirrors trigger.Matcher: empty slice = match-any per dimension,
 // labels = match-all.
@@ -41,6 +56,17 @@ export interface TriggerSubscription {
   invocation: TriggerInvocation;
   mode?: TriggerMode;
   match: TriggerMatcher;
+  // Connector binding (invocation "connector", ADR-168 §6): which
+  // connection's which declared trigger the subscription listens to.
+  // connector_key is derived server-side from the two, never sent.
+  connection_id?: string;
+  trigger_id?: string;
+  connector_key?: string;
+  poller?: string;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  no_live_run?: "" | "launch" | "drop";
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
@@ -152,7 +178,7 @@ export function deleteTrigger(id: string): Promise<void> {
 // createTriggerFromInvocation is the bot home's one-click "enable this
 // trigger": POST /api/v1/bots/{name}/triggers/from-invocation derives a
 // subscription server-side from the bot's manifest invocation at `index`
-// (schedule or board kinds only). `cron` optionally overrides a schedule
+// (schedule, board or keepalive kinds). `cron` optionally overrides a schedule
 // invocation's suggested_cron. Errors surface as ApiError: 409 = a
 // bot-home subscription for that kind already exists (body carries
 // `subscription_id`), 400 = explicit reason (command/forge kinds must be

@@ -4012,6 +4012,12 @@
           "bot_id": {
             "type": "string"
           },
+          "connection_id": {
+            "type": "string"
+          },
+          "connector_key": {
+            "type": "string"
+          },
           "consume_labels": {
             "type": "boolean"
           },
@@ -4027,6 +4033,15 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "filters": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
           },
           "guard": {
             "type": "string"
@@ -4084,10 +4099,16 @@
           "mode": {
             "type": "string"
           },
+          "no_live_run": {
+            "type": "string"
+          },
           "origin": {
             "type": "string"
           },
           "overlap": {
+            "type": "string"
+          },
+          "poller": {
             "type": "string"
           },
           "repo": {
@@ -4120,15 +4141,27 @@
           "tenant_id": {
             "type": "string"
           },
+          "trigger_id": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "var_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "vars": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
+          },
+          "when": {
+            "type": "string"
           }
         },
         "required": [
