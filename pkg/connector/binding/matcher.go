@@ -110,7 +110,11 @@ func (m *Matcher) Rejudge(ctx context.Context, in intake.Intake, sub trigger.Sub
 // for what no retry changes, an error for an outage.
 func (m *Matcher) Trigger(in intake.Intake) (spec.Trigger, string, error) {
 	connector, _, _ := strings.Cut(in.TriggerID, ".")
-	pkg, _, err := m.Catalog(in.TenantID).Package(connector)
+	cat := m.Catalog(in.TenantID)
+	if cat == nil {
+		return spec.Trigger{}, "", fmt.Errorf("binding: no connector catalog for tenant %q", in.TenantID)
+	}
+	pkg, _, err := cat.Package(connector)
 	switch {
 	case connection.IsCatalogUnavailable(err):
 		return spec.Trigger{}, "", fmt.Errorf("binding: resolve connector %s: %w", connector, err)

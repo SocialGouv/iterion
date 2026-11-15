@@ -141,3 +141,12 @@ func TestAMatchStopsWithItsContext(t *testing.T) {
 		t.Fatalf("a cancelled match = %+v, %v; want the context's end", vs, err)
 	}
 }
+
+// A tenant with no catalog is an outage the worker retries, not a refusal.
+func TestAMissingCatalogIsRetried(t *testing.T) {
+	m := matcherWorld(t, nil, connectorSub("s1", "t1", "conn-a", nil))
+	m.Catalog = func(string) connection.Catalog { return nil }
+	if vs, err := m.Match(context.Background(), slackIntake("t1")); err == nil {
+		t.Fatalf("a missing catalog = %+v, want an error", vs)
+	}
+}
