@@ -74,7 +74,9 @@ func (s *MongoStore) Accept(ctx context.Context, in Intake) (Intake, bool, error
 	created := err == nil && res.UpsertedCount == 1
 	var stored Intake
 	if err := s.intakes.FindOne(ctx, bson.M{"_id": in.ID}).Decode(&stored); err != nil {
-		return Intake{}, false, fmt.Errorf("intake: read accepted %s: %w", in.ID, err)
+		// The write's verdict stands even when its read-back fails: the
+		// caller tells its own row from a twin's by it.
+		return Intake{}, created, fmt.Errorf("intake: read accepted %s: %w", in.ID, err)
 	}
 	return stored, created, nil
 }

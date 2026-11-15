@@ -215,7 +215,8 @@ type Store interface {
 	// Accept writes an intake once. The id is derived (IntakeID) and the
 	// row starts pending; a row that exists is left untouched whatever
 	// state it reached. It returns the stored row and whether this call
-	// wrote it.
+	// wrote it — the latter also with an error, when the write landed and
+	// only reading the row back failed.
 	Accept(ctx context.Context, in Intake) (Intake, bool, error)
 	GetIntake(ctx context.Context, tenantID, id string) (Intake, error)
 	// CountBacklog counts a tenant's unprocessed intakes — pending or

@@ -421,3 +421,33 @@ func TestConnectorWebhook_AFlippedConnectorStopsVouching(t *testing.T) {
 		t.Fatalf("the refusal must name the connector mismatch, got: %s", body)
 	}
 }
+
+// An outage of the connection plane is no verdict on the connector lane: 503
+// naming no internal address, no launch, no terminal delivery record — a
+// filtered answer would never be redelivered.
+func TestConnectorWebhook_AStoreOutageIsNotFiltered(t *testing.T) {
+	for name, break_ := range map[string]func(*Server){
+		"connections": func(s *Server) { s.connectionStore = failingConnections{connection.NewMemoryStore()} },
+		"catalog":     func(s *Server) { s.connectorCatalog = failingCatalog{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+			if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			got := connectorLaunches(s)
+			break_(s)
+			w := httptest.NewRecorder()
+			s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+			if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "10.42.3.17") {
+				t.Fatalf("code=%d body=%s, want 503 naming no internal address", w.Code, w.Body.String())
+			}
+			if len(*got) != 0 {
+				t.Fatalf("launches = %v", *got)
+			}
+			if list, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10); err != nil || len(list) != 0 {
+				t.Fatalf("an outage recorded %d deliveries (err %v), want none", len(list), err)
+			}
+		})
+	}
+}
