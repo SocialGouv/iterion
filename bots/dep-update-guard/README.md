@@ -48,9 +48,15 @@ escalate       (human, llm_or_human)  auto-answers a routine question, pauses fo
                                       real architectural decision → needs_decision
 verify_build   (agent, read-only)     capture the repo's real build+tests into an
                                       out-of-tree verify.sh
-verify_run     (tool, GATE)           re-runs it; the REAL exit code decides. A
+verify_run     (tool, GATE)           re-runs it; the REAL exit code decides. It runs
+                                      on a VERIFY BASELINE: a local commit of the
+                                      aligned tree, HEAD detached onto it, never
+                                      pushed, put back before it answers — so a
+                                      CI-mirrored drift gate measures the regen
+                                      against the alignment, not against HEAD. A
                                       precheck rejection (no script / a script that
-                                      runs nothing) loops back as fix_verify(2)
+                                      runs nothing / a masked exit status) loops
+                                      back as fix_verify(2)
 validate_gate  (compute, GATE)        green → delivery_probe ; red → hold_unstable
 delivery_probe (tool, GATE)           can the runtime token push what `align` wrote?
                                       HEAD..worktree plus what HEAD adds on top of

@@ -1,7 +1,29 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.12.0
+version: 2.12.1
+## 2.12.1 — an alignment that IS regenerated output can pass the gate
+## (buildkit-operator#65). Vetty verifies before it commits, so verify.sh met
+## HEAD plus the alignment uncommitted, and the drift gate the verify-build
+## skill makes it mirror from CI (git diff --exit-code, a test -z on git
+## status --porcelain) read that alignment as drift: a controller-tools pin
+## bump whose alignment is the regenerated CRDs held hold_unstable on every
+## rebase with a green build. verify_run now runs the script on a VERIFY
+## BASELINE: a local commit of the aligned tree — HEAD plus every pending path
+## but the canonical tree noise, align_probe's reading — with HEAD detached
+## onto it and the index matching it, the branch ref and the working tree
+## untouched, never pushed. Both gate forms then mean what CI means once the
+## alignment is committed. HEAD and the index are put back before the tool
+## answers, on a normal end, an exception or a SIGTERM; a SIGKILL leaves a
+## marker in the scratch dir the next verify_run restores from first, and a
+## restore that fails holds the gate red (exit 6): a commit made from a tree
+## still on the baseline would ship it. A tree with nothing pending gets no
+## baseline. The verify_build prompt says so, so the agent's own confirmation
+## run — the alignment still uncommitted there — does not scope the gate out.
+## A MASKED EXIT STATUS rejection now loops back to verify_build as
+## fix_verify, like a missing or an empty script: the build never ran, and
+## holding it as a red build reported a diagnostic `diff -u | head` as a
+## broken bump (the same PR's second hold).
 ## 2.12.0 — the gate follows a pure rebase, and the alignment's own push,
 ## with no LLM call (#3128). A new tool node, `continuity`, decides first
 ## after `prepare`: it computes the head's CHANGE IDENTITY (contract v1 —

@@ -506,6 +506,14 @@ prompt verify_user:
   in the index, so a bare diff stays red on it); the
   deterministic precheck rejects a gateless verify.sh otherwise.
 
+  The gate runs verify.sh on a VERIFY BASELINE: a local commit of the
+  aligned tree (the head plus align's uncommitted edits, never pushed),
+  HEAD detached onto it. Its drift gate therefore measures the
+  regeneration against the alignment, as CI will once the alignment is
+  committed. Your own single run (step 4) still meets the alignment
+  UNCOMMITTED, so a drift red there naming exactly the paths align
+  changed is expected: keep the gate whole, never scope those paths out.
+
   EQUALLY MANDATORY (skill section 1c): mirror CI's exact STRICTNESS —
   never stricter, never looser. Copy the CI step's invocation flags
   verbatim (prefer the repo's own umbrella target, e.g. `task check`);
@@ -1780,6 +1788,132 @@ try:
 except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
+# THE VERIFY BASELINE. The alignment is verified BEFORE it is committed --
+# commit runs only on a green verify -- so verify.sh meets HEAD plus the edits
+# align left uncommitted. A drift gate mirrored from CI (git diff --exit-code,
+# a test -z on git status --porcelain) compares against HEAD and reads that
+# alignment as drift: a bump whose alignment IS regenerated output -- a
+# generator pin rewriting the committed CRDs (buildkit-operator#65) -- could
+# never pass. The script therefore runs on a baseline: a local commit of the
+# aligned tree, HEAD plus every pending path but the canonical tree noise (what
+# align_probe reads as pending), with HEAD detached onto it and the index
+# matching it. The branch ref and the working tree are never touched and the
+# baseline is never pushed. Both gate forms then mean what they mean in CI:
+# the regeneration reproduces the tree about to be committed. HEAD and the
+# index are put back before this tool answers -- on a normal end, an
+# exception or a SIGTERM -- and a kill that leaves no chance to do so leaves
+# the marker the next call restores from first. A restore that fails holds
+# the gate red: a commit made from a tree still on the baseline would ship it.
+import atexit, shutil, signal
+_drop = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+         'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+         'GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS',
+         'GIT_ICASE_PATHSPECS')
+genv = dict((k, v) for k, v in os.environ.items() if k not in _drop)
+mark = os.path.join(scratch, 'verify-baseline.json')
+def bgit(args, env=None):
+    try:
+        return subprocess.run(['git', '-C', ws] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300, env=env or genv)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(args, 1, '', str(e))
+def drop_file(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+def baseline_restore():
+    # Idempotent: no marker, nothing to put back. The marker stays when a
+    # step fails, so a later call tries again rather than forgetting.
+    try:
+        with open(mark, encoding='utf-8') as f:
+            m = json.load(f)
+        ref, head, index, saved = m['ref'], m['head'], m['index'], m['saved']
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        if not os.path.exists(mark):
+            return ''
+        return 'VERIFY BASELINE NOT RESTORED: unreadable marker ' + mark + ': ' + str(e)
+    errs = []
+    if ref:
+        p = bgit(['symbolic-ref', 'HEAD', ref])
+    else:
+        p = bgit(['update-ref', '--no-deref', 'HEAD', head])
+    if p.returncode != 0:
+        errs.append('HEAD: ' + (p.stderr or '').strip()[:200])
+    try:
+        shutil.copyfile(saved, index + '.vetty-restore')
+        os.replace(index + '.vetty-restore', index)
+    except OSError as e:
+        errs.append('index: ' + str(e))
+    if errs:
+        return 'VERIFY BASELINE NOT RESTORED: ' + '; '.join(errs)
+    drop_file(saved)
+    drop_file(mark)
+    return ''
+def baseline_build():
+    # Returns (sha, '') on a baseline, ('', '') when there is nothing to
+    # baseline -- no repository, no commit yet, no pending path -- and
+    # ('', reason) when one was needed and could not be built.
+    p = bgit(['rev-parse', '--verify', '-q', 'HEAD'])
+    if p.returncode != 0:
+        return '', ''
+    head = p.stdout.strip()
+    ref = bgit(['symbolic-ref', '-q', 'HEAD']).stdout.strip()
+    p = bgit(['rev-parse', '--git-path', 'index'])
+    if p.returncode != 0:
+        return '', 'git rev-parse --git-path index exited ' + str(p.returncode)
+    index = p.stdout.strip()
+    if not os.path.isabs(index):
+        index = os.path.join(ws, index)
+    if not os.path.isfile(index):
+        return '', 'no index file at ' + index
+    tmpidx = os.path.join(scratch, 'verify-baseline.tmpindex')
+    drop_file(tmpidx)
+    tenv = dict(genv)
+    tenv['GIT_INDEX_FILE'] = tmpidx
+    try:
+        for args in (['read-tree', head], ['add', '-A', '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split(), ['write-tree']):
+            p = bgit(args, tenv)
+            if p.returncode != 0:
+                return '', 'git ' + args[0] + ' exited ' + str(p.returncode) + ': ' + (p.stderr or '').strip()[:300]
+    finally:
+        drop_file(tmpidx)
+    tree = p.stdout.strip()
+    if tree == bgit(['rev-parse', head + ':']).stdout.strip():
+        return '', ''
+    cenv = dict(genv)
+    for k in ('GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME'):
+        cenv[k] = 'iterion verify baseline'
+    for k in ('GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_EMAIL'):
+        cenv[k] = 'verify-baseline@iterion.invalid'
+    # A local object nobody pushes: no hook runs, and no signature is asked
+    # of a runner that holds no key.
+    p = bgit(['-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', head, '-m', 'verify baseline: the aligned tree, local, never pushed'], cenv)
+    if p.returncode != 0:
+        return '', 'git commit-tree exited ' + str(p.returncode) + ': ' + (p.stderr or '').strip()[:300]
+    sha = p.stdout.strip()
+    saved = os.path.join(scratch, 'verify-baseline.index')
+    try:
+        shutil.copyfile(index, saved)
+        with open(mark, 'w', encoding='utf-8') as f:
+            json.dump({'ref': ref, 'head': head, 'index': index, 'saved': saved}, f)
+    except OSError as e:
+        drop_file(saved)
+        drop_file(mark)
+        return '', 'the index could not be saved: ' + str(e)
+    for args in (['update-ref', '--no-deref', '-m', 'verify baseline', 'HEAD', sha], ['reset', '-q']):
+        p = bgit(args)
+        if p.returncode != 0:
+            undone = baseline_restore()
+            return '', 'git ' + args[0] + ' exited ' + str(p.returncode) + ': ' + (p.stderr or '').strip()[:300] + ((' -- ' + undone) if undone else '')
+    return sha, ''
+def on_term(signum, frame):
+    raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, on_term)
+atexit.register(baseline_restore)
+stale = baseline_restore()
+if stale:
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 6, 'precheck_rejected': False, 'precheck_reason': '', 'log_tail': stale + ' -- a previous verify was cut short on its baseline and this tree cannot be put back; nothing may be committed from it.'}))
+    raise SystemExit(0)
 # No script is an AUTHORSHIP defect, not a red build: the agent skipped a step
 # rather than proved a failure. It loops back with that said, because otherwise
 # a bump whose alignment is legitimately empty -- a base-image digest refresh,
@@ -1963,7 +2097,11 @@ def tree_state():
 # success -- the one defect a GREEN verify can never reveal, which is why it is
 # caught before the script runs. The script is moved aside rather than left in
 # place: verify_probe would otherwise call it fresh and the loop would re-run
-# the same lie every pass.
+# the same lie every pass. Like a missing or an empty script it is an
+# AUTHORSHIP defect -- the build never ran -- so it loops back to verify_build
+# with the offending lines rather than holding the bump as a red build
+# (buildkit-operator#65: a diagnostic  diff -u | head  held a bump whose build
+# was green).
 try:
     script_src = open(script, encoding='utf-8', errors='replace').read()
 except OSError:
@@ -1975,8 +2113,10 @@ if masked:
         os.replace(script, rejected)
     except OSError:
         rejected = script
-    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 5, 'log_tail': 'MASKED EXIT STATUS: ' + str(len(masked)) + ' line(s) of ' + script + ' pipe a gating command into an output filter, so the pipeline reports the FILTER and a failed check reads as success (pipefail is not POSIX -- this runs under /bin/sh). Capture the status FIRST and filter the log after: <cmd> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; } -- or append  ' + chr(124) + chr(124) + ' true  to a pipeline that is deliberately not a gate. The script was moved to ' + rejected + ' and is regenerated next pass. Offending lines:' + chr(10) + chr(10).join(masked[:20])}))
+    _m = 'MASKED EXIT STATUS: ' + str(len(masked)) + ' line(s) of ' + script + ' pipe a gating command into an output filter, so the pipeline reports the FILTER and a failed check reads as success (pipefail is not POSIX -- this runs under /bin/sh). Capture the status FIRST and filter the log after: <cmd> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; } -- or append  ' + chr(124) + chr(124) + ' true  to a pipeline that is deliberately not a gate. The script was moved to ' + rejected + ': move it back to ' + script + ' and amend only these lines. Offending lines:' + chr(10) + chr(10).join(masked[:20])
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 5, 'precheck_rejected': True, 'precheck_reason': _m, 'log_tail': _m}))
     raise SystemExit(0)
+baseline_sha, baseline_err = baseline_build()
 pre = tree_state()
 rc = 0
 out = ''
@@ -2091,6 +2231,14 @@ if rc == 0:
             if fresh:
                 rc = 4
                 out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+if baseline_sha:
+    out = out + chr(10) + 'VERIFY BASELINE: verify.sh ran on ' + baseline_sha[:12] + ', a local commit of the aligned tree (never pushed), so its drift gate measured the regeneration against the alignment.'
+elif baseline_err:
+    out = out + chr(10) + 'VERIFY BASELINE NOT BUILT: ' + baseline_err + ' -- verify.sh ran on the uncommitted alignment, where a drift gate reads that alignment as drift.'
+restored = baseline_restore()
+if restored:
+    rc = 6
+    out = out + chr(10) + restored + ' -- HEAD or the index may still sit on the local verify baseline, so nothing may be committed from this tree.'
 if rc == 0:
     # A NOT COVERED line is printed FIRST in verify.sh, off the exit path: a
     # green run carries it into the log tail, wherever the bot reports it.
