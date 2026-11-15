@@ -139,6 +139,11 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
+	// launchOverrides are the launch's OWN rows among modelOverrides, before
+	// the routing policy's cells folded in; nil when the path that built the
+	// executor did not say. They only tell a reader which of the two layers
+	// asked for an effort (requestedEffort): resolution reads modelOverrides.
+	launchOverrides *ModelOverrides
 	// rerouteWarned dedupes the gateway auto-selection redirect warn
 	// (gatewayCapableDetection): the seams ask resolveBackendName several
 	// times for one node, and one redirect is one fact. Guarded because
@@ -725,6 +730,16 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides names, among the overrides WithModelOverrides set,
+// the rows the launch itself carried — the folded list mixes them with the
+// routing policy's cells and cannot say which wrote what. The executor reads
+// them to name who asked for a node's effort (EffortSourceLaunch or
+// EffortSourceCell); an executor built without them names the folded list
+// (EffortSourceOverride). Empty rows are a statement: the launch carried none.
+func WithLaunchModelOverrides(o ModelOverrides) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.launchOverrides = &o }
+}
+
 // ModelOverrides returns the launch-time overrides this executor applies.
 //
 // Read-only, and exported for the paths that REBUILD an executor for an
@@ -732,6 +747,17 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 // dropped the operator's model choice once; being able to assert it survived
 // is what keeps that from coming back.
 func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides }
+
+// LaunchModelOverrides returns the launch's own rows this executor was told
+// of (WithLaunchModelOverrides), and whether it was told. Read-only, for the
+// same assertion ModelOverrides serves: a path that builds an executor
+// without them reports every override effort as the run's overrides.
+func (e *ClawExecutor) LaunchModelOverrides() (ModelOverrides, bool) {
+	if e.launchOverrides == nil {
+		return ModelOverrides{}, false
+	}
+	return *e.launchOverrides, true
+}
 
 // WithAllowedProviders sets the run's provider allowlist (ADR-129 §5) the
 // dispatch enforces: a chain element whose resolved provider is outside it

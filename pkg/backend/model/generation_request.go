@@ -370,6 +370,17 @@ func toolCallsFromBlocks(toolUses []toolUseBlock) []ToolCall {
 	return calls
 }
 
+// wireReasoningEffort is the reasoning effort req carries on the wire
+// through client: the client's own answer when it states one (api.EffortWire
+// — an Anthropic Messages client drops a level the model does not take), the
+// level as named otherwise.
+func wireReasoningEffort(client api.APIClient, req api.CreateMessageRequest) string {
+	if w, ok := client.(api.EffortWire); ok {
+		return w.WireReasoningEffort(req.Model, req.ReasoningEffort)
+	}
+	return req.ReasoningEffort
+}
+
 // fireOnRequest calls the OnRequest hook if set.
 func fireOnRequest(opts GenerationOptions, messageCount int) {
 	if opts.OnRequest != nil {
@@ -465,6 +476,7 @@ func callAndAggregate(
 		streamIdle.Idle = coldTimeout
 	}
 	agg.maxTokens = req.MaxTokens
+	agg.effort = wireReasoningEffort(client, req)
 	adoptGatewayReasoning(&agg, capture)
 	markBudgetCut(&agg, req.MaxTokens, capture.FinishReason())
 	latency := time.Since(start)

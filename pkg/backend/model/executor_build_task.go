@@ -286,11 +286,13 @@ func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
 // per-node model label and context-usage gauge. A gateway route's catalog
 // provenance is re-stamped from Result.GatewaySpec as `_gateway_spec` —
 // harness-recorded like the counters, so it survives the wipe a
-// model-written key of the same name does not (#2786). The effort the call
-// ran at lands as `_reasoning_effort_applied`, who decided it as
-// `_reasoning_effort_source`, and the level asked for, when the route
-// replaced it, as `_reasoning_effort_requested` (Result.ReasoningEffort):
-// a report reads what the run used instead of the dial it was set from.
+// model-written key of the same name does not (#2786). The effort the
+// call's model request carried lands as `_reasoning_effort_applied`, who
+// decided it as `_reasoning_effort_source`, the level asked for, when the
+// route or the backend replaced it, as `_reasoning_effort_requested`, and a
+// lower level a later request of the call carried as
+// `_reasoning_effort_lowered` (Result.ReasoningEffort): a report reads what
+// the run used instead of the dial it was set from.
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
@@ -355,13 +357,14 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if len(result.GatewaySpec) > 0 {
 		output["_gateway_spec"] = result.GatewaySpec
 	}
-	if result.ReasoningEffort != "" {
-		output[OutputReasoningEffortApplied] = result.ReasoningEffort
-		if result.ReasoningEffortSource != "" {
-			output[OutputReasoningEffortSource] = result.ReasoningEffortSource
-		}
-		if result.ReasoningEffortRequested != "" {
-			output[OutputReasoningEffortRequested] = result.ReasoningEffortRequested
+	for key, value := range map[string]string{
+		OutputReasoningEffortApplied:   result.ReasoningEffort,
+		OutputReasoningEffortSource:    result.ReasoningEffortSource,
+		OutputReasoningEffortRequested: result.ReasoningEffortRequested,
+		OutputReasoningEffortLowered:   result.ReasoningEffortLowered,
+	} {
+		if value != "" {
+			output[key] = value
 		}
 	}
 }
@@ -374,6 +377,7 @@ const (
 	OutputReasoningEffortApplied   = "_reasoning_effort_applied"
 	OutputReasoningEffortSource    = "_reasoning_effort_source"
 	OutputReasoningEffortRequested = "_reasoning_effort_requested"
+	OutputReasoningEffortLowered   = "_reasoning_effort_lowered"
 )
 
 // meteredFailureOutput renders what a FAILED delegation spent, in the shape
@@ -1814,6 +1818,10 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if mcpForwardingBackends[backendName] && len(f.activeMCPServers) > 0 && e.mcpManager != nil {
 		task.MCPServers = e.resolveTaskMCPServers(f.activeMCPServers)
 	}
+	// A node that opted out of the ambient set holds every backend to its
+	// declared set, the servers a CLI loads from its own configuration
+	// included (delegate.Task.MCPInheritDisabled).
+	task.MCPInheritDisabled = !nodeInheritsAmbientMCP(node)
 
 	e.unpackInboundSession(ctx, input, backendName)
 	e.applySessionContinuity(&task, f, input)
@@ -1871,6 +1879,19 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// beside this one.
 	e.reportMCPDegrades(f.id, degraded)
 	return task, nil
+}
+
+// nodeInheritsAmbientMCP reports whether node takes the workflow's ambient
+// MCP set: its `mcp: inherit:` unset or true, mcp.PrepareWorkflow's reading.
+func nodeInheritsAmbientMCP(node ir.Node) bool {
+	var cfg *ir.MCPConfig
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		cfg = n.MCP
+	case *ir.JudgeNode:
+		cfg = n.MCP
+	}
+	return cfg == nil || cfg.Inherit == nil || *cfg.Inherit
 }
 
 // mcpForwardingBackends are the backends that consume Task.MCPServers — the

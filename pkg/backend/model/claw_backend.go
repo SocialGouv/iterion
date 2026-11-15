@@ -647,6 +647,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 
 	// Observability hooks.
 	applyHooks(task.NodeID, task.Iteration, b.hooks, &opts)
+	// The effort each model request of the call carried on the wire
+	// (StepResult.ReasoningEffort), folded into the Result on every exit:
+	// the node's record names what reached the model — after the model's
+	// matrix, the client's own rule, a reduced-effort re-ask or recovery —
+	// not only what the executor handed this backend.
+	efforts := &wireEffortTrail{}
+	opts.OnStepFinish = efforts.observe(opts.OnStepFinish)
+	defer func() { efforts.fold(&result) }()
 
 	// In-process lifecycle hooks (audit, safety, compaction
 	// observability). Nil-safe at call sites in generation.go.
@@ -1086,6 +1094,38 @@ func clawCostEstimate(modelSpec string, inputTokens, outputTokens int) float64 {
 // A child that burned tokens on a model with no known price contributes its
 // tokens and no cost, exactly as an unpriced node does (cost.EstimateUSD
 // returns 0, which the budget reads as unpriced spend, never as free).
+// wireEffortTrail records, in order, the effort each model request of one
+// claw call carried (StepResult.ReasoningEffort).
+type wireEffortTrail struct {
+	mu      sync.Mutex
+	efforts []string
+}
+
+// observe wraps a step hook so every finished step is recorded first.
+func (t *wireEffortTrail) observe(next func(StepResult)) func(StepResult) {
+	return func(step StepResult) {
+		t.mu.Lock()
+		t.efforts = append(t.efforts, step.ReasoningEffort)
+		t.mu.Unlock()
+		if next != nil {
+			next(step)
+		}
+	}
+}
+
+// fold reports the first and the last recorded effort on result
+// (Result.WireReasoningEffort); a call that finished no step reports none.
+func (t *wireEffortTrail) fold(result *delegate.Result) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.efforts) == 0 {
+		return
+	}
+	result.WireReasoningEffort = t.efforts[0]
+	result.WireReasoningEffortLast = t.efforts[len(t.efforts)-1]
+	result.WireReasoningEffortReported = true
+}
+
 func subagentSpendFold(result *delegate.Result, nodeModel string, spend *SubagentSpend) {
 	usage, costUSD := spend.Total()
 	spent := usage.InputTokens + usage.OutputTokens

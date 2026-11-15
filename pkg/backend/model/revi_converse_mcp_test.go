@@ -41,13 +41,19 @@ const converseMCPServer = "webprobe"
 // silent fixture (a plugin that did not load, a server that did not answer)
 // cannot pass for an opted-out node.
 //
+// The deployment lifts claude_code's --strict-mcp-config for every node
+// (ITERION_CLAUDE_CODE_STRICT_MCP=0): the opted-out node keeps it on every
+// spawn, so the CLI's own scopes add no server either; the control loses it.
+//
 // Mutation that reddens it: drop `mcp: inherit: false` from converse_agent
-// in bots/revi-converse/main.bot.
+// in bots/revi-converse/main.bot; drop the MCPInheritDisabled arm of
+// claudeSpawnBounds.
 func TestReviConverseAgentInheritsNoAmbientMCPServer(t *testing.T) {
 	peer := converseMCPPeer(t)
 	home := t.TempDir()
 	t.Setenv("ITERION_HOME", home)
 	t.Setenv(mcp.EnvAutoLoad, "")
+	t.Setenv("ITERION_CLAUDE_CODE_STRICT_MCP", "0")
 	plugin := filepath.Join(home, "plugins", "webprobe")
 	if err := os.MkdirAll(plugin, 0o755); err != nil {
 		t.Fatal(err)
@@ -100,16 +106,27 @@ func TestReviConverseAgentInheritsNoAmbientMCPServer(t *testing.T) {
 				t.Fatalf("control: claw tool definitions %v lack the inherited server's tool", clawTools)
 			}
 
-			catalogs := converseClaudeCodeMCPCatalogs(t, wf, node, ws, manager)
-			if len(catalogs) == 0 {
+			spawns := converseClaudeCodeMCPCatalogs(t, wf, node, ws, manager)
+			if len(spawns) == 0 {
 				t.Fatal("the stand-in CLI was never spawned")
 			}
-			named := false
-			for _, catalog := range catalogs {
+			named, strict := false, 0
+			for _, spawn := range spawns {
+				flag, catalog, _ := strings.Cut(spawn, " ")
+				if flag == "strict" {
+					strict++
+				}
 				if strings.Contains(catalog, `"`+converseMCPServer+`"`) {
 					named = true
 				}
 			}
+			if tc.shipped && strict != len(spawns) {
+				t.Errorf("%d of %d claude_code spawn(s) carry --strict-mcp-config under ITERION_CLAUDE_CODE_STRICT_MCP=0: %q", strict, len(spawns), spawns)
+			}
+			if !tc.shipped && strict != 0 {
+				t.Fatalf("control: the escape hatch did not lift --strict-mcp-config (%d spawn(s)) — the fixture proves nothing", strict)
+			}
+			catalogs := spawns
 			if tc.shipped && named {
 				t.Errorf("a claude_code spawn's --mcp-config names %q: %q", converseMCPServer, catalogs)
 			}
@@ -197,14 +214,16 @@ func converseClawToolNames(t *testing.T, wf *ir.Workflow, node *ir.AgentNode, ws
 	return names
 }
 
-// converseStandInCLI records, per spawn, the MCP catalog its --mcp-config
-// names: the file's content when the flag names a file (a host spawn moves
-// the inline document into one), the value itself otherwise, and an empty
-// line for a spawn carrying no such flag. It answers the minimum stream-json
-// the SDK needs to end a turn, once it has read the user message.
+// converseStandInCLI records, per spawn, whether --strict-mcp-config was
+// passed ("strict" or "loose") and the MCP catalog its --mcp-config names:
+// the file's content when the flag names a file (a host spawn moves the
+// inline document into one), the value itself otherwise, nothing for a spawn
+// carrying no such flag. It answers the minimum stream-json the SDK needs to
+// end a turn, once it has read the user message.
 const converseStandInCLI = `#!/bin/sh
-catalog=; prev=
-for a in "$@"; do if [ "$prev" = --mcp-config ]; then catalog=$a; fi; prev=$a; done
+catalog=; prev=; strict=loose
+for a in "$@"; do if [ "$prev" = --mcp-config ]; then catalog=$a; fi; if [ "$a" = --strict-mcp-config ]; then strict=strict; fi; prev=$a; done
+printf '%s ' "$strict" >> "$CATALOG_LOG"
 if [ -n "$catalog" ] && [ -f "$catalog" ]; then tr '\n' ' ' < "$catalog" >> "$CATALOG_LOG"; else printf '%s' "$catalog" | tr '\n' ' ' >> "$CATALOG_LOG"; fi
 printf '\n' >> "$CATALOG_LOG"
 case "$*" in *--input-format*)
@@ -216,7 +235,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":""
 
 // converseClaudeCodeMCPCatalogs builds the node's claude_code task through
 // the executor and runs it on the REAL claude_code backend against the
-// stand-in CLI, returning the MCP catalog each spawn was handed.
+// stand-in CLI, returning per spawn its strictness and the MCP catalog it was
+// handed ("strict <catalog>" or "loose <catalog>").
 func converseClaudeCodeMCPCatalogs(t *testing.T, wf *ir.Workflow, node *ir.AgentNode, ws string, manager *mcp.Manager) []string {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())

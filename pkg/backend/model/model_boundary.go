@@ -44,19 +44,33 @@ func (e *ClawExecutor) executeDelegate(ctx context.Context, backend delegate.Bac
 	return res, err
 }
 
-// recordReasoningEffort writes on res the effort the call was handed
-// (delegate.Result.ReasoningEffort): applied, with the request's provenance
-// when the route sent the level as asked, and with the accepted-efforts
-// list's source plus the requested level when the route replaced it.
-func recordReasoningEffort(res *delegate.Result, requestedSource, requested, applied, mappedBy string) {
-	res.ReasoningEffort, res.ReasoningEffortSource, res.ReasoningEffortRequested = applied, "", ""
-	switch {
-	case applied == "":
-	case mappedBy != "":
-		res.ReasoningEffortSource, res.ReasoningEffortRequested = mappedBy, requested
-	default:
-		res.ReasoningEffortSource = requestedSource
+// recordReasoningEffort writes on res the effort the call's model request
+// carried, and who decided it (delegate.Result.ReasoningEffort). The level
+// is the backend's report when it gave one (Result.WireReasoningEffort), the
+// level the executor handed it otherwise; the source is the request's
+// provenance when the level went out as asked, the accepted-efforts list's
+// when the route replaced it, EffortSourceBackend when the backend sent
+// another level, none, or its own default — the latter two with the level
+// asked for. A last request lower than the first is the lowered level.
+func recordReasoningEffort(res *delegate.Result, requestedSource, requested, handed, mappedBy string) {
+	applied, source, asked := handed, requestedSource, ""
+	if mappedBy != "" {
+		source, asked = mappedBy, requested
 	}
+	lowered := ""
+	if res.WireReasoningEffortReported {
+		if res.WireReasoningEffort != handed {
+			applied, source, asked = res.WireReasoningEffort, EffortSourceBackend, requested
+		}
+		if last := res.WireReasoningEffortLast; last != "" && last != applied {
+			lowered = last
+		}
+	}
+	if applied == "" && asked == "" {
+		source = ""
+	}
+	res.ReasoningEffort, res.ReasoningEffortSource = applied, source
+	res.ReasoningEffortRequested, res.ReasoningEffortLowered = asked, lowered
 }
 
 // generationForModel is the boundary of the executor's DIRECT model calls —

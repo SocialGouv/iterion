@@ -3486,6 +3486,25 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	return exec, usage, nil
 }
 
+// launchOverridesFor is the launch's own rows among the overrides msg's run
+// executes with (runview.LaunchOverridesOfRun), read off the run's document.
+// A subbot child's executor is built before its engine creates the child's
+// document: its parent's document records the tree's root rows the child's
+// fold read. nil when neither document answers — the executor then names the
+// folded overrides as the source of an effort they set.
+func (r *Runner) launchOverridesFor(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) *model.ModelOverrides {
+	run, err := r.cfg.Store.LoadRun(ctx, msg.RunID)
+	if err != nil && msg.ParentRunID != "" {
+		run, err = r.cfg.Store.LoadRun(ctx, msg.ParentRunID)
+	}
+	if err != nil {
+		logger.Warn("runner: run %s: its document does not say which override rows the launch carried (%v) — a node effort they set is reported as the run's overrides", msg.RunID, err)
+		return nil
+	}
+	o := runview.LaunchOverridesOfRun(run)
+	return &o
+}
+
 // executorSpec assembles the pod's ExecutorSpec. Split from
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
@@ -3559,7 +3578,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// advertises the model the operator picked — see
 		// queue.RunMessage.ModelOverrides.
 		ModelOverrides: runview.ModelOverridesFromRun(modelOverridesFromWire(msg.ModelOverrides)),
-		MemoryStore:    r.cfg.MemoryStore,
+		// Which of those rows the launch itself carried, read off the run's
+		// document: what lets the executor tell a routing cell's effort from
+		// the launch's own.
+		LaunchModelOverrides: r.launchOverridesFor(ctx, msg, logger),
+		MemoryStore:          r.cfg.MemoryStore,
 		// The operator's subscription ceiling, published to the shared
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.

@@ -68,6 +68,7 @@ var serialFamily = map[string]string{
 	"gateway_feed_test.go":              "Setenv",
 	"feed_effort_test.go":               "Setenv",
 	"effort_provenance_test.go":         "Setenv",
+	"effort_wire_report_test.go":        "Setenv",
 	"hooks_usage_progress_feed_test.go": "via unsetGatewayTables() in feed_effort_test.go",
 	"adverse_schema_test.go":            "Setenv",
 	"correction_budget_warning_test.go": "Setenv",

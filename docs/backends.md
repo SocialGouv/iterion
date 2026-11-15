@@ -2084,12 +2084,22 @@ that listed the efforts) and `reason` — and a warning. The requested effort
 itself is the node's `reasoning_effort:`, an edge mapping, the launch
 override or a routing cell's `effort`; accepted efforts are a fact of the
 gateway, seated at the platform, org and team levels only. The node's output
-records what the call ran at, on every backend: `_reasoning_effort_applied`
-(the level handed to the backend), `_reasoning_effort_source` (`override` for
-a routing cell or a launch override, `node`, `edge`, or the list's source when
-the mapping replaced the level) and, only then, `_reasoning_effort_requested`
-— so a report prints the effort the run used rather than a dial
-(`bots/review-pr`'s run table). Gateway routes
+records what the call sent: `_reasoning_effort_applied` is the level the first
+model request carried — the claw backend reports it from its requests, after
+the model's accepted set and the client's own rule (an Anthropic Messages
+client sends no effort for a model outside its matrix; bedrock and vertex
+send none), claude_code reports the level it hands the CLI, its default
+included, and for the other backends it is the level the executor handed
+them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
+cell), `launch` (the launch's own row), `override` (either, when the executor
+was not told which rows the launch carried), `node`, `dial:<VAR>` (an operator
+set the node's `${VAR:-default}`), `edge`, the list's source when the mapping
+replaced the level, or `backend` when the backend sent another level, none or
+its default. `_reasoning_effort_requested` is the level asked for, written only
+when the mapping or the backend replaced it, and `_reasoning_effort_lowered`
+the lower level of a later request — a claw re-ask after a cut turn or its
+recovery pass — whose answer the output is. A report prints the effort the run
+used rather than a dial (`bots/review-pr`'s run table). Gateway routes
 run on `claw` alone (C186 above): a CLI backend refuses a gateway route at
 dispatch, so it never reaches this mapping.
 
@@ -2468,8 +2478,9 @@ ask_user/board servers. The operator's personal user-scope servers
 undeclared tools reaching the agent, an `npx`/server boot per node visit
 (a CPU spike per iteration on loop-heavy bots), and personal API keys on the
 subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
-restores host-config inheritance. Settings remain inherited independently
-(`--setting-sources`, above).
+restores host-config inheritance; it does not reach a node whose `mcp:` block
+says `inherit: false`, which keeps `--strict-mcp-config`. Settings remain
+inherited independently (`--setting-sources`, above).
 
 **Unnamed servers degrade per-server, on every backend.** A server whose
 tools the node does not name that fails to boot costs its OWN tools, never

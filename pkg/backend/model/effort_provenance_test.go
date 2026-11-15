@@ -19,9 +19,12 @@ import (
 // `max` whatever the run sent.
 //
 //   - a routing cell's `low` wins the dial: the wire carries `low`, the output
-//     says `low` from the override, and nothing was replaced;
+//     says `low` from the cell when the executor knows the launch carried no
+//     row, from the launch when its row asked for it, from the overrides when
+//     the executor was not told which rows the launch carried;
 //   - the dial alone (`max`, accepted by the feed) is sent as asked, from the
-//     node;
+//     operator's dial; with the variable unset, the dial's default is the
+//     node's own;
 //   - an edge's `_reasoning_effort` is sent as asked, from the edge;
 //   - a level the feed does not accept (`medium`) is replaced by the feed's
 //     nearest (`high`): the output names the feed and the level asked for,
@@ -29,11 +32,19 @@ import (
 //
 // Mutation that reddens it: drop the recordReasoningEffort call from
 // executeDelegate (model_boundary.go), or the `_reasoning_effort_*` stamps
-// from stampDelegateOutputMeta.
+// from stampDelegateOutputMeta; read the launch rows nowhere in
+// requestedEffort; drop effortDial.
 func TestTheNodeOutputCarriesTheEffortTheCallRanAt(t *testing.T) {
+	launchLow := func() *ModelOverrides {
+		var o ModelOverrides
+		o.SetEffort("judge", "low")
+		return &o
+	}
 	for _, tc := range []struct {
 		name          string
 		cell          string
+		launch        *ModelOverrides
+		dialUnset     bool
 		nodeEffort    string
 		edge          string
 		wantWire      string
@@ -41,8 +52,11 @@ func TestTheNodeOutputCarriesTheEffortTheCallRanAt(t *testing.T) {
 		wantRequested string
 		wantAdjusted  int
 	}{
-		{name: "a cell's low wins the env dial", cell: "low", nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "low", wantSource: EffortSourceOverride},
-		{name: "the env dial alone", nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "max", wantSource: EffortSourceNode},
+		{name: "a cell's low wins the env dial", cell: "low", launch: &ModelOverrides{}, nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "low", wantSource: EffortSourceCell},
+		{name: "the launch's own row", cell: "low", launch: launchLow(), nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "low", wantSource: EffortSourceLaunch},
+		{name: "overrides whose layer the executor was not told", cell: "low", nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "low", wantSource: EffortSourceOverride},
+		{name: "the env dial alone", nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "max", wantSource: EffortSourceDialPrefix + "ITERION_VIBE_EFFORT_CLAUDE"},
+		{name: "the dial's default", dialUnset: true, nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", wantWire: "high", wantSource: EffortSourceNode},
 		{name: "an edge's level", nodeEffort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}", edge: "xhigh", wantWire: "xhigh", wantSource: EffortSourceEdge},
 		{name: "a level the feed replaces", nodeEffort: "medium", wantWire: "high", wantSource: "feed:pliage", wantRequested: "medium", wantAdjusted: 1},
 	} {
@@ -50,6 +64,9 @@ func TestTheNodeOutputCarriesTheEffortTheCallRanAt(t *testing.T) {
 			r3GatewayEnv(t)
 			unsetGatewayTables(t)
 			t.Setenv("ITERION_VIBE_EFFORT_CLAUDE", "max")
+			if tc.dialUnset {
+				t.Setenv("ITERION_VIBE_EFFORT_CLAUDE", "")
+			}
 			ctx := feedEffortCtx(t)
 			mock := newMockClient(toolUseEvents("ok", "structured_output", `{"verdict":true,"reason":"ok"}`, 10, 10))
 			reg := NewRegistry()
@@ -59,8 +76,12 @@ func TestTheNodeOutputCarriesTheEffortTheCallRanAt(t *testing.T) {
 			if tc.cell != "" {
 				overrides.SetEffort("judge", tc.cell)
 			}
-			e := newTestClawExecutor(reg, verdictWorkflow(), WithLogger(iterlog.Nop()), WithModelOverrides(overrides),
-				WithEventHooks(NewStoreEventHooks(ctx, emitter, "effort", iterlog.Nop(), nil, nil)))
+			opts := []ClawExecutorOption{WithLogger(iterlog.Nop()), WithModelOverrides(overrides),
+				WithEventHooks(NewStoreEventHooks(ctx, emitter, "effort", iterlog.Nop(), nil, nil))}
+			if tc.launch != nil {
+				opts = append(opts, WithLaunchModelOverrides(*tc.launch))
+			}
+			e := newTestClawExecutor(reg, verdictWorkflow(), opts...)
 			node := verdictJudge("claw")
 			node.Model = modelroute.OpenAICompatible + "/" + feedEffortWire
 			node.ReasoningEffort = tc.nodeEffort

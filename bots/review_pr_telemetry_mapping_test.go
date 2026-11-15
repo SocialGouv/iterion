@@ -22,6 +22,7 @@ var telemetryKeyOf = map[string]string{
 	"effort":           model.OutputReasoningEffortApplied,
 	"effort_source":    model.OutputReasoningEffortSource,
 	"effort_requested": model.OutputReasoningEffortRequested,
+	"effort_lowered":   model.OutputReasoningEffortLowered,
 }
 
 // The published run table and the merge-gate note read engine telemetry the

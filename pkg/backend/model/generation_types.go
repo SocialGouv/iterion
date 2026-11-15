@@ -73,6 +73,11 @@ type StepResult struct {
 	// MaxTokens is the max_tokens the step's request carried — what a
 	// FinishLength step was cut at.
 	MaxTokens int
+
+	// ReasoningEffort is the reasoning effort the step's request carried on
+	// the wire: after the client's own rule (wireReasoningEffort), "" when it
+	// carried none.
+	ReasoningEffort string
 }
 
 // TurnCaptureInfo is the payload of the OnTurnCapture hook fired by

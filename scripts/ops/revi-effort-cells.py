@@ -21,16 +21,33 @@ Commands (all but apply and restore are read-only on the instance):
   plan                     list the targets and what apply would change
   backup  --dir D          store each target's current routing block in D
   apply   --dir D (--only X ... | --all) --yes
-                           PATCH the wanted block, then read it back
-  verify  [--only X ...]   read back: is the wanted block what is stored?
+                           set the fixture's efforts, then read the block back
+  verify  [--only X ...]   read back: does every target carry the efforts?
   restore --dir D (--only X ... | --all) --yes
-                           PATCH the backed-up block back, then read it back
+                           put each effort cell back to its backed-up effort,
+                           then read the block back
 
-X is an integration id or a repository full name. apply refuses an
-integration with no backup in D, or whose stored block moved since the
-backup; both apply and restore are idempotent (a block already in the asked
-state is not written again). A PATCH the org parks for an admin's approval
-(202, pending_approval) is reported as parked, not applied.
+X is an integration id, or a repository full name that names one integration
+only (a name two teams share is refused: name the id).
+
+apply refuses an integration with no backup in D, or whose stored block moved
+since the backup (other than by this script's own efforts). restore reverses
+the effort fields only, on the block as it is stored now: a cell or a change
+made after the apply stays; an effort cell whose effort is neither the
+fixture's nor the backup's was changed by someone else and is refused, not
+overwritten. Both are idempotent: a block already in the asked state is not
+written again.
+
+Each integration is read again just before its check and its PATCH. That
+narrows, without closing, the window in which another writer's change lands
+between the read and the PATCH and is replaced: closing it needs a version the
+server checks, and the repo-bots PATCH takes none (RepoIntegration.Version is
+not exposed, the request has no expected-version field).
+
+A failure on one integration (an HTTP error, a refusal, a read-back that
+differs) is reported and the command goes on with the next; the exit code is
+non-zero when any failed. A PATCH the org parks for an admin's approval (202,
+pending_approval) is reported as parked, not applied.
 """
 
 import argparse
@@ -47,7 +64,7 @@ ROUTE_FIELDS = ("backend", "provider", "model")
 
 
 class Refusal(Exception):
-    """A condition that stops the command with a message and exit 2."""
+    """A condition that stops the command, or one integration, with a message."""
 
 
 def iterion_api(method, path, body=None):
@@ -100,7 +117,7 @@ def load_fixture(path):
 
 
 def discover():
-    """Every forge integration the operator can read: (team, integration)."""
+    """Every forge integration the operator can read."""
     orgs = iterion_api("GET", "/api/admin/orgs")
     orgs = orgs if isinstance(orgs, list) else orgs.get("orgs") or orgs.get("items") or []
     found = []
@@ -128,16 +145,22 @@ def stored_routing(team_id, integration_id):
     raise Refusal("integration %s is no longer listed under team %s" % (integration_id, team_id))
 
 
+def gateway_cells(routing, cells):
+    """The index, in the block, of each effort node the block routes to the
+    fixture's gateway route (same backend, provider and model)."""
+    matched = {}
+    for i, o in enumerate((routing or {}).get("overrides") or []):
+        cell = cells.get(o.get("selector"))
+        if cell and all(o.get(f, "") == cell.get(f, "") for f in ROUTE_FIELDS):
+            matched[o["selector"]] = i
+    return matched
+
+
 def wanted_block(routing, cells):
     """(verdict, wanted, changes): verdict is "target", "none" (no effort
     node routed to the gateway) or "partial: ..."; changes lists
     (selector, stored effort, wanted effort) for the cells that move."""
-    overrides = (routing or {}).get("overrides") or []
-    matched = {}
-    for i, o in enumerate(overrides):
-        cell = cells.get(o.get("selector"))
-        if cell and all(o.get(f, "") == cell.get(f, "") for f in ROUTE_FIELDS):
-            matched[o["selector"]] = i
+    matched = gateway_cells(routing, cells)
     if not matched:
         return "none", None, []
     missing = sorted(set(cells) - set(matched))
@@ -154,6 +177,35 @@ def wanted_block(routing, cells):
     return "target", wanted, changes
 
 
+def restored_block(stored, backup, cells):
+    """(block, changes): stored with each effort cell put back to its
+    backed-up effort — only where it carries the fixture's effort, every
+    other field and cell as stored. An effort cell carrying neither is a
+    change someone else made: refused."""
+    backed = {}
+    for o in (backup or {}).get("overrides") or []:
+        backed[o.get("selector")] = o.get("effort", "")
+    block = copy.deepcopy(stored)
+    changes = []
+    for sel, i in sorted(gateway_cells(block, cells).items()):
+        cell = block["overrides"][i]
+        have, original = cell.get("effort", ""), backed.get(sel, "")
+        if have == original:
+            continue
+        if have != cells[sel]["effort"]:
+            raise Refusal("cell %s carries effort %r, neither the fixture's %r nor the backup's %r: changed since the apply, not restored" % (sel, have, cells[sel]["effort"], original))
+        if original:
+            cell["effort"] = original
+        else:
+            cell.pop("effort", None)
+        changes.append((sel, have, original or "unset"))
+    return block, changes
+
+
+def describe(changes):
+    return ", ".join("%s %s->%s" % c for c in changes)
+
+
 def selected(targets, only, all_):
     if all_ and only:
         raise Refusal("--all and --only are exclusive")
@@ -161,10 +213,15 @@ def selected(targets, only, all_):
         return targets
     if not only:
         raise Refusal("name the integrations: --only <integration id|repo> (repeatable), or --all")
-    picked = [t for t in targets if t["id"] in only or t["repo"] in only]
-    unknown = set(only) - {t["id"] for t in picked} - {t["repo"] for t in picked}
-    if unknown:
-        raise Refusal("not a target integration: " + ", ".join(sorted(unknown)))
+    picked = []
+    for name in only:
+        hits = [t for t in targets if t["id"] == name or t["repo"] == name]
+        if not hits:
+            raise Refusal("not a target integration: " + name)
+        if len(hits) > 1:
+            raise Refusal("%s names %d integrations (%s): name one by its id" % (name, len(hits), ", ".join(t["id"] for t in hits)))
+        if hits[0] not in picked:
+            picked.append(hits[0])
     return picked
 
 
@@ -175,7 +232,7 @@ def backup_path(directory, integ):
 def read_backup(directory, integ):
     path = backup_path(directory, integ)
     if not os.path.exists(path):
-        raise Refusal("%s (%s): no backup at %s — run backup first" % (integ["repo"], integ["id"], path))
+        raise Refusal("no backup at %s — run backup first" % path)
     with open(path) as f:
         return json.load(f)
 
@@ -190,7 +247,7 @@ def cmd_plan(args, cells):
             line = "left alone (no gateway effort cell)"
         elif verdict == "target":
             targets += 1
-            line = "UNCHANGED (already applied)" if not changes else "CHANGE " + ", ".join("%s %s->%s" % c for c in changes)
+            line = "UNCHANGED (already applied)" if not changes else "CHANGE " + describe(changes)
         else:
             line = "SKIP " + verdict
         print("%-18s %-62s %-36s %s" % (integ["team"][:18], integ["repo"][:62], integ["id"], line))
@@ -232,31 +289,68 @@ def patch_routing(integ, block):
     return "written"
 
 
+def apply_one(args, cells, integ):
+    """Apply the efforts to one integration; answer True when it holds them."""
+    backup = read_backup(args.dir, integ)
+    stored = stored_routing(integ["team_id"], integ["id"])
+    if not same(backup["routing"], stored):
+        _, wanted_from_backup, _ = wanted_block(backup["routing"], cells)
+        if not same(stored, wanted_from_backup):
+            raise Refusal("the stored block moved since the backup in %s — back it up again in a new --dir" % args.dir)
+    verdict, wanted, changes = wanted_block(stored, cells)
+    if verdict != "target":
+        raise Refusal("no longer a target: " + verdict)
+    if not changes:
+        print("unchanged %s (%s): already applied" % (integ["repo"], integ["id"]))
+        return True
+    if patch_routing(integ, wanted) == "parked":
+        print("PARKED   %s (%s): the org queued the change for an admin's approval — not applied" % (integ["repo"], integ["id"]))
+        return False
+    if not same(stored_routing(integ["team_id"], integ["id"]), wanted):
+        raise Refusal("the block read back is not the one written — restore it from %s" % args.dir)
+    print("applied  %s (%s): %s" % (integ["repo"], integ["id"], describe(changes)))
+    return True
+
+
+def restore_one(args, cells, record):
+    """Put one integration's effort cells back to their backed-up efforts;
+    answer True when they carry them."""
+    integ = {"team_id": record["team_id"], "id": record["id"], "repo": record["repo"]}
+    stored = stored_routing(record["team_id"], record["id"])
+    block, changes = restored_block(stored, record["routing"], cells)
+    if not changes:
+        print("unchanged %s (%s): its effort cells already carry the backed-up efforts" % (record["repo"], record["id"]))
+        return True
+    if patch_routing(integ, block) == "parked":
+        print("PARKED   %s (%s): the org queued the restore for an admin's approval — not restored" % (record["repo"], record["id"]))
+        return False
+    if not same(stored_routing(record["team_id"], record["id"]), block):
+        raise Refusal("the block read back is not the one written")
+    print("restored %s (%s): %s" % (record["repo"], record["id"], describe(changes)))
+    return True
+
+
+def each(items, label, run):
+    """Run one integration at a time; a failure is reported and the next one
+    still runs. Answer the exit code."""
+    failed = 0
+    for item in items:
+        try:
+            if not run(item):
+                failed += 1
+        except Refusal as err:
+            print("FAILED   %s (%s): %s" % (item["repo"], item["id"], err))
+            failed += 1
+    if failed:
+        print("\n%d of %d integration(s) not %s" % (failed, len(items), label))
+    return 1 if failed else 0
+
+
 def cmd_apply(args, cells):
     if not args.yes:
         raise Refusal("apply writes to the instance: add --yes")
-    failed = 0
-    for integ in selected(targets_of(cells), args.only, args.all):
-        backup = read_backup(args.dir, integ)
-        if not same(backup["routing"], integ["routing"]):
-            _, wanted_from_backup, _ = wanted_block(backup["routing"], cells)
-            if not same(integ["routing"], wanted_from_backup):
-                raise Refusal("%s (%s): the stored block moved since the backup in %s — back it up again in a new --dir" % (integ["repo"], integ["id"], args.dir))
-        _, wanted, changes = wanted_block(integ["routing"], cells)
-        if not changes:
-            print("unchanged %s (%s): already applied" % (integ["repo"], integ["id"]))
-            continue
-        outcome = patch_routing(integ, wanted)
-        if outcome == "parked":
-            print("PARKED   %s (%s): the org queued the change for an admin's approval — not applied" % (integ["repo"], integ["id"]))
-            failed += 1
-            continue
-        if same(stored_routing(integ["team_id"], integ["id"]), wanted):
-            print("applied  %s (%s): %s" % (integ["repo"], integ["id"], ", ".join("%s %s->%s" % c for c in changes)))
-        else:
-            print("MISMATCH %s (%s): the block read back is not the one written — restore it from %s" % (integ["repo"], integ["id"], args.dir))
-            failed += 1
-    return 1 if failed else 0
+    picked = selected(targets_of(cells), args.only, args.all)
+    return each(picked, "applied", lambda integ: apply_one(args, cells, integ))
 
 
 def cmd_verify(args, cells):
@@ -265,10 +359,10 @@ def cmd_verify(args, cells):
         integs = selected(integs, args.only, False)
     behind = 0
     for integ in integs:
-        _, wanted, changes = wanted_block(integ["routing"], cells)
+        _, _, changes = wanted_block(integ["routing"], cells)
         if changes:
             behind += 1
-            print("NOT APPLIED %s (%s): %s" % (integ["repo"], integ["id"], ", ".join("%s %s->%s" % c for c in changes)))
+            print("NOT APPLIED %s (%s): %s" % (integ["repo"], integ["id"], describe(changes)))
         else:
             print("applied     %s (%s)" % (integ["repo"], integ["id"]))
     return 1 if behind else 0
@@ -284,32 +378,8 @@ def cmd_restore(args, cells):
                 records.append(json.load(f))
     if not records:
         raise Refusal("no backup in %s" % args.dir)
-    if args.all and args.only:
-        raise Refusal("--all and --only are exclusive")
-    if not args.all and not args.only:
-        raise Refusal("name the integrations: --only <integration id|repo> (repeatable), or --all")
-    picked = records if args.all else [r for r in records if r["id"] in args.only or r["repo"] in args.only]
-    if not picked:
-        raise Refusal("no backup in %s names %s" % (args.dir, ", ".join(args.only)))
-    failed = 0
-    for rec in picked:
-        integ = {"team_id": rec["team_id"], "id": rec["id"], "repo": rec["repo"]}
-        if same(stored_routing(rec["team_id"], rec["id"]), rec["routing"]):
-            print("unchanged %s (%s): already the backed-up block" % (rec["repo"], rec["id"]))
-            continue
-        # A null block clears the stored one: the backup of an integration
-        # that carried none restores none.
-        outcome = patch_routing(integ, rec["routing"])
-        if outcome == "parked":
-            print("PARKED   %s (%s): the org queued the restore for an admin's approval — not restored" % (rec["repo"], rec["id"]))
-            failed += 1
-            continue
-        if same(stored_routing(rec["team_id"], rec["id"]), rec["routing"]):
-            print("restored %s (%s)" % (rec["repo"], rec["id"]))
-        else:
-            print("MISMATCH %s (%s): the block read back is not the backup" % (rec["repo"], rec["id"]))
-            failed += 1
-    return 1 if failed else 0
+    picked = selected(records, args.only, args.all)
+    return each(picked, "restored", lambda record: restore_one(args, cells, record))
 
 
 def main(argv):

@@ -663,6 +663,7 @@ workflow review_pr:
     ai_converge_effort: "{{outputs.converge._reasoning_effort_applied}}",
     ai_converge_effort_source: "{{outputs.converge._reasoning_effort_source}}",
     ai_converge_effort_requested: "{{outputs.converge._reasoning_effort_requested}}",
+    ai_converge_effort_lowered: "{{outputs.converge._reasoning_effort_lowered}}",
   }
 
   converge_gpt -> pr_gate with {
@@ -681,6 +682,7 @@ workflow review_pr:
     ai_converge_effort: "{{outputs.converge_gpt._reasoning_effort_applied}}",
     ai_converge_effort_source: "{{outputs.converge_gpt._reasoning_effort_source}}",
     ai_converge_effort_requested: "{{outputs.converge_gpt._reasoning_effort_requested}}",
+    ai_converge_effort_lowered: "{{outputs.converge_gpt._reasoning_effort_lowered}}",
   }
 
   ## No PR target → finish after the board + report (the default,
@@ -716,6 +718,7 @@ workflow review_pr:
     ai_reviewer_claude_effort: "{{outputs.reviewer_claude._reasoning_effort_applied}}",
     ai_reviewer_claude_effort_source: "{{outputs.reviewer_claude._reasoning_effort_source}}",
     ai_reviewer_claude_effort_requested: "{{outputs.reviewer_claude._reasoning_effort_requested}}",
+    ai_reviewer_claude_effort_lowered: "{{outputs.reviewer_claude._reasoning_effort_lowered}}",
     ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
     ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
     ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
@@ -723,6 +726,7 @@ workflow review_pr:
     ai_reviewer_gpt_effort: "{{outputs.reviewer_gpt._reasoning_effort_applied}}",
     ai_reviewer_gpt_effort_source: "{{outputs.reviewer_gpt._reasoning_effort_source}}",
     ai_reviewer_gpt_effort_requested: "{{outputs.reviewer_gpt._reasoning_effort_requested}}",
+    ai_reviewer_gpt_effort_lowered: "{{outputs.reviewer_gpt._reasoning_effort_lowered}}",
     ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
     ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
     ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
@@ -731,6 +735,7 @@ workflow review_pr:
     ai_reviewer_claude_glance_effort: "{{outputs.reviewer_claude_glance._reasoning_effort_applied}}",
     ai_reviewer_claude_glance_effort_source: "{{outputs.reviewer_claude_glance._reasoning_effort_source}}",
     ai_reviewer_claude_glance_effort_requested: "{{outputs.reviewer_claude_glance._reasoning_effort_requested}}",
+    ai_reviewer_claude_glance_effort_lowered: "{{outputs.reviewer_claude_glance._reasoning_effort_lowered}}",
     ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
     ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
     ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
@@ -738,6 +743,7 @@ workflow review_pr:
     ai_reviewer_gpt_glance_effort: "{{outputs.reviewer_gpt_glance._reasoning_effort_applied}}",
     ai_reviewer_gpt_glance_effort_source: "{{outputs.reviewer_gpt_glance._reasoning_effort_source}}",
     ai_reviewer_gpt_glance_effort_requested: "{{outputs.reviewer_gpt_glance._reasoning_effort_requested}}",
+    ai_reviewer_gpt_glance_effort_lowered: "{{outputs.reviewer_gpt_glance._reasoning_effort_lowered}}",
     ## The merge step's telemetry comes through pr_gate, not from a twin:
     ## `mono_family` decides which of `converge` / `converge_gpt` ran, and
     ## the run table must name the one that did.
@@ -749,6 +755,7 @@ workflow review_pr:
     ai_converge_effort: "{{outputs.pr_gate.ai_converge_effort}}",
     ai_converge_effort_source: "{{outputs.pr_gate.ai_converge_effort_source}}",
     ai_converge_effort_requested: "{{outputs.pr_gate.ai_converge_effort_requested}}",
+    ai_converge_effort_lowered: "{{outputs.pr_gate.ai_converge_effort_lowered}}",
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",

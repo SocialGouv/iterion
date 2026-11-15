@@ -244,6 +244,11 @@ func (r oaiRequest) MarshalJSON() ([]byte, error) {
 	return openaiwire.MarshalJSON(w)
 }
 
+// WireReasoningEffort is level as named (api.EffortWire): the chat wire sets
+// reasoning_effort for every model, the responses wire reasoning.effort
+// whenever the request names one.
+func (c *Client) WireReasoningEffort(_, level string) string { return level }
+
 // ----- StreamResponse --------------------------------------------------------
 
 // StreamResponse sends a streaming request to OpenAI and emits StreamEvents

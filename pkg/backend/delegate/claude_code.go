@@ -245,8 +245,10 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 	// Strict on an untrusted workspace whatever the environment says: without
 	// it the CLI — whose cwd IS that checkout — merges the operator's personal
 	// servers and the servers its own scopes find there. The escape hatch is
-	// the trusted operator's, like the setting sources' floor.
-	if strictMCPFromEnv() || !task.WorkspaceTrust.Trusted() {
+	// the trusted operator's, like the setting sources' floor — and it does
+	// not reach a node that opted out of the ambient set, whose declared set
+	// is its whole MCP surface.
+	if strictMCPFromEnv() || !task.WorkspaceTrust.Trusted() || task.MCPInheritDisabled {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
 	opts = append(opts, claudesdk.WithDisallowedTools(claudeSpawnBoundWithheld(task)...))
@@ -959,6 +961,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the probes). The task carries the trust the engine stamped
 	// (stampWorkspace), never re-derived from the workspace.
 	ctx = credroute.WithRunTrust(ctx, task.WorkspaceTrust)
+	// What every spawn of this call hands the CLI as its effort
+	// (perTaskSpawnOpts), on every exit: the node's record names that level,
+	// not only the one the executor handed this backend.
+	defer func() { reportClaudeCodeEffort(&result, task) }()
 	// cliTurnCompleted records that the CLI carried this call to its own
 	// ResultMessage. It is the discriminator turnFinished needs and the
 	// defer below cannot read: `rm` is declared further down, so the
@@ -1887,12 +1893,7 @@ func hostSpawnEnv(extra map[string]string) []string {
 // settings layer through the one `--settings` object. ExtraEnv never carries a
 // pinned key (claudeExtraEnvEntries), so no provisioning layer can move one.
 func perTaskSpawnOpts(task Task) []claudesdk.Option {
-	effort := task.ReasoningEffort
-	if effort == "" {
-		effort = defaultClaudeCodeEffort
-	}
-	effort = claudeCodeEffort(effort)
-	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort)}
+	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", claudeCodeSpawnEffort(task))}
 	env, settings := claudeSpawnPins(task)
 	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
@@ -1903,6 +1904,25 @@ func perTaskSpawnOpts(task Task) []claudesdk.Option {
 		opts = append(opts, claudesdk.WithEnv(key, env[key]))
 	}
 	return opts
+}
+
+// claudeCodeSpawnEffort is the effort every spawn of task hands the CLI
+// (CLAUDE_CODE_EFFORT_LEVEL): the task's level, or defaultClaudeCodeEffort
+// when it names none, through claudeCodeEffort.
+func claudeCodeSpawnEffort(task Task) string {
+	effort := task.ReasoningEffort
+	if effort == "" {
+		effort = defaultClaudeCodeEffort
+	}
+	return claudeCodeEffort(effort)
+}
+
+// reportClaudeCodeEffort states on result the effort every spawn of the
+// call handed the CLI (Result.WireReasoningEffort): one level for both
+// passes, which share the spawn options.
+func reportClaudeCodeEffort(result *Result, task Task) {
+	effort := claudeCodeSpawnEffort(task)
+	result.WireReasoningEffort, result.WireReasoningEffortLast, result.WireReasoningEffortReported = effort, effort, true
 }
 
 // claudeCodeEffort coerces an iterion effort level to one Claude Code

@@ -293,13 +293,14 @@ func requiresAdaptiveThinking(model string) bool {
 // recorded on the step list and delivered to OnStepFinish.
 func buildStepResult(step int, agg *aggregatedResponse) StepResult {
 	return StepResult{
-		Number:       step,
-		Text:         agg.text,
-		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-		FinishReason: mapStopReason(agg.stopReason),
-		Usage:        agg.usage,
-		Thinking:     agg.thinkingText,
-		MaxTokens:    agg.maxTokens,
+		Number:          step,
+		Text:            agg.text,
+		ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+		FinishReason:    mapStopReason(agg.stopReason),
+		Usage:           agg.usage,
+		Thinking:        agg.thinkingText,
+		MaxTokens:       agg.maxTokens,
+		ReasoningEffort: agg.effort,
 	}
 }
 
@@ -715,13 +716,14 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 			return agg, StepResult{}, used, true, agg.err
 		}
 		step = StepResult{
-			Number:       number,
-			Text:         agg.text,
-			ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-			FinishReason: mapStopReason(agg.stopReason),
-			Usage:        agg.usage,
-			Thinking:     agg.thinkingText,
-			MaxTokens:    agg.maxTokens,
+			Number:          number,
+			Text:            agg.text,
+			ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+			FinishReason:    mapStopReason(agg.stopReason),
+			Usage:           agg.usage,
+			Thinking:        agg.thinkingText,
+			MaxTokens:       agg.maxTokens,
+			ReasoningEffort: agg.effort,
 		}
 		steps = append(steps, step)
 		if o.OnStepFinish != nil {

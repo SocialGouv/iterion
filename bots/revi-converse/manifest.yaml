@@ -7,9 +7,14 @@ version: 0.1.10
 ## The ambient set — every enabled plugin's servers, the repository's
 ## `.mcp.json` — put their tools in every request of the loop: on the team
 ## gateway's claw lane 31 tool schemas where the node declares 4, and a code
-## question sent to a web search (#3283). The same on claude_code: the
-## `--mcp-config` the CLI gets names none of those servers. No native web
-## tool replaces them. What the workflow-wide resolution and its pre-run health
+## question sent to a web search (#3283). On claude_code the `--mcp-config`
+## the CLI gets names none of those servers, and `--strict-mcp-config` stays
+## on for this node even where ITERION_CLAUDE_CODE_STRICT_MCP=0 lifts it, so
+## the CLI's own scopes (~/.claude.json, the repository's .mcp.json) add none;
+## codex, whose own configuration (CODEX_HOME's config.toml, a trusted
+## project's .codex/config.toml) the engine cannot switch off through the
+## pinned SDK, refuses the node, typed, when that configuration lists a
+## server, so a route can take over. No native web tool replaces them. What the workflow-wide resolution and its pre-run health
 ## check do with the ambient servers is unchanged — the opt-out takes the
 ## tools off this node, not the servers off the run.
 ## 0.1.9 — evaluation mode: `publish_mode: off` (a hidden launch var:

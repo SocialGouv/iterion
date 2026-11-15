@@ -373,10 +373,34 @@ func sourcedReasoningEffort(nodeEffort string, input map[string]any) (effort, so
 			return s, EffortSourceEdge
 		}
 	}
-	if effort := ir.ResolveEffortLiteral(nodeEffort); effort != "" {
-		return effort, EffortSourceNode
+	effort = ir.ResolveEffortLiteral(nodeEffort)
+	if effort == "" {
+		return "", ""
 	}
-	return "", ""
+	if dial := effortDial(nodeEffort); dial != "" {
+		return effort, EffortSourceDialPrefix + dial
+	}
+	return effort, EffortSourceNode
+}
+
+// effortDial names the variable that supplied an env-substituted effort —
+// `${VAR:-default}` whose VAR the environment or the bot-vars overlay sets —
+// read through the lookup ir.ResolveEffortLiteral expands with; "" when the
+// literal is not substituted or every variable it reads is unset, so the
+// level is the author's default.
+func effortDial(nodeEffort string) string {
+	if !ir.IsEnvSubstitutedEffort(nodeEffort) {
+		return ""
+	}
+	dial := ""
+	ir.ExpandWithDefault(nodeEffort, func(name string) string {
+		v := ir.LookupEnv(name)
+		if v != "" && dial == "" {
+			dial = name
+		}
+		return v
+	})
+	return dial
 }
 
 // The provenance of the reasoning effort a node requests: who decided the
@@ -384,15 +408,29 @@ func sourcedReasoningEffort(nodeEffort string, input map[string]any) (effort, so
 // Result (executeDelegate), and the node's output carries it as
 // `_reasoning_effort_source` (stampDelegateOutputMeta).
 const (
-	// EffortSourceOverride is the run's model overrides: a routing-policy
-	// cell (ADR-129) or the launch's own override row — the folded list the
-	// executor reads does not say which of the two wrote it.
+	// EffortSourceCell is a routing-policy cell (ADR-129): the run's
+	// overrides gave the effort and the launch's own rows did not.
+	EffortSourceCell = "cell"
+	// EffortSourceLaunch is the launch's own override row (`--effort-for`,
+	// the studio's launch form, a remote launch's model_overrides).
+	EffortSourceLaunch = "launch"
+	// EffortSourceOverride is the run's overrides when the executor was not
+	// told which of their rows the launch carried (WithLaunchModelOverrides).
 	EffortSourceOverride = "override"
 	// EffortSourceEdge is an upstream edge's `_reasoning_effort` mapping.
 	EffortSourceEdge = "edge"
-	// EffortSourceNode is the node's own `reasoning_effort:`, its `${…}`
-	// dial resolved.
+	// EffortSourceNode is the node's own `reasoning_effort:` as written: a
+	// literal level, or the default of its `${VAR:-default}` dial.
 	EffortSourceNode = "node"
+	// EffortSourceDialPrefix opens the source of a level an operator dial
+	// supplied: the variable the node's `${VAR:-default}` read, set in the
+	// environment or the platform's bot-vars (`dial:ITERION_VIBE_EFFORT_CLAUDE`).
+	EffortSourceDialPrefix = "dial:"
+	// EffortSourceBackend is the harness, below the model boundary: it sent
+	// another level than it was handed (a model's accepted set), none at all
+	// (a client that drops the parameter for the model), or its own default
+	// when it was handed none (delegate.Result.WireReasoningEffort).
+	EffortSourceBackend = "backend"
 )
 
 // effortForNode is resolveReasoningEffort with the launch-time override on
@@ -412,7 +450,14 @@ func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[
 // (EffortSource*): "" with an empty effort.
 func (e *ClawExecutor) requestedEffort(node ir.Node, nodeEffort string, input map[string]any) (effort, source string) {
 	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
-		return ov.Effort, EffortSourceOverride
+		switch {
+		case e.launchOverrides == nil:
+			return ov.Effort, EffortSourceOverride
+		case e.launchOverrides.ForNode(node.NodeID(), node.NodeKind()).Effort == ov.Effort:
+			return ov.Effort, EffortSourceLaunch
+		default:
+			return ov.Effort, EffortSourceCell
+		}
 	}
 	return sourcedReasoningEffort(nodeEffort, input)
 }

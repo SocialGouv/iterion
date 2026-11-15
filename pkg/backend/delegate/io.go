@@ -242,6 +242,12 @@ type IOResult struct {
 	ThinkingTokens     int     `json:"thinking_tokens,omitempty"`
 	ThinkingMs         int     `json:"thinking_ms,omitempty"`
 	ToolTurns          int     `json:"tool_turns,omitempty"`
+	// The efforts the in-container call's model requests carried
+	// (Result.WireReasoningEffort*): the launcher records what reached the
+	// model, not only what it handed the runner.
+	WireReasoningEffort         string `json:"wire_reasoning_effort,omitempty"`
+	WireReasoningEffortLast     string `json:"wire_reasoning_effort_last,omitempty"`
+	WireReasoningEffortReported bool   `json:"wire_reasoning_effort_reported,omitempty"`
 
 	Output              map[string]any  `json:"output,omitempty"`
 	Tokens              int             `json:"tokens,omitempty"`
@@ -454,6 +460,10 @@ func ToIOResult(r Result) IOResult {
 		ThinkingMs:         r.ThinkingMs,
 		ToolTurns:          r.ToolTurns,
 
+		WireReasoningEffort:         r.WireReasoningEffort,
+		WireReasoningEffortLast:     r.WireReasoningEffortLast,
+		WireReasoningEffortReported: r.WireReasoningEffortReported,
+
 		DurationMS:              r.Duration.Milliseconds(),
 		ExitCode:                r.ExitCode,
 		Stderr:                  r.Stderr,
@@ -492,6 +502,10 @@ func FromIOResult(r IOResult) Result {
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
 		ToolTurns:          r.ToolTurns,
+
+		WireReasoningEffort:         r.WireReasoningEffort,
+		WireReasoningEffortLast:     r.WireReasoningEffortLast,
+		WireReasoningEffortReported: r.WireReasoningEffortReported,
 
 		Duration:                time.Duration(r.DurationMS) * time.Millisecond,
 		ExitCode:                r.ExitCode,

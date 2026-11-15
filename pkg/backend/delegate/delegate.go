@@ -550,6 +550,14 @@ type Task struct {
 	// are wired separately by each backend and are absent here.
 	MCPServers []TaskMCPServer
 
+	// MCPInheritDisabled says the node opts out of the ambient MCP set
+	// (`mcp: inherit: false`): MCPServers is its whole set. A CLI that loads
+	// MCP servers of its own configuration is held to it — claude_code runs
+	// with --strict-mcp-config whatever ITERION_CLAUDE_CODE_STRICT_MCP says;
+	// codex, which cannot be told to disable them, refuses the node, typed,
+	// when its configuration lists one.
+	MCPInheritDisabled bool
+
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
@@ -2229,22 +2237,40 @@ type Result struct {
 	// there as `_gateway_spec`. Empty on a non-gateway route.
 	GatewaySpec json.RawMessage
 
-	// ReasoningEffort is the reasoning effort the executor handed the
-	// backend for this call: the level the node requested, after the
-	// route's accepted-effort mapping (ADR-166 §7). ReasoningEffortSource
-	// says who decided it — the request's provenance (Task.
-	// ReasoningEffortSource) when the route sent the level as asked, the
-	// accepted-efforts list's source (`feed:<name>`, `env:…`) when the
-	// route replaced it — and ReasoningEffortRequested is the level asked
-	// for, set only when the route replaced it. Recorded by the executor at
-	// the model boundary, never by a backend; a backend's own clamp below
-	// that boundary (claude_code's `none` → `low`, claw's per-model matrix)
-	// is not reflected. Stamped on the node's output as
-	// `_reasoning_effort_applied`, `_reasoning_effort_source` and
-	// `_reasoning_effort_requested` — never `_reasoning_effort`, the input
-	// key an edge raises a node's effort with. Empty when the node requests
-	// no effort.
+	// WireReasoningEffort is the reasoning effort the backend's FIRST model
+	// request of this call carried, after the backend's own rule below the
+	// model boundary — claw: the model's accepted set (coerceEffortForModel),
+	// then the client's (an Anthropic Messages client sends no effort for a
+	// model outside its matrix, "" then); claude_code: the level it hands
+	// the CLI, its default when handed none. WireReasoningEffortLast is the
+	// effort of the call's LAST request, whose answer the output is: lower
+	// than the first when claw re-asked a cut turn, or ran its recovery pass,
+	// at a reduced effort. WireReasoningEffortReported says the backend filled
+	// both; a backend that does not leaves the record at the level it was
+	// handed (model.recordReasoningEffort). They cross the claw-runner wire.
+	WireReasoningEffort         string
+	WireReasoningEffortLast     string
+	WireReasoningEffortReported bool
+
+	// ReasoningEffort is the reasoning effort the call's model request
+	// carried — what the backend reported (WireReasoningEffort), else the
+	// level the executor handed it after the route's accepted-effort mapping
+	// (ADR-166 §7); "" when the request carried none. ReasoningEffortSource
+	// says who decided it: the request's provenance (Task.
+	// ReasoningEffortSource) when it was sent as asked, the accepted-efforts
+	// list's source (`feed:<name>`, `env:…`) when the route replaced it,
+	// `backend` when the backend sent another level, none, or its own
+	// default. ReasoningEffortRequested is the level asked for, set only
+	// when the route or the backend replaced it; ReasoningEffortLowered is
+	// the lower level the call's last request carried, set only when it
+	// differs (WireReasoningEffortLast). Recorded by the executor at the
+	// model boundary (model.executeDelegate), never by a backend. Stamped on
+	// the node's output as `_reasoning_effort_applied`,
+	// `_reasoning_effort_source`, `_reasoning_effort_requested` and
+	// `_reasoning_effort_lowered` — never `_reasoning_effort`, the input key
+	// an edge raises a node's effort with.
 	ReasoningEffort          string
 	ReasoningEffortSource    string
 	ReasoningEffortRequested string
+	ReasoningEffortLowered   string
 }

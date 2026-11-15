@@ -171,7 +171,7 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"run.id": "run-123", "input.ai_run_tokens": "3000",
 				"input.ai_reviewer_claude_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_claude_backend": "claw",
 				"input.ai_reviewer_claude_tokens": "1000",
-				"input.ai_reviewer_claude_effort": "low", "input.ai_reviewer_claude_effort_source": "override",
+				"input.ai_reviewer_claude_effort": "low", "input.ai_reviewer_claude_effort_source": "cell",
 				"input.ai_reviewer_gpt_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_gpt_backend": "claw",
 				"input.ai_reviewer_gpt_tokens": "1000",
 				"input.ai_reviewer_gpt_effort": "xhigh", "input.ai_reviewer_gpt_effort_source": "edge",
@@ -195,6 +195,42 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"| high (feed pliage ; demandé medium) | 200 |",
 			},
 			absent: []string{"max", "<b>who</b>"},
+		},
+		{
+			// The harness's own answers and the other request sources: a
+			// level the client did not send, a recovery at a lower level, an
+			// operator dial, the launch's row, the overrides when the run
+			// cannot tell which layer, a level the harness clamped.
+			name: "what the harness sent, and every source of a request",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "3000",
+				"input.ai_reviewer_claude_model": "anthropic/glm-5.3", "input.ai_reviewer_claude_backend": "claw", "input.ai_reviewer_claude_tokens": "1000",
+				"input.ai_reviewer_claude_effort_source": "backend", "input.ai_reviewer_claude_effort_requested": "high",
+				"input.ai_reviewer_gpt_model": "openai/gpt-6-astra", "input.ai_reviewer_gpt_backend": "claw", "input.ai_reviewer_gpt_tokens": "1000",
+				"input.ai_reviewer_gpt_effort": "high", "input.ai_reviewer_gpt_effort_source": "node", "input.ai_reviewer_gpt_effort_lowered": "low",
+				"input.ai_reviewer_claude_glance_model": "claude-opus-5-5", "input.ai_reviewer_claude_glance_backend": "claude_code", "input.ai_reviewer_claude_glance_tokens": "400",
+				"input.ai_reviewer_claude_glance_effort": "xhigh", "input.ai_reviewer_claude_glance_effort_source": "dial:ITERION_VIBE_EFFORT_CLAUDE_GLANCE",
+				"input.ai_reviewer_gpt_glance_model": "openai/gpt-6-luna", "input.ai_reviewer_gpt_glance_backend": "claw", "input.ai_reviewer_gpt_glance_tokens": "400",
+				"input.ai_reviewer_gpt_glance_effort": "medium", "input.ai_reviewer_gpt_glance_effort_source": "launch",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "200",
+				"input.ai_converge_effort": "low", "input.ai_converge_effort_source": "backend", "input.ai_converge_effort_requested": "none",
+			},
+			want: []string{
+				"| non envoyé (harness ; demandé high) | 1 000 |",
+				"| high (nœud) · abaissé à low (récupération) | 1 000 |",
+				"| xhigh (réglage d’exploitation) | 400 |",
+				"| medium (lancement) | 400 |",
+				"| low (harness ; demandé none) | 200 |",
+			},
+		},
+		{
+			name: "the overrides when the run cannot tell which layer",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "100",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "100",
+				"input.ai_converge_effort": "xhigh", "input.ai_converge_effort_source": "override",
+			},
+			want: []string{"| xhigh (surcharge) | 100 |"},
 		},
 		{
 			name: "missing telemetry stays unavailable and HTML stays text",
