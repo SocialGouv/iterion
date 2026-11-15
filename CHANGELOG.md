@@ -3,6 +3,52 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.0.0](https://github.com/SocialGouv/iterion/compare/v6.3.0...v7.0.0) (2026-11-15)
+
+### ⚠ BREAKING CHANGES
+
+* **scripts:** a data reference ({{input.*}}, {{vars.*}},
+  {{outputs.*}}, {{run.*}}, {{artifacts.*}}, {{attachments.*}},
+  {{loop.*}}, default form) in a sh/bash script: no longer writes its
+  value into the script's text; it renders a read of an environment
+  variable the engine sets (${N+"$N"}), so data never becomes script
+  text. Inside single quotes, a $'…' string, a quoted heredoc's body or a
+  comment the script now receives that read as text where v6.2.0 wrote
+  the value's JSON literal — `curl -d '{"t": {{input.x}}}'` and `jq -n
+  '{{input.obj}}'` run with the wrong data and still succeed (C343 warns
+  at authoring time); build such payloads in an unquoted `cat <<EOF`
+  heredoc, which still receives the JSON literal, or with `jq -n --arg`.
+  A list is now one JSON value, not one word per element (`for f in
+  {{input.files}}` iterates once; use `jq -r '.[]'`). A value still runs
+  where the shell itself runs or evaluates a variable's value — a command
+  word (C345), another shell's code (C346), bash's arithmetic, compound-
+  array and variable-name positions (C344); these warnings are best
+  effort and no value is refused for its position.
+* **scripts:** a data reference ({{input.*}}, {{vars.*}},
+  {{outputs.*}}, {{run.*}}, {{artifacts.*}}, {{attachments.*}},
+  {{loop.*}}, default form) in a sh/bash script: no longer writes its
+  value into the script's text; it renders a read of an environment
+  variable the engine sets. Inside single quotes, a $'…' string, a quoted
+  heredoc's body or a comment the script now receives that read as text
+  where v6.2.0 wrote the value's JSON literal — e.g. `curl -d '{"t":
+  {{input.x}}}'` and `jq -n '{{input.obj}}'` now run with the wrong data
+  and still succeed; C343 warns at authoring time. Build payloads in an
+  unquoted `cat <<EOF` heredoc (which still receives the JSON literal) or
+  with `jq -n --arg`. A list is now one JSON value, not one word per
+  element (`for f in {{input.files}}` iterates once; use `jq -r '.[]'`).
+  A value that is not an integer (not an identifier) where bash evaluates
+  it as arithmetic (a variable name) is refused at run time (C344).
+
+### Bug Fixes
+
+* **scripts:** data in a sh/bash script rides the environment and is never script text ([#3291](https://github.com/SocialGouv/iterion/issues/3291)) ([#3300](https://github.com/SocialGouv/iterion/issues/3300)) ([94295a7](https://github.com/SocialGouv/iterion/commit/94295a7e292e26f33b07517466b4ec07526d72fb)), references [#3283](https://github.com/SocialGouv/iterion/issues/3283) [#3268](https://github.com/SocialGouv/iterion/issues/3268) [#3268](https://github.com/SocialGouv/iterion/issues/3268) [#3268](https://github.com/SocialGouv/iterion/issues/3268) [#1](https://github.com/SocialGouv/iterion/issues/1)
+
+    <details><summary>why</summary>
+
+    #3291 item 1 (operator priority: before #3283). renderScript rendered every {{input|outputs|vars}} value as a double-quoted JSON literal in every language; in a sh/bash script the shell expanded $(…), `…`, $VAR and ${…} inside it, so data (a model's output, a webhook var) ran commands and — after #3268 — could read a secret's value from the interpreter environment ($(env), bash ${!prefix@} then ${!x}).
+
+    </details>
+
 ## [6.3.0](https://github.com/SocialGouv/iterion/compare/v6.2.0...v6.3.0) (2026-11-15)
 
 ### Features
