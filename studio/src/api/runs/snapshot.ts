@@ -3,7 +3,8 @@
 // streaming (the only direct-fetch endpoint in the runs barrel).
 
 import { is404 } from "@/api/client";
-import { BASE_URL, extractErrorMessage, request, withStoreParam } from "./client";
+import { LostRunError, noteRunBirth, runFetch, tagSnapshotStore } from "@/lib/lostRuns";
+import { BASE_URL, extractErrorMessage, request, storeOverrideFor, withStoreParam } from "./client";
 import type {
   RunEvent,
   RunSnapshot,
@@ -19,22 +20,35 @@ export async function getSessionBoard(
   runId: string,
   opts?: { signal?: AbortSignal },
 ): Promise<SessionBoardSpec> {
-  const qs = withStoreParam(new URLSearchParams()).toString();
+  const qs = withStoreParam(new URLSearchParams(), runId).toString();
   return request(
     `/runs/${encodeURIComponent(runId)}/session-board${qs ? `?${qs}` : ""}`,
     { signal: opts?.signal },
   );
 }
 
+// getRun reads a run's snapshot. The request carries the run's expected
+// birth when the page knows it (the server answers 409 for a replaced run);
+// otherwise the snapshot's birth is adopted. A snapshot of another birth is
+// the successor under the ID: the run is marked lost and the snapshot never
+// reaches the caller. The store is the one the request named, captured
+// before it is sent: the page may show another store when the answer lands.
+// A snapshot of a foreign store's run teaches no birth (outside the
+// guarantee).
 export async function getRun(
   runId: string,
   opts?: { signal?: AbortSignal },
 ): Promise<RunSnapshot> {
-  const qs = withStoreParam(new URLSearchParams()).toString();
-  return request(
+  const store = storeOverrideFor(runId);
+  const qs = store ? new URLSearchParams({ store }).toString() : "";
+  const snap = await request<RunSnapshot>(
     `/runs/${encodeURIComponent(runId)}${qs ? `?${qs}` : ""}`,
     { signal: opts?.signal },
   );
+  if (!noteRunBirth(store, snap?.run?.id || runId, snap?.run?.birth_id)) {
+    throw new LostRunError(runId);
+  }
+  return snap && typeof snap === "object" ? tagSnapshotStore(snap, store) : snap;
 }
 
 // getRunWithRetry wraps getRun in a short backoff loop. The launch API
@@ -64,7 +78,9 @@ export async function getRunWithRetry(
     try {
       return await getRun(runId, { signal });
     } catch (err) {
-      if (signal?.aborted || (err as Error)?.name === "AbortError") {
+      // A lost run is refused by the transport for the page's lifetime:
+      // retrying cannot change the answer.
+      if (signal?.aborted || (err as Error)?.name === "AbortError" || err instanceof LostRunError) {
         throw err;
       }
       attempt += 1;
@@ -115,7 +131,7 @@ export async function loadEvents(
   const qs = new URLSearchParams();
   if (from > 0) qs.set("from", String(from));
   if (to > 0) qs.set("to", String(to));
-  withStoreParam(qs);
+  withStoreParam(qs, runId);
   const suffix = qs.toString();
   const res = await request<{ events: RunEvent[] }>(
     `/runs/${encodeURIComponent(runId)}/events${suffix ? `?${suffix}` : ""}`,
@@ -143,7 +159,7 @@ export async function fetchToolBlob(
   if (limit > 0) qs.set("limit", String(limit));
   const suffix = qs.toString();
   const url = `${BASE_URL}/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(toolUseID)}/${kind}${suffix ? `?${suffix}` : ""}`;
-  const res = await fetch(url, { credentials: "include" });
+  const res = await runFetch(url, { credentials: "include" });
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }

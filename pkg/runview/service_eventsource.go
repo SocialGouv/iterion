@@ -11,6 +11,9 @@ import "sync"
 type fileSrcHandle struct {
 	refs int
 	done chan struct{}
+	// buf is the log buffer a run.log tailer feeds (ensureLogSource), the
+	// one its last release drops; nil for an events tailer.
+	buf *RunLogBuffer
 }
 
 // ensureEventSource guarantees a file-backed event tailer is feeding

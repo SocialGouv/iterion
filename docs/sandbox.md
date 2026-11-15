@@ -1510,7 +1510,8 @@ guard, none of them on a route or on a credential:
 - the **browser-facing** guards of the server's own pages
   (`ITERION_SECURITY_HEADERS`, `ITERION_ALLOWED_ORIGINS`,
   `ITERION_REQUIRE_ORIGIN`, `ITERION_REQUIRE_WS_ORIGIN`,
-  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`).
+  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`,
+  `ITERION_RUN_BIRTH_CHECK`).
   The cookie's own transport (`ITERION_COOKIE_SECURE`,
   `ITERION_COOKIE_DOMAIN`) and the auth requirement
   (`ITERION_DISABLE_AUTH`) are neutralised, which is the part of that

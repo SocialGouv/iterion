@@ -890,7 +890,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		}
 	}()
 
-	_, runLogger := s.prepareRunLog(runID)
+	runLog, runLogger := s.prepareRunLog(parent, runID)
 
 	// The connector catalog an `action:` node resolves through, on the same
 	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
@@ -902,7 +902,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// that ever reaches it (#1802).
 	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir, connection.TrustOfRun(spec.Trust))
 	if err != nil {
-		s.dropRunLog(runID)
+		s.dropRunLog(runID, runLog)
 		return nil, err
 	}
 
@@ -963,7 +963,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		UsageCapSource:  s.usageCapSource,
 	})
 	if err != nil {
-		s.dropRunLog(runID)
+		s.dropRunLog(runID, runLog)
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
@@ -981,7 +981,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		answerNode: spec.CallbackAnswerNode,
 	}
 
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, spec.Timeout, false,
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, runLog, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		invocation.OwnedBirth,
@@ -1348,7 +1348,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return s.resumeDetached(parent, spec, r.PermissionOverride, r)
 	}
 
-	_, runLogger := s.prepareRunLog(spec.RunID)
+	runLog, runLogger := s.prepareRunLog(parent, spec.RunID)
 
 	// A resume rebuilds the executor from scratch, so it needs the catalog
 	// too: without it a run that launched fine dies at the first action node
@@ -1360,7 +1360,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// arriving through a different surface.
 	connectors, connectorClient, err := s.localConnectors(wf, "", connection.TrustOfRun(r.Trust))
 	if err != nil {
-		s.dropRunLog(spec.RunID)
+		s.dropRunLog(spec.RunID, runLog)
 		return nil, err
 	}
 
@@ -1382,7 +1382,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
-		s.dropRunLog(spec.RunID)
+		s.dropRunLog(spec.RunID, runLog)
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
@@ -1417,7 +1417,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		autoMerge:     r.AutoMerge,
 	}
 	claim := newResumeClaim()
-	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, runLog, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		false,
@@ -1728,6 +1728,7 @@ func (s *Service) spawnRun(
 	cb callbackOpts,
 	executor *model.ClawExecutor,
 	runLogger *iterlog.Logger,
+	runLog *RunLogBuffer,
 	timeout time.Duration,
 	force bool,
 	promote runtime.AttachmentPromoteFunc,
@@ -1775,14 +1776,14 @@ func (s *Service) spawnRun(
 	}
 	lock, err := s.store.LockRun(sctx, runID)
 	if err != nil {
-		s.dropRunLog(runID)
+		s.dropRunLog(runID, runLog)
 		return nil, fmt.Errorf("runview: lock run: %w", err)
 	}
 
 	ctx, regErr := s.manager.Register(parent, runID)
 	if regErr != nil {
 		func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-		s.dropRunLog(runID)
+		s.dropRunLog(runID, runLog)
 		return nil, regErr
 	}
 
@@ -1804,7 +1805,7 @@ func (s *Service) spawnRun(
 		if stampErr != nil {
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID)
+			s.dropRunLog(runID, runLog)
 			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1829,7 +1830,7 @@ func (s *Service) spawnRun(
 		if stampErr != nil {
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID)
+			s.dropRunLog(runID, runLog)
 			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1861,7 +1862,7 @@ func (s *Service) spawnRun(
 		if saveErr != nil {
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID)
+			s.dropRunLog(runID, runLog)
 			err := fmt.Errorf("runview: persist budget override: %w", saveErr)
 			// Only when THIS call made the run. On a resume the document
 			// existed all along and nothing has been published yet, so
@@ -1971,7 +1972,7 @@ func (s *Service) spawnRun(
 		// than the "already registered" it replaced, because it is silent.
 		defer s.manager.Deregister(runID)
 		defer s.unregisterRunEngine(runID)
-		defer s.dropRunLog(runID)
+		defer s.dropRunLog(runID, runLog)
 		// Keep WS subscribers across a pause: the goroutine exits on
 		// ErrRunPaused(Operator) like on any outcome, but the run is only
 		// dormant — the resume's goroutine publishes to the same broker

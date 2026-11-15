@@ -1,4 +1,13 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, ReadRefusal, UnitInfo, UnitFileInfo } from "./types";
+import {
+  assertRunReachable,
+  expectedBirthHeaders,
+  LostRunError,
+  lostRunStore,
+  markRunLost,
+  RUN_ORIGIN_LOST,
+  runAddressedBy,
+} from "@/lib/lostRuns";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 import { isWorkflowFile } from "@/lib/workflowFile";
 import {
@@ -642,18 +651,37 @@ export async function apiRequest<T>(
 // ("replayed"), or had the session renewed for it ("refreshed").
 type RenewalStage = "fresh" | "replayed" | "refreshed";
 
+// requestHeaders composes a request's headers: the JSON content type (not
+// for a body the browser types itself), the tab's explicit team, then the
+// caller's own headers, which win, then the expected birth of the run the
+// path addresses when the page knows it and the caller set none. Composed
+// AFTER spreading init, so a caller's headers add to these instead of
+// replacing them — the same on every replay after a renewal.
+function requestHeaders(fullPath: string, init: RequestInit | undefined): Headers {
+  const headers = new Headers();
+  const body = init?.body;
+  const typedByBrowser =
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams);
+  if (!typedByBrowser) headers.set("Content-Type", "application/json");
+  if (explicitTeam) headers.set("X-Iterion-Team", explicitTeam);
+  new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+  for (const [name, value] of Object.entries(expectedBirthHeaders(fullPath))) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return headers;
+}
+
 async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, stage: RenewalStage): Promise<T> {
+  // Every request of both `request` wrappers, and every replay after a
+  // renewal, passes here: one addressing a run this page lost (scope_lost)
+  // is refused before it leaves, and one addressing a run whose birth the
+  // page knows carries it as the expected birth (@/lib/lostRuns).
+  assertRunReachable(fullPath);
   const generation = sessionGeneration;
   const sentAt = Date.now();
-  const res = await fetch(fullPath, {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(explicitTeam ? { "X-Iterion-Team": explicitTeam } : {}),
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  const res = await fetch(fullPath, { credentials: "include", ...init, headers: requestHeaders(fullPath, init) });
   // 401 → the access JWT likely just expired. Renew the session and replay
   // the request: without that the first call after the 15-minute access-token
   // TTL bounces the user to login even though their refresh token is valid
@@ -693,7 +721,18 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
     }
   }
   if (!res.ok) {
-    throw apiErrorFrom(res.status, await extractErrorDetail(res));
+    const detail = await extractErrorDetail(res);
+    // The server refused a run whose birth no longer matches the one this
+    // request expected: the run is lost to the page, whoever sent it.
+    if (res.status === 409 && detail.errorCode === RUN_ORIGIN_LOST) {
+      const named = detail.body?.run_id;
+      const lostRun = (typeof named === "string" && named) || runAddressedBy(fullPath);
+      if (lostRun) {
+        markRunLost(lostRunStore(fullPath, lostRun), lostRun);
+        throw new LostRunError(lostRun);
+      }
+    }
+    throw apiErrorFrom(res.status, detail);
   }
   // 204 No Content (e.g. DELETE endpoints) has an empty body. Don't
   // try to parse it — return undefined and let the typed caller cast.

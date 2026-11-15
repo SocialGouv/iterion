@@ -141,8 +141,10 @@ metadata. A scan failure after events reached the reducer returns no snapshot.
 Metadata naming another run, or none, is refused before the scan; a custom
 store that ignores its context gets no guarantee.
 
-The binding covers this function's own two reads. It does not bind a snapshot
-to the WS upgrade's authorization or to later subscriptions, detect a
-canonical-tenant change under an unchanged header, distinguish historical runs
-whose births are both empty, or pin Service.SnapshotCtx's merge reconciliation,
-which reads the run before BuildSnapshot. Protocol-one admission stays off.
+The binding covers this function's own two reads; a caller that already
+carries a binding — the WS socket's origin, [run-ws-origin.md](run-ws-origin.md)
+— has both reads compared with it. It does not detect a canonical-tenant
+change under an unchanged header, distinguish historical runs whose births
+are both empty, or pin Service.SnapshotCtx's merge reconciliation, which reads
+the run before BuildSnapshot (SnapshotWithoutReconcileCtx skips it). `store.BindRunObservation` is the shared
+compare-only helper for such a binding. Protocol-one admission stays off.

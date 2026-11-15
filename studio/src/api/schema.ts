@@ -8318,6 +8318,7 @@ export interface components {
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bank_state?: string;
+            birth_id: string;
             bot_source_tenant?: string;
             bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
@@ -8465,6 +8466,7 @@ export interface components {
             active: boolean;
             auto_merge?: boolean;
             bank_state?: string;
+            birth_id: string;
             bundle_display_name?: string;
             bundle_name?: string;
             /** Format: date-time */

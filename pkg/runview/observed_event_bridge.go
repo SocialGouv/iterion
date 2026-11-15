@@ -99,17 +99,7 @@ func (r *observedEventBridges) admit(ctx context.Context, o store.RunObservation
 	if err := r.lifetime.Err(); err != nil {
 		return nil, err
 	}
-	binding, err := store.CaptureRunDataBinding(o.Header())
-	if err != nil {
-		return nil, err
-	}
-	// WithRunDataBinding compares any existing binding AND explicit format before
-	// adding missing read intent. Caller transport identity remains unchanged.
-	bound, err := store.WithRunDataBinding(ctx, binding)
-	if err != nil {
-		return nil, err
-	}
-	return store.WithRunValueFormat(bound, store.RunValueFormat{RunID: o.Header().RunID, Format: o.Header().Format})
+	return store.BindRunObservation(ctx, o)
 }
 func (r *observedEventBridges) acquire(ctx context.Context, o store.RunObservation) (*observedBridgeLease, error) {
 	for {

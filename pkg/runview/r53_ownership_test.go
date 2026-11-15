@@ -91,7 +91,7 @@ func TestReviewR53ServiceOwnsGrant(t *testing.T) {
 			if fail {
 				id = "missing"
 			}
-			res, err := svc.spawnRun(spec.Ctx, id, spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, exec, iterlog.Nop(), 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+			res, err := svc.spawnRun(spec.Ctx, id, spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, exec, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 			if fail {
 				if err == nil {
 					t.Fatal("expected load error")
@@ -130,7 +130,7 @@ func TestReviewR53ServiceRegisterFailureOwnsGrant(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer svc.manager.Deregister("r")
-	_, e = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, exec, iterlog.Nop(), 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+	_, e = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, exec, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 	if e == nil {
 		t.Fatal("expected register conflict")
 	}

@@ -3550,6 +3550,9 @@
           "bank_state": {
             "type": "string"
           },
+          "birth_id": {
+            "type": "string"
+          },
           "bot_source_tenant": {
             "type": "string"
           },
@@ -3782,6 +3785,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",
@@ -4003,6 +4007,9 @@
           "bank_state": {
             "type": "string"
           },
+          "birth_id": {
+            "type": "string"
+          },
           "bundle_display_name": {
             "type": "string"
           },
@@ -4118,6 +4125,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",

@@ -59,7 +59,7 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
 	if r.SchemaVersion > SchemaVersion {
-		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
+		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, r.SchemaVersion, store.ErrRunMetadataUndecodable)
 	}
 	return &r, nil
 }
@@ -81,7 +81,7 @@ func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, e
 		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
 	if r.SchemaVersion > SchemaVersion {
-		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
+		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, r.SchemaVersion, store.ErrRunMetadataUndecodable)
 	}
 	r.SourceOmitted = true
 	return &r, nil
@@ -395,7 +395,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 			return fmt.Errorf("store/mongo: run %s birth identity: %w", r.ID, store.ErrRunConflict)
 		}
 		if cur.SchemaVersion > SchemaVersion {
-			return fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", r.ID, cur.SchemaVersion)
+			return fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", r.ID, cur.SchemaVersion, store.ErrRunMetadataUndecodable)
 		}
 		if r.MergeStatus != store.MergeStatusMerging && cur.MergeStatus == store.MergeStatusMerging {
 			r.MergeStatus = cur.MergeStatus

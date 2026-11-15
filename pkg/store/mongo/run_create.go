@@ -94,13 +94,15 @@ func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...optio
 		}
 		return store.Run{}, err
 	}
+	// The document is already read: a failure to decode it answers the same
+	// on every re-read, so it is reported as ErrRunMetadataUndecodable.
 	f, err := store.RunValueFormatFromBSON(ctx, raw)
 	if err != nil {
-		return store.Run{}, err
+		return store.Run{}, store.RunMetadataUndecodable(id, err)
 	}
 	h, err := store.RunDataHeaderFromBSON(ctx, raw)
 	if err != nil {
-		return store.Run{}, err
+		return store.Run{}, store.RunMetadataUndecodable(id, err)
 	}
 	if err := store.RequireRunDataStorage(h.Protocol); err != nil {
 		return store.Run{}, err
@@ -123,7 +125,7 @@ func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...optio
 		}
 		err = codec.DecodeBSON(ctx, raw, &r)
 	}
-	return r, err
+	return r, store.RunMetadataUndecodable(id, err)
 }
 func valueFormatPredicate(f store.ValueFormat) bson.M {
 	return canonicalValueFormatPredicate(f)

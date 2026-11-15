@@ -18,6 +18,11 @@ type pipe[T any] struct {
 	onClose func() // optional; runs once inside Close (e.g. a ctx cancel)
 	closeO  sync.Once
 	finO    sync.Once
+	// errMu serializes every send on errs (Warn, Fail) with Finish closing
+	// the channels: once finished is set under it, a late report is dropped
+	// instead of sent on a closed channel, whichever goroutine calls.
+	errMu    sync.Mutex
+	finished bool
 }
 
 func newPipe[T any](onClose func()) *pipe[T] {
@@ -43,19 +48,32 @@ func (p *pipe[T]) Ship(ctx context.Context, v T) bool {
 }
 
 // Warn surfaces an error — best-effort, dropped when the errors channel
-// is saturated. Warn followed by Finish does not guarantee fatal publication;
+// is saturated or the pipe is finished. Warn followed by Finish does not guarantee fatal publication;
 // a producer promising a terminal refusal must retain it before closing data.
 func (p *pipe[T]) Warn(err error) {
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	if p.finished {
+		return
+	}
 	select {
 	case p.errs <- err:
 	default:
 	}
 }
 
-// fail is producer-only: retain the terminal error even when transient
-// warnings filled the buffer. It never waits for a consumer to drain warnings.
-func (p *pipe[T]) fail(err error) {
+// Fail is producer-only: it retains the terminal error even when transient
+// warnings filled the buffer, evicting a queued warning instead of waiting for
+// a consumer to drain one. The producer calls it before Finish; a consumer
+// never calls it. Fail and Finish are serialized: after Finish the stream is
+// already over and Fail is a no-op, the error is not delivered.
+func (p *pipe[T]) Fail(err error) {
 	if err == nil {
+		return
+	}
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	if p.finished {
 		return
 	}
 	for {
@@ -78,8 +96,11 @@ func (p *pipe[T]) Finish(cleanup func()) {
 		if cleanup != nil {
 			cleanup()
 		}
+		p.errMu.Lock()
+		p.finished = true
 		close(p.ch)
 		close(p.errs)
+		p.errMu.Unlock()
 	})
 }
 

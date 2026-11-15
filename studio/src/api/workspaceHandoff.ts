@@ -1,3 +1,4 @@
+import { knownRunBirthWire, LostRunError, lostRunFromResponse, lostRunStore, markRunLost } from "@/lib/lostRuns";
 import { apiBase } from "@/lib/scope";
 
 interface WorkspaceHandoffCreated {
@@ -25,15 +26,34 @@ export interface WorkspaceHandoffReceipt {
   next_step?: string;
 }
 
+// The handoff runs ride in request BODIES, so their known births ride beside
+// them (source_run_birth, destination_run_birth): the host compares each
+// right after loading the run and answers 409 run_origin_lost, naming it,
+// for one replaced under its ID — mapped here to the page's lost registry.
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${apiBase()}${path}`, {
+  const url = `${apiBase()}${path}`;
+  const response = await fetch(url, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const lostRun = await lostRunFromResponse(url, response);
+    if (lostRun !== null) {
+      markRunLost(lostRunStore(url, lostRun), lostRun);
+      throw new LostRunError(lostRun);
+    }
+    throw new Error(await response.text());
+  }
   return (await response.json()) as T;
+}
+
+// withRunBirth adds `<field>` = the known birth of runId, when the page
+// knows it (a pane's own runs live in its primary store).
+function withRunBirth<T extends object>(body: T, field: string, runId: string): T {
+  const birth = knownRunBirthWire("", runId);
+  return birth === undefined ? body : { ...body, [field]: birth };
 }
 
 export function createWorkspaceHandoff(
@@ -41,11 +61,10 @@ export function createWorkspaceHandoff(
   summary: string,
   sourceRunId: string,
 ) {
-  return post<WorkspaceHandoffCreated>("/workspace/handoffs", {
-    destination_project: destinationProject,
-    summary,
-    source_run_id: sourceRunId,
-  });
+  return post<WorkspaceHandoffCreated>(
+    "/workspace/handoffs",
+    withRunBirth({ destination_project: destinationProject, summary, source_run_id: sourceRunId }, "source_run_birth", sourceRunId),
+  );
 }
 
 export function redeemWorkspaceHandoff(
@@ -66,7 +85,7 @@ export function bindWorkspaceHandoff(
 ) {
   return post<{ handoff_id: string; bound: boolean }>(
     "/workspace/handoffs/bind",
-    { handoff_id: handoffId, destination_run_id: destinationRunId },
+    withRunBirth({ handoff_id: handoffId, destination_run_id: destinationRunId }, "destination_run_birth", destinationRunId),
   );
 }
 
@@ -80,9 +99,8 @@ export function completeWorkspaceHandoff(
     receipt_id: string;
     delivery_status: "pending" | "accepted" | "delivered";
     idempotent: boolean;
-  }>("/workspace/handoffs/complete", {
-    handoff_id: handoffId,
-    destination_run_id: destinationRunId,
-    ...receipt,
-  });
+  }>(
+    "/workspace/handoffs/complete",
+    withRunBirth({ handoff_id: handoffId, destination_run_id: destinationRunId, ...receipt }, "destination_run_birth", destinationRunId),
+  );
 }

@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ensureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
@@ -25,7 +27,7 @@ import (
 // active in-process (those feed their buffer directly via the logger tee) and
 // are NOT terminal (a finished run's static run.log wants the one-shot replay,
 // not a lingering tailer).
-func (s *Service) ensureLogSource(runID string) (release func(), buf *RunLogBuffer) {
+func (s *Service) ensureLogSource(ctx context.Context, runID string) (release func(), buf *RunLogBuffer) {
 	s.fileSrcMu.Lock()
 	if s.logSrcs == nil {
 		s.logSrcs = make(map[string]*fileSrcHandle)
@@ -34,34 +36,38 @@ func (s *Service) ensureLogSource(runID string) (release func(), buf *RunLogBuff
 	if h == nil {
 		h = &fileSrcHandle{done: make(chan struct{})}
 		s.logSrcs[runID] = h
-		s.prepareRunLogNoFile(runID)     // in-memory buffer GetLogBuffer will return
-		startLogSource(s, runID, h.done) // fsnotify tail run.log → buffer
+		// The buffer is labelled with the run the tailer reads — the one
+		// holding the ID now, read without the subscriber's binding — never
+		// with the run a subscriber was admitted on.
+		h.buf = s.prepareRunLogNoFile(store.WithoutRunDataBinding(ctx), runID) // in-memory buffer GetLogBuffer will return
+		startLogSource(s, runID, h.buf, h.done)                                // fsnotify tail run.log → buffer
 	}
 	h.refs++
 	s.fileSrcMu.Unlock()
-
-	buf = s.GetLogBuffer(runID)
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			s.fileSrcMu.Lock()
 			cur := s.logSrcs[runID]
-			last := false
+			var drop *RunLogBuffer
 			if cur != nil {
 				cur.refs--
 				if cur.refs <= 0 {
 					close(cur.done)
 					delete(s.logSrcs, runID)
-					last = true
+					drop = cur.buf
 				}
 			}
 			s.fileSrcMu.Unlock()
-			if last {
-				s.dropRunLog(runID)
+			if s.logReleaseGap != nil {
+				s.logReleaseGap(runID)
 			}
+			// The tailer's own buffer: one a new subscription or run
+			// registered under the ID once the handle was gone stays.
+			s.dropRunLog(runID, drop)
 		})
-	}, buf
+	}, h.buf
 }
 
 // GetLogBuffer returns the live log buffer for runID, or nil if the
@@ -72,6 +78,47 @@ func (s *Service) GetLogBuffer(runID string) *RunLogBuffer {
 	s.runLogsMu.RLock()
 	defer s.runLogsMu.RUnlock()
 	return s.runLogs[runID]
+}
+
+// GetLogBufferOf is GetLogBuffer for a reader bound to one run: the buffer
+// only when it was created for the run of this birth (RunLogBuffer.BornOf),
+// nil otherwise — a predecessor's buffer still registered under the ID, or
+// one whose run could not be read when it was created.
+func (s *Service) GetLogBufferOf(runID, birth string) *RunLogBuffer {
+	if buf := s.GetLogBuffer(runID); buf != nil && buf.BornOf(birth) {
+		return buf
+	}
+	return nil
+}
+
+// recordLogBirth records on buf the birth of the run the buffer is created
+// for: the run ctx is bound to (a prepared launch), else the run runID names
+// now, read with the caller's identity. A run that cannot be read leaves the
+// birth unknown, and the buffer is then served to no bound reader.
+func (s *Service) recordLogBirth(ctx context.Context, buf *RunLogBuffer, runID string) {
+	if b, ok := store.RunDataBindingFrom(ctx); ok && b.Header().RunID == runID {
+		buf.SetBirth(b.Header().BirthID)
+		return
+	}
+	if s.store == nil {
+		return
+	}
+	if run, err := s.store.LoadRun(ctx, runID); err == nil {
+		buf.SetBirth(run.BirthID)
+	}
+}
+
+// InstallLogBufferForTest registers a live buffer for runID holding data, as
+// created for the run of birth — a predecessor's buffer a subscription still
+// holds after its run was replaced. The returned func removes it.
+func (s *Service) InstallLogBufferForTest(runID, birth string, data []byte) func() {
+	buf, _ := NewRunLogBuffer("")
+	_, _ = buf.Write(data)
+	buf.SetBirth(birth)
+	s.runLogsMu.Lock()
+	s.runLogs[runID] = buf
+	s.runLogsMu.Unlock()
+	return func() { s.dropRunLog(runID, buf) }
 }
 
 // logPositionForRun is the callback shape the store uses to stamp
@@ -170,7 +217,7 @@ func (s *Service) activeDurationForRun(runID string) int64 {
 // Returns the buffer for cleanup and the logger to thread through
 // both BuildExecutor and runtime.WithLogger so every iterion log line
 // emitted during this run is captured for the WS subscribers.
-func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
+func (s *Service) prepareRunLog(ctx context.Context, runID string) (*RunLogBuffer, *iterlog.Logger) {
 	var filePath string
 	if s.storeDir != "" {
 		runDir := filepath.Join(s.storeDir, "runs", runID)
@@ -182,6 +229,7 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 	if fileErr != nil {
 		s.logger.Warn("runview: open run.log for %s: %v — proceeding without disk persistence", runID, fileErr)
 	}
+	s.recordLogBirth(ctx, buf, runID)
 
 	// A fork, so this run's secret matcher lands on a handle of its own:
 	// BuildExecutor sets it here (iterion#2822) and the service logger —
@@ -235,8 +283,9 @@ func (s *Service) runLoggerFor(runID string) *iterlog.Logger {
 // owns the on-disk run.log; a second writer here would corrupt it.
 // File contents reach this buffer via the file_log_source tailer,
 // which reads new bytes off disk and pushes them through Write.
-func (s *Service) prepareRunLogNoFile(runID string) *RunLogBuffer {
+func (s *Service) prepareRunLogNoFile(ctx context.Context, runID string) *RunLogBuffer {
 	buf, _ := NewRunLogBuffer("")
+	s.recordLogBirth(ctx, buf, runID)
 	s.runLogsMu.Lock()
 	if old, ok := s.runLogs[runID]; ok {
 		old.Close()
@@ -246,16 +295,20 @@ func (s *Service) prepareRunLogNoFile(runID string) *RunLogBuffer {
 	return buf
 }
 
-// dropRunLog tears down the per-run buffer at run-completion time:
-// closes any active subscribers, the persisted file, and removes the
-// map entry. Idempotent.
-func (s *Service) dropRunLog(runID string) {
-	s.runLogsMu.Lock()
-	buf := s.runLogs[runID]
-	delete(s.runLogs, runID)
-	delete(s.runLoggers, runID)
-	s.runLogsMu.Unlock()
-	if buf != nil {
-		buf.Close()
+// dropRunLog tears down buf, the per-run buffer its caller created for
+// runID (prepareRunLog, prepareRunLogNoFile): closes its subscribers and its
+// persisted file, and removes the map entry — only while it still holds buf.
+// A buffer registered under the ID since (a new subscription's tailer, a new
+// run) is another owner's and stays. Idempotent; a nil buf is a no-op.
+func (s *Service) dropRunLog(runID string, buf *RunLogBuffer) {
+	if buf == nil {
+		return
 	}
+	s.runLogsMu.Lock()
+	if s.runLogs[runID] == buf {
+		delete(s.runLogs, runID)
+		delete(s.runLoggers, runID)
+	}
+	s.runLogsMu.Unlock()
+	buf.Close()
 }

@@ -138,11 +138,12 @@ for event corruption, `event_stream_failed` for other permanent event errors
 and `log_stream_failed` for permanent log errors, instead of normal
 termination. Warnings alone preserve clean completion. This cannot recover an
 error a source dropped or published after closing its data channel. `Warn` is
-best effort; these resolved producers use a guaranteed fatal slot. The pump's
+best effort; these resolved producers and the Service's own source use the
+guaranteed producer-only `Fail`. The pump's
 decision concerns the server's outbound queue: a broken socket or full queue
-can still prevent wire delivery. Studio currently logs these error envelopes;
-no rendered fatal state or reconnect policy is established by this consumer
-correction.
+can still prevent wire delivery. Studio logs these error envelopes; a
+`scope_lost` close makes the page refuse every request and socket for that
+run until a reload ([run-ws-origin.md](run-ws-origin.md)).
 
 Subscription `Close` cancels and joins its producer and poller. Source `Close`
 also cancels and joins pending resolution and registered subscriptions.
@@ -167,8 +168,11 @@ closed without being installed. These guarantees rely on Source operations
 honoring cancellation; they do not forcibly terminate arbitrary
 implementations.
 
-This lifetime correction does not bind a new subscription to the original
-upgrade authorization or establish provenance across reconnects.
+Every reservation's parent context binds the run the upgrade loaded, so the
+store reads of each subscribe and resubscribe of a socket admit only that
+run; frames a process-local broker or buffer delivers after admission stay
+keyed by run ID ([run-ws-origin.md](run-ws-origin.md)). A redial carries
+the expected birth, compared before upgrade.
 
 ## Event cursor boundaries
 
@@ -177,11 +181,13 @@ upgrade authorization or establish provenance across reconnects.
 ## What this does not establish
 
 A subscription retains its first observation; it cannot bind itself
-retroactively to an earlier HTTP snapshot or authorization check. Connection
-claims, conservation of the original observation across later subscriptions,
-cross-connection reconnect, fatal UI rendering, and process-local
-broker/registry keys remain activation obligations. The in-process source still
-needs its corresponding proofs. Neither this adapter nor the storage migration
+retroactively to an earlier HTTP snapshot or authorization check. A WS socket
+binds its later subscriptions to its upgrade's run only by header and format,
+with the limits listed in [run-ws-origin.md](run-ws-origin.md): process-local
+broker, buffer and alert keys after admission, Mongo metadata writes,
+tenant changes, unchecked dials. Connection claims, cross-connection
+reconnect and a rendered state for other fatal stream errors remain
+activation obligations. Neither this adapter nor the storage migration
 enables protocol-one admission.
 
 Retained event-origin capture and delivery checks are described in

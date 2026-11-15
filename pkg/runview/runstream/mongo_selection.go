@@ -214,7 +214,7 @@ func (m *MongoSource) runSelectedEvents(ctx context.Context, s MongoSelection, p
 	defer pipe.Finish(nil)
 	original, observed, err := store.CaptureEventStreamObservation(s)
 	if err != nil {
-		pipe.fail(err)
+		pipe.Fail(err)
 		return
 	}
 	delay := 250 * time.Millisecond
@@ -222,7 +222,7 @@ func (m *MongoSource) runSelectedEvents(ctx context.Context, s MongoSelection, p
 	for {
 		terminal, err := m.selectedEventsOnce(ctx, s, &pos, pipe, replay, original, observed)
 		if mongoPermanent(err) {
-			pipe.fail(err)
+			pipe.Fail(err)
 			return
 		}
 		if ctx.Err() != nil || errors.Is(err, errEventDeliveryStopped) {
@@ -231,7 +231,7 @@ func (m *MongoSource) runSelectedEvents(ctx context.Context, s MongoSelection, p
 		if terminal && err == nil {
 			err = replay(ctx)
 			if mongoPermanent(err) {
-				pipe.fail(err)
+				pipe.Fail(err)
 				return
 			}
 			if err == nil || errors.Is(err, errEventDeliveryStopped) {
@@ -307,7 +307,7 @@ func (m *MongoSource) runSelectedLogs(ctx context.Context, s MongoSelection, fro
 	for {
 		terminal, err := m.selectedLogsOnce(ctx, s, &from, pipe, replay)
 		if mongoPermanent(err) {
-			pipe.fail(err)
+			pipe.Fail(err)
 			return
 		}
 		if ctx.Err() != nil {
@@ -316,7 +316,7 @@ func (m *MongoSource) runSelectedLogs(ctx context.Context, s MongoSelection, fro
 		if terminal && err == nil {
 			err = replay(ctx)
 			if mongoPermanent(err) {
-				pipe.fail(err)
+				pipe.Fail(err)
 				return
 			}
 			if err == nil {

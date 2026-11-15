@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -54,6 +55,15 @@ func (s *snapshotWSSource) SubscribeLogs(context.Context, string, int64) (runstr
 }
 
 func (s *snapshotWSSource) Close() error { return nil }
+
+// CheckBoundObservationSource endorses the probe itself: it serves no run at
+// all, so a bound connection may reach it.
+func (s *snapshotWSSource) CheckBoundObservationSource(actual runstream.Source) error {
+	if receiver, ok := actual.(*snapshotWSSource); !ok || receiver != s {
+		return store.ErrRunDataCapability
+	}
+	return nil
+}
 
 // TestSnapshotWSOriginalBoundary drives the real WS subscribe path: a run
 // replaced between the snapshot's load and its scan yields snapshot_failed,
@@ -121,6 +131,16 @@ func TestSnapshotWSOriginalBoundary(t *testing.T) {
 					if payload.Code != "snapshot_failed" {
 						t.Fatal("wrong refusal", payload.Code, string(first.Payload))
 					}
+					// The origin the upgrade bound is gone: the socket closes
+					// scope_lost behind the error instead of serving more.
+					ce, texts := awaitWSClose(t, c, 2*time.Second)
+					if len(texts) != 0 || ce.Code != 1000 || !strings.HasPrefix(ce.Text, wsCloseScopeLost+":") {
+						t.Fatalf("close after a lost origin = %+v, frames %v", ce, texts)
+					}
+					if source.calls.Load() != 0 {
+						t.Fatalf("subscriptions=%d want 0", source.calls.Load())
+					}
+					return
 				} else {
 					if first.Type != wsTypeSnapshot {
 						t.Fatalf("positive missing snapshot: %s %s", first.Type, first.Payload)

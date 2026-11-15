@@ -75,6 +75,28 @@ type RunLogBuffer struct {
 	file     *os.File // optional persisted tee; nil when persistence disabled
 	subs     []*runLogSub
 	dropsLog atomic.Int64 // best-effort counter of total dropped chunks across subscribers
+
+	// birth is the birth of the run this buffer was created for, recorded
+	// once (SetBirth): the buffer is keyed by run ID alone, and a run
+	// deleted and recreated under the ID may still find its predecessor's
+	// buffer registered. birthKnown is false until it is recorded.
+	birth      string
+	birthKnown bool
+}
+
+// SetBirth records the birth of the run the buffer was created for.
+func (b *RunLogBuffer) SetBirth(birth string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.birth, b.birthKnown = birth, true
+}
+
+// BornOf reports whether the buffer was created for the run of this birth:
+// a buffer whose birth was never recorded belongs to no known run.
+func (b *RunLogBuffer) BornOf(birth string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.birthKnown && b.birth == birth
 }
 
 // NewRunLogBuffer creates an empty buffer. Pass filePath to also
@@ -213,12 +235,18 @@ func (b *RunLogBuffer) Snapshot(from int64) (offset int64, data []byte, total in
 // Subscribe registers a live consumer. Callers should Snapshot(from)
 // historical bytes BEFORE Subscribe to avoid racing the next Write,
 // then drain live chunks dropping any whose offset overlaps the
-// snapshot tail.
+// snapshot tail. A subscription to a closed buffer is closed already: no
+// Close will ever end it.
 func (b *RunLogBuffer) Subscribe() *RunLogSubscription {
 	sub := &runLogSub{ch: make(chan runLogChunk, runLogSubBufferSize)}
 
 	b.mu.Lock()
-	b.subs = append(b.subs, sub)
+	if b.closed {
+		sub.closed = true
+		close(sub.ch)
+	} else {
+		b.subs = append(b.subs, sub)
+	}
 	b.mu.Unlock()
 
 	cancel := func() {

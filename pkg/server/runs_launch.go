@@ -118,8 +118,13 @@ type launchRunRequest struct {
 	// repository that owns one failed run's workflow source. The host resolves
 	// provenance, injects a bounded attested failure envelope, and enforces an
 	// isolated no-merge worktree.
-	SourceRunID  string `json:"source_run_id,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+	SourceRunID string `json:"source_run_id,omitempty"`
+	// SourceRunBirth is the birth the caller expects of SourceRunID
+	// (checkCarriedBirth): a source replaced under its ID is refused 409
+	// run_origin_lost instead of delegated in the original's place.
+	// Optional; "historical" expects a run with no birth.
+	SourceRunBirth string `json:"source_run_birth,omitempty"`
+	Instructions   string `json:"instructions,omitempty"`
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
 	// records it on Run.Preset for resume.
@@ -700,8 +705,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var err error
-		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.Instructions, req.Vars)
+		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.SourceRunBirth, req.Instructions, req.Vars)
 		if err != nil {
+			if carriedBirthFailure(err) {
+				s.writeCarriedBirthFailure(w, r, err)
+				span.SetStatus(codes.Error, "source run origin")
+				return
+			}
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
 			return
 		}

@@ -22,6 +22,35 @@ export function nextReconnectDelay(currentMs: number): number {
   return Math.min(currentMs * 2, MAX_RECONNECT_DELAY_MS);
 }
 
+// The server names why it closed a socket with a token, the first word of
+// the close reason ("<token>: <cause>", pkg/server/hub.go). A client matches
+// the token, never the cause behind it.
+export function closeReasonToken(reason: string | null | undefined): string {
+  if (!reason) return "";
+  const end = reason.search(/[:\s]/);
+  return end === -1 ? reason : reason.slice(0, end);
+}
+
+// scope_lost: what this socket was opened on no longer holds — the run was
+// replaced or deleted under its ID, or the caller's standing in its team is
+// gone. A redial would attach to whatever run holds the ID now and resume
+// from this run's cursors, so the client stops reconnecting instead.
+export const SCOPE_LOST_CLOSE_TOKEN = "scope_lost";
+
+export function isScopeLostClose(reason: string | null | undefined): boolean {
+  return closeReasonToken(reason) === SCOPE_LOST_CLOSE_TOKEN;
+}
+
+// invalid_expected_birth: the dial named an expected birth that is not one.
+// The server accepts the socket and closes it with this token instead of
+// refusing the handshake, which a browser sees as 1006 and redials; the
+// client does not redial either.
+export const INVALID_EXPECTATION_CLOSE_TOKEN = "invalid_expected_birth";
+
+export function isInvalidExpectationClose(reason: string | null | undefined): boolean {
+  return closeReasonToken(reason) === INVALID_EXPECTATION_CLOSE_TOKEN;
+}
+
 // Terminal statuses never emit further events, so we stop the heartbeat
 // once the run reaches one (pinging a finished run is pointless churn).
 const TERMINAL_RUN_STATUSES = new Set(["finished", "failed", "cancelled"]);

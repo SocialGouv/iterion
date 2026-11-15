@@ -323,8 +323,8 @@ func TestStreamSource_LogsInProcessBufferCutoff(t *testing.T) {
 	const runID = "run-log-buffer"
 	seedStreamRun(t, svc, runID, 0)
 
-	buf, _ := svc.prepareRunLog(runID)
-	defer svc.dropRunLog(runID)
+	buf, _ := svc.prepareRunLog(t.Context(), runID)
+	defer svc.dropRunLog(runID, buf)
 	if _, err := buf.Write([]byte("hello ")); err != nil {
 		t.Fatalf("seed write: %v", err)
 	}
@@ -354,8 +354,8 @@ func TestStreamSource_LogsRingEvictionGapFill(t *testing.T) {
 	const runID = "run-log-evict"
 	seedStreamRun(t, svc, runID, 0)
 
-	buf, _ := svc.prepareRunLog(runID) // file-backed: writes tee to run.log
-	defer svc.dropRunLog(runID)
+	buf, _ := svc.prepareRunLog(t.Context(), runID) // file-backed: writes tee to run.log
+	defer svc.dropRunLog(runID, buf)
 
 	// Write > runLogRingCap so the head is evicted from the ring but
 	// remains on disk.

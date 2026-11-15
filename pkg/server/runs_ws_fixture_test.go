@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
 
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // testOwnedRunStreams joins the producers a server fixture starts before its
@@ -188,6 +190,17 @@ func TestRunServerFixtureJoinsSubscriptionBeingAdmitted(t *testing.T) {
 			t.Fatal(e)
 		}
 	})
+}
+
+// CheckBoundObservationSource forwards the bound-observation contract
+// explicitly: the fixture endorses only itself, and only when the source it
+// wraps honors the binding. Embedding the Source interface promotes no
+// capability, so without this method the fixture would be refused.
+func (s *testOwnedRunStreams) CheckBoundObservationSource(actual runstream.Source) error {
+	if receiver, ok := actual.(*testOwnedRunStreams); !ok || receiver != s {
+		return fmt.Errorf("%w: %T is not this fixture", store.ErrRunDataCapability, actual)
+	}
+	return runstream.RequireBoundObservationSource(s.Source)
 }
 
 // Preserve the fixture's producer ownership when forwarding the additive seam.

@@ -90,9 +90,12 @@ type detachedSpec struct {
 	// from scratch, so anything not passed here refuses where the
 	// admitting boundary chose to ride.
 	AllowUnknownInputs bool
-	Timeout            time.Duration
-	MergeInto          string // worktree finalization, Launch only
-	BranchName         string // worktree finalization, Launch only
+	// LogBuf is the run's log buffer the launch or resume created
+	// (prepareRunLogNoFile): the one the exit watcher drops.
+	LogBuf     *RunLogBuffer
+	Timeout    time.Duration
+	MergeInto  string // worktree finalization, Launch only
+	BranchName string // worktree finalization, Launch only
 	// AutoMemory forwards the run-level auto-memory override as the CLI's
 	// --auto-memory flag. The subprocess re-resolves the knob from scratch,
 	// so anything not passed here is silently replaced by the workflow's own
@@ -407,7 +410,7 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 		if !paused {
 			s.broker.CloseRun(spec.RunID)
 		}
-		s.dropRunLog(spec.RunID)
+		s.dropRunLog(spec.RunID, spec.LogBuf)
 		s.manager.Deregister(spec.RunID)
 	}()
 
@@ -486,7 +489,6 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, err.Error()); uerr != nil {
 			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
 		}
-		s.dropRunLog(runID)
 		return nil, fmt.Errorf("runview: %w", err)
 	}
 
@@ -514,7 +516,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// the file-based tailer's output. In detached mode we explicitly
 	// skip the file-tee path: the runner subprocess owns run.log on
 	// disk and a duplicate writer here would corrupt it.
-	s.prepareRunLogNoFile(runID)
+	logBuf := s.prepareRunLogNoFile(parent, runID)
 
 	res, err := s.spawnDetached(parent, detachedSpec{
 		Command:            runnerCommandRun,
@@ -535,6 +537,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Supervisors:        spec.Supervisors,
 		Permission:         spec.Permission,
 		Budget:             spec.Budget,
+		LogBuf:             logBuf,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
@@ -542,7 +545,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, "runner failed to start: "+err.Error()); uerr != nil {
 			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
 		}
-		s.dropRunLog(runID)
+		s.dropRunLog(runID, logBuf)
 		return nil, err
 	}
 
@@ -551,7 +554,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// events.jsonl. It runs until the run terminates (signaled via
 	// the closed Done channel from spawnDetached's watcher).
 	startEventSource(s, runID, res.Done)
-	startLogSource(s, runID, res.Done)
+	startLogSource(s, runID, logBuf, res.Done)
 
 	return res, nil
 }
@@ -579,11 +582,11 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 			codemodeBounds = r.CodemodeBoundsOverride
 		}
 	}
-	s.prepareRunLogNoFile(spec.RunID)
+	logBuf := s.prepareRunLogNoFile(parent, spec.RunID)
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)
 	if convErr != nil {
-		s.dropRunLog(spec.RunID)
+		s.dropRunLog(spec.RunID, logBuf)
 		return nil, convErr
 	}
 
@@ -608,14 +611,15 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		// Without it a --max-cost-usd on a detached resume was inert
 		// — the child ran the launch-time figure that killed the run.
 		Budget: spec.Budget,
+		LogBuf: logBuf,
 	})
 	if err != nil {
-		s.dropRunLog(spec.RunID)
+		s.dropRunLog(spec.RunID, logBuf)
 		return nil, err
 	}
 
 	startEventSource(s, spec.RunID, res.Done)
-	startLogSource(s, spec.RunID, res.Done)
+	startLogSource(s, spec.RunID, logBuf, res.Done)
 
 	return res, nil
 }

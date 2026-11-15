@@ -702,6 +702,11 @@ func MergeBudgetOverrides(base, next *ir.BudgetOverrides) *ir.BudgetOverrides {
 // RunSnapshot — call Snapshot for the full view.
 type RunSummary struct {
 	ID string `json:"id"`
+	// BirthID is the run's birth identity, as on the snapshot header
+	// (RunHeader.BirthID): a view opened from this row expects it, so a run
+	// replaced between the listing and the navigation is refused rather
+	// than shown in its place. "" is a historical run.
+	BirthID string `json:"birth_id"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -1065,6 +1070,9 @@ type Service struct {
 	// fileSrcMu (same low-contention lock). Refcounted; the tailer + buffer are
 	// torn down when the last WS subscriber releases.
 	logSrcs map[string]*fileSrcHandle
+	// logReleaseGap, when set (tests), runs between a log tailer's last
+	// release unlocking fileSrcMu and dropping its buffer.
+	logReleaseGap func(runID string)
 
 	// maxCostPerDayUSD configures the per-(store, UTC-day) LLM spend cap
 	// enforced across every run this service launches. 0 disables it.

@@ -96,23 +96,23 @@ func (f *FileSource) SubscribeEventsCursor(ctx context.Context, id string, posit
 		selection, observed, e := cap.OpenFilesystemStream(c, id, store.FilesystemStreamOpenOptions{WaitForInitialDirectory: true})
 		if e != nil {
 			if IsPermanentError(e) || c.Err() == nil {
-				pipe.fail(e)
+				pipe.Fail(e)
 			}
 			return
 		}
 		if !observed || nilEventSelection(selection) {
-			pipe.fail(store.ErrRunDataCapability)
+			pipe.Fail(store.ErrRunDataCapability)
 			return
 		}
 		defer selection.Close()
 		cursor := newFileEventDrain(selection, pipe, position.Seq)
 		if cursor.admissionErr != nil {
-			pipe.fail(cursor.admissionErr)
+			pipe.Fail(cursor.admissionErr)
 			return
 		}
 		cursor.after = position.After
 		defer cursor.Close()
-		f.runSelectedFile(c, selection, false, cursor.Drain, pipe.Warn, pipe.fail)
+		f.runSelectedFile(c, selection, false, cursor.Drain, pipe.Warn, pipe.Fail)
 	}()
 	return pipe, nil
 }
@@ -133,7 +133,7 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 		selection, observed, e := cap.OpenFilesystemStream(c, id, store.FilesystemStreamOpenOptions{})
 		if e != nil {
 			if IsPermanentError(e) || c.Err() == nil {
-				pipe.fail(e)
+				pipe.Fail(e)
 			}
 			return
 		}
@@ -141,7 +141,7 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 			return
 		}
 		if selection == nil {
-			pipe.fail(store.ErrRunDataCapability)
+			pipe.Fail(store.ErrRunDataCapability)
 			return
 		}
 		defer selection.Close()
@@ -151,22 +151,22 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 		// joined identity/missing error must never be an empty successful log.
 		file, e := selection.OpenLog(c)
 		if IsPermanentError(e) {
-			pipe.fail(e)
+			pipe.Fail(e)
 			return
 		}
 		if isFileMissing(e) {
 			return
 		}
 		if e != nil {
-			pipe.fail(e)
+			pipe.Fail(e)
 			return
 		}
 		if file == nil {
-			pipe.fail(store.ErrRunDataCapability)
+			pipe.Fail(store.ErrRunDataCapability)
 			return
 		}
 		file.Close()
-		f.runSelectedFile(c, selection, true, cursor.Drain, pipe.Warn, pipe.fail)
+		f.runSelectedFile(c, selection, true, cursor.Drain, pipe.Warn, pipe.Fail)
 	}()
 	return pipe, nil
 }

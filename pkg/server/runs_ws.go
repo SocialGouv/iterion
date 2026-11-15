@@ -224,9 +224,39 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Cross-store mode skips this — the foreign FS store has no
 	// tenant scoping and the resolveCrossStore() above already
 	// gated the path under the iterion home.
-	if xStore == nil {
-		if _, lerr := s.runs.LoadRunCtx(r.Context(), runID); lerr != nil {
+	//
+	// The run read here is also the ORIGIN the socket keeps: its header is
+	// what every snapshot, event and log subscription of this socket binds
+	// to (runConn.streamCtx), so a run deleted and recreated under the same
+	// ID is refused rather than served in its place. The cross-store read
+	// binds the same way; a run absent from the foreign store stays
+	// unbound, as before, so one created after the upgrade is admitted.
+	//
+	// A dial carrying an expected birth was compared by runOriginGate: the
+	// socket binds exactly the origin the gate compared, without a second
+	// read a successor could slip into — and a redial carries its
+	// expectation again, on whichever replica serves it.
+	var origin store.RunObservation
+	if admitted, ok := admittedOrigin(r.Context(), runID); ok {
+		origin = admitted
+	} else if xStore == nil {
+		o, lerr := s.runs.CaptureRunOrigin(r.Context(), runID)
+		if lerr != nil {
 			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		origin = o
+	} else {
+		o, lerr := runview.CaptureRunOriginIn(r.Context(), xStore, runID)
+		switch {
+		case lerr == nil:
+			origin = o
+		case errors.Is(lerr, store.ErrRunNotFound):
+		case errors.Is(lerr, store.ErrRunDeleted):
+			http.Error(w, "run deleted", http.StatusGone)
+			return
+		default:
+			http.Error(w, "cross-store run could not be read: "+lerr.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -242,6 +272,7 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	rc.clientIP = s.clientIP(r)
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
+	rc.origin = origin
 	// One store-agnostic streaming source per connection (ADR-053): a
 	// per-conn FileSource for cross-store observation (closed with the
 	// conn — see close()), the Service's shared source otherwise.
@@ -316,6 +347,11 @@ type runConn struct {
 	// per-connection FileSource, closed with the conn.
 	src runstream.Source
 
+	// origin is the run the upgrade authorized, observed once by the
+	// upgrade's own read: header and stored tenant, provenance only. Zero
+	// (unobserved) when a cross-store run was absent at the upgrade.
+	origin store.RunObservation
+
 	mu                  sync.Mutex
 	eventOwner          *wsSubscriptionOwner
 	logOwner            *wsSubscriptionOwner
@@ -353,6 +389,60 @@ func (c *runConn) authCtx() context.Context {
 		return context.Background()
 	}
 	return store.WithIdentity(context.Background(), c.tenantID, c.userID)
+}
+
+// streamCtx is authCtx bound to the run the upgrade authorized
+// (store.BindRunObservation): the parent of every event and log reservation,
+// so a snapshot, replay or log read of any (re)subscription reads that run
+// and is refused for a successor recreated under the same ID. It is never
+// the context of a mutating action — authCtx stays unbound so a resume or a
+// child run does not inherit the binding. A connection with no observed
+// origin (a cross-store run absent at the upgrade) stays unbound.
+func (c *runConn) streamCtx() (context.Context, error) {
+	ctx := c.authCtx()
+	if !c.origin.Observed() {
+		return ctx, nil
+	}
+	return store.BindRunObservation(ctx, c.origin)
+}
+
+// wsErrRunOriginLost answers a mutating envelope whose socket's origin is
+// gone: the run behind its ID was replaced or deleted after the upgrade.
+const wsErrRunOriginLost = "run_origin_lost"
+
+// wsCauseOriginLost is the cause the scope_lost close frame names when the
+// socket's origin is gone.
+const wsCauseOriginLost = "the run this socket watches was replaced or deleted"
+
+// runOriginLost reports whether err says the run behind the ID is no longer
+// the origin the reader bound: a successor's header, a deletion, an absence.
+func runOriginLost(err error) bool {
+	return errors.Is(err, store.ErrRunDataIdentityChanged) || errors.Is(err, store.ErrRunDeleted) || errors.Is(err, store.ErrRunNotFound)
+}
+
+// closeOnOriginLost closes a bound connection whose origin err reports gone,
+// behind the typed error envelope the caller already queued: nothing this
+// socket was opened on can be served again, and a redial authorizes whatever
+// run holds the ID now. An unbound connection, or any other error, keeps the
+// socket.
+func (c *runConn) closeOnOriginLost(err error) {
+	if !c.origin.Observed() || !runOriginLost(err) {
+		return
+	}
+	if c.server != nil && c.server.logger != nil {
+		c.server.logger.Info("server: ws of run %s lost its origin — closing: %v", c.runID, err)
+	}
+	c.closeWithReason(websocket.CloseNormalClosure, wsCloseScopeLost, wsCauseOriginLost)
+}
+
+// requireBoundSource refuses, before any subscription, a stream source that
+// cannot honor the bound context of a connection with an origin: stripping
+// the binding would serve whatever run holds the ID now.
+func (c *runConn) requireBoundSource() error {
+	if !c.origin.Observed() {
+		return nil
+	}
+	return runstream.RequireBoundObservationSource(c.src)
 }
 
 func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
@@ -604,12 +694,13 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 //
 // A connection carrying no credential is one no auth context ever reached
 // (the local run console, a server built without the middleware): there is
-// nothing to ask about. A cross-store connection drives no run of this
-// server (its mutating envelopes are refused downstream), so its scope is
-// not re-derived here; its credential still is.
+// no credential to ask about, but its origin is still compared (originHolds).
+// A cross-store connection drives no run of this server (its mutating
+// envelopes are refused downstream), so neither its origin nor its scope is
+// re-derived here; its credential still is.
 func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	if c.identity.Credential == "" {
-		return true
+		return c.originHolds(env)
 	}
 	ctx, cancel := context.WithTimeout(c.authCtx(), runWSStandingTimeout)
 	defer cancel()
@@ -631,6 +722,9 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	}
 	if c.xStore != nil {
 		return true
+	}
+	if !c.originHolds(env) {
+		return false
 	}
 	team, terr := c.server.runTenant(ctx, c.runID)
 	if terr != nil {
@@ -664,6 +758,45 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	return true
 }
 
+// originHolds asks, per envelope that changes the run, whether the run behind
+// this socket's ID is still the origin its upgrade authorized: the run is
+// loaded under the bound context (streamCtx), which a native store refuses for
+// a successor recreated under the same ID. A replaced, deleted or missing
+// origin refuses the envelope with run_origin_lost and closes the socket
+// scope_lost — the run it was opened on is gone, and the action would land on
+// another. A read that did not complete refuses THAT envelope only.
+//
+// This is an admission check, not an atomic guarantee: the run can still be
+// replaced between the check and the action. The action itself keeps the
+// unbound authCtx, so a resume or a child run never inherits the binding.
+func (c *runConn) originHolds(env runWSEnvelope) bool {
+	if c.xStore != nil || !c.origin.Observed() {
+		return true
+	}
+	bound, err := c.streamCtx()
+	if err == nil {
+		ctx, cancel := context.WithTimeout(bound, runWSStandingTimeout)
+		_, err = c.server.runs.LoadRunCtx(ctx, c.runID)
+		cancel()
+	}
+	if err == nil {
+		return true
+	}
+	if runOriginLost(err) {
+		if c.server.logger != nil {
+			c.server.logger.Warn("server: ws of run %s refused a %s: %v", c.runID, env.Type, err)
+		}
+		c.sendError(wsErrRunOriginLost, wsCauseOriginLost+" — reopen it to act on the run that holds this ID now", env.AckID)
+		c.closeOnOriginLost(err)
+		return false
+	}
+	if c.server.logger != nil {
+		c.server.logger.Error("server: ws of run %s: its origin could not be checked: %v", c.runID, err)
+	}
+	c.sendError("scope_unavailable", "the run this socket watches could not be checked — retry", env.AckID)
+	return false
+}
+
 // handleSubscribe registers the connection's event subscription and
 // sends the catch-up sequence: snapshot first, then (with
 // replay_history) any persisted events with seq >= from_seq, then the
@@ -679,7 +812,16 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 			return
 		}
 	}
-	owner, created := c.reserveSubscription(c.authCtx(), false)
+	if err := c.requireBoundSource(); err != nil {
+		c.sendError("event_stream_failed", err.Error(), env.AckID)
+		return
+	}
+	parent, err := c.streamCtx()
+	if err != nil {
+		c.sendError("snapshot_failed", err.Error(), env.AckID)
+		return
+	}
+	owner, created := c.reserveSubscription(parent, false)
 	if !created {
 		if owner != nil {
 			c.sendAck(env.AckID)
@@ -701,6 +843,7 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	if err != nil {
 		if owner.ctx.Err() == nil {
 			c.sendError("snapshot_failed", err.Error(), env.AckID)
+			c.closeOnOriginLost(err)
 		}
 		return
 	}
@@ -721,6 +864,7 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	if err != nil {
 		if owner.ctx.Err() == nil {
 			c.sendError("event_stream_failed", err.Error(), "")
+			c.closeOnOriginLost(err)
 		}
 		return
 	}
@@ -776,6 +920,7 @@ func (c *runConn) pumpEventsCtx(ctx context.Context, sub runstream.EventSubscrip
 					c.sendError("events_corrupted", fatal.Error(), "")
 				} else if fatal != nil {
 					c.sendError("event_stream_failed", fatal.Error(), "")
+					c.closeOnOriginLost(fatal)
 				} else {
 					c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
 				}

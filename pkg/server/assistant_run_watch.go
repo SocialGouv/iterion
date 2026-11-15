@@ -1379,9 +1379,12 @@ func assistantWatchStopsForStatus(status store.RunStatus) bool {
 }
 
 type createAssistantWatchRequest struct {
-	AssistantRunID string        `json:"assistant_run_id"`
-	Mode           runwatch.Mode `json:"mode"`
-	MaxEpisodes    int           `json:"max_episodes,omitempty"`
+	AssistantRunID string `json:"assistant_run_id"`
+	// AssistantRunBirth is the birth the caller expects of AssistantRunID
+	// (checkCarriedBirth): optional, compared right after its load.
+	AssistantRunBirth string        `json:"assistant_run_birth,omitempty"`
+	Mode              runwatch.Mode `json:"mode"`
+	MaxEpisodes       int           `json:"max_episodes,omitempty"`
 	// Pointer distinguishes an omitted pacing preference from an explicit 0.
 	// That matters when a child request widens an existing ancestor watch.
 	CooldownSeconds *int     `json:"cooldown_seconds,omitempty"`
@@ -1526,6 +1529,10 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		s.httpErrorFor(w, r, http.StatusNotFound, "assistant run not found")
 		return
 	}
+	if err := checkCarriedBirth("assistant_run_birth", req.AssistantRunBirth, assistant); err != nil {
+		s.writeCarriedBirthFailure(w, r, err)
+		return
+	}
 	if assistantWatchStopsForStatus(assistant.Status) {
 		s.httpErrorFor(w, r, http.StatusConflict, "assistant run is %s", assistant.Status)
 		return
@@ -1583,7 +1590,13 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	}
 	now := time.Now().UTC()
 	lastObservedSeq := runview.NoEventsSeq
-	if snap, snapErr := c.runs.SnapshotCtx(r.Context(), target.ID); snapErr != nil {
+	// A request the gate admitted on its expected birth only reads the
+	// target: no merge reconciliation write (SnapshotWithoutReconcileCtx).
+	snapshot := c.runs.SnapshotCtx
+	if _, admitted := admittedOrigin(r.Context(), target.ID); admitted {
+		snapshot = c.runs.SnapshotWithoutReconcileCtx
+	}
+	if snap, snapErr := snapshot(r.Context(), target.ID); snapErr != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "read target event cursor: %v", snapErr)
 		return
 	} else if snap != nil {

@@ -107,7 +107,7 @@ func (s *Store) ObserveRunDataHeader(ctx context.Context, id string) (store.RunD
 		return store.RunDataHeader{}, err
 	}
 	if schemaVersion > SchemaVersion {
-		return store.RunDataHeader{}, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, schemaVersion)
+		return store.RunDataHeader{}, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, schemaVersion, store.ErrRunMetadataUndecodable)
 	}
 	if deleted {
 		return store.RunDataHeader{}, store.ErrRunDeleted

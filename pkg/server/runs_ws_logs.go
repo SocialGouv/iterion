@@ -21,7 +21,18 @@ func (c *runConn) handleSubscribeLogs(env runWSEnvelope) {
 			return
 		}
 	}
-	owner, created := c.reserveSubscription(c.authCtx(), true)
+	if err := c.requireBoundSource(); err != nil {
+		c.sendError("log_stream_failed", err.Error(), env.AckID)
+		return
+	}
+	// The same origin-bound parent as the event reservation (streamCtx): a
+	// log subscription reads the run the upgrade authorized, or is refused.
+	parent, err := c.streamCtx()
+	if err != nil {
+		c.sendError("log_stream_failed", err.Error(), env.AckID)
+		return
+	}
+	owner, created := c.reserveSubscription(parent, true)
 	if !created {
 		if owner != nil {
 			c.sendAck(env.AckID)
@@ -39,11 +50,11 @@ func (c *runConn) handleSubscribeLogs(env runWSEnvelope) {
 			c.finishSubscription(owner)
 		}
 	}()
-	var err error
 	sub, err = c.src.SubscribeLogs(owner.ctx, c.runID, req.FromOffset)
 	if err != nil {
 		if owner.ctx.Err() == nil {
 			c.sendError("log_stream_failed", err.Error(), env.AckID)
+			c.closeOnOriginLost(err)
 		}
 		return
 	}
@@ -90,6 +101,7 @@ func (c *runConn) pumpLogsCtx(ctx context.Context, sub runstream.LogSubscription
 				fatal = drainRunStreamFatal(fatal, errs)
 				if fatal != nil {
 					c.sendError("log_stream_failed", fatal.Error(), "")
+					c.closeOnOriginLost(fatal)
 				} else {
 					c.sendEnvelope(wsTypeLogTerminated, map[string]string{"run_id": c.runID}, "")
 				}

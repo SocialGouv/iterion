@@ -23,6 +23,8 @@ function styleFor(state: string): Style {
       return { tone: "warning", label: "Reconnecting…", pulse: true };
     case "closed":
       return { tone: "danger", label: "Disconnected", pulse: false };
+    case "lost":
+      return { tone: "danger", label: "Disconnected — run replaced, deleted or access changed", pulse: false };
     default:
       return { tone: "neutral", label: state || "Unknown", pulse: false };
   }

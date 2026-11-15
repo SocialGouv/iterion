@@ -233,7 +233,7 @@ func TestMongoResolvedPureLifetimeAndErrors(t *testing.T) {
 	if !mongoPermanent(fatal) {
 		t.Fatal("joined refusal not permanent")
 	}
-	p.fail(fatal)
+	p.Fail(fatal)
 	p.Finish(nil)
 	found := false
 	for err := range p.Errors() {

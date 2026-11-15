@@ -253,13 +253,15 @@ func (s *FilesystemRunStore) loadRunRawContext(ctx context.Context, id string) (
 		return nil, fmt.Errorf("store: load run %s: %w", id, err)
 	}
 	var r Run
+	// A document that does not decode is reported as ErrRunMetadataUndecodable
+	// (final): reading it again answers the same.
 	format, err := RunValueFormatFromJSON(context.Background(), data)
 	if err != nil {
-		return nil, err
+		return nil, runJSONUndecodable(id, data, err)
 	}
 	header, err := RunDataHeaderFromJSON(ctx, data)
 	if err != nil {
-		return nil, err
+		return nil, runJSONUndecodable(id, data, err)
 	}
 	if err := RequireRunDataStorage(header.Protocol); err != nil {
 		return nil, err
@@ -274,7 +276,7 @@ func (s *FilesystemRunStore) loadRunRawContext(ctx context.Context, id string) (
 	}
 
 	if err := DecodeValueRecordJSON(ctx, format, ExactRun, data, &r); err != nil {
-		return nil, fmt.Errorf("store: decode run %s: %w", id, err)
+		return nil, runJSONUndecodable(id, data, fmt.Errorf("store: decode run %s: %w", id, err))
 	}
 	return &r, nil
 }

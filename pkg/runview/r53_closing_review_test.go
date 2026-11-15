@@ -52,7 +52,7 @@ func TestIndependentR53ClosePrecedesDoneAndHandoff(t *testing.T) {
 			close(bodyRelease)
 		}
 	}()
-	res, err := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error {
+	res, err := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error {
 		close(bodyEnter)
 		<-bodyRelease
 		return errors.New("body failure")
@@ -134,7 +134,7 @@ func TestIndependentR53AllPrelaunchBranches(t *testing.T) {
 			case "budget":
 				extra.budgetOverrides = &store.RunBudgetOverrides{}
 			}
-			_, err = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), 0, false, nil, "", nil, "", false, extra, nil, func(context.Context, context.Context, *runtime.Engine) error { t.Error("body launched"); return nil })
+			_, err = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, extra, nil, func(context.Context, context.Context, *runtime.Engine) error { t.Error("body launched"); return nil })
 			if err == nil {
 				t.Fatal("missing injected error")
 			}
@@ -184,7 +184,7 @@ func TestIndependentR53FileLockProtectsHandoffCleanup(t *testing.T) {
 			close(barrier.release)
 		}
 	}()
-	res, err := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+	res, err := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestIndependentR53PrelaunchUncreatedHandoffPreservesIncumbent(t *testing.T)
 		t.Fatal(err)
 	}
 	defer stopService(t, svc)
-	_, err = svc.spawnRun(spec.Ctx, "missing", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+	_, err = svc.spawnRun(spec.Ctx, "missing", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 	if err == nil {
 		t.Fatal("expected error")
 	}

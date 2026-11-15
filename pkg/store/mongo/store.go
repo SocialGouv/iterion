@@ -202,6 +202,9 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	}
 
 	clientOptions := options.Client().ApplyURI(cfg.URI).SetRegistry(Registry())
+	if warning := readPreferenceWarning(clientOptions); warning != "" {
+		cfg.Logger.Warn("%s", warning)
+	}
 	cli, err := mongo.Connect(clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: connect: %w", err)

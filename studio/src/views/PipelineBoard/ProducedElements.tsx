@@ -283,7 +283,7 @@ export function ProducedElements({ runIds, status }: Props) {
               {formatBytes(preview.size)} · {preview.contentType || "loading…"}
             </span>
           }
-          downloadHref={`${artifactFileURL(previewRunId, preview.path)}?download=1`}
+          downloadHref={artifactFileURL(previewRunId, preview.path, { download: true })}
         />
       ) : preview ? (
         <Dialog
@@ -300,7 +300,7 @@ export function ProducedElements({ runIds, status }: Props) {
           }
           footer={
             <a
-              href={`${artifactFileURL(previewRunId, preview.path)}?download=1`}
+              href={artifactFileURL(previewRunId, preview.path, { download: true })}
               download
               className="inline-flex items-center gap-1 rounded-md border border-border-default px-2.5 py-1 text-xs font-medium text-fg-default hover:bg-surface-2"
             >
@@ -464,7 +464,7 @@ function ProducedRow({
             Open
           </Button>
           <a
-            href={`${artifactFileURL(item.runId, item.path)}?download=1`}
+            href={artifactFileURL(item.runId, item.path, { download: true })}
             download
             aria-label={`Download ${item.name}`}
             className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg-default"

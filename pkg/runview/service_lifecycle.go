@@ -445,7 +445,9 @@ func (s *Service) tryReattachByPID(runID string) bool {
 // shutdown checkpoints anyway, and the watcher's only consumer is
 // Drain (timing-sensitive) and the broker.CloseRun call (post-mortem).
 func (s *Service) reattachDetached(runID string, pid int) {
-	s.prepareRunLogNoFile(runID)
+	// A reattach at boot has no request: the run's birth is read team-blind
+	// (detached runs are local, a filesystem store).
+	logBuf := s.prepareRunLogNoFile(store.TeamBlind(context.Background()), runID)
 
 	done := make(chan struct{})
 	var cancelOnce sync.Once
@@ -463,11 +465,11 @@ func (s *Service) reattachDetached(runID string, pid int) {
 	}
 
 	go func() {
-		watchDetachedExit(s, runID, pid, done)
+		watchDetachedExit(s, runID, pid, done, logBuf)
 	}()
 
 	startEventSource(s, runID, done)
-	startLogSource(s, runID, done)
+	startLogSource(s, runID, logBuf, done)
 
 	s.logger.Info("runview: re-attached detached run %s (pid=%d) across server restart", runID, pid)
 }
@@ -478,7 +480,8 @@ func (s *Service) reattachDetached(runID string, pid int) {
 // the handle (which closes done). Used only on the re-attach path
 // where we don't own the cmd. 5s cadence is fine because runners
 // typically run for minutes; a faster probe would just burn syscalls.
-func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
+// logBuf is the run's log buffer the re-attach created, the one it drops.
+func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, logBuf *RunLogBuffer) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -491,7 +494,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 					_ = pidS.RemovePIDFile(runID)
 				}
 				s.broker.CloseRun(runID)
-				s.dropRunLog(runID)
+				s.dropRunLog(runID, logBuf)
 				s.manager.Deregister(runID)
 				return
 			}

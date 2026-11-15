@@ -97,6 +97,14 @@ func WithRunDataBinding(ctx context.Context, b RunDataBinding) (context.Context,
 	return context.WithValue(ctx, runDataBindingKey{}, b), nil
 }
 
+// WithoutRunDataBinding returns ctx without the run data binding and value
+// format intent it carries, its identity and deadline kept: a read of
+// whatever run holds the ID now (a log tailer labelling its buffer with the
+// run it tails), never a read whose answer is served to the bound reader.
+func WithoutRunDataBinding(ctx context.Context) context.Context {
+	return context.WithValue(context.WithValue(ctx, runDataBindingKey{}, nil), runValueFormatKey{}, nil)
+}
+
 // RunDataBindingFrom exposes a value copy for propagation, never a mutable row.
 func RunDataBindingFrom(ctx context.Context) (RunDataBinding, bool) {
 	if ctx == nil {

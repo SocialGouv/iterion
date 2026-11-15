@@ -26,5 +26,6 @@ view in [architecture.md](../../architecture.md).
 | [run-birth.md](run-birth.md) | Birth identity, Mongo notes/streams and publication. |
 | [retained-payloads.md](retained-payloads.md) | FS/Mongo grants and cleanup limits. |
 | [run-streams.md](run-streams.md) | Mongo/FS selection, replay, lifetime. |
+| [run-ws-origin.md](run-ws-origin.md) | Expected birth, origin refusals. |
 | [run-cursors.md](run-cursors.md) | Event cursor boundaries and legacy compatibility. |
 | [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker, Service feeds and snapshot scans. |

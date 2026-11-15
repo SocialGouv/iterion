@@ -31,8 +31,18 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 	// Tenant scoping + id validation: load under the caller's context so
 	// the mongo tenant filter rejects cross-tenant reads, and the store's
 	// path-component sanitiser rejects a traversal-shaped id, before any
-	// log bytes are read for it.
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	// log bytes are read for it. A request whose expected birth the gate
+	// admitted reads under that origin (boundRunRead): every store read
+	// below refuses a successor with 409.
+	ctx, bound, err := boundRunRead(r, id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "bind the admitted run: %v", err)
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
+		if s.writeBoundReadFailure(w, r, id, bound, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -46,7 +56,17 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 	}
 	ls := store.AsRunLogStore(s.runs.RunStore())
 
-	if buf := s.runs.GetLogBuffer(id); buf != nil {
+	// The live buffer is keyed by run ID alone: a predecessor's buffer can
+	// stay registered after its run was replaced, and a successor's can
+	// appear after the load above. A bound request reads the buffer only
+	// when it was created for the admitted run; otherwise the persisted
+	// log, read under the binding.
+	buf := s.runs.GetLogBuffer(id)
+	if bound {
+		admitted, _ := admittedOrigin(r.Context(), id)
+		buf = s.runs.GetLogBufferOf(id, admitted.Header().BirthID)
+	}
+	if buf != nil {
 		snapOffset, data, total := buf.Snapshot(from)
 		respOffset := snapOffset
 		// If the ring has evicted bytes older than `from`, fill the
@@ -61,7 +81,7 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 			if until > 0 && until < prefixEnd {
 				prefixEnd = until
 			}
-			if pre, err := ls.ReadRunLogRange(r.Context(), id, from, prefixEnd); err == nil && len(pre) > 0 {
+			if pre, err := ls.ReadRunLogRange(ctx, id, from, prefixEnd); err == nil && len(pre) > 0 {
 				prefix = pre
 				respOffset = from
 			}
@@ -81,8 +101,11 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "no log buffer for run %q", id)
 		return
 	}
-	total, err := ls.RunLogSize(r.Context(), id)
+	total, err := ls.RunLogSize(ctx, id)
 	if err != nil {
+		if s.writeBoundReadFailure(w, r, id, bound, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "log size: %v", err)
 		return
 	}
@@ -90,8 +113,11 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "no log captured for run %q", id)
 		return
 	}
-	data, err := ls.ReadRunLogRange(r.Context(), id, from, until)
+	data, err := ls.ReadRunLogRange(ctx, id, from, until)
 	if err != nil {
+		if s.writeBoundReadFailure(w, r, id, bound, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "read log: %v", err)
 		return
 	}

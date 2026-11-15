@@ -10,4 +10,4 @@ After `MaxInt64`, a finite persisted replay is empty. The source can still wait 
 
 `ReplayEventsCursor` reports a next cursor plus `Found` and `LastSeq`, advancing only after successful delivery. The legacy `ReplayEvents` result still uses a predecessor when no rows were delivered. For an empty replay starting at `MinInt64`, that predecessor cannot be represented: it returns `ErrReplayProgressUnrepresentable`, joined with any original failure, and its integer result is nonauthoritative. New callers can use cursor progress for all int64 anchors.
 
-This change addresses cursor arithmetic and progression. It does not repair the in-process source's pre-existing permanent-error handling, unbound `LoadRun` contexts or final-drain error policies, and it adds no provenance, epoch or cross-connection claim.
+Cursors address arithmetic and progression only: they add no provenance, epoch or cross-connection claim. The in-process source's permanent-error, terminal catch-up and final-drain policies are in [run-ws-origin.md](run-ws-origin.md).

@@ -59,8 +59,8 @@ func contextLaunchService(t *testing.T, failIdentity bool, extra ...ServiceOptio
 		for _, id := range svc.manager.ActiveRuns() {
 			svc.manager.Deregister(id)
 		}
-		for id := range svc.runLogs {
-			svc.dropRunLog(id)
+		for id, buf := range svc.runLogs {
+			svc.dropRunLog(id, buf)
 		}
 		stopService(t, svc)
 	})

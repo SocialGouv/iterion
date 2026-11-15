@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // RunObservation is a copied data-origin observation within its owner's store.
 // It is routing provenance, not authorization or execution ownership. The zero
@@ -29,6 +32,31 @@ func (o RunObservation) Header() RunDataHeader { return o.header }
 func (o RunObservation) TenantID() string      { return o.tenant }
 func (o RunObservation) ParentPresent() bool   { return o.present }
 func (o RunObservation) Observed() bool        { return o.observed }
+
+// BindRunObservation carries a present observation's header and format as the
+// original read intent of ctx. A binding or format ctx already carries is
+// compared, never replaced: a successor is refused, not adopted. Only header
+// and format travel — tenant and presence are not compared by this binding,
+// and the caller's transport identity is left unchanged.
+func BindRunObservation(ctx context.Context, o RunObservation) (context.Context, error) {
+	if ctx == nil || !o.observed {
+		return nil, ErrRunDataBindingRequired
+	}
+	if !o.present {
+		return nil, fmt.Errorf("%w: an absent parent has no header to bind", ErrRunDataCapability)
+	}
+	binding, err := CaptureRunDataBinding(o.header)
+	if err != nil {
+		return nil, err
+	}
+	// WithRunDataBinding compares an existing binding AND an explicit format
+	// before this adds the missing format intent.
+	bound, err := WithRunDataBinding(ctx, binding)
+	if err != nil {
+		return nil, err
+	}
+	return WithRunValueFormat(bound, RunValueFormat{RunID: o.header.RunID, Format: o.header.Format})
+}
 
 // EventObservation returns a value copy. Owned decoders clear provenance;
 // retained readers attach their own observation after decoding and validation.
