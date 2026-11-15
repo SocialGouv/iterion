@@ -31,7 +31,12 @@ func TestAToolResultInsideItsOwnBoundReachesTheProgram(t *testing.T) {
 	t.Parallel()
 	// 300 KiB of result: well inside a declared 512 KiB tool_result_bytes,
 	// well past the 256 KiB default script_bytes.
-	payload := strings.Repeat("y", 300<<10)
+	// `<` escapes to six bytes under json.Encoder's HTML escaping, which is
+	// the WHOLE reason resultFrameCap carries a factor. Measured: with
+	// `strings.Repeat("y", …)` — which escapes 1:1 — a mutant setting the
+	// factor to 1 survived both suites, so the constant the fix exists for
+	// was unexercised. A tool returning XML, HTML or JSON is the normal case.
+	payload := strings.Repeat("<", 300<<10)
 	toolMap := map[string]*GenerationTool{
 		"big": {Name: "big", Execute: func(context.Context, json.RawMessage) (string, error) {
 			return payload, nil

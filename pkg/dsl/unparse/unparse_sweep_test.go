@@ -48,6 +48,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"PortDecl.Name":           "written as the entry header",
 		"CriterionDecl.Name":      "written as the entry header",
 		"PublicEffect.Name":       "written as the entry header",
+		"File.Profile":            "written through f.EffectiveProfile(), which a `.Field` regex cannot see",
 	}
 	types := []string{
 		"WorkflowDecl", "LLMDecl", "AgentDecl", "JudgeDecl", "RouterDecl", "HumanDecl",
@@ -61,6 +62,8 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"MCPConfigDecl", "RecoveryBlock", "VarField", "SecretField", "AttachmentField",
 		"PromptDecl", "SchemaDecl", "SchemaField", "Preset", "PresetValue", "Literal",
 		"ContractDecl", "PortDecl", "PortFileDecl", "CriterionDecl", "PublicEffect",
+		"File", "Comment", "ImportDecl", "ActionParam",
+		"VarsBlock", "SecretsBlock", "AttachmentsBlock", "PresetsBlock",
 	}
 	var writer []byte
 	for _, file := range []string{"unparse.go", "contracts.go", "comments.go"} {
@@ -83,16 +86,14 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 	// the block form implies `on`, that does not merely lose seven numbers,
 	// it turns codemode OFF for every node that inherited it. The jsonenc
 	// sweep has had this half since it shipped; this one owed it.
-	notADeclaration := map[string]string{
-		"File":             "the document itself; the writer's own traversal is what renders it",
-		"Comment":          "comments travel through comments.go, not the field writers",
-		"ImportDecl":       "written by writeImports from the File",
-		"ActionParam":      "an entry of a tool action's params, iterated",
-		"VarsBlock":        "a container; its Fields are swept as VarField",
-		"SecretsBlock":     "a container; its Fields are swept as SecretField",
-		"AttachmentsBlock": "a container; its Fields are swept as AttachmentField",
-		"PresetsBlock":     "a container; its Entries are swept as Preset",
-	}
+	// No exclusion list. Measured: seven of the eight names an earlier draft
+	// excluded pass the sweep's own assertion if they are simply LISTED, so
+	// the exclusion bought nothing and set a precedent for the next type. The
+	// eighth, ast.File, hid exactly one real field — Profile, written through
+	// f.EffectiveProfile() and so invisible to a `.Field` regex — at the cost
+	// of putting every top-level declaration list on ast.File (Agents,
+	// Workflows, Contracts, …) outside the alarm, which is the field class
+	// the alarm exists for. That one field is named in `unwritten` instead.
 	listed := map[string]bool{}
 	for _, name := range types {
 		listed[name] = true
@@ -101,10 +102,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		if listed[typ] {
 			continue
 		}
-		if _, ok := notADeclaration[typ]; ok {
-			continue
-		}
-		t.Errorf("ast.%s is in neither the sweep's type list nor its exclusions — a declaration outside this alarm loses fields silently, which is how CodemodeBlock got here", typ)
+		t.Errorf("ast.%s is not in the sweep's type list — a declaration outside this alarm loses fields silently, which is how CodemodeBlock got here", typ)
 	}
 
 	for _, typ := range types {

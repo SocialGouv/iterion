@@ -82,8 +82,17 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 		ResultBytes:     cb.ResultBytes,
 		ToolResultBytes: cb.ToolResultBytes,
 	}
-	b.Wall = c.codemodeDuration(cb.Wall, "wall", scope, name)
-	b.CPU = c.codemodeDuration(cb.CPU, "cpu", scope, name)
+	// Gated with the census, for the same reason and at the same place: on an
+	// inert block a C349 saying "the DEFAULT applies instead" is text about an
+	// enforcement that will not happen, beside a C348 saying no program runs.
+	// Honouring the rule at one of its two sites was the first draft's defect.
+	if reportCeiling {
+		b.Wall = c.codemodeDuration(cb.Wall, "wall", scope, name)
+		b.CPU = c.codemodeDuration(cb.CPU, "cpu", scope, name)
+	} else {
+		b.Wall, _ = parseCodemodeDuration(cb.Wall)
+		b.CPU, _ = parseCodemodeDuration(cb.CPU)
+	}
 
 	if reportCeiling {
 		for _, phrase := range CodemodeBoundsAboveCeiling(&b) {
@@ -97,6 +106,19 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 
 // codemodeDuration parses a quoted duration (`"90s"`, `"2m"`), the spelling
 // `timeout:` uses. Zero means absent.
+// parseCodemodeDuration is codemodeDuration without the diagnostics: the arm
+// for a block whose bounds are already known to be inert.
+func parseCodemodeDuration(raw string) (time.Duration, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
 func (c *compiler) codemodeDuration(raw, prop, scope, name string) time.Duration {
 	if raw == "" {
 		return 0
@@ -104,13 +126,13 @@ func (c *compiler) codemodeDuration(raw, prop, scope, name string) time.Duration
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		c.warnfAtProperty(DiagCodemodeBoundUnreadable, scope, name, "codemode",
-			"%s %q declares codemode %s: %q, which is not a duration (%v): the DEFAULT applies instead, which is looser than a bound you were lowering. Write it the way timeout: is written — \"90s\", \"2m\"",
+			"%s %q declares codemode %s: %q, which is not a duration (%v): the DEFAULT applies instead (wall 30s, cpu 10s), which is NOT the bound you declared — looser if you were lowering it, tighter if you were raising it. Write it the way timeout: is written — \"90s\", \"2m\"",
 			scope, name, prop, raw, err)
 		return 0
 	}
 	if d < 0 {
 		c.warnfAtProperty(DiagCodemodeBoundUnreadable, scope, name, "codemode",
-			"%s %q declares codemode %s: %q, a NEGATIVE duration: the DEFAULT applies instead, which is looser than a bound you were lowering",
+			"%s %q declares codemode %s: %q, a NEGATIVE duration: the DEFAULT applies instead (wall 30s, cpu 10s), which is NOT the bound you declared",
 			scope, name, prop, raw)
 		return 0
 	}

@@ -172,6 +172,10 @@ func safeErrorText(err error) (text string) {
 	return err.Error()
 }
 
+// promiseType is what ExportType answers for a promise. Held as a value so
+// the comparison costs no allocation and no evaluation.
+var promiseType = reflect.TypeOf((*goja.Promise)(nil))
+
 // encodeValue turns a script value into JSON using the ENGINE's own
 // JSON.stringify rather than Go's json.Marshal over goja's Export().
 //
@@ -195,10 +199,6 @@ func safeErrorText(err error) (text string) {
 //
 // undefined becomes JSON null, so a script that returns nothing is still a
 // value rather than a refusal.
-// promiseType is what ExportType answers for a promise. Held as a value so
-// the comparison costs no allocation and no evaluation.
-var promiseType = reflect.TypeOf((*goja.Promise)(nil))
-
 func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return "null", nil
@@ -213,25 +213,55 @@ func encodeValue(vm *goja.Runtime, v goja.Value) (string, error) {
 		return "", errors.New("JSON.stringify is not callable")
 	}
 
-	// A PROMISE is refused rather than encoded. `JSON.stringify` renders one
-	// as `{}`, so a program ending in `f()` where f is async came back as a
+	// A PROMISE is refused rather than encoded, AT EVERY DEPTH. `JSON.stringify`
+	// renders one as `{}`, so a value holding a promise came back as a
 	// successful empty object — a silent wrong answer, which is the one thing
 	// this repository's conventions forbid outright. There is no event loop
 	// here (a bare goja.Runtime pumps no job queue), so the promise could
 	// never settle and `{}` is not a value the script computed: it is the
-	// shape of an absence. `await` is already a syntax error; this is the
+	// shape of an absence. `await` is already a syntax error; this was the
 	// half that was silent.
+	//
+	// The guard is a REPLACER rather than a test on the root, and that is the
+	// correction of a first draft that checked the root only. Measured: a bare
+	// `f()` was refused while `({report: f()})` came back `{"report":{}}` and
+	// `[f()]` came back `[{}]` — and the object form is the LIKELIER shape,
+	// since a program's last expression is normally a summary of what it did.
+	// Worse, this function also encodes a tool-call INPUT, so
+	// `call("t", {q: fetchAll()})` handed a real tool `{"q":{}}`. One site
+	// fixed and the class left open is the defect this repository names
+	// "corriger le site, pas la classe"; the replacer is the throttle point
+	// both callers and every depth go through.
+	//
 	// ExportType, not Export: exporting MATERIALISES the value, which
 	// evaluates an exotic object's getters — a `new Map([[{get x(){throw 1}},1]])`
-	// threw from inside this guard and changed the error path a sibling test
-	// pins. ExportType reads the shape without running anything.
-	if v.ExportType() == promiseType {
-		return "", errors.New("the program's last expression is a Promise, and this host runs no event loop, so it can never settle: there is no async here — return the value itself, not a promise of it")
-	}
+	// threw from inside the first draft of this guard and changed the error
+	// path a sibling test pins. ExportType reads the shape without running
+	// anything, and was measured to trap on none of the exotics probed.
+	//
+	// KNOWN GAP, stated rather than hidden: a `goja.Proxy` wrapping a promise
+	// answers `goja.Proxy` from ExportType, so it still encodes as `{}`.
+	// Catching it needs a `then`-own-property probe, which runs script code
+	// inside the encoder — the hazard the Export path was abandoned for.
+	promised := ""
+	replacer := vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		v := call.Argument(1)
+		if promised == "" && v.ExportType() == promiseType {
+			if key := call.Argument(0).String(); key != "" {
+				promised = key
+			} else {
+				promised = "the value itself"
+			}
+		}
+		return v
+	})
 
-	out, err := stringify(goja.Undefined(), v)
+	out, err := stringify(goja.Undefined(), v, replacer)
 	if err != nil {
 		return "", err
+	}
+	if promised != "" {
+		return "", fmt.Errorf("%s is a Promise, and this host runs no event loop, so it can never settle: there is no async here — return the value itself, not a promise of it", promised)
 	}
 	// JSON.stringify answers undefined for a function, a symbol or undefined
 	// itself. The script returned something unrepresentable, which is a value

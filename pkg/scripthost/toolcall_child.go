@@ -176,9 +176,17 @@ func (b *toolBridge) roundTrip(name string, input []byte) (Frame, error) {
 	// declared. Measured once both could: `tool_result_bytes: 524288` —
 	// half its own platform ceiling — with the DEFAULT 256 KiB
 	// `script_bytes` made the child refuse a frame its own parent had
-	// written, as "a tool-channel frame passed 262144 bytes", and
-	// codemodeTool classifies that as a deployment failure and tells the
-	// model no other program will run either.
+	// written, as "a tool-channel frame passed 262144 bytes".
+	//
+	// An earlier draft of this comment added "and codemodeTool classifies
+	// that as a deployment failure". Measured: it does not. That branch
+	// fires only when Host.Run returns an error, which is the CALL
+	// direction. This refusal comes back as a `!resp.OK()` verdict, and
+	// WHICH one depends on whether the program has a try/catch —
+	// script_error without it, script_host_died with. That flip is a defect
+	// of its own, pre-existing and filed: errToolChannelBroken's own doc
+	// says the host-died class is what a broken channel must produce,
+	// precisely so a model is not told "your call failed" about a channel.
 	line, err := readFrameLine(b.in, resultFrameCap(b.limits))
 	if err != nil {
 		if errors.Is(err, io.EOF) {

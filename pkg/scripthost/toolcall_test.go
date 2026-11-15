@@ -284,10 +284,15 @@ func TestTheParentRefusesEveryFrameItDoesNotServe(t *testing.T) {
 func TestAnOversizedFrameIsRefusedRatherThanBuffered(t *testing.T) {
 	t.Parallel()
 
+	// The knob is callFrameCap(), derived from MaxToolInputBytes, not
+	// Limits.ScriptBytes — which used to stand here and made two caps bound
+	// one frame with the JSON envelope as the whole window between them. The
+	// GUARANTEE is unchanged and is what this test is for: the parent is the
+	// one process no rlimit covers, so it must refuse an oversized frame
+	// rather than buffer whatever a compromised child chooses to write.
 	limits, _ := smallLimits().Clamp()
-	limits.ScriptBytes = 1 << 10
 
-	huge := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + strings.Repeat("x", 4<<10) + `"}}`
+	huge := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + strings.Repeat("x", int(callFrameCap())+(4<<10)) + `"}}`
 	var out strings.Builder
 	_, err := serveToolCalls(context.Background(), strings.NewReader(huge+"\n"), &out, &recordingServer{}, limits)
 	if err == nil {

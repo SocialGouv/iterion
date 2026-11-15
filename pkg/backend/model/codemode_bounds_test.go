@@ -124,3 +124,42 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 		t.Errorf("nil bounds refused a 200-byte program for its size: %v", err)
 	}
 }
+
+// The witness #3311 asks for, in the ticket's own words: "a program whose
+// source is `await call('x', {})` must come back as the script_error refusal,
+// so the day someone wires a job queue the test says the description is now
+// wrong".
+//
+// It was owed with the description clause and delivered without it, which the
+// gate reviewer caught — a sentence a fix writes is an assertion to execute,
+// and a sentence written in a TICKET is one too.
+//
+// `await` outside an async function is a SyntaxError in ES, and a goja script
+// is not a module, so there is no top-level await either. That is why the
+// clause exists: every JavaScript tool API a model has seen is asynchronous,
+// and the description's own list of absences ("no console, no require, no
+// process, no timers, no network") taught it that anything unforbidden was
+// present.
+func TestAProgramThatAwaitsACallIsRefusedAsAScriptError(t *testing.T) {
+	t.Parallel()
+	toolMap := map[string]*GenerationTool{
+		"x": {Name: "x", Execute: func(context.Context, json.RawMessage) (string, error) {
+			t.Error("the tool ran: a program that does not parse must not reach the node's door")
+			return "", nil
+		}},
+	}
+	_, err := runBounded(t, scripthost.Limits{}, toolMap, `await call('x', {})`)
+	if err == nil {
+		t.Fatalf("`await call(...)` was accepted: either this host grew an event loop, in which case the tool description is now wrong, or the parse stopped being strict")
+	}
+	if !strings.Contains(err.Error(), scripthost.RefusalScriptError) {
+		t.Errorf("refused as %q, want the %s refusal — the model has to be able to tell its own mistake from a broken deployment", err, scripthost.RefusalScriptError)
+	}
+	// The description's promise, executed: the clause that tells the model
+	// not to write this must be in the text the model reads.
+	for _, want := range []string{"SYNCHRONOUS", "await"} {
+		if !strings.Contains(codemodeDescription, want) {
+			t.Errorf("the tool description does not mention %q, so nothing warns the model off the one form every JS API it has seen uses", want)
+		}
+	}
+}
