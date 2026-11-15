@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.1.0](https://github.com/SocialGouv/iterion/compare/v7.0.0...v7.1.0) (2026-11-15)
+
+### Features
+
+* **connectors:** the connector ingress lane — a delivery verified as its package declares, pinned, and stored before its ack (L1c, [#3271](https://github.com/SocialGouv/iterion/issues/3271)) ([#3307](https://github.com/SocialGouv/iterion/issues/3307)) ([79f5c72](https://github.com/SocialGouv/iterion/commit/79f5c723ae4c05c0e15547d65be8ffa41262fd59)), references [#3298](https://github.com/SocialGouv/iterion/issues/3298) [#3305](https://github.com/SocialGouv/iterion/issues/3305) [#3298](https://github.com/SocialGouv/iterion/issues/3298) [#3305](https://github.com/SocialGouv/iterion/issues/3305)
+
+    <details><summary>why</summary>
+
+    POST /api/webhooks/c/{id} reads a delivery for a connector package's ingress (ADR-168 §3, §4, §8.1). The package's `ingress:` block says how: pkg/connector/ingress verifies the declared scheme (HMAC-SHA256/SHA1 over a signed template, token, bearer, basic; header, body or query) over the raw bytes before anything else reads them, checks the replay window (s or ms, header or body) and the authenticated installation, refuses a body with a repeated key, then reads the event over the SANITIZED…
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** Vetty verifies the aligned tree, not HEAD — a regenerated alignment can pass the drift gate ([#3302](https://github.com/SocialGouv/iterion/issues/3302)) ([4287e3f](https://github.com/SocialGouv/iterion/commit/4287e3f3575a03bb907759fbfaeef4933f58f338)), references [buildkit-operator#65](https://github.com/buildkit-operator/issues/65) [#65](https://github.com/SocialGouv/iterion/issues/65)
+
+    <details><summary>why</summary>
+
+    Vetty verifies before it commits: `commit` runs only on a green verify, so verify.sh met HEAD plus the alignment still uncommitted. The drift gate the verify-build skill makes it mirror from CI (git diff --exit-code, a test -z on git status --porcelain) compared against HEAD and read that alignment as drift. buildkit-operator#65 bumps the controller-gen pin (controller-tools v0.21.0 → v0.23.0); align regenerated the two CRD copies with the repo's own `task manifests`, and run 01a1db2f-794a held…
+
+    </details>
+
 ## [7.0.0](https://github.com/SocialGouv/iterion/compare/v6.3.0...v7.0.0) (2026-11-15)
 
 ### ⚠ BREAKING CHANGES
