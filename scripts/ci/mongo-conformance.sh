@@ -157,13 +157,14 @@ cleanup
 # as localhost:27018 never initiates. And --ulimit nofile is not optional: the
 # suites create a fresh database with ~10 indexes per subtest, and a default
 # descriptor limit makes mongod die with "Too many open files" minutes in,
-# which the tests then report as "connection refused".
+# which the tests then report as "connection refused". enableTestCommands is
+# the job's own flag: the store suites inject faults through configureFailPoint.
 # Guarded rather than left to `set -e`: an image this host cannot pull (no
 # network) or a port already taken is a machine that cannot judge, not a red
 # tree.
 docker run --rm -d --name "$CONTAINER" --ulimit nofile=131072:131072 \
 	-p "127.0.0.1:$PORT:$PORT" mongo:8.0 \
-	--replSet rs0 --bind_ip_all --port "$PORT" > /dev/null || {
+	--replSet rs0 --bind_ip_all --port "$PORT" --setParameter enableTestCommands=1 > /dev/null || {
 	say "mongo-conformance: the mongo:8.0 container would not start (an image this host cannot"
 	say "pull, or port $PORT already taken). Refusing is not a verdict."
 	exit 2
