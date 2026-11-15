@@ -50,6 +50,10 @@ type LaunchResult struct {
 	Status store.RunStatus
 	// FailureCode names why a parked launch waits; empty otherwise.
 	FailureCode store.FailureCode
+	// AlreadySubmitted reports an idempotent submission whose run had
+	// already been handed on: this call published and started nothing, and
+	// Status is the run's status as read.
+	AlreadySubmitted bool
 }
 
 // LaunchSubmission is what a LaunchPublisher's SubmitLaunch landed: the
@@ -68,6 +72,11 @@ type LaunchSubmission struct {
 	// moment of submission; zero when the lookup failed or the run was not
 	// queued.
 	QueuePosition int
+	// AlreadySubmitted reports a keyed submission the publisher found
+	// already handed on at its own read (a runner claimed the run between
+	// the service's read and the publisher's): nothing was persisted or
+	// published.
+	AlreadySubmitted bool
 }
 
 // LaunchPublisher routes Launch / Resume / Cancel to the cloud
@@ -168,6 +177,55 @@ var ErrRunIDTaken = errors.New("runview: run id already exists")
 // tells it from a launch that failed later on its own merits.
 var ErrInProcessCannotDescribe = errors.New("runview: refusing a launch the in-process path cannot describe")
 
+// answerSubmission derives a keyed submission's run id onto spec and judges
+// the run that id already names (submission.go). It returns a result when the
+// run was handed on, and nil to let the launch proceed: on no run, and on a
+// queued cloud run whose submission the publisher completes. A store that
+// cannot answer is an error, never "no run" — read as absence, it would launch
+// a second run beside one it could not see.
+func (s *Service) answerSubmission(parent context.Context, spec *LaunchSpec) (*LaunchResult, error) {
+	tenantID, _ := store.TenantFromContext(parent)
+	runID := SubmissionRunID(tenantID, spec.SubmissionKey)
+	if spec.RunID != "" && spec.RunID != runID {
+		return nil, fmt.Errorf("runview: run id %q is not the one submission key %q derives (%q): a keyed launch takes its id from its key", spec.RunID, spec.SubmissionKey, runID)
+	}
+	spec.RunID = runID
+	// Team-blind like the taken-id lookup: the id must be judged against the
+	// run that holds it in ANY team, which a tenant-scoped read cannot see.
+	r, err := s.store.LoadRun(store.TeamBlind(context.WithoutCancel(parent)), runID)
+	switch {
+	case errors.Is(err, store.ErrRunNotFound):
+		return nil, nil
+	case errors.Is(err, store.ErrRunDeleted):
+		return nil, SubmissionDeleted(runID, err)
+	case err != nil:
+		return nil, fmt.Errorf("runview: read submission run %s: %w", runID, err)
+	}
+	verdict, err := ClassifySubmission(r, tenantID, s.publisher != nil)
+	if err != nil {
+		return nil, err
+	}
+	if verdict != SubmissionAcknowledged {
+		return nil, nil
+	}
+	// Nothing started here, so there is nothing to wait for.
+	closed := make(chan struct{})
+	close(closed)
+	return &LaunchResult{RunID: runID, Done: closed, Status: r.Status, FailureCode: r.FailureCode, AlreadySubmitted: true}, nil
+}
+
+// endCreatedRun ends the run THIS launch created when the launch fails before
+// its engine started (store.FailRunAtLaunch): the row would otherwise read
+// running with nothing behind it until a restart reconciles it — and an
+// idempotent re-submission of its key would take it for a run that was handed
+// on. The run was persisted, so the error stays a RunPersistedError.
+func (s *Service) endCreatedRun(ctx context.Context, runID string, err error) error {
+	if ferr := store.FailRunAtLaunch(ctx, s.store, runID, err.Error()); ferr != nil {
+		err = errors.Join(err, fmt.Errorf("end the run it created: %w", ferr))
+	}
+	return &RunPersistedError{RunID: runID, Err: err}
+}
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -187,6 +245,19 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// queued: the pipeline queue persists a run before compiling it,
 		// so the compile floor alone would leave a queued run behind.
 		return nil, bundle.AuthorDocumentError(spec.FilePath)
+	}
+	// An idempotent submission answers from the run its key already names
+	// BEFORE anything judges the request again: a run that was handed on is
+	// the truth whatever a later re-check would say, and an at-least-once
+	// caller re-submitting it must hear "submitted", never a refusal that
+	// would send it retrying a launch that happened.
+	if spec.SubmissionKey != "" {
+		res, err := s.answerSubmission(parent, &spec)
+		if err != nil || res != nil {
+			return res, err
+		}
+	} else if IsSubmissionRunID(spec.RunID) {
+		return nil, fmt.Errorf("%w: %q", ErrRunIDReserved, spec.RunID)
 	}
 	// A run launched FROM another works on what that run produced, so it is
 	// never more trusted than it (inheritSourceTrust) — settled before the
@@ -238,6 +309,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
+	// A keyed submission's id was derived and its run judged by
+	// answerSubmission — no run, or a queued cloud run this launch
+	// completes — so only an id a caller chose is looked up here.
 	runID := spec.RunID
 	if runID == "" {
 		generated, err := store.GenerateRunID()
@@ -245,14 +319,16 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return nil, fmt.Errorf("mint run id: %w", err)
 		}
 		runID = generated
-	} else if _, err := s.store.LoadRun(store.TeamBlind(context.WithoutCancel(parent)), runID); err == nil || errors.Is(err, store.ErrRunDeleted) {
-		// The id names a run in ANY team: refuse it before the launch
-		// reaches anything that acts on the id — the credential pool
-		// supersedes a run id's leases, and its lease query knows no
-		// team. The lookup is team-blind on purpose: a plain detached
-		// context would keep the caller's tenant stamp, and the query
-		// would only see the caller's own team.
-		return nil, fmt.Errorf("%w: %q", ErrRunIDTaken, runID)
+	} else if spec.SubmissionKey == "" {
+		if _, err := s.store.LoadRun(store.TeamBlind(context.WithoutCancel(parent)), runID); err == nil || errors.Is(err, store.ErrRunDeleted) {
+			// The id names a run in ANY team: refuse it before the launch
+			// reaches anything that acts on the id — the credential pool
+			// supersedes a run id's leases, and its lease query knows no
+			// team. The lookup is team-blind on purpose: a plain detached
+			// context would keep the caller's tenant stamp, and the query
+			// would only see the caller's own team.
+			return nil, fmt.Errorf("%w: %q", ErrRunIDTaken, runID)
+		}
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The
@@ -315,7 +391,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// event stream the runner pod populates.
 		closed := make(chan struct{})
 		close(closed)
-		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: sub.QueuePosition, Status: sub.Status, FailureCode: sub.FailureCode}, nil
+		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: sub.QueuePosition, Status: sub.Status, FailureCode: sub.FailureCode, AlreadySubmitted: sub.AlreadySubmitted}, nil
 	}
 
 	// Usage cap, local path: a cap that stops runs mid-flight but lets new
@@ -1602,7 +1678,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: create run: %w", createErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1626,7 +1702,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1651,7 +1727,7 @@ func (s *Service) spawnRun(
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}
@@ -1687,7 +1763,7 @@ func (s *Service) spawnRun(
 			// nothing started — and the question a meter asks is whether
 			// this call started work, never whether a document exists.
 			if startedRun {
-				return nil, &RunPersistedError{RunID: runID, Err: err}
+				return nil, s.endCreatedRun(sctx, runID, err)
 			}
 			return nil, err
 		}

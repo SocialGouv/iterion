@@ -196,6 +196,53 @@ erDiagram
 - **`pkg/lease` is load reduction, not mutual exclusion.** A holder that stalls past its TTL can overlap its successor, so the package is for idempotent reconciliation nets whose *cost* scales with replicas.
 - **A lease running out does nothing by itself.** The expiry is a predicate the sweeps query, never a timer.
 
+## Block D — a connector source's intake and pairs
+
+```mermaid
+erDiagram
+    connector_intakes {
+        string _id PK "in-<digest of tenant, ingress or poller, dedup key>"
+        string tenant_id FK "team id"
+        string connection_id FK "connections._id"
+        string ingress_id "or poller_id - exactly one"
+        string trigger_id "the package trigger the event was read as"
+        string dedup_key "digest of the authenticated material"
+        bytes event "the sanitized event, as JSON"
+        string state "pending|claimed|matched|dead"
+        int64 generation
+        datetime not_before
+        datetime expires_at
+    }
+    connector_pairs {
+        string _id PK "pr-<digest of intake, subscription>"
+        string tenant_id FK "team id"
+        string intake_id FK "connector_intakes._id"
+        string subscription_id FK "trigger_subscriptions._id"
+        string state "pending|claimed|launched|not_matched|refused|dead"
+        int epoch "its submission key is (pair, epoch)"
+        string run_id FK "runs._id, once launched"
+        int64 generation
+        datetime not_before
+        datetime expires_at
+    }
+    trigger_subscriptions {
+        string _id PK
+        string tenant_id FK "team id"
+    }
+    runs {
+        string _id PK "idem-<uuid v5 of tenant and submission key>"
+        string tenant_id FK "team id"
+    }
+    connector_intakes ||--o{ connector_pairs : "intake_id - one pair per candidate subscription"
+    connector_pairs }o--|| trigger_subscriptions : "subscription_id"
+    connector_pairs |o..o| runs : "run_id - the run id is derived from the submission key, never stored first"
+```
+
+- **A delivery is written once.** The intake's `_id` is derived from its tenant, its source and the digest of what the vendor signed, so a redelivery meets the existing row; a pair's `_id` is derived from its intake and subscription, so a matcher that repeats its work writes nothing new.
+- **A claim is a generation, not a token.** Each claim increments `generation`, and every later write matches it with the row's id and state: a worker whose claim expired writes nothing and is told so. A claim past `not_before` is claimable by any worker, and that reclaim spends an attempt.
+- **The run is found by its key.** A pair launches as an idempotent submission keyed by (pair, `epoch`); the run id is derived from that key and the tenant, so a crash anywhere between the run's persistence and the pair's mark is answered by the run the key already names. A spent submission (`LAUNCH_FAILED`) and the replay of a launch-refused pair advance the epoch; a dead pair replays under its own key.
+- **Claims follow arrival.** A fresh row is due from its arrival (`not_before`), and pending rows and expired claims are taken in one `not_before` order, so a retry or a crashed worker's claim is never passed over by rows that came after it.
+
 ## Collections
 
 | Collection | Package | Document struct | Tenant field (values) | Unique / TTL indexes | Twin |
@@ -213,6 +260,8 @@ erDiagram
 | `"FS: baked catalog"` | `pkg/botregistry` | not a collection | — | not a collection | the bundles shipped in the image, read from `bots/`, `examples/` and `.botz/` under the work dir (or `Bots.Paths`) |
 | `repo_integrations` | `pkg/forge` | `RepoIntegration` | `tenant_id` — a team | `tenant_conn_repo_unique` | none (cloud-only) — same as the binding above: spec generator and tests only |
 | `runs` | `pkg/store/mongo` | `store.Run` | `tenant_id` — a team; absent on a local or resident-surface run | none unique, none TTL | file `runs/<id>/run.json` |
+| `connector_intakes` | `pkg/connector/intake` | `Intake` | `tenant_id` — a team | the derived `_id` is the dedup identity; TTL `intake_expiry` on `expires_at`, no delay | one JSON journal for both, `intake.FileStore`, for a local server (memory in tests) |
+| `connector_pairs` | `pkg/connector/intake` | `Pair` | `tenant_id` — a team | the derived `_id` is one per (intake, subscription); TTL `pair_expiry` on `expires_at`, no delay | the intakes' journal |
 | `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a **team** on the `schedule.*` rows drawn here, an org on `auditOrg` rows, empty or either on `scope: platform` rows ([identity](data-model-identity.md)) | TTL `audit_ttl`, 400 days | none (cloud-only); the tick records go to the local JSONL |
 
 The three board collections share one filesystem twin, the native tracker's `<store-dir>/dispatcher/` directory (`board.json`, `issues/<id>.json`, `events.jsonl`): the same `native.Issue` and `native.Event` values, stored on both sides — under their json tags on disk, the lowercased Go field names in Mongo.

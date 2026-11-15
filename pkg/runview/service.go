@@ -81,9 +81,16 @@ type LaunchSpec struct {
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
-	Preset  string
-	RunID   string        // optional explicit ID; auto-generated when empty
-	Timeout time.Duration // 0 disables
+	Preset string
+	RunID  string // optional explicit ID; auto-generated when empty
+	// SubmissionKey makes the launch an idempotent submission (submission.go):
+	// the run id is derived from the key and the caller's tenant, and a key
+	// whose run already exists answers from that run — completing a cloud run
+	// persisted but never published, refusing a spent one — instead of
+	// failing or creating a second run. A RunID set beside it must be the
+	// derived one.
+	SubmissionKey string
+	Timeout       time.Duration // 0 disables
 	// MergeInto controls the worktree-finalization fast-forward target
 	// for `worktree: auto` runs. "" or "current" → FF the user's
 	// currently-checked-out branch (default); "none" → skip FF;

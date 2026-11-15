@@ -242,18 +242,25 @@ func TestRedeliveryWindowAccountsForAHeldLease(t *testing.T) {
 func TestRunMessageIDSeparatesLaunchAndResume(t *testing.T) {
 	launch := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:00:00Z"}
 	resume := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:01:00Z", Resume: &queue.ResumeSpec{}}
-	if got := runMessageID(launch); got != "run-1" {
+	if got := MessageID(launch); got != "run-1" {
 		t.Fatalf("launch message id = %q, want bare run id", got)
 	}
-	if got := runMessageID(resume); got != "run-1|resume-2026-08-25T08:01:00Z" {
+	if got := MessageID(resume); got != "run-1|resume-2026-08-25T08:01:00Z" {
 		t.Fatalf("resume message id = %q, want per-attempt salt", got)
 	}
 	// PublishRun stamps PublishedAtRFC only when it is empty, so retrying the
 	// same object preserves this id. A genuinely new resume attempt carries a
 	// different durable timestamp and must get a different id.
 	second := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:02:00Z", Resume: &queue.ResumeSpec{}}
-	if runMessageID(second) == runMessageID(resume) {
-		t.Fatalf("two distinct resume attempts share a message id: %q", runMessageID(second))
+	if MessageID(second) == MessageID(resume) {
+		t.Fatalf("two distinct resume attempts share a message id: %q", MessageID(second))
+	}
+	// A launch that is a new attempt of an already-queued run — an
+	// idempotent submission's completion — must not share the first
+	// attempt's id, or the dedup window drops it for the attempt it retired.
+	completion := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:03:00Z", LaunchAttempt: "2026-08-25T08:03:00Z"}
+	if got := MessageID(completion); got != "run-1|launch-2026-08-25T08:03:00Z" || got == MessageID(launch) {
+		t.Fatalf("completion message id = %q, want one salted by its attempt", got)
 	}
 }
 

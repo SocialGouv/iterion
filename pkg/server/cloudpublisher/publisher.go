@@ -3954,6 +3954,20 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
+	// A keyed submission is judged again HERE, at the persistence point
+	// (runview/submission.go): the service read the run before compiling, and
+	// a runner may have claimed it since. A run still queued by the launch
+	// path's own attempt is completed as a new attempt — the save below
+	// replaces it under compare-and-swap on the version read here, so a claim
+	// or a flip landing in between refuses the save instead of being
+	// overwritten.
+	prior, err := p.priorSubmission(ctx, runID, tenantID, spec.SubmissionKey)
+	if err != nil {
+		return runview.LaunchSubmission{}, err
+	}
+	if prior != nil && prior.acknowledged {
+		return runview.LaunchSubmission{Status: prior.run.Status, FailureCode: prior.run.FailureCode, AlreadySubmitted: true}, nil
+	}
 	// One inputs map shared by the run doc and the RunMessage, so the
 	// credential-derived topology injection below reaches both carriers.
 	inputs := varsAsAny(spec.Vars)
@@ -4077,6 +4091,21 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	if r.PermissionMode == "" {
 		r.PermissionMode = wf.Permission
+	}
+	if spec.SubmissionKey != "" {
+		// The attempt this launch queues, recorded so a later submission of
+		// the key can tell it from any re-queue (runview.QueuedBySubmission).
+		attempt := now
+		r.SubmissionAttemptAt = &attempt
+	}
+	if prior != nil {
+		// Completing: the same row at the version read, created when it was,
+		// queued NOW. The new queued_at is what retires the first attempt: a
+		// runner claims a queued run only for a delivery published at or
+		// after its queued_at (ClaimQueuedRunIfAttempt), so a first
+		// publication that did land can no longer claim it.
+		r.CASVersion = prior.run.CASVersion
+		r.CreatedAt = prior.run.CreatedAt
 	}
 	// Resolve the same versioned context the local launch authority stamps.
 	// It is persisted before the queued row is published so admission on the
@@ -4454,12 +4483,30 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// outside it — a forbidden rescue burns no retry budget on the pod.
 		LLMProviders: policyProviders(spec.LLMRoutePolicy),
 	}
+	if prior != nil {
+		// A new attempt of a run queued once: its own message identity, or
+		// the broker's dedup window would swallow it for the first one's —
+		// which its queued_at has just retired.
+		msg.LaunchAttempt = r.QueuedAt.Format(time.RFC3339Nano)
+	}
 	if err := p.publish(ctx, msg); err != nil {
 		// The deferred choke point above flips the row to failed — while it
 		// is still queued for this launch.
 		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: publish: %w", err)
 	}
 	launched = true
+	if prior != nil && creds.poolLease() == nil && p.credPool != nil {
+		// Published: the first attempt is over, as after a resume. A grant
+		// acquired here superseded its pool lease already; without one, it
+		// is superseded now, or it holds its donor's slot to the lease TTL.
+		supersedingPublishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+		if perr != nil {
+			supersedingPublishedAt = time.Time{}
+		}
+		if err := p.credPool.SupersedeRun(context.WithoutCancel(ctx), runID, tenantID, supersedingPublishedAt); err != nil {
+			p.logger.Warn("cloudpublisher: supersede the first attempt's pool lease of %s after its completion: %v", runID, err)
+		}
+	}
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
 	}
@@ -4473,6 +4520,47 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		p.logger.Warn("cloudpublisher: queue position lookup: %v", err)
 	}
 	return runview.LaunchSubmission{QueuePosition: pos, Status: store.RunStatusQueued}, nil
+}
+
+// priorRun is the run a keyed submission's id already names, as the
+// publisher read it.
+type priorRun struct {
+	run *store.Run
+	// acknowledged: the run was handed on; nothing is persisted or published.
+	acknowledged bool
+}
+
+// priorSubmission reads the run a keyed submission's id names and judges it
+// (runview.ClassifySubmission): nil when there is none, a run to complete, or
+// an acknowledged one. The id must be the one the key derives — the service
+// derived it, and a publisher handed another would complete a run the key
+// does not name.
+//
+// Completing is a new attempt, as a resume is: it re-resolves and re-seals
+// the credentials, and its acquisition supersedes the first attempt's pool
+// lease — that attempt can no longer claim the run. The first attempt's
+// sealed bundle is left to its own expiry.
+func (p *Publisher) priorSubmission(ctx context.Context, runID, tenantID, key string) (*priorRun, error) {
+	if key == "" {
+		return nil, nil
+	}
+	if want := runview.SubmissionRunID(tenantID, key); runID != want {
+		return nil, fmt.Errorf("cloudpublisher: run id %q is not the one submission key %q derives in tenant %q (%q)", runID, key, tenantID, want)
+	}
+	r, err := p.store.LoadRun(ctx, runID)
+	switch {
+	case errors.Is(err, store.ErrRunNotFound):
+		return nil, nil
+	case errors.Is(err, store.ErrRunDeleted):
+		return nil, runview.SubmissionDeleted(runID, err)
+	case err != nil:
+		return nil, fmt.Errorf("cloudpublisher: read submission run %s: %w", runID, err)
+	}
+	verdict, err := runview.ClassifySubmission(r, tenantID, true)
+	if err != nil {
+		return nil, err
+	}
+	return &priorRun{run: r, acknowledged: verdict == runview.SubmissionAcknowledged}, nil
 }
 
 // CancelRun flips the Mongo doc to cancelled. Two effects:

@@ -105,6 +105,9 @@ var teamScopedCollections = []string{
 	// the platform tier's rows live under the "platform:" sentinel tenant,
 	// which no org purge names
 	"connector_packages",
+	// connector intake (pkg/connector/intake) — a delivery's durable row and
+	// the pairs it owes the team's subscriptions
+	"connector_intakes", "connector_pairs",
 	// control-plane audit (pkg/audit) — written under BOTH scopes: a
 	// team-scoped row carries tenant_id == the team id (auditTenant: the
 	// member.added with the member's email, team.status_changed, …), an
