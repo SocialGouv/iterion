@@ -442,11 +442,18 @@ func TestShellScriptDataThroughTheExecutor(t *testing.T) {
 func TestShellScriptDataCannotReadASecretsValue(t *testing.T) {
 	t.Parallel()
 	const value = "sv-3e81c0a9d27f6b54"
-	for _, body := range []string{
-		"printf '%s|%s|%s' {{secrets.pw}} {{input.d}} \"[{{input.d}}]\" > out.txt\n",
-		"payload=$(cat <<'EOF'\n{\"t\": 1}\nEOF)\nprintf '%s|%s|%s' {{secrets.pw}} {{input.d}} \"[{{input.d}}]\" > out.txt\ncat <<'EOF'\nx\nEOF\n",
+	for _, tc := range []struct {
+		body      string
+		languages []string
+	}{
+		{"printf '%s|%s|%s' {{secrets.pw}} {{input.d}} \"[{{input.d}}]\" > out.txt\n", []string{"sh", "bash"}},
+		// The heredoc closed by `EOF)` inside `$( )` is bash's reading alone:
+		// dash, which is `sh` on a Debian runner, refuses it as a syntax
+		// error, so the row runs where the construct parses — bash.
+		{"payload=$(cat <<'EOF'\n{\"t\": 1}\nEOF)\nprintf '%s|%s|%s' {{secrets.pw}} {{input.d}} \"[{{input.d}}]\" > out.txt\ncat <<'EOF'\nx\nEOF\n", []string{"bash"}},
 	} {
-		for _, language := range []string{"sh", "bash"} {
+		body := tc.body
+		for _, language := range tc.languages {
 			for _, d := range []string{"$(env)", "`env`", "${x:=${!__ITERION_AUTHORED_@}}${!x}", "${!__ITERION_AUTHORED_@}", "$(env | grep -o 'sv-[0-9a-f]*' | head -n1)", "$(touch pwned.txt)"} {
 				got, pwned := runSecretScript(t, language, body, value, map[string]any{"d": d})
 				if want := value + "|" + d + "|[" + d + "]"; got != want {
