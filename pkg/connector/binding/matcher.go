@@ -64,7 +64,7 @@ func (m *Matcher) Match(ctx context.Context, in intake.Intake) ([]intake.Verdict
 		return out
 	}
 
-	trig, refusal, err := m.trigger(in)
+	trig, refusal, err := m.Trigger(in)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +86,29 @@ func (m *Matcher) Match(ctx context.Context, in intake.Intake) ([]intake.Verdict
 	return out, nil
 }
 
-// trigger resolves the intake's trigger in its tenant's catalog: a refusal
+// Rejudge judges one subscription, as it stands now, against an intake:
+// the launch-time check a matched pair passes again (ADR-168 Q2), and the
+// replay of a pair matching refused. The event comes back decoded for the
+// vars the launch computes from it.
+func (m *Matcher) Rejudge(ctx context.Context, in intake.Intake, sub trigger.Subscription) (Verdict, Event, error) {
+	trig, refusal, err := m.Trigger(in)
+	if err != nil {
+		return Verdict{}, Event{}, err
+	}
+	if refusal != "" {
+		return Verdict{Refusal: refusal}, Event{}, nil
+	}
+	ev, err := DecodeEvent(in.Event)
+	if err != nil {
+		return Verdict{Refusal: err.Error()}, Event{}, nil
+	}
+	v, err := Judge(ctx, sub, trig, ev)
+	return v, ev, err
+}
+
+// Trigger resolves the intake's trigger in its tenant's catalog: a refusal
 // for what no retry changes, an error for an outage.
-func (m *Matcher) trigger(in intake.Intake) (spec.Trigger, string, error) {
+func (m *Matcher) Trigger(in intake.Intake) (spec.Trigger, string, error) {
 	connector, _, _ := strings.Cut(in.TriggerID, ".")
 	pkg, _, err := m.Catalog(in.TenantID).Package(connector)
 	switch {

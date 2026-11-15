@@ -8004,10 +8004,12 @@ export interface components {
             client_id?: string;
             conversation_id?: string;
             delivery_id?: string;
+            intake_id?: string;
             issue_id?: string;
             issue_identifier?: string;
             issue_title?: string;
             kind?: string;
+            pair_id?: string;
             schedule_id?: string;
             schedule_name?: string;
         };

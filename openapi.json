@@ -3708,6 +3708,9 @@
           "delivery_id": {
             "type": "string"
           },
+          "intake_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },
@@ -3718,6 +3721,9 @@
             "type": "string"
           },
           "kind": {
+            "type": "string"
+          },
+          "pair_id": {
             "type": "string"
           },
           "schedule_id": {

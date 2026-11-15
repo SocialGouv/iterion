@@ -40,6 +40,7 @@ export type RunSourceKind =
   | "manual"
   | "studio_chat"
   | "webhook"
+  | "connector"
   | "schedule"
   | "dispatcher"
   | "fork"
