@@ -57,6 +57,7 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		{MemoryBlock{}, jsonMemoryBlock{}, nil},
 		{CompactionBlock{}, jsonCompactionBlock{}, nil},
 		{RecoveryBlock{}, jsonRecoveryBlock{}, nil},
+		{CodemodeBlock{}, jsonCodemodeBlock{}, nil},
 		{SandboxBlock{}, jsonSandboxBlock{}, nil},
 		{SandboxBuildBlock{}, jsonSandboxBuildBlock{}, nil},
 		{SandboxNetworkBlock{}, jsonSandboxNetworkBlock{}, nil},

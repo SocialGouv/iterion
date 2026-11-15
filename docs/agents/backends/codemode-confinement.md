@@ -180,3 +180,28 @@ makes Go fall back to UTC, the same answer) and the `recover` in `runScript`
 (the two sites that panicked are closed at the site, and nine further
 adversarial shapes refuse without it). A mutation bench finds them as
 survivors by design.
+
+## The author's surface
+
+Seven bounds are declared in the `.bot`, as the `codemode:` block; the names,
+defaults and ceilings are in [dsl.md](../../dsl.md).
+
+**The conventions are borrowed, not invented.** A duration is a quoted string,
+`timeout:`'s spelling; a byte size and a count are bare integers. Measured
+first: this DSL has no byte-size form and vendors no parser for one, so
+`256KiB` is its own lot with its own edges (KiB vs KB, floats, overflow).
+Philosophy 1 reads a bound with no override as a defect.
+
+**Clamped, never refused.** The parent reduces a request above `Ceiling`
+where it spawns the program and reports it through `OnClamp`; **C347** says
+the same thing at compile, **C349** on a duration that is not one (the field
+falls back to its default — tighter than asked, never looser), **C348** on
+bounds beside a `mode: off`. The compiler warns and the clamp enforces: a
+diagnostic that also lowered the value would make the bound a thing two
+places decide, and `OnClamp` would stop firing on its own case.
+
+**It arrived from a measurement.** On this repository's bot catalog a program
+surveying 39 files spent **40 of the 64 default calls**; a second attempt
+crossed it and came back *"the script has spent its budget of 64 tool calls
+[…] or ask the operator to raise the bound"* — naming a bound no author could
+raise. `tool_calls` is what a real sweep meets first.

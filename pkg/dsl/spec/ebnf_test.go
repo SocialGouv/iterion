@@ -35,6 +35,7 @@ var ebnfProductions = map[string]string{
 	"compaction":         "compaction_prop",
 	"memory":             "memory_prop",
 	"mcp":                "mcp_config_prop",
+	"codemode":           "codemode_prop",
 	"sandbox":            "sandbox_prop",
 	"sandbox.build":      "sandbox_build_prop",
 	"sandbox.network":    "sandbox_network_prop",

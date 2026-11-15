@@ -117,10 +117,45 @@ var formWitnesses = map[spec.Form]witnesses{
 	},
 	spec.BlockOrIdent: {
 		// The parser takes any bare word (the compiler narrows it, C044);
-		// the quoted spelling and a list are not a mode.
-		accepted: []string{"zz_word", "\n  image: \"img\""},
+		// the quoted spelling and a list are not a mode. `%b` is a line the
+		// property's OWN body kind accepts, derived from the registry — the
+		// block-form witness was `image: "img"` while `sandbox` was the only
+		// property of this form, which made it sandbox's witness rather than
+		// the form's, and the second such property is what said so.
+		accepted: []string{"zz_word", "\n  %b"},
 		refused:  []string{`"%s"`, "1", "[%s]"},
 	},
+}
+
+// bodyWitness is one property line the kind named by a Block / BlockOrIdent
+// property's Body accepts: the first of that kind's properties whose own Form
+// has a single-line accepted witness, rendered as `name: value`.
+//
+// Derived rather than written down, so a property of a block form is probed
+// with ITS body and not with whichever body happened to be first.
+func bodyWitness(body string) string {
+	k, ok := spec.Lookup(body)
+	if !ok {
+		return "mode: zz_word" // no such kind: let the parser say so
+	}
+	for _, bp := range k.Properties {
+		w, ok := formWitnesses[bp.Form]
+		if !ok || len(w.accepted) == 0 {
+			continue
+		}
+		v := w.accepted[0]
+		if strings.Contains(v, "\n") || strings.Contains(v, "%b") {
+			continue // a nested block is not a one-line witness
+		}
+		if strings.Contains(v, "%s") {
+			if len(bp.Values) == 0 {
+				continue
+			}
+			v = strings.ReplaceAll(v, "%s", bp.Values[0])
+		}
+		return bp.Name + ": " + v
+	}
+	return "mode: zz_word"
 }
 
 // witnessLine writes one witness as the property's line(s): a value after
@@ -130,6 +165,9 @@ var formWitnesses = map[spec.Form]witnesses{
 func witnessLine(p spec.Property, w, indent string) string {
 	if strings.Contains(w, "%s") && len(p.Values) > 0 {
 		w = strings.ReplaceAll(w, "%s", p.Values[0])
+	}
+	if strings.Contains(w, "%b") {
+		w = strings.ReplaceAll(w, "%b", bodyWitness(p.Body))
 	}
 	var line string
 	switch {

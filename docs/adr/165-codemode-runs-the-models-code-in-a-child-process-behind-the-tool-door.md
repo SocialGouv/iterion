@@ -351,3 +351,78 @@ runtime needs makes it crash — measured at 64 MiB, `script_host_died` with a
 SIGSEGV where the caller asked for `memory_exceeded`. A tenant can therefore
 write a `memory:` that produces an unexplained crash instead of a typed
 refusal. Its own ticket.
+
+## Amendment — 2026-11-15: the bounds get an author surface, and the A/B that did not show a gain
+
+Two things landed together, and only one of them is good news.
+
+### The surface (CM-5d, #3301)
+
+Seven of the bounds this record calls for are now declarable: the `codemode:`
+block, `Form: BlockOrIdent` on `sandbox`'s precedent, hosted on the workflow,
+agents and judges. Operational detail in
+[dsl.md](../dsl.md) and
+[codemode-confinement](../agents/backends/codemode-confinement.md#the-authors-surface);
+the decisions this record owns are these four.
+
+- **`ir.CodemodeBounds` IS `scripthost.Limits`**, not a struct that maps onto
+  it. One type means one spelling of the seven numbers, so the `wall_ms`
+  defect the host's own field doc records — a hand-written bound enforced a
+  million times tighter — cannot be reintroduced by a second declaration.
+- **The rungs resolve FIELD BY FIELD**, node over workflow, not
+  nearest-rung-wins. The workflow rung is a *default* by its own field doc; a
+  workflow raising `tool_calls` for a whole bot must not be erased by a node
+  that only wanted a longer `wall`. It is the per-field filling `Limits.Clamp`
+  already does one rung down, so the ladder is one rule applied twice.
+- **Clamped, never refused.** The parent reduces a request above `Ceiling` and
+  reports it; the compiler says it earlier (**C347**), and that is all it does.
+  A diagnostic that also lowered the value would give the bound two owners and
+  silence `OnClamp` on exactly its own case. **C348** is bounds beside a
+  `mode: off`, **C349** a duration that is not one.
+- **Schema v32.** The bounds ride `ir_compiled`, as the switch does. A stale
+  runner drops them and runs the DEFAULTS — tighter, and its refusal is loud —
+  which satisfies the rollout runbook's first exemption condition but not its
+  second: the exemption also asks that the field carry no operator choice, and
+  declared bounds are the rule's own named class, *budget caps*.
+
+### The A/B, and why it is reported as a non-result
+
+The switch was activated on a read-only audit node — `assessment.survey`'s
+shape, `tools: [read_file, glob, grep]`, no shell — on `claw` +
+`openai/gpt-6-sol`, over this repository's own bot catalog pinned by commit,
+two `.bot` files differing by one line, three runs per arm interleaved.
+
+**It showed no gain.** Arm B was worse on every axis: +56% turns, +75% tokens,
++76% cost, +76% wall. And that number is not a result either — per-run spreads
+were 1.5× to 2.8× within each arm, and the answer was wrong in 3 of 6 runs, so
+the task sat at the model's competence limit and a share of what was measured
+is the model. The honest statement is that **this measurement does not show a
+gain and, at n=3 with that variance, cannot show one in either direction**. The
+first pair alone read −32% tokens; the replicates reversed the sign. Spend:
+$1.37.
+
+**This is a gap in the criterion above, not only in the measurement.** That
+amendment specifies what to count, which turns to exclude and three ways a run
+voids itself — and says nothing about **n**. A criterion whose sign flips
+between n=1 and n=3 is not yet a criterion. CM-17 owes a replicate count and a
+spread it refuses to conclude under, decided before its own measurement runs.
+
+### What the measurement did deliver
+
+- **The 64-call default is the wall, measured.** One program surveying 39 files
+  spent **40 of 64**; another attempt at the same task crossed it and came back
+  *"the script has spent its budget of 64 tool calls. Aggregate in the script,
+  or ask the operator to raise the bound"*. That sentence named a bound no
+  author could raise, which is what CM-5d answers — the surface arrived from a
+  refusal rather than from this record's reasoning.
+- **Two premises of this record are refuted.** A no-shell node is not unable to
+  loop: it keeps `grep`, which aggregates server-side, and claw **batches
+  parallel tool calls** (2 to 4 per turn was observed). So "one call per turn",
+  the phrase the tool's own description uses, is not what the baseline does,
+  and the turn axis is not where codemode wins on this kind of task.
+- **A second product defect, from measurement**: the tool description never
+  said `call()` is synchronous, so the model wrote `await call(...)` and lost a
+  program to a `SyntaxError`. Its own ticket
+  ([#3311](https://github.com/SocialGouv/iterion/issues/3311)); the sentence is
+  fixed in this slice because the description was already being touched.
+

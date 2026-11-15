@@ -38,24 +38,31 @@ import (
 // a node with no `backend:`, an `auto` route or a `{{vars.x}}` a launch
 // overrides has no backend the compiler can read, and this is the first place
 // the resolved one exists.
-func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.CodemodePolicy, error) {
+// The BOUNDS come back with the policy, from the same call, for the reason
+// this file's whole shape encodes: a second place that walked the same ladder
+// would be a second opinion, and the one that answered second would win on
+// some path. They are resolved even when the policy is off — the caller
+// carries nil then, because it carries no capability either — so the walk has
+// no branch a reader has to hold two readings of.
+func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.CodemodePolicy, *ir.CodemodeBounds, error) {
 	// ONE guard. `policy.Declared()` stood here too and could never fire:
 	// the only rung answering "not declared" is the default, and the default
 	// is OFF. The compiler's half carries the same single guard and
 	// ir.TestOnImpliesDeclared pins the invariant both rely on.
 	policy := ir.ResolveCodemode(f.codemode, e.wfCodemode)
 	if !policy.On {
-		return policy, nil
+		return policy, nil, nil
 	}
+	bounds := ir.ResolveCodemodeBounds(f.codemodeBounds, e.wfCodemodeBounds)
 	// The POSITIVE question, not the compiler's. Here the backend name is
 	// RESOLVED, and the only loop that installs the tool is the one whose
 	// cell says shipped — so a name the registry does not carry (a custom
 	// backend in an operator's own registry) is refused out loud rather than
 	// handed a Codemode the loop it reaches will never read.
 	if ir.CodemodeServedBy(backendName) {
-		return policy, nil
+		return policy, bounds, nil
 	}
-	return policy, &delegate.ErrCapabilityUnsupported{
+	return policy, nil, &delegate.ErrCapabilityUnsupported{
 		NodeID:     f.id,
 		Backend:    backendName,
 		Capability: policy.String(),

@@ -387,7 +387,7 @@ agent reviewer:
   max_tokens: 12000
   reasoning_effort: high
   ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
-  codemode: off           ## on|off — the model composes its calls as code (claw only, ADR-165)
+  codemode: off           ## on|off, or a block of bounds (implies on) — the model composes its calls as code (claw only, ADR-165)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -424,6 +424,50 @@ where it is not. The refusal is TERMINAL — it ends the node, and no
 `fallbacks:` route is tried. A node writes
 `codemode: off` to stay off a workflow default; the empty value inherits,
 which is why this is a string and not a flag.
+
+The **block form** declares the bounds one program runs under, and it
+**implies `on`** — bounds for a capability that is off express nothing, which
+is what **C348** says when a `mode: off` is written beside one:
+
+```iter fragment
+agent surveyor:
+  backend: "claw"
+  codemode:
+    tool_calls: 256          ## nested calls ONE program may make (default 64)
+    wall: "2m"               ## the child's lifetime (default "30s")
+    cpu: "45s"               ## its CPU-seconds ceiling (default "10s")
+    memory: 536870912        ## bytes of RLIMIT_DATA (default 268435456)
+    script_bytes: 524288     ## bytes of program source (default 262144)
+    result_bytes: 2097152    ## bytes it may return (default 1048576)
+    tool_result_bytes: 131072 ## bytes of ONE tool result (default 65536)
+```
+
+A duration is **quoted**, the spelling `timeout:` uses; a byte size and a
+count are **bare integers**, because this DSL has no byte-size value form and
+inventing one is its own lot. An unreadable or negative duration is **C349**
+and falls back to its default — tighter than what was asked for, never looser.
+
+Every bound has a **platform ceiling a tenant cannot raise**
+(`scripthost.Ceiling`: 4096 calls, 10m wall, 5m CPU, 2 GiB, 4 MiB of source,
+8 MiB returned, 1 MiB per tool result). The parent clamps the request where it
+spawns the program and reports the reduction, so a declaration above the
+ceiling describes something that will not happen: **C347** at compile says so.
+Philosophy 1 forbids a bound with no override; cloud multi-tenancy forbids an
+override with no ceiling.
+
+The rungs resolve **field by field**: the node's value where it set one, else
+the workflow's, else the default. A workflow that raises `tool_calls` for a
+whole bot is therefore not erased by a node that only wanted a longer `wall`
+— the workflow rung is a default, and this is the same per-field filling the
+clamp already does one rung down. Still no environment rung, for the bounds as
+for the switch.
+
+**Which number to reach for first.** Measured on this repository's own bot
+catalog: a program surveying 39 files spent **40 of the 64 default calls**,
+and a second attempt at the same task crossed the bound and was refused with
+*"the script has spent its budget of 64 tool calls"*. `tool_calls` is the bound
+a real sweep meets first; the byte bounds bite on large tool results, and
+`wall`/`cpu` on a program that computes rather than calls.
 
 `ambient_context: none | workspace | operator | all` picks what the node
 inherits from its surroundings besides its prompt (ADR-119): the

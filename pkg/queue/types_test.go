@@ -342,8 +342,13 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// and the run parks on the DLQ. The migration sentence on ADR-165 is
 	// what answers that, and this comment said the opposite until an
 	// adversarial round read both files.
-	if SchemaVersion != 31 {
-		t.Errorf("SchemaVersion = %d, want 31 (bump intentionally)", SchemaVersion)
+	// v32 adds the codemode BOUNDS to that same carrier. The fallback runs
+	// tighter rather than looser, which is the exemption's first condition
+	// but not its second: declared bounds carry an operator's choice (the
+	// additive-field rule's own "budget caps"), and a runner that drops them
+	// silently re-makes it. Hence a bump, and MinSchemaVersion still 27.
+	if SchemaVersion != 32 {
+		t.Errorf("SchemaVersion = %d, want 32 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)

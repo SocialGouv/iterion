@@ -46,6 +46,7 @@ var probes = map[string]string{
 	"budget":             "workflow w:\n  budget:\n    %s: 1\n",
 	"compaction":         "workflow w:\n  compaction:\n    %s: 1\n",
 	"memory":             "agent a:\n  memory:\n    %s: 1\n",
+	"codemode":           "workflow w:\n  codemode:\n    %s: 1\n",
 	"sandbox":            "workflow w:\n  sandbox:\n    %s: 1\n",
 	"sandbox.build":      "workflow w:\n  sandbox:\n    build:\n      %s: 1\n",
 	"sandbox.network":    "workflow w:\n  sandbox:\n    network:\n      %s: 1\n",

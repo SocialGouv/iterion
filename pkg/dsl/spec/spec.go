@@ -313,11 +313,12 @@ var (
 	pPermission     = checked("permission", "Tool-permission gate: off, ask or deny (C110–C112)", "off", "ask", "deny")
 	pAutoMemory     = checked("auto_memory", "The backend's own auto-memory: on or off (C131/C132)", "on", "off")
 	pAmbientContext = checked("ambient_context", "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)", "none", "workspace", "operator", "all")
-	pCodemode       = checked("codemode", "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)", "on", "off")
-	pInteraction    = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
-	pInteractionP   = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
-	pInteractionM   = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
-	pReasoning      = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
+	pCodemode       = Property{Name: "codemode", Form: BlockOrIdent, Body: "codemode", Values: []string{"on", "off"},
+		Doc: "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"}
+	pInteraction  = enum("interaction", "How the node asks the operator (ADR-081); human_or_host lets the host application answer in the operator's place, whichever comes first (docs/assistant-dock.md, C212)", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host")
+	pInteractionP = prop("interaction_prompt", Ident, "Prompt the llm interaction mode answers with in the operator's place")
+	pInteractionM = word(prop("interaction_model", String, "Model the llm interaction mode uses; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}"))
+	pReasoning    = Property{Name: "reasoning_effort", Form: EnumOrEnv, Values: []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"},
 		Doc: "Reasoning effort; none disables reasoning on the models that carry it (GPT-6 Sol/Luna) — elsewhere the behaviour is per-route: claw and claude_code clamp it to the lowest real level (low), pi spells it off, codex's CLI refuses it on a model without it, opencode passes it through; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime"}
 	pSandbox = Property{Name: "sandbox", Form: BlockOrIdent, Body: "sandbox", Values: []string{"none", "auto"},
 		Doc: "Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044)"}
@@ -642,6 +643,17 @@ var Kinds = append([]Kind{
 			prop("inherit", Bool, "Node scope: inherit the workflow's active servers (default true)"),
 			prop("servers", IdentList, "mcp_server declarations activated"),
 			prop("disable", IdentList, "Servers removed from the ambient set"),
+		}},
+	{Name: "codemode", Role: BlockRole, Opener: "codemode", Hosts: []string{"workflow", "agent", "judge"}, Doc: "Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.",
+		Properties: []Property{
+			checked("mode", "on or off — the short form's value, written out (C337 on another word)", "on", "off"),
+			prop("tool_calls", Int, "How many of the node's tools ONE program may call (default 64, ceiling 4096). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal"),
+			prop("wall", String, "How long the child may live, e.g. \"60s\" (default \"30s\", ceiling \"10m\") — the parent's backstop, including for a child that never starts"),
+			prop("cpu", String, "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP"),
+			prop("memory", Int, "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290"),
+			prop("script_bytes", Int, "Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn"),
+			prop("result_bytes", Int, "Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced"),
+			prop("tool_result_bytes", Int, "Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports"),
 		}},
 	{Name: "sandbox", Role: BlockRole, Opener: "sandbox", Hosts: []string{"workflow", "agent", "judge", "tool"}, Doc: "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
 		Properties: []Property{

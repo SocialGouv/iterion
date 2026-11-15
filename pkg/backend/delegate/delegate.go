@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -743,6 +744,26 @@ type Task struct {
 	// it, and the zero value is off, so a task built outside the executor
 	// gets no script host rather than an accidental one.
 	Codemode bool
+
+	// CodemodeBounds are the bounds ONE program of this node runs under, as
+	// the author declared them and the executor resolved them (node over
+	// workflow, field by field — ir.ResolveCodemodeBounds). nil means nobody
+	// chose, which is the zero value Limits.Clamp fills from
+	// scripthost.DefaultLimits.
+	//
+	// It is a REQUEST, not the enforced value. The parent clamps it to
+	// scripthost.Ceiling at spawn and reports any reduction through OnClamp,
+	// so a tenant cannot raise a platform bound by declaring a bigger number
+	// — philosophy 1 forbids a bound with no override, cloud multi-tenancy
+	// forbids an override with no ceiling, and this field is the override
+	// half only.
+	//
+	// Nil here and nil at the node are the same thing on purpose: a backend
+	// that drops the field runs the DEFAULTS, which are tighter than anything
+	// an author would raise them to. That direction is what makes the field
+	// safe to transport and is why the refusal it produces — "the script has
+	// spent its budget of 64 tool calls" — is loud rather than silent.
+	CodemodeBounds *scripthost.Limits
 
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the

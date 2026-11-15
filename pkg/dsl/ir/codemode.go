@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // Codemode (ADR-165) hands a node one extra tool whose input is a PROGRAM,
@@ -36,6 +38,107 @@ import (
 // them. The empty string is not among them: it is the ABSENCE of a
 // declaration and means INHERIT, never off.
 var CodemodeValues = []string{"on", "off"}
+
+// CodemodeBounds is a declared bound set, and it IS [scripthost.Limits] —
+// not a parallel struct that maps onto it.
+//
+// One type means one spelling and nothing to drift: the wire names
+// (`wall_ns`, `memory_bytes`, …) are the ones the host enforces, so the
+// `wall_ms` bug its own field doc records — a hand-written `"wall_ms":30000`
+// enforced as 30µs — cannot be reintroduced by a second declaration of the
+// same seven numbers. It is also what the repository asks for in general:
+// read the vocabulary where it is defined rather than keep a copy.
+//
+// A zero field means UNSET, which is exactly what Limits.Clamp already reads
+// as "nobody chose" — so an author's `tool_calls: 0` is the default rather
+// than a ban, and the resolution below can fill field by field without a
+// third state to carry.
+type CodemodeBounds = scripthost.Limits
+
+// ResolveCodemodeBounds decides the bounds a node's programs run under, FIELD
+// BY FIELD: the node's value where it set one, else the workflow's, else the
+// zero that Clamp fills from scripthost.DefaultLimits.
+//
+// Per-field rather than nearest-rung-wins, and that is a choice: the
+// workflow rung is a DEFAULT — its own field doc says so — and a workflow
+// that raises `tool_calls` for a whole bot would otherwise be erased by a
+// node that only wanted a longer `wall`. It is also the behaviour Clamp
+// already has one rung down, so the ladder is one rule applied twice rather
+// than two rules that happen to meet.
+//
+// There is deliberately NO environment rung, for codemode's bounds as for its
+// switch: ADR-132 §1, and a bound an operator flips from a pod spec is a bound
+// no `.bot` author can read.
+func ResolveCodemodeBounds(node, workflow *CodemodeBounds) *CodemodeBounds {
+	if node == nil && workflow == nil {
+		return nil
+	}
+	pick := func(n, w int64) int64 {
+		if n > 0 {
+			return n
+		}
+		return w
+	}
+	pickDur := func(n, w time.Duration) time.Duration {
+		if n > 0 {
+			return n
+		}
+		return w
+	}
+	var n, w CodemodeBounds
+	if node != nil {
+		n = *node
+	}
+	if workflow != nil {
+		w = *workflow
+	}
+	out := CodemodeBounds{
+		Wall:            pickDur(n.Wall, w.Wall),
+		CPU:             pickDur(n.CPU, w.CPU),
+		Memory:          pick(n.Memory, w.Memory),
+		ScriptBytes:     pick(n.ScriptBytes, w.ScriptBytes),
+		ResultBytes:     pick(n.ResultBytes, w.ResultBytes),
+		ToolCalls:       pick(n.ToolCalls, w.ToolCalls),
+		ToolResultBytes: pick(n.ToolResultBytes, w.ToolResultBytes),
+	}
+	return &out
+}
+
+// CodemodeBoundsAboveCeiling names every field of b that is above the
+// platform ceiling, as "<property> <declared> > <ceiling>" phrases in the
+// order the DSL block lists them. Empty means nothing is above it.
+//
+// It is the compiler's half of a bound that is clamped anyway: the parent
+// process reduces the value at spawn (Limits.Clamp) and reports it through
+// OnClamp, but an author learns that at RUN time, on a run that already cost
+// money. C347 moves the same fact to compile time. It WARNS rather than
+// refuses — philosophy 1 — and the clamp remains what enforces it: a
+// diagnostic that replaced the clamp would be a bound with two owners.
+func CodemodeBoundsAboveCeiling(b *CodemodeBounds) []string {
+	if b == nil {
+		return nil
+	}
+	ceil := scripthost.Ceiling()
+	var over []string
+	dur := func(name string, v, c time.Duration) {
+		if v > c {
+			over = append(over, fmt.Sprintf("%s %s > %s", name, v, c))
+		}
+	}
+	num := func(name string, v, c int64) {
+		if v > c {
+			over = append(over, fmt.Sprintf("%s %d > %d", name, v, c))
+		}
+	}
+	num("tool_calls", b.ToolCalls, ceil.ToolCalls)
+	dur("wall", b.Wall, ceil.Wall)
+	dur("cpu", b.CPU, ceil.CPU)
+	num("memory", b.Memory, ceil.Memory)
+	num("script_bytes", b.ScriptBytes, ceil.ScriptBytes)
+	num("result_bytes", b.ResultBytes, ceil.ResultBytes)
+	num("tool_result_bytes", b.ToolResultBytes, ceil.ToolResultBytes)
+	return over
+}
 
 // ValidCodemode reports whether v is a value the compiler accepts. "" is
 // valid and means inherit.

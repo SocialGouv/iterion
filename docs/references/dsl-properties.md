@@ -275,7 +275,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
+| `codemode` | one of `on`, `off`, or a block → [codemode](#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
@@ -328,7 +328,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
+| `codemode` | one of `on`, `off`, or a block → [codemode](#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
@@ -561,7 +561,7 @@ A top-level declaration: `workflow <name>:`.
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
 | `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
-| `codemode` | ident — `on`, `off` | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339) |
+| `codemode` | one of `on`, `off`, or a block → [codemode](#codemode) | Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
 | `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
 | `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |
@@ -638,6 +638,23 @@ A block opened by `mcp:` inside `workflow`, `agent`, `judge`.
 | `inherit` | bool | Node scope: inherit the workflow's active servers (default true) |
 | `servers` | ident list | mcp_server declarations activated |
 | `disable` | ident list | Servers removed from the ambient set |
+
+### codemode
+
+Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.
+
+A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
+
+| Property | Value | Meaning |
+|---|---|---|
+| `mode` | ident — `on`, `off` | on or off — the short form's value, written out (C337 on another word) |
+| `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
+| `wall` | string | How long the child may live, e.g. "60s" (default "30s", ceiling "10m") — the parent's backstop, including for a child that never starts |
+| `cpu` | string | The child's CPU-seconds ceiling, e.g. "30s" (default "10s", ceiling "5m"); RLIMIT_CPU's unit is seconds, so the value is rounded UP |
+| `memory` | int | Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290 |
+| `script_bytes` | int | Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn |
+| `result_bytes` | int | Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced |
+| `tool_result_bytes` | int | Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports |
 
 ### sandbox
 

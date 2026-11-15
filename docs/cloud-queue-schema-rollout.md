@@ -403,6 +403,34 @@ recompiles it, C339 refuses it, and the run parks on the DLQ as
 number: re-route the node to a backend that serves codemode, or declare
 `codemode: off`.
 
+## v32: the codemode bounds, in the same carrier
+
+**What rose.** The `codemode:` block's seven bounds (ADR-165) reach the runner
+inside `ir_compiled`, as `codemode_bounds` on each agent/judge node and on the
+workflow. No RunMessage field was added — the value rides a field that already
+travels — and no `MinSchemaVersion` move: it stays **27**.
+
+**Why a bump, when the fallback is TIGHTER.** This is the opposite direction
+from v31 and it still needs one. A pre-bounds runner drops the key and runs
+every program under `scripthost.DefaultLimits`, so it cannot fail OPEN and the
+refusal an author meets is loud — *"the script has spent its budget of 64 tool
+calls"*. But "cannot fail open" is only the first of the exemption's two
+conditions. The second is that the field **carries no operator choice**, which
+is what let `BudgetOverrides.cap_imposed` in without a bump: the publisher
+DERIVES that one. Declared bounds are an operator's choice, and the
+additive-field rule names their class itself — *budget caps*. A stale runner
+silently re-making that choice is the correctness bug the rule exists for,
+whichever direction the silence goes in.
+
+**What this bump does NOT cover.** A v31 message carrying `codemode_bounds` is
+impossible: v31 is the release that compiled the attribute without the block
+form, so no v31 publisher can produce the key. There is no window here of the
+kind v31 had to name.
+
+**Order: server first,** as the default. An old runner parks a v32 message
+transiently until the fleet is upgraded; a new runner accepts every message the
+old server still publishes.
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 These two paths accompany the **server-first** default. Choose **one** of

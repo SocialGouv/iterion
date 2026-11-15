@@ -773,6 +773,8 @@ func (c *compiler) compile() *Workflow {
 		interaction = &im
 	}
 
+	wfCodemode, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "the workflow")
+
 	w := &Workflow{
 		Name:                wf.Name,
 		Entry:               wf.Entry,
@@ -805,7 +807,8 @@ func (c *compiler) compile() *Workflow {
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		AmbientContext:      wf.AmbientContext,
-		Codemode:            normCodemode(wf.Codemode),
+		Codemode:            wfCodemode,
+		CodemodeBounds:      wfCodemodeBounds,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
 		RepoDevbox:          wf.RepoDevbox,
 		WorkspaceCheckpoint: wf.WorkspaceCheckpoint,
@@ -1175,6 +1178,7 @@ func (c *compiler) compileAgents() {
 		if !ok {
 			continue
 		}
+		agentCodemode, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent "+strconv.Quote(a.Name))
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
@@ -1200,7 +1204,8 @@ func (c *compiler) compileAgents() {
 			Compress:          a.Compress,
 			AutoMemory:        a.AutoMemory,
 			AmbientContext:    a.AmbientContext,
-			Codemode:          normCodemode(a.Codemode),
+			Codemode:          agentCodemode,
+			CodemodeBounds:    agentCodemodeBounds,
 			Permission:        a.Permission,
 			PermissionAllow:   a.Allow,
 			PermissionAsk:     a.Ask,
@@ -1220,6 +1225,7 @@ func (c *compiler) compileJudges() {
 		if !ok {
 			continue
 		}
+		judgeCodemode, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge "+strconv.Quote(j.Name))
 		c.nodes[j.Name] = &JudgeNode{
 			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
@@ -1244,7 +1250,8 @@ func (c *compiler) compileJudges() {
 			Compress:          j.Compress,
 			AutoMemory:        j.AutoMemory,
 			AmbientContext:    j.AmbientContext,
-			Codemode:          normCodemode(j.Codemode),
+			Codemode:          judgeCodemode,
+			CodemodeBounds:    judgeCodemodeBounds,
 			Permission:        j.Permission,
 			PermissionAllow:   j.Allow,
 			PermissionAsk:     j.Ask,
