@@ -36,15 +36,18 @@ func TestADryRunRendersAShellScriptsDataAsTheRunDoes(t *testing.T) {
 	if _, err := Run(context.Background(), compileBot(t, shellScriptDataBot), Options{Shell: rec}); err != nil {
 		t.Fatal(err)
 	}
-	read := regexp.MustCompile(`\$\{__ITERION_DATA_[0-9a-f]{16}_[0-9]+(_JSON)?__\}`)
-	want := "printf '%s' \"${V}\" \"[${V}]\" \"${V}\"\necho $(( ${V} + 1 ))\ncat <<EOF\n${J}\nEOF\n"
+	read := regexp.MustCompile(`\$\{(__ITERION_DATA_[0-9a-f]{16}_[0-9]+(_JSON)?__)(\+"\$__ITERION_DATA_[0-9a-f]{16}_[0-9]+__")?\}`)
+	want := "printf '%s' ${R} \"[${R}]\" ${R}\necho $(( ${R} + 1 ))\ncat <<EOF\n${J}\nEOF\n"
 	rendered := false
 	for _, body := range rec.bodies() {
 		if strings.Contains(body, "a'b") || strings.Contains(body, "touch") || strings.Contains(body, "[1,2]") {
 			t.Errorf("a value is in the previewed script's text:\n%s", body)
 		}
 		shape := read.ReplaceAllStringFunc(body, func(m string) string {
-			if strings.HasSuffix(m, "_JSON__}") {
+			switch {
+			case strings.Contains(m, "+"):
+				return "${R}"
+			case strings.HasSuffix(m, "_JSON__}"):
 				return "${J}"
 			}
 			return "${V}"

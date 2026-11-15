@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -18,19 +19,31 @@ import (
 // data reference (ir.ShellScriptData) renders to a read of a variable named
 // for this one rendering (`__ITERION_DATA_<marker>_<n>__`, the marker drawn
 // from crypto/rand), and the value rides the interpreter's environment, as a
-// secret's does (bodySecrets). A parameter expansion's result is never parsed
-// again by the shell, and every read the renderer writes is balanced for any
-// quoting it lands in, so where it stands decides only whether the value is
-// word-split, never whether it runs:
+// secret's does (bodySecrets). The shell never parses a parameter
+// expansion's result again, and the read is written in one form whatever
+// quoting the reading (ir.ShellScriptRefPositions) finds around it:
 //
-//   - inside the author's double quotes, or inside arithmetic, `${NAME}`;
-//   - in the body of a heredoc whose delimiter is unquoted, `${NAME_JSON}`,
-//     a second variable holding the value's JSON literal — what that body
-//     has always received, the payload idiom (`cat <<EOF` of a JSON
-//     document) — expanded there and read again by nothing;
-//   - after an unescaped backslash, `${NAME}`: the escaped `$` keeps its
-//     text, and no quote of the rendering is the one escaped;
-//   - everywhere else, `"${NAME}"`: one word, never split.
+//   - `${N+"$N"}` everywhere: the value as ONE word unquoted, inside the
+//     author's double quotes, in arithmetic, a `[[ ]]`, an assignment — so
+//     a reading that differs from the shell's changes nothing of what the
+//     value becomes;
+//   - in the body of a heredoc whose delimiter is unquoted, as the reading
+//     finds it, `${N_JSON}`, a second variable holding the value's JSON
+//     literal, the payload idiom (`cat <<EOF` of a JSON document) — a bare
+//     read, which a misread leaves to word splitting: a JSON text never
+//     opens with a word a shell runs;
+//   - after an unescaped backslash, `${N}`, whose escaped `$` keeps the text
+//     from expanding at all.
+//
+// What the shell does with the expansion is still the shell's: a read at a
+// position the shell takes as a command word runs the value as a program
+// (one word, no argument — C345 warns where the reading sees it); another
+// shell handed the value as code parses it (C346); bash evaluates the value
+// at an arithmetic or a name-taking position, and the run refuses one that
+// is not an integer (an identifier) where the reading is sure of such a
+// position (checkEvaluatedValue, C344). Inside single quotes, a `$'…'`
+// string, a quoted heredoc or a comment the read stays text, unless a shell
+// runs that text (C343).
 //
 // The value is the raw form's text (rawTemplateValue): a string as it is, a
 // number or a boolean its JSON, an object or a list its compact JSON text —
@@ -39,11 +52,11 @@ import (
 // environment nor a shell variable can carry it.
 //
 // The value rides the environment while it fits (dataEnvValueMax, and
-// dataEnvTotalMax over all of a script's data); past that, the script opens
-// with a single-quoted assignment of the variable (scriptData.deliver), the
-// engine's own text ahead of the author's, which no construct of the
-// author's can precede. Such a value is a variable of the script and not of
-// its environment: the processes the script starts do not inherit it.
+// dataEnvTotalMax over all of a script's data); past that the script opens
+// with an assignment reading it from a heredoc (scriptData.deliver), the
+// engine's own text ahead of the author's. Such a value is a variable of the
+// script and not of its environment: the processes the script starts —
+// a nested `sh -c` among them — do not inherit it.
 //
 // A secret reference, the raw `{{!…}}` form and `{{"{{"}}` are not data:
 // they render as in any script body — the raw form is the author's own text,
@@ -56,6 +69,8 @@ import (
 const (
 	dataEnvValueMax = 64 << 10
 	dataEnvTotalMax = 256 << 10
+	// dataSpillMax bounds what the prologue carries: the script's own text.
+	dataSpillMax = 64 << 20
 )
 
 // renderScriptIn renders a tool node's `script:` written in language: a
@@ -120,7 +135,10 @@ func renderShellScript(script string, bash bool, refs []*ir.Ref, input, vars map
 		if strings.ContainsRune(text, 0) {
 			return "", scriptData{}, fmt.Errorf("the value of %s holds a NUL byte, which a shell script can carry neither in its environment nor in a variable", raw)
 		}
-		data.set(name, text)
+		if err := checkEvaluatedValue(raw, pos, text); err != nil {
+			return "", scriptData{}, err
+		}
+		data.set(name, raw, text)
 		b.WriteString(shellDataRead(name, pos, gluedToBackslash(script, span[0])))
 	}
 	b.WriteString(script[last:])
@@ -146,12 +164,32 @@ func shellDataRead(name string, pos ir.ShellRefPosition, glued bool) string {
 	switch {
 	case glued:
 		return "${" + name + "}"
-	case pos.Unsure:
-		return `"${` + name + `}"`
-	case pos.Context == ir.ShellRefDouble || pos.Context == ir.ShellRefArith || pos.Context == ir.ShellRefHeredoc:
+	case pos.Context == ir.ShellRefHeredoc && !pos.Unsure:
 		return "${" + name + "}"
 	}
-	return `"${` + name + `}"`
+	return "${" + name + `+"$` + name + `"}`
+}
+
+var (
+	integerValue    = regexp.MustCompile(`^-?[0-9]+$`)
+	identifierValue = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// checkEvaluatedValue refuses, at a position the reading is sure bash
+// evaluates (ir.ShellRefPosition.ArithEval, NameTaking), a value that is not
+// an integer — or, for a name, a plain identifier: bash evaluates the array
+// subscript any other value may hold (`a[$(cmd)]`), running its command
+// substitutions, and no rendering of a variable's read changes that. The
+// error names the reference and the position, never the value.
+func checkEvaluatedValue(raw string, pos ir.ShellRefPosition, value string) error {
+	switch {
+	case pos.Unsure:
+	case pos.ArithEval && !integerValue.MatchString(value):
+		return fmt.Errorf("%s is %s, where bash evaluates the value as arithmetic, and its value is not an integer (`-?[0-9]+`) — check the value before bash evaluates it (C344)", raw, pos.Where)
+	case pos.NameTaking && !identifierValue.MatchString(value):
+		return fmt.Errorf("%s is %s, where bash takes the value as a variable name, and its value is not a plain identifier — check the value before bash takes it (C344)", raw, pos.Where)
+	}
+	return nil
 }
 
 // gluedToBackslash reports whether the byte before at is a backslash that is
@@ -178,31 +216,37 @@ func drawDataMarker() string {
 type scriptData struct {
 	names  []string
 	values map[string]string
+	refs   map[string]string // each variable's reference, for a message
 }
 
-func (d *scriptData) set(name, value string) {
+func (d *scriptData) set(name, ref, value string) {
 	if d.values == nil {
-		d.values = map[string]string{}
+		d.values, d.refs = map[string]string{}, map[string]string{}
 	}
 	if _, ok := d.values[name]; !ok {
 		d.names = append(d.names, name)
 	}
-	d.values[name] = value
+	d.values[name], d.refs[name] = value, ref
 }
 
 // deliver splits d into the environment the interpreter starts with and the
 // prologue the script opens with: each value in the environment while it
-// fits dataEnvValueMax and the running total dataEnvTotalMax, the rest
-// assigned by the prologue as single-quoted words (shellEscape) — text the
-// engine writes ahead of the author's, so no construct of the author's
-// precedes or encloses it.
-func (d scriptData) deliver() (map[string]string, string) {
+// fits dataEnvValueMax and the running total dataEnvTotalMax, the rest read
+// by the prologue from a heredoc whose quoted delimiter is drawn from
+// crypto/rand — text the engine writes ahead of the author's, which no
+// construct of the author's precedes or encloses, and which no value can end
+// early, since none can spell the delimiter. A heredoc, not a single-quoted
+// word: bash parses a word of many escaped-quote segments in quadratic time. The
+// spilled values are bounded by dataSpillMax; past it the script is refused,
+// naming the references.
+func (d scriptData) deliver() (map[string]string, string, error) {
 	if len(d.names) == 0 {
-		return nil, ""
+		return nil, "", nil
 	}
 	env := make(map[string]string, len(d.names))
 	var prologue strings.Builder
-	total := 0
+	var spilled []string
+	total, spill := 0, 0
 	for _, name := range d.names {
 		value := d.values[name]
 		entry := len(name) + len(value) + 2
@@ -211,7 +255,16 @@ func (d scriptData) deliver() (map[string]string, string) {
 			total += entry
 			continue
 		}
-		prologue.WriteString(name + "=" + shellEscape(value) + "\n")
+		spill += len(value)
+		spilled = append(spilled, d.refs[name])
+		delim := "__ITERION_DATA_EOF_" + drawDataMarker() + drawDataMarker() + "__"
+		// The `.` keeps the value's trailing newlines from the substitution,
+		// which strips them; the second assignment takes it off.
+		fmt.Fprintf(&prologue, "%s=$(cat <<'%s'\n%s.\n%s\n) || { printf 'iterion: cannot read the value of %s\\n' >&2; exit 125; }\n%s=${%s%%.}\n",
+			name, delim, value, delim, d.refs[name], name, name)
 	}
-	return env, prologue.String()
+	if spill > dataSpillMax {
+		return nil, "", fmt.Errorf("the values of %s are %d bytes, past the %d a shell script carries", strings.Join(spilled, ", "), spill, dataSpillMax)
+	}
+	return env, prologue.String(), nil
 }

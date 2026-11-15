@@ -7,21 +7,21 @@ import (
 // A sh or bash `script:` receives each data reference (ShellScriptData)
 // through its interpreter's environment: the reference renders to a read of
 // a variable the engine names for that one rendering, and the value never
-// enters the script's text (pkg/backend/model, renderShellScript). What the
-// shell does with the variable read still depends on where it stands, and
+// enters the script's text (pkg/backend/model, renderShellScript), in one
+// context-free form (`${N+"$N"}`) but in an unquoted heredoc's body. What the
+// shell does with the read still depends on where it stands, and
 // ShellScriptRefPositions is that one reading — for the renderer, which
-// writes the read for its quoting, and for the compiler, which warns where
-// the value does not arrive (C343) or where bash evaluates it (C344).
+// writes a heredoc's read and refuses a value bash would evaluate where it is
+// sure of such a position, and for the compiler, which warns (C343 – C346).
 //
-// The reading is a lexer, not the shell, and it is allowed to be wrong: every
-// form the renderer writes is a parameter expansion, whose result the shell
-// never parses again, and every form is balanced for any quoting it lands in
-// (`"${N}"` holds two quotes, `${N}` none), so a misread costs at most word
-// splitting, a glob, a value that does not arrive, or a warning missed or
-// too many — never a command, never a read of the environment. Where it
-// knows it lost the shell's reading (a `case` inside `$( … )`, a heredoc
-// that never ends, …) it stops, and every later reference is a plain word,
-// marked Unsure so no warning rests on it.
+// The reading is a lexer, not the shell, and it is allowed to be wrong: the
+// read a misread position gets is the same one, so a misread costs a
+// heredoc's JSON form, a refusal or a warning missed or one too many — what
+// the value becomes is the shell's reading of the author's text either way.
+// Where it knows it lost the shell's reading (a `case` inside `$( … )`, a
+// heredoc that never ends, a `$((` closed by one `)`, a delimiter-led line
+// holding `)` in a sh script, …) it stops, and every later reference is a
+// plain word, marked Unsure so no warning or refusal rests on it.
 
 // ShellRefContext is the quoting a shell reads a reference's position in.
 type ShellRefContext int
@@ -59,6 +59,22 @@ type ShellRefPosition struct {
 	// crafted value's array subscript holds (`a[$(cmd)]`). Always so in
 	// ShellRefArith.
 	ArithEval bool
+	// NameTaking: bash takes the expanded word as a variable NAME — after
+	// `[[ -v`, `test -v`, `printf -v`, `read`, `unset`, `export`, the name
+	// of a `declare NAME=…`, the value of `declare -n r=…` — and evaluates
+	// the array subscript a name holds (`a[$(cmd)]`) the same way.
+	NameTaking bool
+	// CommandWord: the reference is a command's first word — the shell runs
+	// the value as a program.
+	CommandWord bool
+	// Code: the word is code another shell parses — the string of `sh -c`,
+	// an `eval` or `trap` argument, the command `ssh` hands the remote
+	// shell, the value of PS4 / BASH_ENV / ENV / PROMPT_COMMAND, an `alias`
+	// — or the body of a heredoc a shell reads as its script. A
+	// single-quoted read there is the safe form: the other shell reads the
+	// variable from the environment it inherits. A double-quoted one, or
+	// one in an unquoted heredoc, hands it the value, which it parses.
+	Code bool
 	// Where names the position for a message: "inside single quotes", "a
 	// `let` argument", …; empty for a plain word or a double-quoted string.
 	Where string
@@ -137,12 +153,20 @@ type shellRefScanner struct {
 	word *[]int
 	// subst counts the `$( … )` substitutions around the position.
 	subst int
+	// arithWhere, when set, marks every span recorded as evaluated by bash
+	// as arithmetic, with that position's name: a `${…}` subscript or
+	// offset holds a double-quoted string as well as a word.
+	arithWhere string
+	// intVars are the names a `declare -i` (or local, typeset) declared: an
+	// assignment to one later is evaluated as arithmetic.
+	intVars map[string]bool
 }
 
 type shellHeredoc struct {
 	delim  string
 	strip  bool
 	quoted bool
+	fed    bool // the command reading it is a shell: the body is its script
 }
 
 func (sc *shellRefScanner) done(i int) bool { return sc.lost || i >= sc.limit }
@@ -163,6 +187,9 @@ func (sc *shellRefScanner) slot(i int, ctx ShellRefContext, where string) (int, 
 		return i, false
 	}
 	p := ShellRefPosition{Context: ctx, Where: where, ArithEval: ctx == ShellRefArith}
+	if sc.arithWhere != "" && ctx != ShellRefSingle {
+		p.ArithEval, p.Where = true, sc.arithWhere
+	}
 	sc.out[i] = p
 	if sc.word != nil && (ctx == ShellRefWord || ctx == ShellRefDouble || ctx == ShellRefSingle) {
 		*sc.word = append(*sc.word, i)
@@ -181,6 +208,52 @@ func (sc *shellRefScanner) arithEval(spans []int, where string) {
 	}
 }
 
+// mark sets what set does on the position of each span of spans but the
+// single-quoted ones, which nothing expands.
+func (sc *shellRefScanner) mark(spans []int, set func(*ShellRefPosition)) {
+	for _, at := range spans {
+		p := sc.out[at]
+		if p.Context == ShellRefSingle {
+			continue
+		}
+		set(&p)
+		sc.out[at] = p
+	}
+}
+
+// markCode marks spans as code another shell parses, single-quoted ones
+// included: there the other shell reads the variable itself.
+func (sc *shellRefScanner) markCode(spans []int, where string) {
+	for _, at := range spans {
+		p := sc.out[at]
+		p.Code = true
+		if p.Where == "" || p.Context == ShellRefSingle {
+			p.Where = where
+		}
+		sc.out[at] = p
+	}
+}
+
+func (sc *shellRefScanner) nameTaking(spans []int, where string) {
+	sc.mark(spans, func(p *ShellRefPosition) { p.NameTaking, p.Where = true, where })
+}
+
+// shellRunner reports whether the command verb runs a shell that reads its
+// `-c` string or stdin as a script.
+func shellRunner(verb string) bool {
+	if i := strings.LastIndexByte(verb, '/'); i >= 0 {
+		verb = verb[i+1:]
+	}
+	switch verb {
+	case "sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "ssh":
+		return true
+	}
+	return false
+}
+
+// shellCodeVars are the variables whose value a shell runs or evaluates.
+var shellCodeVars = map[string]bool{"PS4": true, "PS1": true, "PS2": true, "BASH_ENV": true, "ENV": true, "PROMPT_COMMAND": true}
+
 func isShellMetaByte(c byte) bool {
 	switch c {
 	case ' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>':
@@ -198,10 +271,18 @@ var shellArithOps = map[string]bool{"-eq": true, "-ne": true, "-lt": true, "-le"
 type shellCommand struct {
 	words     int
 	verb      string
-	intFlag   bool  // a declaration utility saw a flag holding `i`
-	cond      bool  // inside `[[ … ]]`
-	arithNext bool  // the previous word was an integer operator of `[[ … ]]`
-	prevSpans []int // the previous word's spans
+	intFlag   bool   // a declaration utility saw a flag holding `i`
+	refFlag   bool   // a declaration utility saw a flag holding `n`
+	cond      bool   // inside `[[ … ]]`
+	arithNext bool   // the previous word was an integer operator of `[[ … ]]`
+	nameNext  bool   // the next word is a name (after `-v`, `printf -v`, `read -a`)
+	skipNext  bool   // the next word is an option's value (`read -p prompt`)
+	codeNext  bool   // the next word is a shell's `-c` string
+	hasC      bool   // the shell runs a `-c` string, not its stdin
+	hostSeen  bool   // `ssh` saw its host: the words after it are the remote command
+	array     bool   // inside a compound array assignment's `( … )`: its words are values
+	prevWord  string // the previous word
+	prevSpans []int  // the previous word's spans
 }
 
 // endWord applies the rules that judge a whole word, word being the text of
@@ -210,31 +291,48 @@ func (sc *shellRefScanner) endWord(c *shellCommand, ws int, word string, spans [
 	if word == "" {
 		return
 	}
-	// An array element assignment, `name[sub]=…`: bash evaluates the
-	// subscript as arithmetic.
+	// An array element assignment, `name[sub]=…`, and a compound array's
+	// index, `([sub]=…)`: bash evaluates the subscript as arithmetic.
 	if eq := shellSubscriptEnd(word); eq > 0 {
-		var in []int
-		for _, at := range spans {
-			if at-ws < eq {
-				in = append(in, at)
-			}
+		sc.arithEval(spansBefore(spans, ws, eq), "an array subscript")
+	} else if strings.HasPrefix(word, "[") {
+		if j := strings.Index(word, "]="); j > 0 {
+			sc.arithEval(spansBefore(spans, ws, j), "a compound array assignment's index")
 		}
-		sc.arithEval(in, "an array subscript")
 	}
-	defer func() { c.prevSpans = spans }()
+	defer func() { c.prevSpans, c.prevWord = spans, word }()
+	if c.array {
+		return // a compound array's element, not a command's word
+	}
 	if c.words == 0 {
 		if isShellAssignmentWord(word) {
-			return // a prefix assignment keeps command position
+			sc.assignment(word, ws, spans, "") // a prefix assignment keeps command position
+			return
 		}
 		if shellReservedWord(word) {
 			return // `{`, `then`, `do`, … — the command's verb comes next
 		}
 		c.words, c.verb = 1, word
 		c.cond = word == "[["
+		sc.mark(spans, func(p *ShellRefPosition) {
+			p.CommandWord = true
+			if p.Where == "" {
+				p.Where = "the command word"
+			}
+		})
 		return
 	}
 	c.words++
+	flag := strings.HasPrefix(word, "-") && word != "-" && word != "--" && !strings.Contains(word, "=")
 	switch {
+	case c.skipNext:
+		c.skipNext = false
+	case c.nameNext:
+		sc.nameTaking(spans, "a variable name after `"+c.prevWord+"`")
+		c.nameNext = false
+	case c.codeNext && !flag:
+		sc.markCode(spans, "the `-c` string of `"+c.verb+"`")
+		c.codeNext = false
 	case c.cond && word == "]]":
 		c.cond = false
 	case c.cond && shellArithOps[word]:
@@ -243,15 +341,109 @@ func (sc *shellRefScanner) endWord(c *shellCommand, ws int, word string, spans [
 	case c.arithNext:
 		sc.arithEval(spans, "an operand of an integer comparison in `[[ … ]]`")
 		c.arithNext = false
+	case (c.cond || c.verb == "test" || c.verb == "[") && word == "-v":
+		c.nameNext = true
 	case c.verb == "let":
 		sc.arithEval(spans, "a `let` argument")
+	case c.verb == "printf" && word == "-v":
+		c.nameNext = true
+	case c.verb == "read":
+		switch {
+		case word == "-a":
+			c.nameNext = true
+		case flag && strings.ContainsAny(word[len(word)-1:], "pdtnNui"):
+			c.skipNext = true
+		case !flag:
+			sc.nameTaking(spans, "a `read` variable name")
+		}
+	case c.verb == "unset" && !flag:
+		sc.nameTaking(spans, "an `unset` name")
+	case c.verb == "eval":
+		sc.markCode(spans, "an `eval` argument")
+	case c.verb == "trap" && c.words == 2:
+		sc.markCode(spans, "the command `trap` runs")
+	case c.verb == "alias":
+		sc.markCode(spans, "an `alias` definition")
+	case strings.HasSuffix(c.verb, "ssh"):
+		if !flag && c.hostSeen {
+			sc.markCode(spans, "the command `ssh` hands the remote shell")
+		} else if !flag {
+			c.hostSeen = true
+		}
+	case shellRunner(c.verb) && flag && !strings.HasPrefix(word, "--") && strings.Contains(word, "c"):
+		c.codeNext, c.hasC = true, true
 	case c.verb == "declare" || c.verb == "local" || c.verb == "typeset" || c.verb == "readonly" || c.verb == "export":
-		if strings.HasPrefix(word, "-") && !strings.Contains(word, "=") {
+		if flag {
 			c.intFlag = c.intFlag || strings.Contains(word, "i")
-		} else if c.intFlag {
-			sc.arithEval(spans, "a `"+c.verb+" -i` assignment")
+			c.refFlag = c.refFlag || strings.Contains(word, "n")
+			break
+		}
+		how := ""
+		switch {
+		case c.intFlag:
+			how = "a `" + c.verb + " -i` assignment"
+		case c.refFlag:
+			how = "nameref"
+		}
+		sc.assignment(word, ws, spans, how)
+		if eq := strings.IndexByte(word, '='); eq < 0 {
+			sc.nameTaking(spans, "a name `"+c.verb+"` declares")
+			if c.intFlag && shellNameLen(word) == len(word) {
+				sc.declareInt(word)
+			}
+		} else {
+			sc.nameTaking(spansBefore(spans, ws, eq), "a name `"+c.verb+"` declares")
+			if c.intFlag && shellNameLen(word) == eq {
+				sc.declareInt(word[:eq])
+			}
 		}
 	}
+}
+
+// assignment applies to a `NAME=value` word the rules of its name: a code
+// variable's value is code, an integer variable's (declared `-i`, or how
+// says so) is arithmetic, a nameref's is a name.
+func (sc *shellRefScanner) assignment(word string, ws int, spans []int, how string) {
+	eq := strings.IndexByte(word, '=')
+	if eq <= 0 {
+		return
+	}
+	name := strings.TrimSuffix(word[:eq], "+")
+	var value []int
+	for _, at := range spans {
+		if at-ws > eq {
+			value = append(value, at)
+		}
+	}
+	switch {
+	case shellCodeVars[name]:
+		sc.markCode(value, "the value of "+name+", which the shell runs")
+	case how == "nameref":
+		sc.nameTaking(value, "the target of a `declare -n` nameref")
+	case how != "":
+		sc.arithEval(value, how)
+	case sc.intVars[name]:
+		sc.arithEval(value, "an assignment to "+name+", declared `-i`")
+	}
+}
+
+func (sc *shellRefScanner) declareInt(name string) {
+	if sc.intVars == nil {
+		sc.intVars = map[string]bool{}
+	}
+	sc.intVars[name] = true
+}
+
+// spansBefore is the spans of a word starting at ws that start before the
+// word's byte end.
+func spansBefore(spans []int, ws, end int) []int {
+	var in []int
+	for _, at := range spans {
+		if at-ws < end {
+			in = append(in, at)
+		}
+	}
+	return in
 }
 
 // shellReservedWord reports whether w, at command position, leaves it there
@@ -377,18 +569,26 @@ func (sc *shellRefScanner) cmd(i int, subst bool) int {
 			continue
 		case ch == '(' && wordStart && i+1 < len(s) && s[i+1] == '(':
 			end(i)
-			i = sc.arith(i + 2)
+			where := "inside `(( … ))`"
+			if !sc.bash {
+				where = "inside `(( … ))` — arithmetic to bash, a nested subshell's command to dash"
+			}
+			i = sc.arith(i+2, where)
 			wordStart = false
 			continue
 		case ch == '(':
 			end(i)
-			if !c.cond {
+			if i > 0 && s[i-1] == '=' {
+				c.array = true // `name=( … )`: the words are values
+			} else if !c.cond {
 				c = shellCommand{}
 			}
 			depth++
 		case ch == ')':
 			end(i)
-			if !c.cond {
+			if c.array {
+				c.array = false
+			} else if !c.cond {
 				c = shellCommand{}
 			}
 			if subst {
@@ -403,7 +603,7 @@ func (sc *shellRefScanner) cmd(i int, subst bool) int {
 				i, wordStart = i+3, true // a here-string: a word follows
 				continue
 			}
-			i = sc.heredocOperator(i + 2)
+			i = sc.heredocOperator(i+2, shellRunner(c.verb) && !c.hasC)
 			wordStart = true
 			continue
 		case ch == '\n':
@@ -509,14 +709,17 @@ func (sc *shellRefScanner) dollar(i int, inDouble bool) int {
 	switch s[i+1] {
 	case '(':
 		if i+2 < len(s) && s[i+2] == '(' {
-			return sc.arith(i + 3)
+			return sc.arith(i+3, "inside `$(( … ))`")
 		}
 		return sc.cmd(i+2, true)
 	case '{':
 		return sc.param(i+2, inDouble)
 	case '[':
-		sc.lost = true // bash's legacy `$[ … ]`, dash's two literal bytes
-		return i
+		if !sc.bash {
+			sc.lost = true // bash's legacy `$[ … ]` is two literal bytes to dash
+			return i
+		}
+		return sc.arithBracket(i + 2)
 	case '\'':
 		if inDouble {
 			return i + 1
@@ -584,17 +787,20 @@ func (sc *shellRefScanner) param(i int, inDouble bool) int {
 	case i < sc.limit && strings.IndexByte("@*#?$!-", s[i]) >= 0:
 		i++
 	}
-	arith := ""
+	outer := sc.arithWhere
+	defer func() { sc.arithWhere = outer }()
+	offset := func(at int) {
+		if at+1 < sc.limit && s[at] == ':' && strings.IndexByte("-=?+", s[at+1]) < 0 {
+			sc.arithWhere = "a `${…:offset}` substring offset"
+		}
+	}
 	if i < sc.limit && s[i] == '[' {
-		arith = "a `${…[…]}` subscript"
-	} else if i+1 < sc.limit && s[i] == ':' && strings.IndexByte("-=?+", s[i+1]) < 0 {
-		arith = "a `${…:offset}` substring offset"
+		sc.arithWhere = "a `${…[…]}` subscript"
+	} else {
+		offset(i)
 	}
 	for !sc.done(i) {
 		if e, ok := sc.slot(i, ctx, ""); ok {
-			if arith != "" {
-				sc.arithEval([]int{i}, arith)
-			}
 			i = e
 			continue
 		}
@@ -602,8 +808,9 @@ func (sc *shellRefScanner) param(i int, inDouble bool) int {
 		case '}':
 			return i + 1
 		case ']':
-			if strings.HasSuffix(arith, "subscript") {
-				arith = ""
+			if strings.HasSuffix(sc.arithWhere, "subscript") {
+				sc.arithWhere = outer
+				offset(i + 1)
 			}
 		case '{':
 			sc.lost = true // a brace inside ${ … }, or bash 5.3's `${ cmd; }`
@@ -639,12 +846,16 @@ func (sc *shellRefScanner) param(i int, inDouble bool) int {
 }
 
 // arith reads an arithmetic expansion or command from past its `((`, to
-// past its `))`.
-func (sc *shellRefScanner) arith(i int) int {
+// past its `))`. Its references are recorded only once the `))` is found:
+// bash reads a `$((` whose parentheses do not close as `))` as a command
+// substitution of a subshell, and so does dash a `((` command.
+func (sc *shellRefScanner) arith(i int, where string) int {
 	s := sc.s
 	depth := 0
+	var pending []int
 	for !sc.done(i) {
-		if e, ok := sc.slot(i, ShellRefArith, "inside arithmetic"); ok {
+		if e, ok := sc.spans[i]; ok {
+			pending = append(pending, i)
 			i = e
 			continue
 		}
@@ -657,6 +868,9 @@ func (sc *shellRefScanner) arith(i int) int {
 				break
 			}
 			if i+1 < len(s) && s[i+1] == ')' {
+				for _, at := range pending {
+					sc.out[at] = ShellRefPosition{Context: ShellRefArith, ArithEval: true, Where: where}
+				}
 				return i + 2
 			}
 			sc.lost = true
@@ -670,6 +884,36 @@ func (sc *shellRefScanner) arith(i int) int {
 		case '\\':
 			i += 2
 			continue
+		case '$':
+			i = sc.dollar(i, true)
+			continue
+		}
+		i++
+	}
+	sc.openAtEnd()
+	return i
+}
+
+// arithBracket reads bash's legacy `$[ … ]` arithmetic from past its `$[`.
+func (sc *shellRefScanner) arithBracket(i int) int {
+	s := sc.s
+	depth := 0
+	for !sc.done(i) {
+		if e, ok := sc.slot(i, ShellRefArith, "inside `$[ … ]`"); ok {
+			i = e
+			continue
+		}
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			if depth == 0 {
+				return i + 1
+			}
+			depth--
+		case '\'', '"':
+			sc.lost = true
+			return i
 		case '$':
 			i = sc.dollar(i, true)
 			continue
@@ -710,7 +954,7 @@ func (sc *shellRefScanner) backquote(i int) int {
 // heredocOperator reads the delimiter word of a `<<` / `<<-` from past the
 // `<<` (parseHeredocDelim's quote removal), and queues the heredoc for the
 // next newline of a command.
-func (sc *shellRefScanner) heredocOperator(i int) int {
+func (sc *shellRefScanner) heredocOperator(i int, fed bool) int {
 	rest := sc.s[i:sc.limit]
 	for j := 0; j < len(rest) && !isShellMetaByte(rest[j]); j++ {
 		if _, ok := sc.spans[i+j]; ok {
@@ -723,7 +967,7 @@ func (sc *shellRefScanner) heredocOperator(i int) int {
 		sc.lost = true
 		return i
 	}
-	sc.pending = append(sc.pending, shellHeredoc{delim: delim, strip: strip, quoted: quoted})
+	sc.pending = append(sc.pending, shellHeredoc{delim: delim, strip: strip, quoted: quoted, fed: fed})
 	return i + n
 }
 
@@ -756,6 +1000,10 @@ func (sc *shellRefScanner) heredocBodies(i int) int {
 			// the delimiter and holds a `)`, and reads the rest of the line
 			// as the command (`EOF)` closing the substitution).
 			if sc.subst > 0 && strings.HasPrefix(line, h.delim) && strings.Contains(line[len(h.delim):], ")") {
+				if !sc.bash {
+					sc.lost = true // dash reads the line as the body's, bash (devbox's sh) as its end
+					return i
+				}
 				sc.heredocBody(start, i, h)
 				return lineEnd - len(line) + len(h.delim)
 			}
@@ -782,6 +1030,19 @@ func (sc *shellRefScanner) heredocBody(start, end int, h shellHeredoc) {
 	outer := sc.word
 	sc.word = nil
 	defer func() { sc.word = outer }()
+	if h.fed {
+		// The body is a shell's script: mark what the scan below records.
+		defer func() {
+			for at := range sc.spans {
+				if at >= start && at < end {
+					if p, ok := sc.out[at]; ok && (p.Context == ShellRefHeredoc || p.Context == ShellRefLiteralHeredoc) {
+						p.Code, p.Where = true, "the body of a heredoc a shell reads as its script"
+						sc.out[at] = p
+					}
+				}
+			}
+		}()
+	}
 	if h.quoted {
 		for at := range sc.spans {
 			if at >= start && at < end {

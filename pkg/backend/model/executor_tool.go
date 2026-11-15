@@ -400,8 +400,9 @@ type recipeResult struct {
 	// (authoredBody.repair): resolved with every placeholder that is not the
 	// author's reference defused. Set by the command and script recipes,
 	// the two the self-repair rung corrects.
-	repair string
-	runErr error
+	repair     string
+	repairData repairData
+	runErr     error
 	// deliveryErr is the verdict of handing over the files the output
 	// declared: non-nil only when a `required=true` directive lost its
 	// file (#2668). It is NOT a recipe failure — the recipe exited 0 —
@@ -420,6 +421,18 @@ type toolCommand struct {
 	// repair is the body this command runs as a recovery model may read it
 	// (authoredBody.repair), "" for a command no recovery rung corrects.
 	repair string
+	// repairData is what the body's variable reads need to run: a shell
+	// script's data (scriptData.deliver), which a command the recovery
+	// model corrects from repair reads the same way.
+	repairData repairData
+}
+
+// repairData is a shell script's data delivery, for a corrected command
+// that keeps the script's variable reads: the environment, and the prologue
+// assigning what the environment cannot hold.
+type repairData struct {
+	env      map[string]string
+	prologue string
 }
 
 // runToolNodeCore is the shared recipe-execution skeleton: policy check,
@@ -463,7 +476,7 @@ func (e *ClawExecutor) runToolNodeCore(
 		defer cleanup()
 	}
 	if err != nil {
-		return recipeResult{resolved: resolved, repair: tc.repair}, err
+		return recipeResult{resolved: resolved, repair: tc.repair, repairData: tc.repairData}, err
 	}
 
 	e.emitToolNodeStarted(node.ID, toolName, len(resolved))
@@ -541,6 +554,7 @@ func (e *ClawExecutor) runToolNodeCore(
 		stderr:      stderrStr,
 		resolved:    resolved,
 		repair:      tc.repair,
+		repairData:  tc.repairData,
 		runErr:      runErr,
 		deliveryErr: deliveryErr,
 	}, nil
@@ -984,7 +998,10 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// A shell script's data: the values its variable reads name, in
 			// the interpreter's environment, or assigned ahead of the
 			// author's text where the environment cannot hold them.
-			dataEnv, prologue := data.deliver()
+			dataEnv, prologue, err := data.deliver()
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
 			script = prologue + script
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
@@ -1079,6 +1096,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// relative path); out of it, the absolute scratch path.
 			tc := e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv)
 			tc.repair = body.repair()
+			tc.repairData = repairData{env: dataEnv, prologue: prologue}
 			return tc, cleanup, nil
 		}
 }

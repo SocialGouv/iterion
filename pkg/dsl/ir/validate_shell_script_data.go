@@ -6,28 +6,31 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// C343 / C344 — a data reference in a shell script the value does not reach,
-// or that bash evaluates
+// C343 – C346 — what a data reference's position in a shell script does
 // ---------------------------------------------------------------------------
 //
 // A sh or bash `script:` receives each data reference (ShellScriptData)
 // through its interpreter's environment: the reference renders to a read of
 // a variable the engine sets, and the value never enters the script's text
-// (#3291). Two positions deserve a word at authoring time, both from
-// ShellScriptRefPositions — the reading the renderer itself takes:
+// (#3291). What the shell then does with the read depends on where it
+// stands, and ShellScriptRefPositions — the reading the renderer takes — says
+// four things worth a word at authoring time:
 //
-//   - C343: where the shell reads nothing — single quotes, a `$'…'` string,
-//     the body of a heredoc whose delimiter is quoted, a comment — the text
-//     holds the variable's read as written: the value arrives only if a
-//     shell runs that text (`sh -c '…'`, `trap '…'`, a quoted heredoc fed to
-//     `bash`), and never in a comment.
-//   - C344: where bash evaluates the expanded value as an arithmetic
-//     expression — `$(( … ))`, `(( … ))`, a `[[ … -gt … ]]` operand, a
-//     `let` argument, a `declare -i` / `local -i` assignment, an array
-//     subscript, a `${…}` subscript or offset — a crafted value runs the
-//     command substitutions its array subscript holds (`a[$(cmd)]`). That
-//     is the shell's evaluation of a variable, not a rendering the engine
-//     can quote: the script validates the value as an integer first.
+//   - C343: where the shell reads nothing — single quotes, `$'…'`, a quoted
+//     heredoc's body, a comment — the value does not arrive: the text holds
+//     the read itself. A shell that runs that text (`sh -c '…'`, `trap '…'`,
+//     a quoted heredoc fed to `sh`) reads the variable from its environment,
+//     the safe form: no warning there (Code).
+//   - C344: where bash evaluates the value — as arithmetic, or as a
+//     variable name, whose array subscript it evaluates the same way — a
+//     crafted value runs the command substitutions it holds (`a[$(cmd)]`).
+//     The run refuses a value that is not an integer (an identifier, for a
+//     name) at such a position; the warning says so ahead of the run.
+//   - C345: a command's first word runs the value as a program.
+//   - C346: where the value is code another shell parses — a double-quoted
+//     `sh -c` string, an `eval` argument, an unquoted heredoc fed to a
+//     shell, PS4 / BASH_ENV / ENV / PROMPT_COMMAND, an `alias` — a crafted
+//     value runs.
 //
 // Warnings: the script runs. Once per reference and code in a body, on the
 // first position that shows it; a position the reading is unsure of
@@ -54,6 +57,13 @@ func (c *compiler) validateShellScriptData(w *Workflow) {
 		}
 		positions := ShellScriptRefPositions(t.Script, t.Language == "bash")
 		warned := map[string]bool{}
+		warn := func(code DiagCode, raw string, format string, args ...any) {
+			if warned[string(code)+raw] {
+				return
+			}
+			warned[string(code)+raw] = true
+			c.warnfAtProperty(code, "tool", t.ID, "script", format, args...)
+		}
 		for _, span := range TemplateSpans(t.Script) {
 			raw := t.Script[span[0]:span[1]]
 			p := positions[span[0]]
@@ -61,18 +71,31 @@ func (c *compiler) validateShellScriptData(w *Workflow) {
 				continue
 			}
 			line := strings.Count(t.Script[:span[0]], "\n") + 1
+			quiet := p.Context == ShellRefSingle || p.Context == ShellRefLiteralHeredoc || p.Context == ShellRefComment
 			switch {
-			case p.ArithEval && !warned["C344"+raw]:
-				warned["C344"+raw] = true
-				c.warnfAtProperty(DiagShellScriptDataArith, "tool", t.ID, "script",
-					"tool %q script, body line %d: %s is %s, where bash evaluates the value as an arithmetic expression — a crafted value runs the command substitutions its array subscript holds (`a[$(cmd)]`). "+
-						"Check the value is an integer before bash evaluates it (`n={{…}}; case $n in ''|*[!0-9]*) exit 1;; esac`)",
+			case p.Code && !quiet:
+				warn(DiagShellScriptDataCode, raw,
+					"tool %q script, body line %d: %s is %s, where another shell parses the value as code — a crafted value runs (`$(cmd)`, `; cmd`). "+
+						"Single-quote the text that shell runs (`sh -c 'printf %%s {{…}}'`, `trap '…' EXIT`, a heredoc with a quoted delimiter): it then reads the variable from the environment it inherits, as data — or hand the value as an argument (`sh -c '… \"$1\"' _ {{…}}`)",
 					t.ID, line, raw, p.Where)
-			case (p.Context == ShellRefSingle || p.Context == ShellRefLiteralHeredoc || p.Context == ShellRefComment) && !warned["C343"+raw]:
-				warned["C343"+raw] = true
-				c.warnfAtProperty(DiagShellScriptDataNotArriving, "tool", t.ID, "script",
-					"tool %q script, body line %d: %s stands %s, where the shell reads nothing — a shell script receives a data reference as a variable of its environment, so this text holds the variable's read, not the value: the value arrives only if a shell runs the text (`sh -c '…'`, `trap '…'`, a heredoc fed to `bash`). "+
-						"Write the reference where the shell expands it — outside the single quotes, in an unquoted heredoc — or assign it first (`v={{…}}`) and hand `\"$v\"` on",
+			case p.ArithEval || p.NameTaking:
+				what := "as an arithmetic expression"
+				refuse := "a value that is not an integer"
+				if p.NameTaking {
+					what, refuse = "as a variable name", "a value that is not a plain identifier"
+				}
+				warn(DiagShellScriptDataArith, raw,
+					"tool %q script, body line %d: %s is %s, where bash evaluates the value %s — the array subscript a crafted value holds runs its command substitutions (`a[$(cmd)]`). The run refuses %s at this position",
+					t.ID, line, raw, p.Where, what, refuse)
+			case p.CommandWord:
+				warn(DiagShellScriptDataCommand, raw,
+					"tool %q script, body line %d: %s is the command word, so the shell runs the value as a program — a value names any command the script's environment holds, `env` among them. "+
+						"If that is the intent, check the value against the programs you allow first",
+					t.ID, line, raw)
+			case quiet && !p.Code:
+				warn(DiagShellScriptDataNotArriving, raw,
+					"tool %q script, body line %d: %s stands %s, where the shell reads nothing — the value does NOT arrive: the text holds the read of the variable the engine sets, as written (a v6.2.0 script received the value's JSON literal here). "+
+						"For a payload, build it where the shell expands — an unquoted heredoc (`cat <<EOF`, which receives the value's JSON literal) or `jq -n --arg k {{…}}` — and for another shell's code keep the single quotes: that shell reads the variable from its environment",
 					t.ID, line, raw, p.Where)
 			}
 		}

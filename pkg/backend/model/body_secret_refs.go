@@ -152,10 +152,11 @@ func (b *bodySecrets) shellEnv(s string) (string, map[string]string) {
 //     as the one literal it is. In a shell script the literal becomes
 //     `"$M"` — a variable named after the marker, which no data can spell —
 //     and the value rides the interpreter's environment, never the
-//     script's text. Nor can data read it: a shell script's data rides the
-//     environment too (renderShellScript), its value never in the script's
-//     text, so no data runs as code — no `$(env)`, no bash `${!prefix@}`
-//     then `${!x}`. Where the shell expands nothing — single quotes, a
+//     script's text. Nor is data parsed as script text: a shell script's
+//     data rides the environment too (renderShellScript), so a value's
+//     `$(env)` or bash `${!prefix@}` then `${!x}` is text — unless the
+//     author hands the value to something that runs it (a command word,
+//     another shell's code: C345, C346). Where the shell expands nothing — single quotes, a
 //     heredoc whose delimiter is quoted — the script receives the
 //     variable's name and not the value: C342 warns on those positions at
 //     authoring time. In js and py the literal is the value's JSON string

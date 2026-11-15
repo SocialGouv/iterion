@@ -315,7 +315,11 @@ body does.
   data-in-a-shell-script class, open on its own ticket (#3291). #3291
   closed it: a sh or bash script's data rides the environment too, read
   through variables the engine names for the rendering, and the value never
-  enters the script's text, so no data runs as code ([dsl.md](../dsl.md)).
+  enters the script's text, so no data is parsed as script text — what
+  remains is where the author hands the value to something that runs it (a
+  command word, another shell's code, bash's arithmetic), which the compiler
+  names (C344 – C346) and the run refuses at an arithmetic or name position
+  ([dsl.md](../dsl.md)).
   Where the shell expands nothing — single
   quotes, a heredoc whose delimiter is quoted — the script therefore reads
   the variable's name and not the value; `C342` warns on those positions,

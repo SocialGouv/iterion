@@ -101,7 +101,7 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 						continue
 					}
 					c.warnfAtProperty(DiagTreeNoiseRefInExecBody, "tool", t.ID, b.where,
-						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE word (a shell script reads a data reference from its environment as one quoted word, \"${…}\") — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
+						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE word (a shell script reads a data reference from its environment as one quoted word, ${N+\"$N\"}) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
 							"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 						t.ID, freeLine, treenoise.TreeNoiseEnvVar)
 					continue

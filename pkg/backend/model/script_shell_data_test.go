@@ -13,8 +13,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
@@ -83,7 +85,10 @@ func renderAndRun(t *testing.T, argv []string, language, script string, input ma
 	if err != nil {
 		t.Fatalf("render %q: %v", script, err)
 	}
-	env, prologue := data.deliver()
+	env, prologue, err := data.deliver()
+	if err != nil {
+		t.Fatalf("deliver %q: %v", script, err)
+	}
 	dir, home := t.TempDir(), t.TempDir()
 	path := filepath.Join(dir, "script.sh")
 	if err := os.WriteFile(path, []byte(prologue+rendered), 0o600); err != nil {
@@ -116,8 +121,24 @@ func jsonText(t *testing.T, v any) string {
 	return string(b)
 }
 
-// dataRead matches the read of a data variable the renderer writes.
-var dataRead = regexp.MustCompile(`\$\{__ITERION_DATA_[0-9a-f]{16}_[0-9]+(_JSON)?__\}`)
+// dataRead matches the read of a data variable the renderer writes: the
+// context-free `${N+"$N"}`, or a bare `${N}` (a heredoc's JSON variable, a
+// read glued to a backslash).
+var dataRead = regexp.MustCompile(`\$\{(__ITERION_DATA_[0-9a-f]{16}_[0-9]+(_JSON)?__)(\+"\$__ITERION_DATA_[0-9a-f]{16}_[0-9]+__")?\}`)
+
+// readShape writes each read of s as `${R}` (the context-free form), `${J}`
+// (a heredoc's JSON variable) or `${V}` (a bare read).
+func readShape(s string) string {
+	return dataRead.ReplaceAllStringFunc(s, func(m string) string {
+		switch {
+		case strings.Contains(m, "+"):
+			return "${R}"
+		case strings.HasSuffix(m, "_JSON__}"):
+			return "${J}"
+		}
+		return "${V}"
+	})
+}
 
 // shellPositions are the positions a shell script holds a reference at, each
 // with what the script prints for value v: the value's bytes where the shell
@@ -254,13 +275,8 @@ func TestShellScriptDataRendersReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shape := dataRead.ReplaceAllStringFunc(got, func(m string) string {
-		if strings.HasSuffix(m, "_JSON__}") {
-			return "${J}"
-		}
-		return "${V}"
-	})
-	if want := "echo \"${V}\" \"x=${V}\" $(( ${V} + 1 )) \\${V} '\"${V}\"'\ncat <<EOF\n${J}\nEOF\nX=\"${V}\" Y=\"${V}\""; shape != want {
+	shape := readShape(got)
+	if want := "echo ${R} \"x=${R}\" $(( ${R} + 1 )) \\${V} '${R}'\ncat <<EOF\n${J}\nEOF\nX=${R} Y=${R}"; shape != want {
 		t.Errorf("rendered\n%s\nshape\n%s\nwant\n%s", got, shape, want)
 	}
 	var values []string
@@ -294,17 +310,27 @@ func TestShellScriptDataDelivery(t *testing.T) {
 		t.Fatalf("the big value is %d bytes, want over 1 MiB", len(big))
 	}
 	var d scriptData
-	d.set("A", small)
-	d.set("B", big)
+	d.set("A", "{{input.a}}", small)
+	d.set("B", "{{input.b}}", big)
 	for i := range 8 {
-		d.set("C"+string(rune('0'+i)), strings.Repeat("c", 60<<10))
+		d.set("C"+string(rune('0'+i)), "{{input.c}}", strings.Repeat("c", 60<<10))
 	}
-	env, prologue := d.deliver()
-	if env["A"] != small || strings.Contains(prologue, "A='") {
+	env, prologue, err := d.deliver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["A"] != small || strings.Contains(prologue, "A=$(") {
 		t.Errorf("a small value did not ride the environment")
 	}
-	if _, inEnv := env["B"]; inEnv || !strings.HasPrefix(prologue, "B='") {
+	if _, inEnv := env["B"]; inEnv || !strings.HasPrefix(prologue, "B=$(cat <<'__ITERION_DATA_EOF_") {
 		t.Errorf("a 1 MiB value rode the environment")
+	}
+	// What the prologue carries is bounded: past it the script is refused,
+	// naming the reference, not the value.
+	var huge scriptData
+	huge.set("H", "{{input.huge}}", strings.Repeat("h", dataSpillMax+1))
+	if _, _, err := huge.deliver(); err == nil || !strings.Contains(err.Error(), "{{input.huge}}") || strings.Contains(err.Error(), "hhhh") {
+		t.Errorf("a value past the spill bound delivered (%v), want a refusal naming the reference", err)
 	}
 	total := 0
 	for name, v := range env {
@@ -452,5 +478,138 @@ func TestShellScriptDataPlaceholderIsDefusedInItsValue(t *testing.T) {
 				t.Errorf("%s: the script receives %q (defused = %v wanted)", tc.name, v, tc.defused)
 			}
 		}
+	}
+}
+
+// TestShellScriptMisreadsCostNothing is the class the verification review of
+// the environment delivery found (rva-sh91-2 H2): wherever the reading and
+// the shell part — dash ignoring bash's `EOF)`, a `case` spelled across a
+// line continuation or through an alias, `$\<nl>(`, bash's `$((` falling
+// back to `$( (` — the read the renderer wrote is the same context-free
+// `${N+"$N"}`, one word unquoted and inside double quotes alike: a value at
+// a position the shell takes as a command is one word with no argument, and
+// nothing a value needs arguments or an expansion for runs or reads the
+// environment. A command word the author writes runs the value — C345 warns.
+func TestShellScriptMisreadsCostNothing(t *testing.T) {
+	t.Parallel()
+	rows := []struct{ id, language, script string }{
+		{"F2 variant: case across a line continuation, data as the arm's command", "sh", "x=\"$(ca\\\nse a in a) {{input.v}};; esac)\"\necho \"x=[$x]\""},
+		{"F6 variant: aliased case, data as the arm's command", "sh", "alias c=case\nx=\"$(c a in a) {{input.v}};; esac)\"\necho \"x=[$x]\""},
+		{"F8 variant: $\\<nl>( in double quotes", "sh", "x=\"$\\\n(cd /; {{input.v}})\"\necho \"x=[$x]\""},
+		{"dash: EOF) does not end a heredoc in $( )", "sh", "x=\"$(cat <<EOF\nEOF)\nEOF\n{{input.v}}\n)\"\necho \"x=[$x]\""},
+		{"bash: $(( falls back to $( (", "bash", "x=$((cd /tmp; {{input.v}}) 2>&1)\necho \"x=[$x]\""},
+		{"backquote stripping a backslash", "sh", "x=`echo \\\"{{input.v}}\\\"`\necho \"x=[$x]\""},
+		{"read right: data as the arm's command", "sh", "x=\"$(case a in a) {{input.v}};; esac)\"\necho \"x=[$x]\""},
+	}
+	payloads := []any{"touch pwned", "sh -c touch${IFS}pwned", "cp /proc/self/environ leak.txt", "\ntouch pwned #", "touch\tpwned", "$(touch pwned)", "${ITERION_CANARY}"}
+	for _, r := range rows {
+		for _, argv := range shellsFor(t, r.language) {
+			t.Run(r.id+"/"+strings.Join(argv, " "), func(t *testing.T) {
+				t.Parallel()
+				for _, v := range payloads {
+					got, pwned, rendered := renderAndRun(t, argv, r.language, r.script, map[string]any{"v": v})
+					if pwned || strings.Contains(got, "leak-") {
+						t.Fatalf("value %q ran (pwned %v) or read the environment (%q):\n%s", v, pwned, got, rendered)
+					}
+				}
+			})
+		}
+	}
+	// Through the executor, beside a real secret: the F8 and `$((` rows.
+	const value = "sv-3e81c0a9d27f6b54"
+	for _, c := range []struct{ language, body string }{
+		{"sh", "printf '%s' {{secrets.pw}} > /dev/null\nx=\"$\\\n(cd .; {{input.d}})\"\nprintf '%s' \"$x\" > out.txt\n"},
+		{"bash", "printf '%s' {{secrets.pw}} > /dev/null\nx=$((cd .; {{input.d}}) 2>&1)\nprintf '%s' \"$x\" > out.txt\n"},
+	} {
+		for _, d := range []string{"cp /proc/self/environ pwned.txt", "sh -c env", "touch pwned.txt", "$(env)"} {
+			got, pwned := runSecretScript(t, c.language, c.body, value, map[string]any{"d": d})
+			if pwned || strings.Contains(got, value) {
+				t.Errorf("%s, data %q: ran (pwned %v) or read the secret (out.txt %q)", c.language, d, pwned, got)
+			}
+		}
+	}
+}
+
+// TestShellScriptRefusesAnEvaluatedValue: where the reading is sure bash
+// evaluates the value — arithmetic, a variable name — the run refuses a value
+// that is not an integer (an identifier), naming the reference and never the
+// value, and an integer (an identifier) runs.
+func TestShellScriptRefusesAnEvaluatedValue(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ script, good string }{
+		{"echo $(( {{input.v}} + 1 ))", "-42"},
+		{"[[ {{input.v}} -gt 0 ]] && echo pos", "7"},
+		{"let n={{input.v}}+1", "1"},
+		{"arr[{{input.v}}]=1", "0"},
+		{"declare -i n\nn={{input.v}}", "3"},
+		{"printf -v {{input.v}} '%s' x", "name_1"},
+		{"[[ -v {{input.v}} ]] && echo set", "HOME"},
+		{"read {{input.v}} <<< x", "line"},
+	} {
+		for _, bad := range []string{"a[$(touch pwned)]", "1+1", "", "x y"} {
+			if _, _, err := renderScriptIn(c.script, "bash", mustRefs(c.script), map[string]any{"v": bad}, nil, nil, "run", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "{{input.v}} is ") || (bad != "" && strings.Contains(err.Error(), bad)) {
+				t.Errorf("%q with %q: rendered (%v), want a refusal naming the reference", c.script, bad, err)
+			}
+		}
+		got, pwned, rendered := renderAndRun(t, []string{"bash"}, "bash", c.script, map[string]any{"v": c.good})
+		if pwned || strings.Contains(got, "leak-") {
+			t.Errorf("%q with %q misbehaved:\n%s", c.script, c.good, rendered)
+		}
+	}
+}
+
+// TestShellScriptSpillIsLinear: a spilled value is read from a heredoc, not
+// spelled as one single-quoted word, which bash parses in time quadratic in
+// its apostrophes — a 1 MiB value of quotes arrives byte for byte, quickly.
+func TestShellScriptSpillIsLinear(t *testing.T) {
+	t.Parallel()
+	quotes := strings.Repeat("'", 1<<20)
+	start := time.Now()
+	got, pwned, _ := renderAndRun(t, []string{"bash"}, "bash", "printf '%s' {{input.v}}", map[string]any{"v": quotes})
+	if pwned || got != quotes {
+		t.Fatalf("a 1 MiB value of quotes arrived as %d bytes", len(got))
+	}
+	if took := time.Since(start); took > 20*time.Second {
+		t.Errorf("a 1 MiB value of quotes took %v to arrive", took)
+	}
+}
+
+// The self-repair rung shows a model the failed script, whose data reads name
+// variables of its environment, and runs what the model answers as a
+// command: that command keeps the reads, so it runs with the script's data —
+// a repaired script still receives the value, not an empty string.
+func TestASelfRepairedShellScriptKeepsItsData(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	reg := NewRegistry()
+	client := &echoingRepairClient{}
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return client, nil })
+	exec := newTestClawExecutor(reg, &ir.Workflow{}, WithWorkDir(dir))
+	body := "printf '%s' {{input.answer}} > data.txt; printf '%s' {{input.big}} > big.txt; exit 1"
+	node := &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "publish"},
+		Language:      "sh",
+		Script:        body,
+		ScriptRefs:    mustRefs(body),
+		Goal:          "publish the answer",
+		Postcondition: "test -f repaired.txt",
+		Policy:        ir.PolicyRecover,
+		Recovery:      &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "anthropic/claude-test"},
+	}
+	answer, big := "the answer is $(touch pwned) 42", strings.Repeat("b", dataEnvValueMax+1)
+	if _, err := exec.Execute(context.Background(), node, map[string]any{"answer": answer, "big": big}); err != nil {
+		t.Fatalf("Execute: %v — the repaired command did not run", err)
+	}
+	if len(client.seen()) != 1 {
+		t.Fatalf("the repair model was asked %d times, want once", len(client.seen()))
+	}
+	for file, want := range map[string]string{"data.txt": answer, "big.txt": big} {
+		got, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil || string(got) != want {
+			t.Errorf("%s after the repair holds %d bytes (%v), want the script's value (%d bytes)", file, len(got), err, len(want))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pwned")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a value ran a command")
 	}
 }

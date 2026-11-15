@@ -116,9 +116,12 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 			// one: there a placeholder data carried reads exactly like the
 			// author's reference, and the corrected command the model
 			// returns runs through the agent sink.
-			lastStdout, lastStderr, lastCmd := res.stdout, res.stderr, res.repair
+			// A shell script's data rides its environment: the corrected
+			// command keeps the script's variable reads, so it runs with the
+			// same delivery.
+			lastStdout, lastStderr, lastCmd, data := res.stdout, res.stderr, res.repair, res.repairData
 			for i := 0; i < node.Recovery.MaxRepairAttempts; i++ {
-				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd)
+				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd, data)
 				if rerr != nil {
 					e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
 					break
@@ -309,7 +312,7 @@ func ambiguousEnd(err error) bool {
 // aware, secret-materialised). The resolved corrected command is emitted as
 // a tool_called event — the model fixes the recipe, it never does the side
 // effect blind. Returns the corrected command + its run result.
-func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string) (string, recipeResult, error) {
+func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout, stderr, lastCmd string, data repairData) (string, recipeResult, error) {
 	modelSpec := e.recoveryModel(node)
 	if modelSpec == defaultVerifiedActionModel && anthropicFunding(ctx) == "" {
 		return "", recipeResult{}, fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
@@ -376,7 +379,15 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		// grant's placeholder out of the failed command it was shown gets
 		// the placeholder, not the bearer.
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
-		return e.toolNodeCommand(ctx, materialized, env), nil, nil
+		// The recipe's data, which the corrected command's variable reads
+		// name: its environment, and the prologue for what that cannot hold.
+		for name, value := range data.env {
+			if env == nil {
+				env = make(map[string]string, len(data.env))
+			}
+			env[name] = value
+		}
+		return e.toolNodeCommand(ctx, data.prologue+materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, "self_repair:"+node.ID, resolve, buildCmd)
 	if setupErr != nil {
