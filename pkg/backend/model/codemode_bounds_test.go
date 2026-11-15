@@ -18,8 +18,21 @@ import (
 // write JavaScript.
 
 // runBounded is runCodemode with a chosen bound set instead of the zero value.
+//
+// MEMORY is filled here rather than at each call site, because the reason is
+// the HARNESS's and not any one test's: this child is the test binary, and on
+// the `-race` leg it is race-instrumented, which does not fit in
+// DefaultLimits' 256 MiB — the same reason codemode_tool_test.go states for
+// its own `Memory: 1 << 30`. Measured by not doing it: a child died mid-write
+// and the parent reported `write |1: broken pipe`, which reads as a channel
+// defect rather than as a child that ran out of address space. 1 GiB is under
+// scripthost.Ceiling, so Clamp leaves it alone and the bound under test is
+// still the one the caller chose.
 func runBounded(t *testing.T, want scripthost.Limits, toolMap map[string]*GenerationTool, source string) (string, error) {
 	t.Helper()
+	if want.Memory == 0 {
+		want.Memory = 1 << 30
+	}
 	_, ctx := newToolDispatcher(context.Background(), toolMap, nil, nil, nil, nil, nil)
 	in, err := json.Marshal(map[string]string{"source": source})
 	if err != nil {

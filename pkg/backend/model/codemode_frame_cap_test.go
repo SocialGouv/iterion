@@ -48,7 +48,7 @@ func TestAToolResultInsideItsOwnBoundReachesTheProgram(t *testing.T) {
 	}
 	_, ctx := newToolDispatcher(context.Background(), toolMap, nil, nil, nil, nil, nil)
 
-	out, err := codemodeTool(childHost(), scripthost.Limits{ToolResultBytes: 512 << 10}).Execute(ctx, in)
+	out, err := codemodeTool(childHost(), scripthost.Limits{ToolResultBytes: 512 << 10, Memory: 1 << 30}).Execute(ctx, in)
 	if err != nil {
 		t.Fatalf("a 300 KiB result under a declared 512 KiB tool_result_bytes broke the channel: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestAToolResultAboveItsBoundIsClippedNotFatal(t *testing.T) {
 	}
 	_, ctx := newToolDispatcher(context.Background(), toolMap, nil, nil, nil, nil, nil)
 
-	out, err := codemodeTool(childHost(), scripthost.Limits{ToolResultBytes: 4096}).Execute(ctx, in)
+	out, err := codemodeTool(childHost(), scripthost.Limits{ToolResultBytes: 4096, Memory: 1 << 30}).Execute(ctx, in)
 	if err != nil {
 		t.Fatalf("a clipped result must come back, not break the channel: %v", err)
 	}
