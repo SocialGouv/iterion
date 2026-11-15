@@ -513,9 +513,9 @@ const (
 
 	DiagShellScriptDataNotArriving DiagCode = "C343" // a data reference in a sh/bash script where the shell reads nothing (single quotes, $'…', a quoted heredoc, a comment) — the text holds the environment variable's read, not the value (warning)
 
-	DiagShellScriptDataArith DiagCode = "C344" // a data reference in a sh/bash script where bash evaluates the value as arithmetic or as a variable name ($(( )), (( )), [[ -gt ]], let, declare -i, a subscript, [[ -v ]], read, printf -v, …) — refused at run time unless an integer (an identifier) (warning)
+	DiagShellScriptDataArith DiagCode = "C344" // a data reference in a sh/bash script where bash evaluates the value — as arithmetic, a compound array assignment or a variable name ($(( )), (( )), [[ -gt ]], let, declare -i / -a, a subscript, [[ -v ]], read, printf -v, …) — best effort (warning)
 
 	DiagShellScriptDataCommand DiagCode = "C345" // a data reference as a command word in a sh/bash script — the shell runs the value as a program (warning)
 
-	DiagShellScriptDataCode DiagCode = "C346" // a data reference where another shell parses the value as code (a double-quoted sh -c / eval / trap argument, an unquoted heredoc fed to a shell, PS4/BASH_ENV/ENV, alias) (warning)
+	DiagShellScriptDataCode DiagCode = "C346" // a data reference where another shell parses the value as code (a double-quoted sh -c / eval / trap argument, an unquoted heredoc fed to a shell, a mapfile -C callback, PS4/BASH_ENV/ENV, alias, ssh) (warning)
 )

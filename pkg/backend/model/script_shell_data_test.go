@@ -85,7 +85,7 @@ func renderAndRun(t *testing.T, argv []string, language, script string, input ma
 	if err != nil {
 		t.Fatalf("render %q: %v", script, err)
 	}
-	env, prologue, err := data.deliver()
+	env, prologue, err := data.deliver(dataSpillMax)
 	if err != nil {
 		t.Fatalf("deliver %q: %v", script, err)
 	}
@@ -315,7 +315,7 @@ func TestShellScriptDataDelivery(t *testing.T) {
 	for i := range 8 {
 		d.set("C"+string(rune('0'+i)), "{{input.c}}", strings.Repeat("c", 60<<10))
 	}
-	env, prologue, err := d.deliver()
+	env, prologue, err := d.deliver(dataSpillMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,11 +326,23 @@ func TestShellScriptDataDelivery(t *testing.T) {
 		t.Errorf("a 1 MiB value rode the environment")
 	}
 	// What the prologue carries is bounded: past it the script is refused,
-	// naming the reference, not the value.
+	// naming the reference, not the value — and the bound has its override.
 	var huge scriptData
-	huge.set("H", "{{input.huge}}", strings.Repeat("h", dataSpillMax+1))
-	if _, _, err := huge.deliver(); err == nil || !strings.Contains(err.Error(), "{{input.huge}}") || strings.Contains(err.Error(), "hhhh") {
-		t.Errorf("a value past the spill bound delivered (%v), want a refusal naming the reference", err)
+	huge.set("H", "{{input.huge}}", strings.Repeat("h", 2<<20))
+	if _, _, err := huge.deliver(1 << 20); err == nil || !strings.Contains(err.Error(), "{{input.huge}}") || !strings.Contains(err.Error(), DataSpillMaxEnv) || strings.Contains(err.Error(), "hhhh") {
+		t.Errorf("a value past the spill bound delivered (%v), want a refusal naming the reference and the override", err)
+	}
+	if _, _, err := huge.deliver(4 << 20); err != nil {
+		t.Errorf("a value under a raised bound was refused: %v", err)
+	}
+	for v, want := range map[string]int{"": dataSpillMax, "1048576": 1 << 20, "0": int(^uint(0) >> 1)} {
+		got, err := scriptDataSpillMax(v)
+		if err != nil || got != want {
+			t.Errorf("%s=%q reads %d (%v), want %d", DataSpillMaxEnv, v, got, err, want)
+		}
+	}
+	if _, err := scriptDataSpillMax("lots"); err == nil || !strings.Contains(err.Error(), DataSpillMaxEnv) {
+		t.Errorf("a bound that is no byte count read (%v), want an error naming the variable", err)
 	}
 	total := 0
 	for name, v := range env {
@@ -530,30 +542,46 @@ func TestShellScriptMisreadsCostNothing(t *testing.T) {
 	}
 }
 
-// TestShellScriptRefusesAnEvaluatedValue: where the reading is sure bash
-// evaluates the value — arithmetic, a variable name — the run refuses a value
-// that is not an integer (an identifier), naming the reference and never the
-// value, and an integer (an identifier) runs.
-func TestShellScriptRefusesAnEvaluatedValue(t *testing.T) {
+// TestShellScriptEvaluatedPositionsRunAsWritten: no value is refused for its
+// position — bash evaluating a value is the author's to check (C344 warns) —
+// and the idioms the refusal of the third round got wrong run as bash runs
+// them: a here-string after `read`, an associative array's key, a number
+// bash reads that is no plain decimal, `export -n`, `unset -f`, a local
+// shadowing an integer global.
+func TestShellScriptEvaluatedPositionsRunAsWritten(t *testing.T) {
 	t.Parallel()
-	for _, c := range []struct{ script, good string }{
-		{"echo $(( {{input.v}} + 1 ))", "-42"},
-		{"[[ {{input.v}} -gt 0 ]] && echo pos", "7"},
-		{"let n={{input.v}}+1", "1"},
-		{"arr[{{input.v}}]=1", "0"},
-		{"declare -i n\nn={{input.v}}", "3"},
-		{"printf -v {{input.v}} '%s' x", "name_1"},
-		{"[[ -v {{input.v}} ]] && echo set", "HOME"},
-		{"read {{input.v}} <<< x", "line"},
+	for _, c := range []struct {
+		script string
+		v      any
+		want   string
+	}{
+		{"read -r x <<< {{input.v}}\nprintf '%s' \"$x\"", "a b", "a b"},
+		{"declare -A h\nh[{{input.v}}]=1\nprintf '%s' \"${h[{{input.v}}]}\"", "a key", "1"},
+		{"printf '%s' $(( {{input.v}} + 0 ))", "+5", "5"},
+		{"printf '%s' $(( {{input.v}} + 0 ))", "0x1F", "31"},
+		{"printf '%s' $(( {{input.v}} ))", "1+1", "2"},
+		{"export X=1\nexport -n {{input.v}}\nprintf '%s' \"${X-unset}|$(env | grep -c '^X=')\"", "X", "1|0"},
+		{"f() { :; }\nunset -f {{input.v}}\ntype f >/dev/null 2>&1 || printf gone", "f", "gone"},
+		{"declare -i n=1\ng() { local n={{input.v}}; printf '%s' \"$n\"; }\ng", "a+b", "a+b"},
 	} {
-		for _, bad := range []string{"a[$(touch pwned)]", "1+1", "", "x y"} {
-			if _, _, err := renderScriptIn(c.script, "bash", mustRefs(c.script), map[string]any{"v": bad}, nil, nil, "run", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "{{input.v}} is ") || (bad != "" && strings.Contains(err.Error(), bad)) {
-				t.Errorf("%q with %q: rendered (%v), want a refusal naming the reference", c.script, bad, err)
-			}
+		got, pwned, rendered := renderAndRun(t, []string{"bash"}, "bash", c.script, map[string]any{"v": c.v})
+		if pwned || got != c.want {
+			t.Errorf("%q with %v printed %q, want %q\n%s", c.script, c.v, got, c.want, rendered)
 		}
-		got, pwned, rendered := renderAndRun(t, []string{"bash"}, "bash", c.script, map[string]any{"v": c.good})
-		if pwned || strings.Contains(got, "leak-") {
-			t.Errorf("%q with %q misbehaved:\n%s", c.script, c.good, rendered)
+	}
+}
+
+// A read glued to a backslash inside backquotes: the shell strips the
+// backslash before it reads the text again, so the read there is the
+// context-free one, and the value arrives exact.
+func TestShellScriptBackquoteGluedReadIsExact(t *testing.T) {
+	t.Parallel()
+	for _, argv := range shellsFor(t, "sh") {
+		for _, v := range []string{"a  b*", "$(touch pwned)", "x\ny"} {
+			got, pwned, rendered := renderAndRun(t, argv, "sh", "X=`printf '%s|' \\{{input.v}}`\nprintf '%s' \"${X%|}\"", map[string]any{"v": v})
+			if pwned || got != v {
+				t.Errorf("%v: %q arrived as %q\n%s", argv, v, got, rendered)
+			}
 		}
 	}
 }

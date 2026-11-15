@@ -998,7 +998,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// A shell script's data: the values its variable reads name, in
 			// the interpreter's environment, or assigned ahead of the
 			// author's text where the environment cannot hold them.
-			dataEnv, prologue, err := data.deliver()
+			spillMax, err := scriptDataSpillMaxFromEnv()
+			if err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
+			dataEnv, prologue, err := data.deliver(spillMax)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 			}

@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,15 +34,16 @@ import (
 //   - after an unescaped backslash, `${N}`, whose escaped `$` keeps the text
 //     from expanding at all.
 //
-// What the shell does with the expansion is still the shell's: a read at a
-// position the shell takes as a command word runs the value as a program
-// (one word, no argument — C345 warns where the reading sees it); another
-// shell handed the value as code parses it (C346); bash evaluates the value
-// at an arithmetic or a name-taking position, and the run refuses one that
-// is not an integer (an identifier) where the reading is sure of such a
-// position (checkEvaluatedValue, C344). Inside single quotes, a `$'…'`
+// So data never becomes script text. What the shell does with the expansion
+// is still the shell's, and no value is refused for its position: a read at
+// a position the shell takes as a command word runs the value as a program
+// (one word, no argument); another shell handed the value as code parses it;
+// bash evaluates the value as arithmetic, as a compound array assignment or
+// as a variable name at some positions, where a crafted value's array
+// subscript runs its command substitutions. Inside single quotes, a `$'…'`
 // string, a quoted heredoc or a comment the read stays text, unless a shell
-// runs that text (C343).
+// that inherits the environment runs that text. The compiler warns at each
+// such position its best-effort reading finds (C343 – C346).
 //
 // The value is the raw form's text (rawTemplateValue): a string as it is, a
 // number or a boolean its JSON, an object or a list its compact JSON text —
@@ -69,9 +69,37 @@ import (
 const (
 	dataEnvValueMax = 64 << 10
 	dataEnvTotalMax = 256 << 10
-	// dataSpillMax bounds what the prologue carries: the script's own text.
+	// dataSpillMax bounds what the prologue carries — the script's own text
+	// — unless DataSpillMaxEnv says otherwise.
 	dataSpillMax = 64 << 20
 )
+
+// DataSpillMaxEnv overrides dataSpillMax: a byte count, `0` lifting the
+// bound. Read by scriptDataSpillMaxFromEnv, on the host.
+const DataSpillMaxEnv = "ITERION_SCRIPT_DATA_SPILL_MAX"
+
+// scriptDataSpillMaxFromEnv is scriptDataSpillMax of the engine's own
+// environment (ir.LookupEnv: the bot-var overlay, then the process).
+func scriptDataSpillMaxFromEnv() (int, error) {
+	return scriptDataSpillMax(ir.LookupEnv("ITERION_SCRIPT_DATA_SPILL_MAX"))
+}
+
+// scriptDataSpillMax is the bound a script's spilled data is held to: v, the
+// DataSpillMaxEnv dial's value, when set, dataSpillMax otherwise. A value
+// that is no byte count fails, naming the variable.
+func scriptDataSpillMax(v string) (int, error) {
+	if v == "" {
+		return dataSpillMax, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s=%q is not a byte count (0 lifts the bound)", DataSpillMaxEnv, v)
+	}
+	if n == 0 {
+		return int(^uint(0) >> 1), nil
+	}
+	return n, nil
+}
 
 // renderScriptIn renders a tool node's `script:` written in language: a
 // shell script through renderShellScript, any other language through
@@ -135,9 +163,6 @@ func renderShellScript(script string, bash bool, refs []*ir.Ref, input, vars map
 		if strings.ContainsRune(text, 0) {
 			return "", scriptData{}, fmt.Errorf("the value of %s holds a NUL byte, which a shell script can carry neither in its environment nor in a variable", raw)
 		}
-		if err := checkEvaluatedValue(raw, pos, text); err != nil {
-			return "", scriptData{}, err
-		}
 		data.set(name, raw, text)
 		b.WriteString(shellDataRead(name, pos, gluedToBackslash(script, span[0])))
 	}
@@ -162,34 +187,12 @@ func previewMask(ref *ir.Ref, vars map[string]any, guard *secretguard.Guard) boo
 // reading above renderScriptIn).
 func shellDataRead(name string, pos ir.ShellRefPosition, glued bool) string {
 	switch {
-	case glued:
+	case glued && !pos.InBackquote:
 		return "${" + name + "}"
 	case pos.Context == ir.ShellRefHeredoc && !pos.Unsure:
 		return "${" + name + "}"
 	}
 	return "${" + name + `+"$` + name + `"}`
-}
-
-var (
-	integerValue    = regexp.MustCompile(`^-?[0-9]+$`)
-	identifierValue = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-)
-
-// checkEvaluatedValue refuses, at a position the reading is sure bash
-// evaluates (ir.ShellRefPosition.ArithEval, NameTaking), a value that is not
-// an integer — or, for a name, a plain identifier: bash evaluates the array
-// subscript any other value may hold (`a[$(cmd)]`), running its command
-// substitutions, and no rendering of a variable's read changes that. The
-// error names the reference and the position, never the value.
-func checkEvaluatedValue(raw string, pos ir.ShellRefPosition, value string) error {
-	switch {
-	case pos.Unsure:
-	case pos.ArithEval && !integerValue.MatchString(value):
-		return fmt.Errorf("%s is %s, where bash evaluates the value as arithmetic, and its value is not an integer (`-?[0-9]+`) — check the value before bash evaluates it (C344)", raw, pos.Where)
-	case pos.NameTaking && !identifierValue.MatchString(value):
-		return fmt.Errorf("%s is %s, where bash takes the value as a variable name, and its value is not a plain identifier — check the value before bash takes it (C344)", raw, pos.Where)
-	}
-	return nil
 }
 
 // gluedToBackslash reports whether the byte before at is a backslash that is
@@ -237,9 +240,9 @@ func (d *scriptData) set(name, ref, value string) {
 // construct of the author's precedes or encloses, and which no value can end
 // early, since none can spell the delimiter. A heredoc, not a single-quoted
 // word: bash parses a word of many escaped-quote segments in quadratic time. The
-// spilled values are bounded by dataSpillMax; past it the script is refused,
-// naming the references.
-func (d scriptData) deliver() (map[string]string, string, error) {
+// spilled values are bounded by spillMax (scriptDataSpillMax); past it the
+// script is refused, naming the references.
+func (d scriptData) deliver(spillMax int) (map[string]string, string, error) {
 	if len(d.names) == 0 {
 		return nil, "", nil
 	}
@@ -263,8 +266,8 @@ func (d scriptData) deliver() (map[string]string, string, error) {
 		fmt.Fprintf(&prologue, "%s=$(cat <<'%s'\n%s.\n%s\n) || { printf 'iterion: cannot read the value of %s\\n' >&2; exit 125; }\n%s=${%s%%.}\n",
 			name, delim, value, delim, d.refs[name], name, name)
 	}
-	if spill > dataSpillMax {
-		return nil, "", fmt.Errorf("the values of %s are %d bytes, past the %d a shell script carries", strings.Join(spilled, ", "), spill, dataSpillMax)
+	if spill > spillMax {
+		return nil, "", fmt.Errorf("the values of %s are %d bytes, past the %d a shell script carries (%s raises the bound)", strings.Join(spilled, ", "), spill, spillMax, DataSpillMaxEnv)
 	}
 	return env, prologue.String(), nil
 }

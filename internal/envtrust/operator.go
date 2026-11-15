@@ -258,6 +258,10 @@ var operatorInfraNames = map[string]bool{
 	// a read that becomes a billed system prompt — "0" unbounds it, so no
 	// bot var may speak for it.
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": true,
+	// The bound on a shell script node's data written into its script
+	// (#3291): what data may cost the script file, "0" unbounding it, so
+	// no bot var may speak for it.
+	"ITERION_SCRIPT_DATA_SPILL_MAX": true,
 	// The server-wide aggregate of concurrent readings and its refusal grace
 	// (#2693): bounds on what untrusted input may cost the PROCESS, 0
 	// removing the first. A stored bot var must never widen either.

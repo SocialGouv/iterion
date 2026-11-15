@@ -87,23 +87,33 @@ func TestShellScriptDataPositionsWarnAtAuthoring(t *testing.T) {
 		body                   string
 		c343, c344, c345, c346 int
 	}{
-		"single quotes":                       {script("sh", "printf '%s' '{{run.id}}'"), 1, 0, 0, 0},
-		"a quoted heredoc":                    {script("sh", "cat <<'EOF'\n{{run.id}}\nEOF"), 1, 0, 0, 0},
-		"a comment":                           {script("bash", "true # {{run.id}}"), 1, 0, 0, 0},
-		"arithmetic":                          {script("sh", "echo $(( {{vars.n}} + 1 ))"), 0, 1, 0, 0},
-		"a [[ -gt ]] operand":                 {script("bash", "[[ {{vars.n}} -gt 0 ]] && echo pos"), 0, 1, 0, 0},
-		"let, declare -i and a subscript":     {script("bash", "let x={{vars.n}}\ndeclare -i y={{vars.n}}\na[{{run.id}}]=1"), 0, 2, 0, 0},
-		"a shell runs the single-quoted text": {script("sh", "sh -c 'echo {{run.id}}'\ntrap 'echo {{run.id}}' EXIT\nsh <<'EOF'\necho {{run.id}}\nEOF"), 0, 0, 0, 0},
-		"a name bash takes":                   {script("bash", "read {{run.id}} <<< x"), 0, 1, 0, 0},
-		"a command word":                      {script("sh", "{{run.id}} --version"), 0, 0, 1, 0},
-		"code another shell parses":           {script("sh", "sh -c \"echo {{run.id}}\"\neval \"echo {{vars.n}}\""), 0, 0, 0, 2},
-		"an unquoted heredoc fed to bash":     {script("sh", "bash <<EOF\necho {{run.id}}\nEOF"), 0, 0, 0, 1},
-		"PS4 and alias":                       {script("bash", "PS4={{run.id}}\nalias x={{vars.n}}"), 0, 0, 0, 2},
-		"once per reference":                  {script("sh", "echo '{{run.id}}' '{{run.id}}'"), 1, 0, 0, 0},
-		"positions the shell expands":         {script("sh", "printf '%s' {{run.id}} \"{{run.id}}\"\ncat <<EOF\n{{run.id}}\nEOF"), 0, 0, 0, 0},
-		"the raw form":                        {script("sh", "echo '{{!run.id}}' $(( {{!vars.n}} ))"), 0, 0, 0, 0},
-		"a js script":                         {script("js", "const x = '{{run.id}}';"), 0, 0, 0, 0},
-		"a lost reading":                      {script("sh", "x=$(case a in a) echo;; esac)\necho '{{run.id}}'"), 0, 0, 0, 0},
+		"single quotes":                         {script("sh", "printf '%s' '{{run.id}}'"), 1, 0, 0, 0},
+		"a quoted heredoc":                      {script("sh", "cat <<'EOF'\n{{run.id}}\nEOF"), 1, 0, 0, 0},
+		"a comment":                             {script("bash", "true # {{run.id}}"), 1, 0, 0, 0},
+		"arithmetic":                            {script("sh", "echo $(( {{vars.n}} + 1 ))"), 0, 1, 0, 0},
+		"a [[ -gt ]] operand":                   {script("bash", "[[ {{vars.n}} -gt 0 ]] && echo pos"), 0, 1, 0, 0},
+		"let, declare -i and a subscript":       {script("bash", "let x={{vars.n}}\ndeclare -i y={{vars.n}}\na[{{run.id}}]=1"), 0, 2, 0, 0},
+		"a shell runs the single-quoted text":   {script("sh", "sh -c 'echo {{run.id}}'\ntrap 'echo {{run.id}}' EXIT\nsh <<'EOF'\necho {{run.id}}\nEOF"), 0, 0, 0, 0},
+		"a name bash takes":                     {script("bash", "read {{run.id}} <<< x"), 0, 1, 0, 0},
+		"ssh does not inherit, single-quoted":   {script("sh", "ssh host 'echo {{run.id}}'"), 1, 0, 0, 0},
+		"ssh parses the value":                  {script("sh", "ssh host \"echo {{run.id}}\""), 0, 0, 0, 1},
+		"wrapped local shells":                  {script("sh", "timeout 5 sh -c 'echo {{run.id}}'\nfind . -exec sh -c 'echo {{vars.n}}' \\;"), 0, 0, 0, 0},
+		"sudo and docker reset the environment": {script("sh", "sudo sh -c 'echo {{run.id}}'\ndocker exec c sh -c 'echo {{vars.n}}'"), 2, 0, 0, 0},
+		"a wrapped -c string, double-quoted":    {script("sh", "env X=1 bash -c \"echo {{run.id}}\""), 0, 0, 0, 1},
+		"an array declare":                      {script("bash", "declare -a arr={{run.id}}"), 0, 1, 0, 0},
+		"mapfile -C and trap --":                {script("bash", "mapfile -C {{run.id}} -c 1 a < /dev/null\ntrap -- {{vars.n}} EXIT"), 0, 0, 0, 2},
+		"declared later or in a function":       {script("bash", "n={{run.id}}\ndeclare -i n\nf() { r={{vars.n}}; }\ndeclare -n r"), 0, 2, 0, 0},
+		"printf -v into an integer":             {script("bash", "declare -i n\nprintf -v n %s {{run.id}}"), 0, 1, 0, 0},
+		"no false positives":                    {script("bash", "read x <<< {{run.id}}\nread y < {{run.id}}\ndeclare -A h\nh[{{vars.n}}]=1\necho \"${h[{{vars.n}}]}\"\nexport -n X={{run.id}}\nunset -f {{run.id}}\ndeclare -i k\ng() { local k={{vars.n}}; }"), 0, 0, 0, 0},
+		"a command word":                        {script("sh", "{{run.id}} --version"), 0, 0, 1, 0},
+		"code another shell parses":             {script("sh", "sh -c \"echo {{run.id}}\"\neval \"echo {{vars.n}}\""), 0, 0, 0, 2},
+		"an unquoted heredoc fed to bash":       {script("sh", "bash <<EOF\necho {{run.id}}\nEOF"), 0, 0, 0, 1},
+		"PS4 and alias":                         {script("bash", "PS4={{run.id}}\nalias x={{vars.n}}"), 0, 0, 0, 2},
+		"once per reference":                    {script("sh", "echo '{{run.id}}' '{{run.id}}'"), 1, 0, 0, 0},
+		"positions the shell expands":           {script("sh", "printf '%s' {{run.id}} \"{{run.id}}\"\ncat <<EOF\n{{run.id}}\nEOF"), 0, 0, 0, 0},
+		"the raw form":                          {script("sh", "echo '{{!run.id}}' $(( {{!vars.n}} ))"), 0, 0, 0, 0},
+		"a js script":                           {script("js", "const x = '{{run.id}}';"), 0, 0, 0, 0},
+		"a lost reading":                        {script("sh", "x=$(case a in a) echo;; esac)\necho '{{run.id}}'"), 0, 0, 0, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -142,7 +152,7 @@ func TestShellScriptDataPositionsWarnAtAuthoring(t *testing.T) {
 // code another shell parses — and where it stops.
 func TestShellScriptRefFlags(t *testing.T) {
 	t.Parallel()
-	type flags struct{ arith, name, command, code, unsure bool }
+	type flags struct{ arith, name, command, code, remote, unsure bool }
 	for _, c := range []struct {
 		name, script string
 		bash         bool
@@ -154,8 +164,14 @@ func TestShellScriptRefFlags(t *testing.T) {
 			[]flags{{arith: true}, {arith: true}, {arith: true}, {arith: true}, {arith: true}}},
 		{"a command word", "{{input.a}} --version\nif {{input.b}}; then x=1 {{input.c}}; fi\necho {{input.d}}\na=( {{input.e}} \"{{input.f}}\" )", false,
 			[]flags{{command: true}, {command: true}, {command: true}, {}, {}, {}}},
-		{"code another shell parses", "sh -c \"echo {{input.a}}\" _ {{input.b}}\neval {{input.c}}\ntrap \"{{input.d}}\" EXIT\nssh host {{input.e}}\nPS4={{input.f}}\nbash <<EOF\n{{input.g}}\nEOF", true,
-			[]flags{{code: true}, {}, {code: true}, {code: true}, {code: true}, {code: true}, {code: true}}},
+		{"code another shell parses", "sh -c \"echo {{input.a}}\" _ {{input.b}}\neval {{input.c}}\ntrap \"{{input.d}}\" EXIT\nssh host {{input.e}}\nPS4={{input.f}}\nbash <<EOF\n{{input.g}}\nEOF\nssh h <<EOF\n{{input.h}}\nEOF\nsudo sh -c '{{input.i}}'", true,
+			[]flags{{code: true}, {}, {code: true}, {code: true}, {code: true, remote: true}, {code: true}, {code: true}, {code: true, remote: true}, {code: true, remote: true}}},
+		{"wrappers reach the shell they run", "timeout 5 bash -c \"{{input.a}}\"\nfind . -exec sh -c '{{input.b}}' \\;\nkubectl exec p -- sh -c '{{input.c}}'", false,
+			[]flags{{code: true}, {code: true}, {code: true, remote: true}}},
+		{"declarations bash evaluates", "declare -a a={{input.a}}\nlocal -A h={{input.b}}\nn={{input.c}}\ndeclare -i n\nmapfile -t {{input.d}} < f\ndeclare -i m\nread m <<< {{input.e}}", true,
+			[]flags{{arith: true}, {arith: true}, {arith: true}, {name: true}, {arith: true}}},
+		{"no false evaluated positions", "read x <<< {{input.a}}\nunset x > {{input.b}}\ndeclare -A h\nh[{{input.c}}]=1\necho ${h[{{input.d}}]}\nexport -n X={{input.e}}\nunset -f {{input.f}}\ndeclare -i k\ng() { local k={{input.g}}; }", true,
+			[]flags{{}, {}, {}, {}, {}, {}, {}}},
 		{"bash reads $(( without )) as a subshell", "x=$((cd /; {{input.a}}) 2>&1)", true, []flags{{unsure: true}}},
 		{"sh: dash and bash part at a delimiter-led line holding )", "x=\"$(cat <<EOF\nEOF)\nEOF\n{{input.a}}\n)\"", false, []flags{{unsure: true}}},
 	} {
@@ -166,7 +182,7 @@ func TestShellScriptRefFlags(t *testing.T) {
 		}
 		for i, span := range spans {
 			p := got[span[0]]
-			if f := (flags{p.ArithEval, p.NameTaking, p.CommandWord, p.Code, p.Unsure}); f != c.want[i] {
+			if f := (flags{p.ArithEval, p.NameTaking, p.CommandWord, p.Code, p.Remote, p.Unsure}); f != c.want[i] {
 				t.Errorf("%s: reference %d reads %+v (%q), want %+v", c.name, i, f, p.Where, c.want[i])
 			}
 		}
