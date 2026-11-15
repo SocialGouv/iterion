@@ -93,4 +93,18 @@ type SubscriptionStore interface {
 	// applies the full Matcher.Match on the returned set — this is only the
 	// indexed pre-filter, kept coarse so it stays a single-index query.
 	ListCandidates(ctx context.Context, ev Event) ([]Subscription, error)
+
+	// EnsureDerived creates s — whose id is derived (DerivedSubscriptionID)
+	// — unless a row with that id exists or an operator deleted it (a
+	// Tombstone); created reports whether it wrote. Racing an operator's
+	// delete never leaves the deleted row standing: the delete writes its
+	// tombstone first, and a creation that lands beside it withdraws.
+	EnsureDerived(ctx context.Context, s Subscription) (created bool, err error)
+	// Tombstone records an operator's delete of a derived subscription,
+	// written BEFORE the row's delete so no crash between the two lets a
+	// reconciliation re-create it. Refused for an id that is not derived.
+	Tombstone(ctx context.Context, t Tombstone) error
+	// ClearTombstone lifts a tenant's tombstone — an operator re-enabling
+	// the invocation. An absent tombstone is no error.
+	ClearTombstone(ctx context.Context, tenantID, id string) error
 }

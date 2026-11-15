@@ -4,64 +4,43 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
-// buildLocalTriggerStore discovers the bots under botsPaths and derives a
-// board trigger.Subscription from each kind=board invocation that carries a
-// board: block (see trigger.FromBoardInvocation — a plain kind=board target
-// with no block stays poll-only). It returns nil when no such invocation
-// exists, so the server leaves the trigger spine off and the dispatcher poll
-// remains the only board path. This is the discovery-driven local wiring: a
-// bot opts into event-driven promotion purely by adding a board: block to its
-// manifest — no engine or CLI edit.
+// openLocalTriggerStore opens the local subscription journal under storeDir
+// and reconciles it with the bots discovered under botsPaths
+// (trigger.ReconcileManifests): each kind=board invocation carrying a board:
+// block, each schedule and each keepalive invocation keeps one row under its
+// derived id, refreshed from its manifest, unless an operator deleted it.
+// Operator subscriptions, edits, pins and tombstones persist across restarts,
+// and a process sharing the store directory (`iterion dispatch` beside the
+// studio) reads the same journal.
 //
-// The store is in-memory (the local single-host scope, tenant/repo ""), seeded
-// fresh each process start from the manifests; operator-authored subscriptions
-// added via the studio /triggers CRUD live here too but are not persisted
-// across restarts yet (a file-backed store is the follow-on).
-func buildLocalTriggerStore(botsPaths []string, logger *iterlog.Logger) trigger.SubscriptionStore {
+// The store is returned whatever the manifests declare — an operator's own
+// subscriptions need the spine as much as a manifest's do — and a failed
+// discovery leaves the stored rows as they stand rather than reconciling
+// them against nothing.
+func openLocalTriggerStore(storeDir string, botsPaths []string, logger *iterlog.Logger) trigger.SubscriptionStore {
+	st := trigger.NewFileSubscriptionStore(trigger.SubscriptionJournalPath(storeDir))
 	entries, err := botregistry.List(botregistry.ListOptions{Paths: botsPaths})
 	if err != nil {
 		if logger != nil {
-			logger.Warn("trigger: bot discovery for triggers failed: %v", err)
+			logger.Warn("trigger: bot discovery for triggers failed, the stored subscriptions stand unreconciled: %v", err)
 		}
-		return nil
+		return st
 	}
-	st := trigger.NewMemorySubscriptionStore()
-	now := time.Now().UTC()
-	n := 0
+	bots := make([]trigger.ManifestBot, 0, len(entries))
 	for _, e := range entries {
-		for _, inv := range e.Invocations {
-			origin := "manifest:" + e.Name
-			if sub, ok := trigger.FromBoardInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
-				if err := st.Create(context.Background(), sub); err == nil {
-					n++
-				}
-				continue
-			}
-			if sub, ok := trigger.FromScheduleInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
-				if err := st.Create(context.Background(), sub); err == nil {
-					n++
-				}
-				continue
-			}
-			if sub, ok := trigger.FromKeepaliveInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
-				if err := st.Create(context.Background(), sub); err == nil {
-					n++
-				}
-			}
-		}
+		bots = append(bots, trigger.ManifestBot{Name: e.Name, Invocations: e.Invocations})
 	}
-	if n == 0 {
-		return nil
+	rep, err := trigger.ReconcileManifests(context.Background(), st, "", bots, time.Now().UTC())
+	if err != nil && logger != nil {
+		logger.Warn("trigger: reconciling subscriptions with the bot manifests: %v", err)
 	}
-	if logger != nil {
-		logger.Info("trigger: %d subscription(s) loaded from bot manifests", n)
+	if logger != nil && rep != (trigger.ReconcileReport{}) {
+		logger.Info("trigger: subscriptions reconciled with the bot manifests: %d created, %d refreshed, %d removed", rep.Created, rep.Refreshed, rep.Removed)
 	}
 	return st
 }

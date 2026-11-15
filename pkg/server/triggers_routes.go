@@ -248,7 +248,10 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	now := time.Now().UTC()
-	id := uuid.NewString()
+	// The id is the invocation's own (trigger.DerivedSubscriptionID): the
+	// row a local reconciliation derives from the same invocation is this
+	// one, and two enables of one invocation meet on it.
+	id := trigger.DerivedSubscriptionID(tenant, entry.Name, inv.Kind, trigger.DerivedInvocationKey(entry.Invocations, req.Index), "")
 	var (
 		sub     trigger.Subscription
 		derived bool
@@ -286,19 +289,38 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	for _, e := range existing {
-		if e.Origin == botHomeTriggerOrigin && e.Invocation == sub.Invocation {
-			dispatcher.WriteJSON(w, http.StatusConflict, map[string]any{
-				"error":           fmt.Sprintf("a %s trigger from this bot's manifest already exists", sub.Invocation),
-				"subscription_id": e.ID,
-			})
+		// A row enabled before ids were derived holds a random id: it still
+		// answers for its kind.
+		if e.Origin == botHomeTriggerOrigin && e.Invocation == sub.Invocation && !trigger.IsDerivedID(e.ID) {
+			writeTriggerExists(w, sub.Invocation, e.ID)
 			return
 		}
 	}
-	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
+	// Enabling is the operator's explicit gesture: it lifts the tombstone an
+	// earlier delete of this invocation's row left.
+	if err := s.cfg.TriggerStore.ClearTombstone(r.Context(), tenant, sub.ID); err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	created, err := s.cfg.TriggerStore.EnsureDerived(r.Context(), sub)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !created {
+		writeTriggerExists(w, sub.Invocation, sub.ID)
+		return
+	}
 	dispatcher.WriteJSON(w, http.StatusCreated, sub)
+}
+
+// writeTriggerExists is the 409 of an invocation already enabled, naming
+// the row that answers for it.
+func writeTriggerExists(w http.ResponseWriter, kind bundle.InvocationKind, id string) {
+	dispatcher.WriteJSON(w, http.StatusConflict, map[string]any{
+		"error":           fmt.Sprintf("a %s trigger from this bot's manifest already exists", kind),
+		"subscription_id": id,
+	})
 }
 
 // botHomeTriggerOrigin marks subscriptions created by the bot home's
@@ -726,6 +748,13 @@ func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
 	if err == nil && cur.TenantID != s.triggerTenant(r) {
 		err = trigger.ErrSubscriptionNotFound
+	}
+	// An operator deleting a row derived from a manifest invocation means
+	// it: the tombstone, written before the delete, keeps every later
+	// reconciliation from deriving it again until the operator re-enables
+	// the invocation.
+	if err == nil && trigger.IsDerivedID(cur.ID) {
+		err = s.cfg.TriggerStore.Tombstone(r.Context(), trigger.Tombstone{ID: cur.ID, TenantID: cur.TenantID, DeletedAt: time.Now().UTC()})
 	}
 	if err == nil {
 		err = s.cfg.TriggerStore.Delete(r.Context(), r.PathValue("id"))

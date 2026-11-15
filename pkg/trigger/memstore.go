@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -22,12 +23,49 @@ import (
 // that delete into Go's unrecoverable concurrent map iteration and map
 // write (#2644).
 type MemorySubscriptionStore struct {
-	mu    sync.RWMutex
-	items map[string]Subscription
+	mu         sync.RWMutex
+	items      map[string]Subscription
+	tombstones map[string]Tombstone
 }
 
 func NewMemorySubscriptionStore() *MemorySubscriptionStore {
-	return &MemorySubscriptionStore{items: make(map[string]Subscription)}
+	return &MemorySubscriptionStore{items: make(map[string]Subscription), tombstones: make(map[string]Tombstone)}
+}
+
+func (m *MemorySubscriptionStore) EnsureDerived(_ context.Context, s Subscription) (bool, error) {
+	if !IsDerivedID(s.ID) {
+		return false, fmt.Errorf("trigger: %q is not a derived subscription id", s.ID)
+	}
+	s.normalize()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.items[s.ID]; ok {
+		return false, nil
+	}
+	if _, ok := m.tombstones[s.ID]; ok {
+		return false, nil
+	}
+	m.items[s.ID] = storekit.Snapshot(s)
+	return true, nil
+}
+
+func (m *MemorySubscriptionStore) Tombstone(_ context.Context, t Tombstone) error {
+	if !IsDerivedID(t.ID) {
+		return fmt.Errorf("trigger: %q is not a derived subscription id", t.ID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tombstones[t.ID] = t
+	return nil
+}
+
+func (m *MemorySubscriptionStore) ClearTombstone(_ context.Context, tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tombstones[id]; ok && t.TenantID == tenantID {
+		delete(m.tombstones, id)
+	}
+	return nil
 }
 
 func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) error {

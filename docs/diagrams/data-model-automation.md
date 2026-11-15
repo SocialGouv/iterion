@@ -51,12 +51,18 @@ erDiagram
         string tenant_id FK "team id"
         string repo "a forge slug 'group/project'"
         string bot_id "a bot SLUG, never a key"
-        string invocation "forge|command|schedule|board|keepalive"
+        string invocation "forge|command|schedule|board|keepalive|connector"
         string mode "direct, board"
         object match
+        string connector_key "connection_id/trigger_id, derived by every write"
         bool consume_labels
         bool enabled
         string origin "e.g. operator | bot-home | manifest:<bot name>"
+    }
+    trigger_subscription_tombstones {
+        string _id PK "a derived subscription id, drv-..."
+        string tenant_id FK "team id"
+        datetime deleted_at
     }
     forge_board_bindings {
         string _id PK, FK "teams._id - the tenant IS the id"
@@ -76,6 +82,7 @@ erDiagram
     trigger_effects }o--o| forge_board_bindings : "tenant_id, on a projection row - the binding _id IS the tenant"
     trigger_subscriptions }o..o{ board_issues : "issue.bot, stamped by board mode - no field points back"
     trigger_subscriptions }o..o| bot_sources : "bot_id (slug)"
+    trigger_subscription_tombstones |o..o| trigger_subscriptions : "_id - the row an operator deleted, never re-derived"
     board_issues }o..o| bot_sources : "issue.bot (slug)"
     trigger_subscriptions }o..o| "FS: baked catalog" : "bot_id slug - the last tier, resolved at launch"
     board_issues }o..o| "FS: baked catalog" : "issue.bot slug - the last tier, resolved at launch"
@@ -247,7 +254,8 @@ erDiagram
 
 | Collection | Package | Document struct | Tenant field (values) | Unique / TTL indexes | Twin |
 |---|---|---|---|---|---|
-| `trigger_subscriptions` | `pkg/trigger` | `Subscription` | `tenant_id` — a team; `""` is the local scope | none unique, none TTL | memory (local, manifest-seeded each start) / Mongo (cloud) |
+| `trigger_subscriptions` | `pkg/trigger` | `Subscription` | `tenant_id` — a team; `""` is the local scope | none unique, none TTL | file journal (local, `dispatcher/trigger-subscriptions.json`, reconciled with the manifests at each start) / Mongo (cloud) |
+| `trigger_subscription_tombstones` | `pkg/trigger` | `Tombstone` | `tenant_id` — a team | none unique, none TTL | in the same journal (local) / Mongo (cloud) |
 | `trigger_effects` | `pkg/trigger` (type), `pkg/dispatcher/boardmongo` (store) | `EffectRow` | `tenant_id` — a team | TTL `done_ttl`, 7 days, partial on `state: "done"` | file `trigger-effects.json` beside the native board |
 | `board_issues` | `pkg/dispatcher/boardmongo` | `issueDoc` wrapping `native.Issue` | `tenant_id` — a team | none unique, none TTL | file `issues/<id>.json` |
 | `board_events` | `pkg/dispatcher/boardmongo` | `eventDoc` wrapping `native.Event` | `tenant_id` — a team | none unique, none TTL | file `events.jsonl` |

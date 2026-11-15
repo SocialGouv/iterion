@@ -128,6 +128,9 @@ invocations:
     mode: deliver
     board:
       to_states: [ready]
+  - kind: schedule
+    schedule:
+      suggested_cron: "0 9 * * 5"
 `)
 	srv := New(Config{DisableAuth: true, WorkDir: workdir, TriggerStore: trigger.NewMemorySubscriptionStore()}, iterlog.New(iterlog.LevelError, nil))
 	srv.handler = srv.mux

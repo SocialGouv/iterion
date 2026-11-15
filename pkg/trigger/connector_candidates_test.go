@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -15,11 +16,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
-// onSubscriptionTwins runs one contract against the memory and Mongo twins;
-// the Mongo half skips without ITERION_TEST_MONGO_URI.
+// onSubscriptionTwins runs one contract against the memory, file and Mongo
+// twins; the Mongo half skips without ITERION_TEST_MONGO_URI.
 func onSubscriptionTwins(t *testing.T, run func(*testing.T, SubscriptionStore)) {
 	t.Helper()
 	t.Run("memory", func(t *testing.T) { run(t, NewMemorySubscriptionStore()) })
+	t.Run("file", func(t *testing.T) {
+		run(t, NewFileSubscriptionStore(filepath.Join(t.TempDir(), "trigger-subscriptions.json")))
+	})
 	t.Run("mongo", func(t *testing.T) {
 		uri := os.Getenv("ITERION_TEST_MONGO_URI")
 		if uri == "" {
