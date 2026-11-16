@@ -745,8 +745,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// MCP servers beside the launcher for a run that sandboxes.
 		BotSourceTier:  spec.BotSourceTier,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
-		RunFallback:    toRunFallback(spec.Fallback),
-		LLMProviders:   spec.LLMRoutePolicy.ProviderAllowlist(),
+		// The fold above kept the launch's own rows apart (foldAndScreen).
+		LaunchModelOverrides: knownLaunchOverrides(toModelOverrides(spec.LaunchModelOverrides)),
+		RunFallback:          toRunFallback(spec.Fallback),
+		LLMProviders:         spec.LLMRoutePolicy.ProviderAllowlist(),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that
@@ -1531,6 +1533,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 	if r != nil {
 		spec.RunID = r.ID
 		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
+		spec.LaunchModelOverrides = knownLaunchOverrides(LaunchOverridesOfRun(r))
 		spec.Permission = r.PermissionOverride
 		spec.LLMProviders = r.LLMRoutePolicy.ProviderAllowlist()
 	}

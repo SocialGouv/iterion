@@ -252,6 +252,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		if sess.claimPrompt(routerText, bn) && e.hooks.OnLLMPrompt != nil {
 			e.hooks.OnLLMPrompt(node.ID, systemText, routerText)
 		}
+		routerEffort, routerEffortSource := e.requestedEffort(node, node.ReasoningEffort, input)
 		t := &delegate.Task{
 			NodeID:           node.ID,
 			Iteration:        LoopIterationFromContext(ctx),
@@ -263,8 +264,9 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
 			// never reaches the provider; identity for every other level. Routers
 			// don't get the orchestration prerogative (they route, not orchestrate).
-			ReasoningEffort: wireEffort(e.effortForNode(node, node.ReasoningEffort, input)),
-			Sandbox:         e.sandbox,
+			ReasoningEffort:       wireEffort(routerEffort),
+			ReasoningEffortSource: routerEffortSource,
+			Sandbox:               e.sandbox,
 			// ProviderHint is set per-attempt by the chain walker.
 			InboxDrain: e.bindInboxDrain(ctx),
 			// A claude_code router keeps the CLI's native tools, background
@@ -359,13 +361,77 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 // Valid values are defined in ir.ValidReasoningEfforts: none, low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
+	effort, _ := sourcedReasoningEffort(nodeEffort, input)
+	return effort
+}
+
+// sourcedReasoningEffort is resolveReasoningEffort with the provenance of its
+// answer (EffortSourceEdge, EffortSourceNode; "" with an empty effort).
+func sourcedReasoningEffort(nodeEffort string, input map[string]any) (effort, source string) {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
-			return s
+			return s, EffortSourceEdge
 		}
 	}
-	return ir.ResolveEffortLiteral(nodeEffort)
+	effort = ir.ResolveEffortLiteral(nodeEffort)
+	if effort == "" {
+		return "", ""
+	}
+	if dial := effortDial(nodeEffort); dial != "" {
+		return effort, EffortSourceDialPrefix + dial
+	}
+	return effort, EffortSourceNode
 }
+
+// effortDial names the variable that supplied an env-substituted effort —
+// `${VAR:-default}` whose VAR the environment or the bot-vars overlay sets —
+// read through the lookup ir.ResolveEffortLiteral expands with; "" when the
+// literal is not substituted or every variable it reads is unset, so the
+// level is the author's default.
+func effortDial(nodeEffort string) string {
+	if !ir.IsEnvSubstitutedEffort(nodeEffort) {
+		return ""
+	}
+	dial := ""
+	ir.ExpandWithDefault(nodeEffort, func(name string) string {
+		v := ir.LookupEnv(name)
+		if v != "" && dial == "" {
+			dial = name
+		}
+		return v
+	})
+	return dial
+}
+
+// The provenance of the reasoning effort a node requests: who decided the
+// level effortForNode answers. The model boundary records it on the call's
+// Result (executeDelegate), and the node's output carries it as
+// `_reasoning_effort_source` (stampDelegateOutputMeta).
+const (
+	// EffortSourceCell is a routing-policy cell (ADR-129): the run's
+	// overrides gave the effort and the launch's own rows did not.
+	EffortSourceCell = "cell"
+	// EffortSourceLaunch is the launch's own override row (`--effort-for`,
+	// the studio's launch form, a remote launch's model_overrides).
+	EffortSourceLaunch = "launch"
+	// EffortSourceOverride is the run's overrides when the executor was not
+	// told which of their rows the launch carried (WithLaunchModelOverrides).
+	EffortSourceOverride = "override"
+	// EffortSourceEdge is an upstream edge's `_reasoning_effort` mapping.
+	EffortSourceEdge = "edge"
+	// EffortSourceNode is the node's own `reasoning_effort:` as written: a
+	// literal level, or the default of its `${VAR:-default}` dial.
+	EffortSourceNode = "node"
+	// EffortSourceDialPrefix opens the source of a level an operator dial
+	// supplied: the variable the node's `${VAR:-default}` read, set in the
+	// environment or the platform's bot-vars (`dial:ITERION_VIBE_EFFORT_CLAUDE`).
+	EffortSourceDialPrefix = "dial:"
+	// EffortSourceBackend is the harness, below the model boundary: it sent
+	// another level than it was handed (a model's accepted set), none at all
+	// (a client that drops the parameter for the model), or its own default
+	// when it was handed none (delegate.Result.WireReasoningEffort).
+	EffortSourceBackend = "backend"
+)
 
 // effortForNode is resolveReasoningEffort with the launch-time override on
 // top. The override wins over BOTH the node's static `reasoning_effort:` and a
@@ -376,10 +442,30 @@ func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 // A bot that escalates effort per branch is therefore flattened by a run-wide
 // `*` override — which is what asking for one means.
 func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[string]any) string {
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
-		return ov.Effort
+	effort, _ := e.requestedEffort(node, nodeEffort, input)
+	return effort
+}
+
+// requestedEffort is effortForNode with the provenance of its answer
+// (EffortSource*): "" with an empty effort.
+//
+// The override's layer is read off the RULE that won, not its level: the
+// launch's own rows resolve the node to the same rule (the same selector,
+// the same level) only when the launch row is what decided. A routing cell
+// that wins on a more specific selector at the level a launch row also
+// names stays the cell's.
+func (e *ClawExecutor) requestedEffort(node ir.Node, nodeEffort string, input map[string]any) (effort, source string) {
+	if ov, won := e.modelOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind()); ov.Effort != "" {
+		if e.launchOverrides == nil {
+			return ov.Effort, EffortSourceOverride
+		}
+		lov, lwon := e.launchOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind())
+		if lov.Effort == ov.Effort && lwon.Effort == won.Effort {
+			return ov.Effort, EffortSourceLaunch
+		}
+		return ov.Effort, EffortSourceCell
 	}
-	return resolveReasoningEffort(nodeEffort, input)
+	return sourcedReasoningEffort(nodeEffort, input)
 }
 
 // providerOptsForNode builds the ProviderOptions map from the resolved

@@ -88,6 +88,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — |
 | `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — |
+| `pkg/backend/effortlevel` | orders the reasoning-effort levels and coerces one onto a model's accepted set: the one rule the claw backend sends by (model.coerceEffortForModel)… | — |
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
@@ -124,7 +125,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
 | `pkg/claw/hooks` | — | `HookProgressReporter` |
-| `pkg/claw/internal/api` | — | `APIClient`, `ImageGenerator`, `Provider` |
+| `pkg/claw/internal/api` | — | `APIClient`, `EffortWire`, `ImageGenerator`, `Provider` |
 | `pkg/claw/internal/api/httputil` | holds tiny formatting helpers shared by every HTTP-based provider (openai, foundry, vertex, bedrock-on-HTTP, ...). | — |
 | `pkg/claw/internal/api/providers/anthropic` | implements the Anthropic direct API provider. | — |
 | `pkg/claw/internal/api/providers/bedrock` | implements the AWS Bedrock provider using the Anthropic "Messages" payload shape via InvokeModelWithResponseStream. | — |

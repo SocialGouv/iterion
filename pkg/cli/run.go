@@ -722,6 +722,8 @@ func buildRunExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
+		// A local launch resolves no routing policy: every row is the launch's.
+		LaunchModelOverrides: &modelOverrides,
 		// The same tiers the engine resolves the sandbox from (see
 		// ExecutorSpec) — without them the codex screen is inert on the
 		// primary local surface while the run sandboxes two calls later.

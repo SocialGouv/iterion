@@ -127,11 +127,21 @@ board + report still run; the PR review is additive.
 The review ends with a collapsed **Détails du run IA · Iterion** block. It
 shows the run id, linked to the instance's normal run page (login and run access
 rights still apply), and cumulative token total at publication, plus each executed
-review/synthesis node's served model, harness, requested reasoning effort and
-tokens. Values come from engine metadata; absent telemetry is marked unavailable.
-Effort follows the node's `ITERION_VIBE_EFFORT_*` setting/default and describes
-the requested level, not a provider measurement. Token counts accumulate calls,
-including repeated context; they are not the session's context-window size.
+review/synthesis node's served model, harness, reasoning effort and tokens.
+Values come from engine metadata; absent telemetry is marked unavailable. The
+effort is the level the node's first model request carried — as claw put it on
+the wire, as claude_code handed it to the CLI, as the executor handed it to
+the other harnesses — with who decided it: `cellule` (a routing cell),
+`lancement` (the launch's own override), `surcharge` (either, when the run
+cannot tell), `nœud` (the node's own setting or its dial's default),
+`réglage d’exploitation` (an operator setting the node's `ITERION_VIBE_EFFORT_*`
+dial), `arête` (an upstream edge), the gateway's feed when it replaced the level
+asked for (`high (feed pliage ; demandé medium)`), `harness` when the harness
+sent another level, none (`non envoyé`) or its default; `abaissé à low
+(récupération)` marks an answer that came from a later request at a lower
+effort. It is what the run sent, not a provider measurement. Token counts
+accumulate calls, including repeated context; they are not the session's
+context-window size.
 
 ```bash
 # Check out the PR's branch locally, then:

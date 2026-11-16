@@ -164,6 +164,11 @@ type ExecutorSpec struct {
 	// explicitly and win over the node's DSL backend:/model:, so a run can
 	// re-target the bot per node-group without editing the .bot. Empty = no-op.
 	ModelOverrides model.ModelOverrides
+	// LaunchModelOverrides are the launch's own rows among ModelOverrides,
+	// before the routing policy's cells folded in — what lets the executor
+	// say which of the two asked for a node's effort. nil when the path does
+	// not know them; a non-nil empty value says the launch carried none.
+	LaunchModelOverrides *model.ModelOverrides
 	// PolicyLadder is the adaptive-routing policy's computed ladder
 	// (ADR-121 §1): the held (harness, credential) pairs in policy order,
 	// applied through ir.ApplyPolicyLadder's screen right after
@@ -817,6 +822,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if !spec.ModelOverrides.Empty() {
 		opts = append(opts, model.WithModelOverrides(spec.ModelOverrides))
+	}
+	if spec.LaunchModelOverrides != nil {
+		opts = append(opts, model.WithLaunchModelOverrides(*spec.LaunchModelOverrides))
 	}
 
 	if spec.BotID != "" {

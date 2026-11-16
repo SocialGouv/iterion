@@ -51,7 +51,17 @@ done
 ```
 
 The agent's model is `${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}` and its
-effort `${ITERION_VIBE_EFFORT_CONVERSE:-medium}`. Its tool loop only reads:
+effort `${ITERION_VIBE_EFFORT_CONVERSE:-medium}`; a routing cell's `effort`
+outranks that dial, and the team-gateway routing block sets `high` (#3283).
+Its whole surface is the four tools it declares — `bash`, `read_file`, `glob`,
+`grep` — and no MCP server: the node opts out of the ambient set (`mcp:
+inherit: false`), so neither a plugin's servers nor the repository's
+`.mcp.json` reach its requests — on claw, on claude_code (whose own scopes
+stay shut: `--strict-mcp-config` holds for this node whatever
+`ITERION_CLAUDE_CODE_STRICT_MCP` says); codex, which cannot switch off the
+servers of its own configuration, refuses the node when that configuration
+lists one — and it has no web tool. It answers from the diff and
+the repository. Its tool loop only reads:
 a question that runs out of steps still hands back its draft (claw's recovery
 pass), and the draft is still posted — posting no longer depends on how many
 steps the model spent reading (VAO !48: a reply that took 61 steps was

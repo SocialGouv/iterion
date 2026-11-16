@@ -16,9 +16,12 @@ func TestReviewPRRunDetails(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	t.Setenv("ITERION_VIBE_EFFORT_GPT", "xhigh")
-	t.Setenv("ITERION_VIBE_EFFORT_CLAUDE", "")
-	t.Setenv("ITERION_VIBE_EFFORT_EMIT", "")
+	// Every effort dial reads `max`, a level no case's run used: the table
+	// prints the effort the engine recorded on the node that ran, so `max`
+	// in a row would be the dial read back (#3283 F11).
+	for _, dial := range []string{"ITERION_VIBE_EFFORT_CLAUDE", "ITERION_VIBE_EFFORT_GPT", "ITERION_VIBE_EFFORT_CLAUDE_GLANCE", "ITERION_VIBE_EFFORT_GPT_GLANCE", "ITERION_VIBE_EFFORT_EMIT"} {
+		t.Setenv(dial, "max")
+	}
 	for _, tc := range []struct {
 		name         string
 		endpointPath string
@@ -36,11 +39,13 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_gpt_model":   "openai/gpt-6-astra",
 				"input.ai_reviewer_gpt_backend": "claw",
 				"input.ai_reviewer_gpt_tokens":  "205000",
-				"input.ai_converge_model":       "openai/summary-model",
-				"input.ai_converge_backend":     "another-harness",
-				"input.ai_converge_tokens":      "20000",
+				"input.ai_reviewer_gpt_effort":  "xhigh", "input.ai_reviewer_gpt_effort_source": "node",
+				"input.ai_converge_model":   "openai/summary-model",
+				"input.ai_converge_backend": "another-harness",
+				"input.ai_converge_tokens":  "20000",
+				"input.ai_converge_effort":  "medium", "input.ai_converge_effort_source": "node",
 			},
-			want:   []string{"<code>run-123</code>", "**225 800**", "| Revue GPT | openai/gpt-6-astra | claw | xhigh | 205 000 |", "| Synthèse · GPT | openai/summary-model | another-harness | medium | 20 000 |"},
+			want:   []string{"<code>run-123</code>", "**225 800**", "| Revue GPT | openai/gpt-6-astra | claw | xhigh (nœud) | 205 000 |", "| Synthèse · GPT | openai/summary-model | another-harness | medium (nœud) | 20 000 |"},
 			absent: []string{"Revue Claude", "Revue GLM", "glance", "**225 000**", "private", "fragment", "test-token"},
 		},
 		{
@@ -55,8 +60,9 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_gpt_model":   "claude-sonnet-4-6",
 				"input.ai_reviewer_gpt_backend": "claude_code",
 				"input.ai_reviewer_gpt_tokens":  "760",
+				"input.ai_reviewer_gpt_effort":  "xhigh", "input.ai_reviewer_gpt_effort_source": "node",
 			},
-			want:   []string{"| Revue Claude | claude-sonnet-4-6 | claude_code | xhigh | 760 |"},
+			want:   []string{"| Revue Claude | claude-sonnet-4-6 | claude_code | xhigh (nœud) | 760 |"},
 			absent: []string{"Revue GPT"},
 		},
 		{
@@ -66,8 +72,9 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_claude_model":   "glm-5.3",
 				"input.ai_reviewer_claude_backend": "claude_code",
 				"input.ai_reviewer_claude_tokens":  "860",
+				"input.ai_reviewer_claude_effort":  "high", "input.ai_reviewer_claude_effort_source": "node",
 			},
-			want:   []string{"| Revue GLM | glm-5.3 | claude_code | high | 860 |"},
+			want:   []string{"| Revue GLM | glm-5.3 | claude_code | high (nœud) | 860 |"},
 			absent: []string{"Revue Claude", "Revue GPT"},
 		},
 		{
@@ -82,12 +89,14 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_gpt_backend": "claude_code",
 				"input.ai_reviewer_gpt_tokens":  "72128",
 				"input.ai_reviewer_gpt_wire":    "facade:zai:https://api.z.ai/api/anthropic",
-				"input.ai_converge_model":       "claude-opus-5-5",
-				"input.ai_converge_backend":     "claude_code",
-				"input.ai_converge_tokens":      "4316",
-				"input.ai_converge_wire":        "facade:zai:https://api.z.ai/api/anthropic",
+				"input.ai_reviewer_gpt_effort":  "xhigh", "input.ai_reviewer_gpt_effort_source": "node",
+				"input.ai_converge_model":   "claude-opus-5-5",
+				"input.ai_converge_backend": "claude_code",
+				"input.ai_converge_tokens":  "4316",
+				"input.ai_converge_wire":    "facade:zai:https://api.z.ai/api/anthropic",
+				"input.ai_converge_effort":  "medium", "input.ai_converge_effort_source": "node",
 			},
-			want:   []string{"| Revue GLM | claude-sonnet-4-6 | claude_code | xhigh | 72 128 |", "| Synthèse · GLM | claude-opus-5-5 | claude_code | medium | 4 316 |"},
+			want:   []string{"| Revue GLM | claude-sonnet-4-6 | claude_code | xhigh (nœud) | 72 128 |", "| Synthèse · GLM | claude-opus-5-5 | claude_code | medium (nœud) | 4 316 |"},
 			absent: []string{"Revue Claude", "Revue GPT", "Synthèse · Claude", "api.z.ai", "facade:"},
 		},
 		{
@@ -100,8 +109,9 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_claude_backend": "claude_code",
 				"input.ai_reviewer_claude_tokens":  "500",
 				"input.ai_reviewer_claude_wire":    "facade:https://gateway.example",
+				"input.ai_reviewer_claude_effort":  "high", "input.ai_reviewer_claude_effort_source": "node",
 			},
-			want:   []string{"| Revue | claude-opus-5-5 | claude_code | high | 500 |"},
+			want:   []string{"| Revue | claude-opus-5-5 | claude_code | high (nœud) | 500 |"},
 			absent: []string{"Revue Claude", "gateway.example"},
 		},
 		{
@@ -143,9 +153,84 @@ func TestReviewPRRunDetails(t *testing.T) {
 			refs: map[string]string{
 				"input.ai_run_tokens": "700", "input.ai_reviewer_claude_model": "claude-opus-5-5",
 				"input.ai_reviewer_claude_backend": "claude_code", "input.ai_reviewer_claude_tokens": "700",
+				"input.ai_reviewer_claude_effort": "high", "input.ai_reviewer_claude_effort_source": "node",
 				"input.ai_reviewer_gpt_model": "openai/gpt-6-astra", "input.ai_reviewer_gpt_tokens": "0",
+				"input.ai_reviewer_gpt_effort": "xhigh", "input.ai_reviewer_gpt_effort_source": "node",
 			},
-			want: []string{"| Revue Claude | claude-opus-5-5 | claude_code | high | 700 |", "| Revue GPT | openai/gpt-6-astra | indisponible | xhigh | 0 |"},
+			want: []string{"| Revue Claude | claude-opus-5-5 | claude_code | high (nœud) | 700 |", "| Revue GPT | openai/gpt-6-astra | indisponible | xhigh (nœud) | 0 |"},
+		},
+		{
+			// What the run used, from the engine's record on the node that
+			// ran — never the dial, which reads `max` here. A routing cell's
+			// `low` is the reviewer's level; a level the gateway's feed
+			// replaced names the feed and the level asked for; an edge's
+			// level names the edge; a source the table does not know is
+			// printed as given (HTML-escaped like every engine value).
+			name: "the effort the run used, never the env dial",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "3000",
+				"input.ai_reviewer_claude_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_claude_backend": "claw",
+				"input.ai_reviewer_claude_tokens": "1000",
+				"input.ai_reviewer_claude_effort": "low", "input.ai_reviewer_claude_effort_source": "cell",
+				"input.ai_reviewer_gpt_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_gpt_backend": "claw",
+				"input.ai_reviewer_gpt_tokens": "1000",
+				"input.ai_reviewer_gpt_effort": "xhigh", "input.ai_reviewer_gpt_effort_source": "edge",
+				"input.ai_reviewer_claude_glance_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_claude_glance_backend": "claw",
+				"input.ai_reviewer_claude_glance_tokens": "400",
+				"input.ai_reviewer_claude_glance_effort": "high", "input.ai_reviewer_claude_glance_effort_source": "env:OPENAI_COMPATIBLE_REASONING_EFFORTS",
+				"input.ai_reviewer_claude_glance_effort_requested": "medium",
+				"input.ai_reviewer_gpt_glance_model":               "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_gpt_glance_backend": "claw",
+				"input.ai_reviewer_gpt_glance_tokens": "400",
+				"input.ai_reviewer_gpt_glance_effort": "low", "input.ai_reviewer_gpt_glance_effort_source": "<b>who</b>",
+				"input.ai_converge_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_converge_backend": "claw",
+				"input.ai_converge_tokens": "200",
+				"input.ai_converge_effort": "high", "input.ai_converge_effort_source": "feed:pliage", "input.ai_converge_effort_requested": "medium",
+			},
+			want: []string{
+				"| Étape | Modèle | Harness | Effort (source) | Tokens |",
+				"| Revue | openai_compatible/scaleway/deepseek-v4.1-flash | claw | low (cellule) | 1 000 |",
+				"| xhigh (arête) | 1 000 |",
+				"| high (table du runner ; demandé medium) | 400 |",
+				"| low (&lt;b&gt;who&lt;/b&gt;) | 400 |",
+				"| high (feed pliage ; demandé medium) | 200 |",
+			},
+			absent: []string{"max", "<b>who</b>"},
+		},
+		{
+			// The harness's own answers and the other request sources: a
+			// level the client did not send, a recovery at a lower level, an
+			// operator dial, the launch's row, the overrides when the run
+			// cannot tell which layer, a level the harness clamped.
+			name: "what the harness sent, and every source of a request",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "3000",
+				"input.ai_reviewer_claude_model": "anthropic/glm-5.3", "input.ai_reviewer_claude_backend": "claw", "input.ai_reviewer_claude_tokens": "1000",
+				"input.ai_reviewer_claude_effort_source": "backend", "input.ai_reviewer_claude_effort_requested": "high",
+				"input.ai_reviewer_gpt_model": "openai/gpt-6-astra", "input.ai_reviewer_gpt_backend": "claw", "input.ai_reviewer_gpt_tokens": "1000",
+				"input.ai_reviewer_gpt_effort": "high", "input.ai_reviewer_gpt_effort_source": "node", "input.ai_reviewer_gpt_effort_lowered": "low",
+				"input.ai_reviewer_claude_glance_model": "claude-opus-5-5", "input.ai_reviewer_claude_glance_backend": "claude_code", "input.ai_reviewer_claude_glance_tokens": "400",
+				"input.ai_reviewer_claude_glance_effort": "xhigh", "input.ai_reviewer_claude_glance_effort_source": "dial:ITERION_VIBE_EFFORT_CLAUDE_GLANCE",
+				"input.ai_reviewer_gpt_glance_model": "openai/gpt-6-luna", "input.ai_reviewer_gpt_glance_backend": "claw", "input.ai_reviewer_gpt_glance_tokens": "400",
+				"input.ai_reviewer_gpt_glance_effort": "medium", "input.ai_reviewer_gpt_glance_effort_source": "launch",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "200",
+				"input.ai_converge_effort": "low", "input.ai_converge_effort_source": "backend", "input.ai_converge_effort_requested": "none",
+			},
+			want: []string{
+				"| non envoyé (harness ; demandé high) | 1 000 |",
+				"| high (nœud) · abaissé à low (récupération) | 1 000 |",
+				"| xhigh (réglage d’exploitation) | 400 |",
+				"| medium (lancement) | 400 |",
+				"| low (harness ; demandé none) | 200 |",
+			},
+		},
+		{
+			name: "the overrides when the run cannot tell which layer",
+			refs: map[string]string{
+				"run.id": "run-123", "input.ai_run_tokens": "100",
+				"input.ai_converge_model": "claude-opus-5-5", "input.ai_converge_backend": "claude_code", "input.ai_converge_tokens": "100",
+				"input.ai_converge_effort": "xhigh", "input.ai_converge_effort_source": "override",
+			},
+			want: []string{"| xhigh (surcharge) | 100 |"},
 		},
 		{
 			name: "missing telemetry stays unavailable and HTML stays text",
@@ -154,7 +239,7 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"input.ai_reviewer_gpt_model":  "<b>model</b>|extra\nrow",
 				"input.ai_reviewer_gpt_tokens": "-1",
 			},
-			want:   []string{"**indisponible**", "&lt;details&gt;&#124;unsafe", "&lt;b&gt;model&lt;/b&gt;&#124;extra row", "| indisponible | xhigh | indisponible |"},
+			want:   []string{"**indisponible**", "&lt;details&gt;&#124;unsafe", "&lt;b&gt;model&lt;/b&gt;&#124;extra row", "| indisponible | indisponible | indisponible |"},
 			absent: []string{"{{run.tokens}}", "<b>model</b>", "**0**", "<a href="},
 		},
 	} {

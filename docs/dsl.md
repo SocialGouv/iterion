@@ -1078,8 +1078,14 @@ servers (`~/.claude.json`) do NOT boot inside bot nodes — a node's `mcp:`
 block (plus the repo's `.mcp.json` through `autoload_project` and iterion's
 own ask_user/board servers) is the complete truth. Set
 `ITERION_CLAUDE_CODE_STRICT_MCP=0` to deliberately restore host-config
-inheritance. (pi and claw are strict by construction — pi's MCP client only
-connects declared servers, claw registers in-process tools.)
+inheritance — except for a node whose `mcp:` block says `inherit: false`,
+which keeps `--strict-mcp-config` whatever the variable says: its declared set
+is its whole MCP surface. codex loads the servers of its own configuration
+(`CODEX_HOME`'s `config.toml`, a trusted project's `.codex/config.toml`) and
+the pinned SDK cannot switch one off, so a node with `inherit: false` is
+refused on codex, typed, when that configuration lists a server. (pi and claw
+are strict by construction — pi's MCP client only connects declared servers,
+claw registers in-process tools.)
 
 ## Workflows and edges
 

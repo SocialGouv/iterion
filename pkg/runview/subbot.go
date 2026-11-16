@@ -241,6 +241,8 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 			// parent.
 			BotID:          childBotID,
 			ModelOverrides: toModelOverrides(childRows),
+			// The rows of the tree's root launch the child's fold read.
+			LaunchModelOverrides: knownLaunchOverrides(ModelOverridesFromRun(root.launchRows)),
 			// The child dispatches under the providers allowlist its root
 			// froze, as the root does (startInProcess), as the cloud child
 			// does (its message is a copy of the root's), and as a lone

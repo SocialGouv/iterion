@@ -550,6 +550,14 @@ type Task struct {
 	// are wired separately by each backend and are absent here.
 	MCPServers []TaskMCPServer
 
+	// MCPInheritDisabled says the node opts out of the ambient MCP set
+	// (`mcp: inherit: false`): MCPServers is its whole set. A CLI that loads
+	// MCP servers of its own configuration is held to it — claude_code runs
+	// with --strict-mcp-config whatever ITERION_CLAUDE_CODE_STRICT_MCP says;
+	// codex, which cannot be told to disable them, refuses the node, typed,
+	// when its configuration lists one.
+	MCPInheritDisabled bool
+
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
@@ -680,6 +688,13 @@ type Task struct {
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string
+
+	// ReasoningEffortSource names who asked for ReasoningEffort: the run's
+	// model overrides, an upstream edge's mapping or the node's own
+	// `reasoning_effort:` (model.EffortSource*). The executor's bookkeeping,
+	// read back at the model boundary to record it on the Result; no backend
+	// reads it, and it does not cross the claw-runner wire.
+	ReasoningEffortSource string
 
 	// Ultracode enables the "Ultracode" mode: xhigh reasoning paired with a
 	// standing-consent prerogative to orchestrate multi-agent workflows.
@@ -2221,4 +2236,44 @@ type Result struct {
 	// output goes through the way the usage counters do, and is re-stamped
 	// there as `_gateway_spec`. Empty on a non-gateway route.
 	GatewaySpec json.RawMessage
+
+	// WireReasoningEffort is the reasoning effort the backend's FIRST model
+	// request of this call carried, after the backend's own rule below the
+	// model boundary — claw: the model's accepted set (coerceEffortForModel),
+	// then the client's (an Anthropic Messages client sends no effort for a
+	// model outside its matrix, "" then); claude_code: the level its CLI sends
+	// for the model — the level handed it after the CLI's per-model rule
+	// (claudeCodeWireEffort), "" when the model takes no effort and when the
+	// call never reached the model — a call that fails mid-stream may already
+	// have carried a request the record cannot name. WireReasoningEffortLast is the
+	// effort of the call's LAST request, whose answer the output is: lower
+	// than the first when claw re-asked a cut turn, or ran its recovery pass,
+	// at a reduced effort. WireReasoningEffortReported says the backend filled
+	// both; a backend that does not leaves the record at the level it was
+	// handed (model.recordReasoningEffort). They cross the claw-runner wire.
+	WireReasoningEffort         string
+	WireReasoningEffortLast     string
+	WireReasoningEffortReported bool
+
+	// ReasoningEffort is the reasoning effort the call's model request
+	// carried — what the backend reported (WireReasoningEffort), else the
+	// level the executor handed it after the route's accepted-effort mapping
+	// (ADR-166 §7); "" when the request carried none. ReasoningEffortSource
+	// says who decided it: the request's provenance (Task.
+	// ReasoningEffortSource) when it was sent as asked, the accepted-efforts
+	// list's source (`feed:<name>`, `env:…`) when the route replaced it,
+	// `backend` when the backend sent another level, none, or its own
+	// default. ReasoningEffortRequested is the level asked for, set only
+	// when the route or the backend replaced it; ReasoningEffortLowered is
+	// the lower level the call's last request carried, set only when it
+	// differs (WireReasoningEffortLast). Recorded by the executor at the
+	// model boundary (model.executeDelegate), never by a backend. Stamped on
+	// the node's output as `_reasoning_effort_applied`,
+	// `_reasoning_effort_source`, `_reasoning_effort_requested` and
+	// `_reasoning_effort_lowered` — never `_reasoning_effort`, the input key
+	// an edge raises a node's effort with.
+	ReasoningEffort          string
+	ReasoningEffortSource    string
+	ReasoningEffortRequested string
+	ReasoningEffortLowered   string
 }

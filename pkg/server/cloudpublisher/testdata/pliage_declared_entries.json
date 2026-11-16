@@ -1,0 +1,27 @@
+{
+  "feed": "pliage",
+  "type": "declared",
+  "read_at": "2026-11-15",
+  "declared_at": "2026-11-13T08:31:07.453Z",
+  "entries": {
+    "scaleway/deepseek-v4.1-flash": {
+      "cache_read_usd_per_mtok": 0.1344,
+      "context_window": 256000,
+      "input_usd_per_mtok": 0.672,
+      "max_output_tokens": 32768,
+      "output_usd_per_mtok": 2.016,
+      "reasoning_efforts": [
+        "low",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "scaleway/glm-5.3": {
+      "context_window": 256000,
+      "input_usd_per_mtok": 2.01,
+      "max_output_tokens": 16384,
+      "output_usd_per_mtok": 6.15
+    }
+  }
+}

@@ -449,6 +449,30 @@ func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 	return ModelOverridesFromRun(RunModelOverrides(entries))
 }
 
+// knownLaunchOverrides marks a launch's own rows as known to the executor
+// (ExecutorSpec.LaunchModelOverrides): empty rows say the launch carried none.
+func knownLaunchOverrides(o model.ModelOverrides) *model.ModelOverrides { return &o }
+
+// LaunchOverridesOfRun is the launch's own rows among a run's overrides, as
+// its document records them (store.Run.LaunchModelOverrides — a subbot
+// child's records its tree's root rows). A document that records none holds
+// no launch row, unless its routing policy froze no override cell: then its
+// overrides are the launch's rows whole (a CLI launch, or a document written
+// before the field). A document written before the field WITH policy cells
+// cannot be split, and reads as cells only.
+func LaunchOverridesOfRun(run *store.Run) model.ModelOverrides {
+	if run == nil {
+		return model.ModelOverrides{}
+	}
+	if len(run.LaunchModelOverrides) > 0 {
+		return ModelOverridesFromRun(run.LaunchModelOverrides)
+	}
+	if run.LLMRoutePolicy == nil || len(run.LLMRoutePolicy.Overrides) == 0 {
+		return ModelOverridesFromRun(run.ModelOverrides)
+	}
+	return model.ModelOverrides{}
+}
+
 // ModelOverridesFromRun adapts persisted pins through the same fold used by
 // launch and cloud execution, including the operator's reasoning effort.
 func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {

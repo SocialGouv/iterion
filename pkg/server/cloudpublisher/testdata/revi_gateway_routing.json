@@ -1,0 +1,35 @@
+{
+  "about": [
+    "The routing block a product's forge integration carries (PATCH /api/teams/{id}/forge/repo-bots/{integration_id}, `routing`) so that every LLM site of the shipped Revi pair runs on claw against the team's own PLIAGE gateway model, with the reasoning effort of each node decided by its cell (#3283, D2).",
+    "The cells without `effort` are the activation block of 2026-11-10, as 17 integrations carried it on 2026-11-15 (read-only GET, the same block on all 17). Each `effort` is a level the platform's `pliage` feed accepts for the cell's model (testdata/pliage_declared_entries.json), so the route sends it as asked and emits no reasoning_effort_adjusted (ADR-166 section 7 keeps ties going up, D3).",
+    "`effort` sits on node cells only: a `#glm` route runs at its node's effort and a supervisor names a model only, so llmroute.Validate refuses the field on both.",
+    "scripts/ops/revi-effort-cells.py applies the `effort` fields of this block, and nothing else, to each integration's stored block.",
+    "Read by pkg/server/cloudpublisher/revi_routing_cells_test.go and revi_gateway_effort_cells_test.go."
+  ],
+  "effort_rationale": {
+    "revi-converse/converse_agent": "high (D4). The node's own dial asks `medium`, which the feed does not list, so every converse step already ran at `high` (reasoning_effort_adjusted, source feed:pliage). The cell names the level the run gets.",
+    "review-pr/reviewer_claude": "high (plan section 2). A full-tier reviewer keeps high. Its dial reads `max` on the platform (bot-vars ITERION_VIBE_EFFORT_CLAUDE, set 2026-11-04): on 2026-11-13 reviewer_claude sent `max`, 86-92% of its output thinking. The cell fixes high whatever the dial reads.",
+    "review-pr/reviewer_gpt": "high (plan section 2), as reviewer_claude.",
+    "review-pr/reviewer_claude_glance": "low (plan section 2, chosen explicitly). F15: `low` is the lowest level the feed lists for deepseek-v4.1-flash, so effortAfterCut (pkg/backend/model/structured_recovery.go) has nothing to lower to: a final turn cut at max_tokens, or a recovery pass that failed, gets no retry at a reduced effort on this node. Accepted for the cheap tier: in the M1 runs (2026-11-15) and their baselines, no step of a celled node finished on length or max_tokens, and the largest output of a glance, reviewer_gpt_glance at high, was 7457 tokens, 23% of the 32768 the feed allows (the glance ran once; reviewer_claude_glance never ran, prod picked the gpt twin). M2a counts the cut final passes and the node goes back to high if they appear.",
+    "review-pr/reviewer_gpt_glance": "low (plan section 2, chosen explicitly), with reviewer_claude_glance's F15 consequence: no reduced-effort retry is left below low.",
+    "review-pr/converge": "low (plan section 2, chosen explicitly). The merge step reads two structured outputs; F15 as for the glances: below low there is no reduced-effort retry. In the M1 runs and their baselines converge_gpt's largest output at high was 2501 tokens, with no cut step; this claude twin never ran there. M2a counts the cut final passes; back to high if they appear.",
+    "review-pr/converge_gpt": "low (plan section 2, chosen explicitly), the merge twin of converge, with the same F15 consequence."
+  },
+  "routing": {
+    "overrides": [
+      {"selector": "review-pr/converge", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "low"},
+      {"selector": "review-pr/converge_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "low"},
+      {"selector": "review-pr/reviewer_claude", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "high"},
+      {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "low"},
+      {"selector": "review-pr/reviewer_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "high"},
+      {"selector": "review-pr/reviewer_gpt_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "low"},
+      {"selector": "review-pr/converge#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+      {"selector": "review-pr/reviewer_claude#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+      {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+      {"selector": "review-pr/supervisor:pacer", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+      {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+      {"selector": "revi-converse/converse_agent", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash", "effort": "high"},
+      {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
+    ]
+  }
+}

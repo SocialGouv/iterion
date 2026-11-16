@@ -12,6 +12,7 @@
 package cloudpublisher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -198,32 +199,56 @@ func TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead(t *testing.T) {
 	}
 }
 
-// reviGatewayCellsJSON is the routing block a product writes on its forge
-// integration (PATCH /api/teams/{id}/forge/repo-bots/{integration_id},
+// reviGatewayRoutingFixture holds the routing block a product writes on its
+// forge integration (PATCH /api/teams/{id}/forge/repo-bots/{integration_id},
 // `routing`) — or on its team's routing policy — so that every LLM site of
 // the shipped Revi pair, the pacers and the GLM rescues included, runs on
 // claw against the team's own gateway model. Each node cell fixes the three
 // fields the walk reads (backend, provider, model): the provider cell
 // collapses the slot's own `provider:` dial, so no `${ITERION_VIBE_*}` text
 // is read on any route. Every cell names its bot, so a co-enabled bot's
-// same-named node stays its own.
-const reviGatewayCellsJSON = `{
-  "overrides": [
-    {"selector": "review-pr/converge", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/converge_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_claude", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_gpt_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/converge#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_claude#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/supervisor:pacer", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "revi-converse/converse_agent", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-    {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
-  ]
-}`
+// same-named node stays its own. The node cells also carry the reasoning
+// effort the node runs at (#3283), each with its reason in the fixture's
+// `effort_rationale`; the operator's script applies exactly that block's
+// efforts (scripts/ops/revi-effort-cells.py), so the tests read the block
+// production carries.
+const reviGatewayRoutingFixture = "testdata/revi_gateway_routing.json"
+
+// reviGatewayRouting is the fixture: the block, and why each effort.
+type reviGatewayRouting struct {
+	About           []string          `json:"about"`
+	EffortRationale map[string]string `json:"effort_rationale"`
+	Routing         json.RawMessage   `json:"routing"`
+}
+
+// readReviGatewayRouting reads the fixture.
+func readReviGatewayRouting(t *testing.T) reviGatewayRouting {
+	t.Helper()
+	raw, err := os.ReadFile(reviGatewayRoutingFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f reviGatewayRouting
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		t.Fatalf("%s: %v", reviGatewayRoutingFixture, err)
+	}
+	return f
+}
+
+// reviGatewayBlock is the fixture's routing block, decoded the way the
+// integration write surface decodes one (unknown fields refused).
+func reviGatewayBlock(t *testing.T) llmroute.Policy {
+	t.Helper()
+	var block llmroute.Policy
+	dec := json.NewDecoder(bytes.NewReader(readReviGatewayRouting(t).Routing))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&block); err != nil {
+		t.Fatalf("the fixture's block is not a routing policy: %v", err)
+	}
+	return block
+}
 
 // reviGatewayModelID is the one model every cell pins.
 const reviGatewayModelID = "openai_compatible/scaleway/deepseek-v4.1-flash"
@@ -247,10 +272,7 @@ var reviRescueAndSupervisorSites = map[string][]string{
 // production fold, snapshotted the way resolveRunLLMRoutePolicy stores it.
 func reviGatewayPolicy(t *testing.T, source string) *store.RunLLMRoutePolicy {
 	t.Helper()
-	var block llmroute.Policy
-	if err := json.Unmarshal([]byte(reviGatewayCellsJSON), &block); err != nil {
-		t.Fatalf("the block is not a routing policy: %v", err)
-	}
+	block := reviGatewayBlock(t)
 	if err := llmroute.Validate(block); err != nil {
 		t.Fatalf("llmroute.Validate refused the activation block: %v", err)
 	}
@@ -401,10 +423,7 @@ func TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary(t *testing.T
 // name outranks `*/`), so converge stays on the gateway — at the walk that
 // seals the run and at the call site dispatch reads.
 func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T) {
-	var block llmroute.Policy
-	if err := json.Unmarshal([]byte(reviGatewayCellsJSON), &block); err != nil {
-		t.Fatal(err)
-	}
+	block := reviGatewayBlock(t)
 	team := llmroute.Policy{Overrides: []llmroute.Override{{Selector: "*/converge", Backend: "claw", Model: "anthropic/claude-sonnet-5"}}}
 	for _, p := range []llmroute.Policy{block, team} {
 		if err := llmroute.Validate(p); err != nil {
