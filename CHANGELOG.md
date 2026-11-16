@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.2](https://github.com/SocialGouv/iterion/compare/v7.3.1...v7.3.2) (2026-11-16)
+
+### Bug Fixes
+
+* **scripthost:** a broken tool channel is host_died whatever the catch, and the frame bounds trust the clamp ([#3316](https://github.com/SocialGouv/iterion/issues/3316)) ([5201ca5](https://github.com/SocialGouv/iterion/commit/5201ca5fecf7a1ce8e1b4e4c746b325c63a30a02)), references [#3153](https://github.com/SocialGouv/iterion/issues/3153) [#3301](https://github.com/SocialGouv/iterion/issues/3301) [#3327](https://github.com/SocialGouv/iterion/issues/3327) [#3327](https://github.com/SocialGouv/iterion/issues/3327)
+
+    <details><summary>why</summary>
+
+    TWO findings from #3301's third adversarial round, both pre-existing, both measured before this change.
+
+    </details>
+
 ## [7.3.1](https://github.com/SocialGouv/iterion/compare/v7.3.0...v7.3.1) (2026-11-16)
 
 ### Bug Fixes
