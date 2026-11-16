@@ -156,7 +156,7 @@ function NodeRow({
             {selectedAssessment.warning}
           </p>
         )}
-        {routeRefusal && (
+        {routeRefusal && !override.backend && (
           <p className="mt-1 text-caption text-warning" role="status">
             inherit — {routeRefusal} The run is refused at dispatch (terminal;
             no fallbacks: route carries it), so override the backend or fix

@@ -97,6 +97,7 @@ export function useRunOverrides(
       filePath ? "" : currentSource,
       permissionOverride,
       backendOverride,
+      ambientContextOverride,
       backendNames,
     ],
     queryFn: async () =>
@@ -105,6 +106,7 @@ export function useRunOverrides(
         source: filePath ? undefined : currentSource || undefined,
         permission: permissionOverride || undefined,
         backend: backendOverride || undefined,
+        ambient_context: ambientContextOverride || undefined,
         backend_names: backendNames,
       }),
     enabled: !!(filePath || currentSource),

@@ -83,6 +83,7 @@ export async function previewRunCost(req: {
   source?: string;
   permission?: string;
   backend?: string;
+  ambient_context?: string;
   backend_names?: string[];
 }): Promise<PreviewCostResponse> {
   return request("/runs/preview-cost", {
