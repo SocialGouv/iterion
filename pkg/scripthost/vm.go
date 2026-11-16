@@ -174,12 +174,20 @@ func runScript(vm *goja.Runtime, src string, wall time.Duration, resultBytes int
 				if guard != nil {
 					defer guard.Stop()
 				}
-				exported, ok := exception.Value().Export().(map[string]any)
-				if !ok {
-					return nil
-				}
-				wrapped, _ = exported["value"].(error)
-				return wrapped
+				// Unwrap reads ONLY the genuine GoError's "value" property
+				// (after an instanceof GoError check — vendor runtime.go): it
+				// never walks the thrown object's other properties, so a
+				// large or deeply nested throw is NOT materialised into Go.
+				// The first draft used Export() here and the gate review
+				// measured the flaw on this tree: Export recursively
+				// materialises every own property (the repo's encodeValue
+				// comment records a.length = 50000000 costing 2 GiB on this
+				// exact path) with NO JS running, so the interrupt guard
+				// could not preempt it and a script fault came back in a
+				// memory/host class. Unwrap never runs script code; the
+				// closure stays for a forged GoError prototype whose getter
+				// does.
+				return exception.Unwrap()
 			}()
 			if wrapped != nil && errors.Is(wrapped, errToolChannelBroken) {
 				return Refuse(RefusalHostDied,

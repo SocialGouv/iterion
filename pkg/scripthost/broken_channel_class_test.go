@@ -87,7 +87,16 @@ func TestABrokenChannelIsHostDiedWhateverTheCatch(t *testing.T) {
 		{"looping getter", `throw { get x(){ for(;;){} } }`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			start := time.Now()
 			resp := bindAndRunHostile(row.src)
+			// The SPEED is the property that distinguishes Unwrap from the
+			// Export walk: with Export, the looping getter runs until the
+			// re-armed wall interrupt (30s for a 30s wall); with Unwrap, the
+			// thrown object's properties are never touched and the row
+			// returns instantly (measured 0.00s). 10s is a third of the wall.
+			if d := time.Since(start); d > 10*time.Second {
+				t.Errorf("%s took %s — the thrown object's properties were walked (a getter ran to the wall)", row.name, d)
+			}
 			if resp.Refusal != RefusalScriptError {
 				t.Errorf("refusal = %q (message %.120q), want %q — a script throw must stay the script's own verdict", resp.Refusal, resp.Message, RefusalScriptError)
 			}
