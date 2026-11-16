@@ -98,12 +98,14 @@ captured codec. The event cursor is internal inclusive/after state; the public
 subscription still accepts an inclusive sequence. Successful sends alone
 advance delivered progress. Notifications can be lost, so polling remains a
 fallback; they do not select a new origin. Terminal polling triggers a final
-drain, and deterministic terminal JSON decoding failures are permanent.
+drain held at an end-of-events barrier ([run-ws-origin.md](run-ws-origin.md)),
+and deterministic terminal JSON decoding failures are permanent.
 
 Filesystem selections own their roots; the producer owns and closes returned
 file descriptors. The Source borrows the store. Closing a subscription or
 Source cancels and joins pending initial resolution, the producer and its
-poller before releasing those resources. Protocol-one support remains platform-
+poller before releasing those resources; a Source close ends its open
+subscriptions with `ErrSourceClosed`. Protocol-one support remains platform-
 dependent and typed-refused where its storage capability is unavailable.
 Historical regular-file opening has its own portable implementation, not a
 strict-protocol admission dependency.
@@ -122,8 +124,8 @@ ancestor is also distinct from a successful replacement experiment.
 ## Errors, cancellation and ownership
 
 Identity, format, missing-original and corruption refusals stop the source.
-Transient infrastructure errors retry with the same selection and delivered
-position. A joined cancellation cannot hide a permanent refusal. Pollers report
+Transient infrastructure errors (on FS also a permission or descriptor failure,
+never a replacement) retry with the same selection and delivered position. A joined cancellation cannot hide a permanent refusal. Pollers report
 their cause to the producer and are joined on every exit, including failed
 watch/backfill and a blocked send cancelled by the poller. Normal cleanup
 cancellation does not erase the error that caused cleanup.
@@ -170,8 +172,9 @@ implementations.
 
 Every reservation's parent context binds the run the upgrade loaded, so the
 store reads of each subscribe and resubscribe of a socket admit only that
-run; frames a process-local broker or buffer delivers after admission stay
-keyed by run ID ([run-ws-origin.md](run-ws-origin.md)). A redial carries
+run, and on the native filesystem store so do its live events; alerts and
+log buffers delivered after admission stay keyed by run ID
+([run-ws-origin.md](run-ws-origin.md)). A redial carries
 the expected birth, compared before upgrade.
 
 ## Event cursor boundaries
@@ -184,7 +187,7 @@ A subscription retains its first observation; it cannot bind itself
 retroactively to an earlier HTTP snapshot or authorization check. A WS socket
 binds its later subscriptions to its upgrade's run only by header and format,
 with the limits listed in [run-ws-origin.md](run-ws-origin.md): process-local
-broker, buffer and alert keys after admission, Mongo metadata writes,
+alert, log-buffer and other-store broker keys after admission, Mongo metadata writes,
 tenant changes, unchecked dials. Connection claims, cross-connection
 reconnect and a rendered state for other fatal stream errors remain
 activation obligations. Neither this adapter nor the storage migration

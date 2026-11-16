@@ -24,13 +24,13 @@ func TestReaderReviewTerminalJoinedRefusal(t *testing.T) {
 	f := &FileSource{logger: quietLogger()}
 	final := false
 	var failed error
-	f.runSelectedFile(ctx, s, false, func(c context.Context) error {
+	f.runSelectedFile(ctx, s, fileRun{drain: func(c context.Context) error {
 		if c == ctx {
 			final = true
 			return errors.Join(store.ErrRunDataIdentityChanged, errEventDeliveryStopped)
 		}
 		return nil
-	}, func(error) { t.Error("unexpected retry") }, func(e error) { failed = e })
+	}, warn: func(error) { t.Error("unexpected retry") }, fail: func(e error) { failed = e }})
 	if !final {
 		t.Fatal("final drain was not reached", ctx.Err())
 	}

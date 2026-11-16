@@ -38,8 +38,13 @@ import (
 // when the producer emits a megabyte burst.
 const logChunkBudget = 64 * 1024
 
-// tailPollFallbackInterval is the fsnotify-less polling cadence.
-const tailPollFallbackInterval = 250 * time.Millisecond
+// tailPollFallbackInterval is the fsnotify-less polling cadence. A var so a
+// package test can widen it and prove a wake input alone drives a drain.
+var tailPollFallbackInterval = 250 * time.Millisecond
+
+// newTailWatcher creates the notification watcher. A var so a package test can
+// make notifications unavailable and exercise the polling fallback.
+var newTailWatcher = fswatch.NewWatcher
 
 // tailDefensivePollInterval is the wide safety-net re-drain that catches
 // fsnotify events dropped on busy file systems.
@@ -88,7 +93,7 @@ func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64,
 		}
 	}()
 	offset := int64(0)
-	_ = watchFileDrains(ctx, filepath.Dir(path), filepath.Base(path), func(context.Context) error { offset = drain(offset); return nil }, logger)
+	_ = watchFileDrains(ctx, filepath.Dir(path), filepath.Base(path), func(context.Context) error { offset = drain(offset); return nil }, nil, logger)
 	cancel()
 	<-joined
 	drain(offset)
@@ -96,11 +101,14 @@ func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64,
 
 // watchFileDrains installs notification hints before the first finite drain.
 // Paths are used only for notifications; the callback owns all payload IO.
-func watchFileDrains(ctx context.Context, dir, name string, drain func(context.Context) error, logger *iterlog.Logger) error {
-	watcher, err := fswatch.NewWatcher()
+// wake is an optional external drain request carrying no payload; nil never
+// fires, and neither does a closed channel.
+func watchFileDrains(ctx context.Context, dir, name string, drain func(context.Context) error, wake <-chan struct{}, logger *iterlog.Logger) error {
+	fallback := tailPollFallbackInterval
+	watcher, err := newTailWatcher()
 	var events <-chan fsnotify.Event
 	var errs <-chan error
-	cadence := tailPollFallbackInterval
+	cadence := fallback
 	if err == nil {
 		defer watcher.Close()
 		err = fswatch.Add(watcher, dir)
@@ -113,7 +121,18 @@ func watchFileDrains(ctx context.Context, dir, name string, drain func(context.C
 	if err != nil {
 		logger.Warn("runstream: watcher %s unavailable, using polling: %v", dir, err)
 	}
-	if err = drain(ctx); err != nil {
+	run := func() error {
+		// A pending wake is consumed before the drain reads the file end, so
+		// every wake sent before that read is covered by this drain. A wake
+		// sent while the drain runs stays pending and costs one more drain,
+		// which may find nothing new.
+		select {
+		case <-wake:
+		default:
+		}
+		return drain(ctx)
+	}
+	if err = run(); err != nil {
 		return err
 	}
 	tick := time.NewTicker(cadence)
@@ -122,11 +141,19 @@ func watchFileDrains(ctx context.Context, dir, name string, drain func(context.C
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case _, open := <-wake:
+			if !open {
+				wake = nil
+				continue
+			}
+			if err = run(); err != nil {
+				return err
+			}
 		case ev, ok := <-events:
 			if !ok {
 				events = nil
 				errs = nil
-				tick.Reset(tailPollFallbackInterval)
+				tick.Reset(fallback)
 				continue
 			}
 			if filepath.Base(ev.Name) != name {
@@ -135,7 +162,7 @@ func watchFileDrains(ctx context.Context, dir, name string, drain func(context.C
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
 				continue
 			}
-			if err = drain(ctx); err != nil {
+			if err = run(); err != nil {
 				return err
 			}
 		case _, ok := <-errs:
@@ -144,9 +171,9 @@ func watchFileDrains(ctx context.Context, dir, name string, drain func(context.C
 				continue
 			}
 			// A watch error can mean dropped notifications. Polling restores liveness.
-			tick.Reset(tailPollFallbackInterval)
+			tick.Reset(fallback)
 		case <-tick.C:
-			if err = drain(ctx); err != nil {
+			if err = run(); err != nil {
 				return err
 			}
 		}

@@ -14,7 +14,7 @@ For this helper, a private context marker requests validation of the selected pa
 
 `WithEventProjection` supplies invocation-owned log position and active duration. The callback must use captured resources, never rediscover a current run by public ID; filesystem execution remains under the write lock. Nonzero caller fields are preserved, both prefilled fields avoid calling the projection, and a refused projection never falls back to the historical ID-only callbacks.
 
-These seams do not activate scoped runtime delivery. Store-instance and resource-handle ownership, registry and default Service stream wiring, wrapper observers and HTTP/WS authorization remain separate integration work. In particular, a reader's authorization tenant must not be silently treated as the canonical stored tenant. Protocol-one admission remains disabled until the complete migration is qualified.
+These seams do not activate scoped runtime delivery. Store-instance and resource-handle ownership, registries and the default Service stream wiring of logs, alerts and stores other than the native filesystem one, wrapper observers and HTTP/WS authorization remain separate integration work. In particular, a reader's authorization tenant must not be silently treated as the canonical stored tenant. Protocol-one admission remains disabled until the complete migration is qualified.
 
 ## Retained readers and delivery
 
@@ -47,7 +47,8 @@ RunID from the retained stream ID; contradictory IDs are refused. This is an
 explicit emitted-field compatibility change for observed FileSource delivery.
 The direct historical DecodeEvent path retains its empty-ID behavior. Other
 fields, exact numeric payloads and the private observation's wire omission are
-preserved.
+preserved; a format-one stream line keeps its numbers as written
+(`json.Number`), never through float64.
 
 Decoding can stamp retained A bytes as A after storage changes: it does not
 reload B to repair the stamp. Existing snapshot validation and pre-delivery
@@ -58,9 +59,11 @@ false, and cannot deliver a later batch or advance the cursor after that
 refusal. A closed delivery pipe stops the producer rather than restarting the
 replay.
 
-This integration covers retained FileSource and selected Mongo delivery. It
-does not by itself migrate Service registries, captured resource
-handles, ephemeral alerts or HTTP/WS authorization. Those paths still require
+This integration covers retained FileSource and selected Mongo delivery, and
+the Service's StreamSource events on the native filesystem store, one retained
+FileSource subscription per client ([run-ws-origin.md](run-ws-origin.md)). It
+does not by itself migrate other Service registries, captured resource
+handles, ephemeral alerts, logs or HTTP/WS authorization. Those paths still require
 their own original-observation integration before scoped admission is enabled.
 
 ## Observed broker scopes
@@ -115,7 +118,10 @@ client whose physical Cancel is still in progress.
 
 StopBackground closes admission under the reservation mutex before its other
 shutdown work, cancels all captured entries including pending acquisitions,
-and waits within the supplied context. Stop and Drain use the same path.
+and waits within the supplied context. Stop and Drain use the same path. The
+live StreamSource event streams stop the same way, with
+`runstream.ErrSourceClosed`; Drain stops those last, after the drained runs'
+own streams end (bounded).
 A deadline is reported as a warning, not successful cleanup; entries remain
 tracked and a subsequent stop can finish joining. Cancellation happens even
 when the join budget has already expired. Already-completed cleanup succeeds.

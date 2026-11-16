@@ -31,7 +31,32 @@ type fileDrain struct {
 	logpipe         LogPipe
 	scratch         []byte
 	skipped, valid  int
+	// ended is true when the events read up to offset end the run's latest
+	// lifecycle episode with a terminal event (endsRunEpisode): the
+	// end-of-events barrier a terminal status alone does not provide.
+	ended bool
 }
+
+// endsRunEpisode folds one persisted event type into the end-of-events
+// state: a terminal event ends the episode, a resume or rewind reopens it, and
+// every other event leaves it unchanged (a run_health twin may follow a
+// run_failed). The terminal writers persist the status first, then the event.
+// run_auto_resumed does not reopen: it is written before the resume it
+// announces, whose own run_resumed does.
+func endsRunEpisode(ended bool, t store.EventType) bool {
+	switch t {
+	case store.EventRunFinished, store.EventRunFailed, store.EventRunCancelled, store.EventRunInterrupted:
+		return true
+	case store.EventRunResumed, store.EventRunRewound:
+		return false
+	}
+	return ended
+}
+
+// Ended reports whether the events drained so far end the run with a terminal
+// event, whether or not the cursor delivered it: a subscriber whose cursor is
+// past that event already holds it.
+func (d *fileDrain) Ended() bool { return d.ended }
 
 func newFileEventDrain(s store.FilesystemStreamSelection, p EventPipe, from int64) *fileDrain {
 	d := &fileDrain{selection: s, events: p, seq: from}
@@ -88,6 +113,7 @@ func (d *fileDrain) open(ctx context.Context) (bool, error) {
 		}
 		d.file = file
 		d.offset = 0
+		d.ended = false
 		if rotated {
 			d.skipped, d.valid = 0, 0
 			if d.logs {
@@ -99,6 +125,7 @@ func (d *fileDrain) open(ctx context.Context) (bool, error) {
 	}
 	if info.Size() < d.offset {
 		d.offset = 0
+		d.ended = false
 		d.skipped, d.valid = 0, 0
 		if d.logs {
 			d.delivered = 0
@@ -167,6 +194,9 @@ func (d *fileDrain) drainEvents(ctx context.Context, reader io.Reader) error {
 	r := bufio.NewReader(reader)
 	batch := make([]*store.Event, 0, min(MaxEventsPerPage(), 256))
 	offset := d.offset
+	// ended follows the lines read up to offset; it is committed with offset,
+	// so lines a refused ship leaves unread are folded again when re-read.
+	ended := d.ended
 	flush := func() error {
 		if len(batch) > 0 {
 			if e := d.selection.Validate(ctx); e != nil {
@@ -183,6 +213,7 @@ func (d *fileDrain) drainEvents(ctx context.Context, reader io.Reader) error {
 			batch = nil
 		}
 		d.offset = offset
+		d.ended = ended
 		return nil
 	}
 	for {
@@ -215,6 +246,7 @@ func (d *fileDrain) drainEvents(ctx context.Context, reader io.Reader) error {
 					d.events.Warn(de)
 				} else if evt != nil {
 					d.valid++
+					ended = endsRunEpisode(ended, evt.Type)
 					if evt.Seq > d.seq || evt.Seq == d.seq && !d.after {
 						batch = append(batch, evt)
 					}

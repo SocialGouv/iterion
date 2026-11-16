@@ -190,11 +190,20 @@ func (r *mongoRound) finish(parent context.Context, err error) (bool, error) {
 	}
 	return r.terminal, errors.Join(err, pollErr)
 }
-func mongoRetry(ctx context.Context, err error, delay time.Duration, warn func(error)) bool {
+
+// Retry warnings name the source that waits before its next attempt.
+const (
+	mongoRetryLabel = "runstream/mongo: reconnect"
+	fileRetryLabel  = "runstream/file: retry"
+)
+
+// retryAfter publishes err as a warning naming label, then waits delay; false
+// when ctx ended first.
+func retryAfter(ctx context.Context, label string, err error, delay time.Duration, warn func(error)) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	warn(fmt.Errorf("runstream/mongo: reconnect in %s: %w", delay, err))
+	warn(fmt.Errorf("%s in %s: %w", label, delay, err))
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -241,7 +250,7 @@ func (m *MongoSource) runSelectedEvents(ctx context.Context, s MongoSelection, p
 		if err == nil {
 			err = io.EOF
 		}
-		if !mongoRetry(ctx, err, delay, pipe.Warn) {
+		if !retryAfter(ctx, mongoRetryLabel, err, delay, pipe.Warn) {
 			return
 		}
 		delay = nextMongoDelay(delay)
@@ -326,7 +335,7 @@ func (m *MongoSource) runSelectedLogs(ctx context.Context, s MongoSelection, fro
 		if err == nil {
 			err = io.EOF
 		}
-		if !mongoRetry(ctx, err, delay, pipe.Warn) {
+		if !retryAfter(ctx, mongoRetryLabel, err, delay, pipe.Warn) {
 			return
 		}
 		delay = nextMongoDelay(delay)

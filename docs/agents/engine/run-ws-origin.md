@@ -89,7 +89,33 @@ socket stays open.
 
 ## The Service source
 
-For every caller, a permanent refusal of the replay, of the catch-up's run
+On the native filesystem store (the concrete store, never a wrapper, and no
+injected source) each event subscription, bound or not, is its own retained
+`FileSource` subscription under the caller's context: replay, cursor,
+validation and final drain read only the run it was opened on. The run ID's
+broker subscription, taken first, keeps two roles: `EventAlert` frames ship out
+of band (never deduped, never moving the cursor) and every other publication
+is only a wake — drain now (a wake during a drain costs one more); a
+`CloseRun` checks the status now and is the producer's end-of-events barrier.
+No other broker payload is delivered. Runs another process produces keep the
+ID-keyed events tailer: it feeds alert detection. A terminal status ends the
+events once a terminal event was read (`run_finished`, `run_failed`,
+`run_cancelled`, `run_interrupted`; `run_resumed` or `run_rewound` reopens),
+even one the cursor had passed; else a 500 ms settle window, then the status is
+read again: still terminal ends quietly (status-only terminal writers are
+legitimate), resumed keeps tailing. A transient open failure (a permission, no
+descriptor) is retried, not a replaced run. Format-one numbers decode as
+written (`json.Number`). An unbound subscription to a missing run is refused.
+StopBackground cancels and joins these streams within its context — each ends
+with the permanent `runstream.ErrSourceClosed`, `event_stream_failed` with the
+socket open — and closes the Service's `FileSource` only after the join. Drain
+ends them last: when its runs are drained — or its context gave out — their
+streams read the final status at once (CloseRun or not) and get 2 s (within
+its context) to end with their run; what is still open when the wait ends is
+stopped. A run ID too long for a file name, a symlinked lock or a store root
+that became a file or a link loop refuses the open.
+
+Events of other stores, and logs on every store, keep the path below. For every caller, a permanent refusal of the replay, of the catch-up's run
 load or final replay, or of a persisted log read ends the subscription
 through the producer-only guaranteed `Fail`. `Fail`, `Warn` and `Finish`
 are serialized; a report after `Finish` is dropped. Run metadata that does
@@ -147,9 +173,17 @@ The server refusal is the guarantee; the registry is defense in depth.
 - Atomicity: routes other than the three bound reads, and every mutation,
   are admitted, not bound — the run can be replaced before the action; Mongo
   metadata writes carry no birth predicate.
-- Isolation after admission: broker tails, tailers and alerts stay keyed by
-  run ID, so an open subscription can receive a successor's in-flight frames
-  until a bound read refuses it.
+- Isolation after admission: alerts, log buffers and tailers stay keyed by
+  run ID, and so do the broker tails of a store other than the native
+  filesystem one, so an open subscription can receive a successor's alerts
+  (there, its in-flight frames) until it ends or a bound read refuses it. A
+  terminal alert a detached sink publishes may miss a stream that ends first;
+  the buffered-alert flush is best effort and the persisted `run_health`
+  twin is the durable carrier.
+- A stale end of events: an episode a resume or rewind reopens only through
+  its status (the event not yet written, or never) keeps the previous
+  episode's terminal event as read, so its next terminal status ends the
+  stream without waiting for its own terminal event.
 - Downloads outside the server (a presigned attachment) and a preview's
   subresources; replication lag under a non-primary read preference.
 - Tenant changes under one birth, or two historical runs.
