@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.5](https://github.com/SocialGouv/iterion/compare/v7.3.4...v7.3.5) (2026-11-16)
+
+### Bug Fixes
+
+* **scripthost:** a memory bound under the measured working floor is raised and reported ([#3290](https://github.com/SocialGouv/iterion/issues/3290)) ([32fb118](https://github.com/SocialGouv/iterion/commit/32fb1188e2a06744ddf85f61197b70e59557073a)), references [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    #3290's defect: `Limits.Clamp` capped Memory at the ceiling and filled an unset value from the default, but enforced NO minimum — so a `.bot` writing `codemode: memory: 32 MiB` got a child that died at once (SIGSEGV on the shipped image, measured in the ticket), and the run carried no usable cause.
+
+    </details>
+
 ## [7.3.4](https://github.com/SocialGouv/iterion/compare/v7.3.3...v7.3.4) (2026-11-16)
 
 ### Bug Fixes
