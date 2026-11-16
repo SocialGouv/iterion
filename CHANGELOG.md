@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.1](https://github.com/SocialGouv/iterion/compare/v7.3.0...v7.3.1) (2026-11-16)
+
+### Bug Fixes
+
+* **claw:** one tool-step bound per node execution — retries, nudge, replay and engine re-runs share it; thinking summed across attempts ([#3283](https://github.com/SocialGouv/iterion/issues/3283)) ([#3325](https://github.com/SocialGouv/iterion/issues/3325)) ([129e042](https://github.com/SocialGouv/iterion/commit/129e0426e8ac286d4e479e11901c049881eed011))
+
+    <details><summary>why</summary>
+
+    A claw node's tool_max_steps bound holds for the whole node execution: the claw retryLoop, the nudge, the executor's in-place retries, the schema re-ask, the engine's recovery re-runs and sandboxed crossings all draw from one budget, charged the completed tool turns its replay holds after an identity anchor; a resume after a human pause gets the whole bound back (operator decision); a recovery pause ends the execution. foldSpend / chainSpend sum thinking across attempts and routes instead of…
+
+    </details>
+
 ## [7.3.0](https://github.com/SocialGouv/iterion/compare/v7.2.0...v7.3.0) (2026-11-16)
 
 ### Features
