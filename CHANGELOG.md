@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.3](https://github.com/SocialGouv/iterion/compare/v7.3.2...v7.3.3) (2026-11-16)
+
+### Bug Fixes
+
+* **bots:** Vetty set aside a mis-transcribed commit id instead of holding red ([#3328](https://github.com/SocialGouv/iterion/issues/3328)) ([07f2efd](https://github.com/SocialGouv/iterion/commit/07f2efd3692890ef4e67fa70645da01ae4748f75)), references [buildkit-operator#65](https://github.com/buildkit-operator/issues/65)
+
+    <details><summary>why</summary>
+
+    Live on buildkit-operator#65 (run 01a1e07f): the commit agent dropped two hex digits of the pushed sha (40 hex became 38) and commit_probe refused every id that does not resolve to the workspace head, so a push git itself certified came back hold_lost_alignment. The synchronize relaunch caught it; a PR without that relaunch stays red until a manual /vetty.
+
+    </details>
+
 ## [7.3.2](https://github.com/SocialGouv/iterion/compare/v7.3.1...v7.3.2) (2026-11-16)
 
 ### Bug Fixes
