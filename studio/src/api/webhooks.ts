@@ -102,6 +102,13 @@ export interface CreateWebhookInput {
   launch_vars?: Record<string, string>;
   key_overrides?: Record<string, string>;
   enabled?: boolean;
+  // The connector ingress binding (ADR-168 §3/§6): set, the inbound
+  // handler is the connector lane and the secret is minted (or the
+  // vendor's, when the package declares it).
+  connector_connection_id?: string;
+  installation?: string;
+  vendor_secret?: string;
+  contract_digest?: string;
 }
 
 export interface UpdateWebhookInput {
@@ -118,6 +125,13 @@ export interface UpdateWebhookInput {
   monthly_call_limit?: number;
   launch_vars?: Record<string, string>;
   key_overrides?: Record<string, string>;
+  // The connector ingress binding (ADR-168 §3/§6): set, the inbound
+  // handler is the connector lane and the secret is minted (or the
+  // vendor's, when the package declares it).
+  connector_connection_id?: string;
+  installation?: string;
+  vendor_secret?: string;
+  contract_digest?: string;
 }
 
 export async function listWebhooks(teamID: string): Promise<WebhookConfig[]> {
