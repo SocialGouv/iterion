@@ -56,7 +56,15 @@ func runCodemode(t *testing.T, toolMap map[string]*GenerationTool, source string
 	if err != nil {
 		t.Fatal(err)
 	}
-	return codemodeTool(childHost(), scripthost.Limits{}).Execute(ctx, in)
+	// The memory room, for the reason codemode_tool_test.go:236 states for
+	// its own site: this child is the test binary, and on the `-race` leg it
+	// is race-instrumented, which does not fit in DefaultLimits' 256 MiB.
+	// Measured by not doing it: TestAProgramCannotPauseTheRun's
+	// await_answers/send_user_message cases died of `memory_exceeded` under
+	// load on `race-shard (1)` — the same flake the bko runbook documents
+	// with `gh run rerun` as its remedy. 1 GiB is under scripthost.Ceiling,
+	// so Clamp leaves it alone and no bound under test moves.
+	return codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}).Execute(ctx, in)
 }
 
 // TestCodemodeCallsReachTheNodesOwnDoor is the whole slice in one assertion,
