@@ -131,6 +131,69 @@ func runScript(vm *goja.Runtime, src string, wall time.Duration, resultBytes int
 			}
 			return Refuse(RefusalWallClock, "script interrupted after %s: the wall-clock bound elapsed", wall)
 		}
+		// A tool-channel failure reaches here TOO, when the script had no
+		// `catch` to make the bridge's interrupt win the race: the bridge's
+		// panic surfaces as a *goja.Exception whose thrown value wraps
+		// errToolChannelBroken, and the InterruptedError branch above never
+		// matches. Measured both ways before this existed: the SAME broken
+		// channel came back script_error without a catch and
+		// script_host_died with one — and script_error is the class
+		// errToolChannelBroken's doc forbids, because a script told "your
+		// call failed" would retry a broken deployment in a loop, which is
+		// exactly the shape a bare `call(...)` — what a model writes — makes
+		// the common case. Unwrap the exception and read the thrown value.
+		// Export here is safe: the value was built by the bridge from a Go
+		// error, not by running script code.
+		var exception *goja.Exception
+		if errors.As(err, &exception) {
+			// The read is GUARDED, because Export() on a script-thrown value
+			// RUNS script code: goja walks the thrown object's own properties
+			// and invokes getters and Proxy traps (the hazard this file's
+			// encodeValue comment documents as the reason Export was
+			// abandoned for encoding — and the reason safeErrorText carries
+			// its own recover). Two measured failures without the guard:
+			// `throw {get x(){throw 1}}` panicked through Export into the
+			// outer belt, degrading the message to "could not be evaluated",
+			// and `throw {get x(){while(true){}}}` looped PAST the wall bound
+			// — the timer is stopped and the interrupt cleared before this
+			// error path — for the parent to later report wall_clock_exceeded
+			// about what is a script throw. So: recover around the read, and
+			// re-arm the wall interrupt for its duration. A panic here falls
+			// through to the generic rendering below — the verdict class
+			// never moves.
+			wrapped := func() (wrapped error) {
+				defer func() {
+					if recover() != nil {
+						wrapped = nil
+					}
+				}()
+				var guard *time.Timer
+				if wall > 0 {
+					guard = time.AfterFunc(wall, func() { vm.Interrupt(RefusalWallClock) })
+				}
+				if guard != nil {
+					defer guard.Stop()
+				}
+				// Unwrap reads ONLY the genuine GoError's "value" property
+				// (after an instanceof GoError check — vendor runtime.go): it
+				// never walks the thrown object's other properties, so a
+				// large or deeply nested throw is NOT materialised into Go.
+				// The first draft used Export() here and the gate review
+				// measured the flaw on this tree: Export recursively
+				// materialises every own property (the repo's encodeValue
+				// comment records a.length = 50000000 costing 2 GiB on this
+				// exact path) with NO JS running, so the interrupt guard
+				// could not preempt it and a script fault came back in a
+				// memory/host class. Unwrap never runs script code; the
+				// closure stays for a forged GoError prototype whose getter
+				// does.
+				return exception.Unwrap()
+			}()
+			if wrapped != nil && errors.Is(wrapped, errToolChannelBroken) {
+				return Refuse(RefusalHostDied,
+					"the script was stopped because its tool channel failed: %s", wrapped.Error())
+			}
+		}
 		// Matched on the type, because the message is a bare stack trace:
 		// goja's StackOverflowError carries no sentence, so the cause has to be
 		// supplied here or the model receives a file:line and nothing else.

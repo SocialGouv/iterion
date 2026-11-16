@@ -242,7 +242,10 @@ func readFrameLine(br *bufio.Reader, max int64) ([]byte, error) {
 // would have read, not a value the script parses, so cutting it is honest in a
 // way cutting a JSON value would not be.
 func clipToolText(s string, max int64) (string, bool) {
-	if max <= 0 || int64(len(s)) <= max {
+	// No max<=0 escape hatch, for the same reason resultFrameCap dropped
+	// its zero branch: a clip bound of zero CLIPS TO EMPTY (bounded, and
+	// flagged) rather than returning the caller's whole string unbounded.
+	if int64(len(s)) <= max {
 		return s, false
 	}
 	cut := int(max)
@@ -302,9 +305,11 @@ func callFrameCap() int64 {
 func resultFrameCap(l Limits) int64 {
 	const jsonEscapeWorstCase = 6
 	const envelope = 1 << 10
-	cap := l.ToolResultBytes
-	if cap <= 0 {
-		cap = DefaultLimits().ToolResultBytes
-	}
-	return cap*jsonEscapeWorstCase + envelope
+	// No zero fallback, on purpose: limits arrive CLAMPED — Host.Run and
+	// RunChild clamp before use — so a caller that skips the clamp gets a
+	// loud refusal at the first oversized frame, never a silent default it
+	// did not choose. The ticket this closes called the previous
+	// zero-branch the inconsistent half of a defence: it silently
+	// substituted the default while clipToolText returned unbounded.
+	return l.ToolResultBytes*jsonEscapeWorstCase + envelope
 }
