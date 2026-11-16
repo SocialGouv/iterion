@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.0](https://github.com/SocialGouv/iterion/compare/v7.2.0...v7.3.0) (2026-11-16)
+
+### Features
+
+* **dsl:** the codemode bounds get an author surface — a block of seven, resolved field by field ([#3301](https://github.com/SocialGouv/iterion/issues/3301)) ([dc5b6c3](https://github.com/SocialGouv/iterion/commit/dc5b6c38fb92fbf108363ef545f165e72ee791ad)), references [#3300](https://github.com/SocialGouv/iterion/issues/3300) [#3311](https://github.com/SocialGouv/iterion/issues/3311) [#3153](https://github.com/SocialGouv/iterion/issues/3153) [#3311](https://github.com/SocialGouv/iterion/issues/3311) [#3316](https://github.com/SocialGouv/iterion/issues/3316) [#3316](https://github.com/SocialGouv/iterion/issues/3316)
+
+    <details><summary>why</summary>
+
+    ADR-165 law 4 promised every bound an operator override and a platform ceiling. The ceiling shipped with CM-5c (`scripthost.Ceiling`, clamped in the parent); the override did not, and `installCodemode`'s own doc comment said so in as many words — "There is no DSL surface for these yet, which is why the zero value is what installCodemode passes". This is that surface.
+
+    </details>
+
 ## [7.2.0](https://github.com/SocialGouv/iterion/compare/v7.1.0...v7.2.0) (2026-11-15)
 
 ### Features
