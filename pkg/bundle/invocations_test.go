@@ -322,3 +322,20 @@ func TestResolveMode(t *testing.T) {
 		}
 	}
 }
+
+// The matcher reads the board lists insensible to their order (any-of on
+// kinds and states, all-of on labels): a cosmetic reorder of the manifest
+// must not change the invocation's identity, and a real change must.
+func TestInvocationKeyIgnoresAListReorder(t *testing.T) {
+	a := Invocation{Kind: InvocationKindBoard, Board: &InvocationBoard{
+		On: []string{"card.moved", "card.created"}, ToStates: []string{"ready", "done"}, AllLabels: []string{"triage", "urgent"}}}
+	b := Invocation{Kind: InvocationKindBoard, Board: &InvocationBoard{
+		On: []string{"card.created", "card.moved"}, ToStates: []string{"done", "ready"}, AllLabels: []string{"urgent", "triage"}}}
+	if InvocationKey([]Invocation{a}, 0) != InvocationKey([]Invocation{b}, 0) {
+		t.Fatal("a cosmetic reorder of the board lists changed the invocation's identity")
+	}
+	b.Board.On = []string{"card.created"}
+	if InvocationKey([]Invocation{a}, 0) == InvocationKey([]Invocation{b}, 0) {
+		t.Fatal("a changed board kept the identity")
+	}
+}

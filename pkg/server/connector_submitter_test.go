@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -285,5 +287,32 @@ func TestTheConnectorSubmitterRetriesATeamTierOutage(t *testing.T) {
 	}
 	if len(w.launch.plans) != 0 {
 		t.Fatal("an outage launched")
+	}
+}
+
+// The local scope (tenant "") holds no team tier: the fallback answers from
+// the platform tier alone — a catalog bot's vars come through, and a bot
+// absent everywhere is the clean absence, never an error.
+func TestTheConnectorSubmitterReadsTheLocalScopeWithoutATeamTier(t *testing.T) {
+	s := newOrgTestServer(t)
+	botsDir := t.TempDir()
+	dir := filepath.Join(botsDir, "chatbot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(chatBotMain), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: chatbot\nversion: 1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{botsDir}
+	sub := s.connectorSubmitter()
+	names, found, err := sub.botVars(context.Background(), "", "chatbot")
+	if err != nil || !found || len(names) == 0 {
+		t.Fatalf("the local catalog bot = (%v, %v), want its vars", found, err)
+	}
+	if _, found, err := sub.botVars(context.Background(), "", "ghost"); err != nil || found {
+		t.Fatalf("a bot absent everywhere = (%v, %v), want the clean absence", found, err)
 	}
 }

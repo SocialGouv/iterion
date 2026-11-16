@@ -972,7 +972,7 @@ func InvocationKey(invs []Invocation, index int) string {
 		}
 	case InvocationKindBoard:
 		if inv.Board != nil {
-			if raw, err := json.Marshal(inv.Board); err == nil {
+			if raw, err := json.Marshal(canonicalBoard(inv.Board)); err == nil {
 				sum := sha256.Sum256(raw)
 				return hex.EncodeToString(sum[:])[:16]
 			}
@@ -1272,6 +1272,27 @@ func validateInvocations(invs []Invocation) error {
 		}
 	}
 	return nil
+}
+
+// canonicalBoard copies b with its lists sorted: the matcher reads them
+// insensible to order (any-of on kinds and states, all-of on labels), so a
+// cosmetic reorder of the manifest must not change the invocation's
+// identity.
+func canonicalBoard(b *InvocationBoard) *InvocationBoard {
+	c := *b
+	c.On = sortedCopy(b.On)
+	c.ToStates = sortedCopy(b.ToStates)
+	c.AllLabels = sortedCopy(b.AllLabels)
+	return &c
+}
+
+func sortedCopy(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // keyField names what an invocation key is made of, for the duplicate

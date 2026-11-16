@@ -131,13 +131,17 @@ func (s *Server) connectorSubmitter() *connectorSubmitter {
 		matcher:  s.connectorMatcher(),
 		launcher: s.triggerLauncher(),
 		botVars: func(ctx context.Context, tenantID, botID string) ([]string, bool, error) {
-			// The team tier is read strictly: a store outage is a retried
-			// attempt, never a permanent refusal — only the platform
-			// fallback may answer "absent" without an error.
-			if entry, found, err := s.storedBotEntry(ctx, tenantID, botID); err != nil {
-				return nil, false, err
-			} else if found {
-				return botVarNames(entry), true, nil
+			// The team tier is read strictly — a store outage is a retried
+			// attempt, never a permanent refusal — but it exists only for a
+			// real tenant, wired: the local scope (tenant "") answers from
+			// the platform tier alone, and a bot absent from every tier is
+			// the clean absence the pair refuses on.
+			if tenantID != "" && s.botSources != nil {
+				if entry, found, err := s.storedBotEntry(ctx, tenantID, botID); err != nil {
+					return nil, false, err
+				} else if found {
+					return botVarNames(entry), true, nil
+				}
 			}
 			entry, found, err := s.effectiveFindByNameForTeam(ctx, tenantID, botID)
 			if err != nil || !found {
