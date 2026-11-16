@@ -1880,6 +1880,9 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		// has something to compact for the next attempt.
 		if e.sessions != nil && runID != "" {
 			key := nodeSessionKey(node)
+			// The node execution is over: the next one starts a tool-step
+			// budget of its own (toolTurnsAnchorCarry).
+			e.sessions.dropAnchor(runID, key)
 			llm, isLLM := node.(ir.LLMNode)
 			persist := isLLM && llm.GetSession() == ir.SessionPersist
 			if persist && output != nil {

@@ -572,6 +572,19 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
+	// ToolTurnsAnchor anchors this node execution's tool-step budget at the
+	// last completed tool turn of the conversation its first attempt
+	// started from — its key and that key's occurrence, "<n>:<key>", as a
+	// provider may reuse a call id — "" when that conversation held none.
+	// The claw backend charges a loop the completed tool turns its
+	// conversation holds after the anchor — those a compaction folded
+	// included, as its summary names them; every one when the anchor is not
+	// among them — and hands the loop what is left of ToolMaxSteps.
+	// Nil on a first attempt: the backend fixes it from the conversation its
+	// first loop starts from and reports it in Result.ToolTurnsAnchor, which
+	// a retry of the same node execution carries back here.
+	ToolTurnsAnchor *string
+
 	// MaxTokens caps the LLM response length per call. Honored by API-based
 	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
 	// Zero means "use the backend default" (typically 8192).
@@ -2187,6 +2200,18 @@ type Result struct {
 	// before a thinking-bearing assistant message arrived). Zero when no
 	// thinking was produced.
 	ThinkingMs int
+
+	// ToolTurns is how many tool turns this invocation completed, every
+	// internal attempt included. Attempts are disjoint, so a fold sums it.
+	// Zero for a backend that does not count them. It reports; it charges
+	// nothing (Task.ToolTurnsAnchor).
+	ToolTurns int
+
+	// ToolTurnsAnchor is the anchor the invocation's tool-step budget
+	// charged against — the task's, or the one it fixed — and nil when it
+	// fixed none: what a retry of the same node execution hands its next
+	// attempt.
+	ToolTurnsAnchor *string
 
 	// GatewaySpec is the invocation's catalog provenance on an
 	// OpenAI-compatible gateway route (ADR-122 §resolution): which table

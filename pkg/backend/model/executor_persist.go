@@ -110,6 +110,14 @@ func (e *ClawExecutor) UnpackSession(ctx context.Context, backend, sessionID str
 		if reduced && e.logger != nil {
 			e.logger.Warn("persist: compacted oversized inbound claw replay slot %q (%d -> %d bytes)", env.Slot, before, len(bounded))
 		}
+		if e.sessions.anchorOf(runID, env.Slot) != nil {
+			// A node execution on this slot is still running — it failed and
+			// the engine re-runs it: the anchor kept beside the session lives
+			// until the node succeeds, pauses or the run ends. The re-run
+			// replays the conversation the dead attempt left, never the slot
+			// as the last success persisted it.
+			return nil
+		}
 		e.sessions.save(runID, env.Slot, replay)
 		return nil
 	}
@@ -165,7 +173,12 @@ func (e *ClawExecutor) packClawSession(runID, slot, sessionID, fingerprint strin
 // prompt. It is used for both newly written and legacy inbound envelopes: a
 // persist slot can outlive a node-id rewind, so save-time enforcement alone
 // would replay a stale oversized blob once before it was ever repacked.
+//
+// A persisted conversation outlives the node execution whose tool steps its
+// fold records count, so it carries none, written or read
+// (withoutFoldRecord).
 func constrainClawPersistReplay(slot, sessionID, fingerprint string, messages []api.Message) ([]byte, []api.Message, int, bool, error) {
+	messages = withoutFoldRecord(messages)
 	blob, err := marshalClawPersistEnvelope(slot, sessionID, fingerprint, messages)
 	if err != nil {
 		return nil, nil, 0, false, err
@@ -186,7 +199,7 @@ func constrainClawPersistReplay(slot, sessionID, fingerprint string, messages []
 	if compacted == nil {
 		return nil, nil, before, false, fmt.Errorf("%d-byte replay could not compact to %d bytes", before, clawPersistReplayBlobBytes)
 	}
-	replay, _ := sanitizeToolPairs(compacted.CompactedMessages, nil, false)
+	replay, _ := sanitizeToolPairs(withoutFoldRecord(compacted.CompactedMessages), nil, false)
 	blob, err = marshalClawPersistEnvelope(slot, sessionID, fingerprint, replay)
 	if err != nil {
 		return nil, nil, before, false, err

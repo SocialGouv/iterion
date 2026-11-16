@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,9 +121,18 @@ func TestCompactMessagesToolSafe_RepairsBoundaryFromRun4893(t *testing.T) {
 	if err := validateToolPairs(res.CompactedMessages); err != nil {
 		t.Fatalf("boundary repair invalid: %v", err)
 	}
-	raw, _ := json.Marshal(res.CompactedMessages)
-	if strings.Contains(string(raw), "call_mLlgpMRfNzIL1t7PmYviSIWg") {
-		t.Fatalf("orphaned boundary result survived: %s", raw)
+	// The summary names the folded turn (foldedToolTurnsMarker); no tool
+	// block of the call may survive it.
+	for _, m := range res.CompactedMessages {
+		for _, b := range m.Content {
+			if (b.Type == "tool_use" && b.ID == "call_mLlgpMRfNzIL1t7PmYviSIWg") || (b.Type == "tool_result" && b.ToolUseID == "call_mLlgpMRfNzIL1t7PmYviSIWg") {
+				raw, _ := json.Marshal(res.CompactedMessages)
+				t.Fatalf("orphaned boundary result survived: %s", raw)
+			}
+		}
+	}
+	if got := toolTurnKeys(res.CompactedMessages); !slices.Equal(got, []string{"call_mLlgpMRfNzIL1t7PmYviSIWg"}) {
+		t.Fatalf("the summary names folded turns %v, want the boundary call's", got)
 	}
 }
 

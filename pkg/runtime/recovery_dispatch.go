@@ -187,7 +187,19 @@ func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, r
 	if err := e.doPause(rs, nodeID, questions, eventExtra, info); err != nil {
 		return err
 	}
+	// The acknowledged node re-executes from scratch: the executor drops what
+	// the dead execution left — its session and its tool-step budget — as a
+	// cold resume, whose executor holds neither, already does.
+	if ender, ok := e.executor.(nodeExecutionEnder); ok {
+		ender.EndNodeExecution(rs.runID, nodeID)
+	}
 	return ErrRunPaused
+}
+
+// nodeExecutionEnder is the optional interface ClawExecutor implements so a
+// recovery pause ends the paused node execution, warm resume or cold.
+type nodeExecutionEnder interface {
+	EndNodeExecution(runID, nodeID string)
 }
 
 // runtimeErrorFields extracts the structured fields of a *RuntimeError

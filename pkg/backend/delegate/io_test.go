@@ -27,6 +27,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		Model:                  "anthropic/claude-sonnet-4-6",
 		HasTools:               true,
 		ToolMaxSteps:           10,
+		ToolTurnsAnchor:        ptrString("tu_7"),
 		MaxTokens:              8192,
 		WorkDir:                "/workspace",
 		BaseDir:                "/workspace",
@@ -101,6 +102,13 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.MaxTokens != original.MaxTokens {
 		t.Errorf("MaxTokens = %d, want %d", got.MaxTokens, original.MaxTokens)
+	}
+	// A retry of a sandboxed node re-crosses with the anchor its node
+	// execution started from: lost on the wire, the in-container loop takes
+	// the replayed conversation — dead turns included — for its start and
+	// hands the loop the whole bound again.
+	if got.ToolTurnsAnchor == nil || *got.ToolTurnsAnchor != *original.ToolTurnsAnchor {
+		t.Errorf("ToolTurnsAnchor = %v, want %q — the runner would charge the replayed turns nothing", got.ToolTurnsAnchor, *original.ToolTurnsAnchor)
 	}
 	if got.Ultracode != original.Ultracode {
 		t.Errorf("Ultracode = %v, want %v", got.Ultracode, original.Ultracode)
@@ -206,6 +214,7 @@ func TestIOResultRoundTrip(t *testing.T) {
 		PeakInputTokens:    1500,
 		ThinkingTokens:     50,
 		ThinkingMs:         20,
+		ToolTurns:          9,
 		Duration:           5 * time.Second,
 		ExitCode:           0,
 		BackendName:        "claw",
@@ -227,6 +236,11 @@ func TestIOResultRoundTrip(t *testing.T) {
 
 	if got.Tokens != original.Tokens {
 		t.Errorf("Tokens = %d, want %d", got.Tokens, original.Tokens)
+	}
+	// The in-container loop's completed tool turns are what the launcher's
+	// in-place retry carries into the next crossing.
+	if got.ToolTurns != original.ToolTurns {
+		t.Errorf("ToolTurns = %d, want %d — a retry of the crossing would start the bound over", got.ToolTurns, original.ToolTurns)
 	}
 	if got.Duration != original.Duration {
 		t.Errorf("Duration = %v, want %v (millisecond precision expected)", got.Duration, original.Duration)
@@ -310,5 +324,33 @@ func TestR2ParseDiagnosticCrossesSandboxApartFromAnswer(t *testing.T) {
 	got := FromIOResult(received)
 	if got.ParseError != original.ParseError || !got.ParseFallback || got.Output["text"] != "" {
 		t.Fatalf("parse diagnostic lost or became answer: %+v", got)
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
+// An empty anchor is an anchor: the node execution started from a
+// conversation holding no tool turn. It must cross as "", never as absent —
+// an absent anchor tells the runner to fix its own from the conversation it
+// replays, which on a retry already holds the dead attempt's turns.
+func TestIOTaskCarriesAnEmptyToolTurnsAnchor(t *testing.T) {
+	data, err := json.Marshal(ToIOTask(Task{NodeID: "n", ToolMaxSteps: 4, ToolTurnsAnchor: ptrString("")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded IOTask
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := FromIOTask(decoded).ToolTurnsAnchor; got == nil || *got != "" {
+		t.Fatalf("ToolTurnsAnchor = %v after the wire (%s), want \"\"", got, data)
+	}
+	data, _ = json.Marshal(ToIOTask(Task{NodeID: "n"}))
+	var unanchored IOTask
+	if err := json.Unmarshal(data, &unanchored); err != nil {
+		t.Fatal(err)
+	}
+	if got := FromIOTask(unanchored).ToolTurnsAnchor; got != nil {
+		t.Fatalf("an unanchored task crossed with ToolTurnsAnchor = %q", *got)
 	}
 }

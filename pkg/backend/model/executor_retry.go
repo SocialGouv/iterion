@@ -234,6 +234,81 @@ func (e *ClawExecutor) retryDelegateLoopReask(ctx context.Context, nodeID string
 	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn, reask)
 }
 
+// toolTurnsAnchorCarry hands every attempt of a node execution the anchor
+// of its tool-step budget (delegate.Task.ToolTurnsAnchor): the last
+// completed tool turn of the conversation its first attempt started from,
+// as the first attempt that reports one fixes it. A retry replays what the
+// dead attempt left (claw's session store holds it) and is charged the turns
+// that replay holds after this anchor, so the anchor must be the first
+// attempt's, never one a retry fixes from its own replay.
+//
+// A carry over the run's session store (newToolTurnsAnchorCarry) keeps the
+// anchor beside the session until the node succeeds, pauses for a human
+// (EndToolStepBudget) or a recovery pause ends its execution
+// (EndNodeExecution): the engine's recovery re-runs a failed node through a
+// fresh dispatch, on the session the executor keeps on error, and that
+// re-run is a retry of the same execution.
+type toolTurnsAnchorCarry struct {
+	anchor *string
+	// store, runID and key address the session the anchor is kept beside;
+	// a nil store keeps it for this carry alone.
+	store      *nodeSessionStore
+	runID, key string
+}
+
+// newToolTurnsAnchorCarry is the carry of task's session in ctx's store,
+// starting from the anchor kept beside it.
+func newToolTurnsAnchorCarry(ctx context.Context, task *delegate.Task) toolTurnsAnchorCarry {
+	runID, store := runtimeContextFrom(ctx)
+	if runID == "" {
+		store = nil
+	}
+	key := taskSessionKey(*task)
+	return toolTurnsAnchorCarry{anchor: store.anchorOf(runID, key), store: store, runID: runID, key: key}
+}
+
+// EndToolStepBudget ends the tool-step budget of nodeID's execution in
+// runID: the anchor kept beside its session is dropped, so the execution
+// resumed after a human pause fixes its own from the conversation it resumes
+// with — the pause point, the answer included — and is charged only the
+// turns after it. An answer the interaction model gives without pausing
+// ends nothing: the run goes on under the same budget.
+func (e *ClawExecutor) EndToolStepBudget(runID, nodeID string) {
+	if e.sessions == nil || runID == "" {
+		return
+	}
+	e.sessions.dropAnchor(runID, e.sessionKeyOf(nodeID))
+}
+
+// EndNodeExecution ends nodeID's execution in runID at a recovery pause:
+// the session it left and its tool-step budget are dropped, so the node
+// re-executed once the operator acknowledges starts from what it started
+// from — no conversation, or the slot the engine restores — with the whole
+// bound, as a cold resume, whose executor holds neither, re-executes it.
+func (e *ClawExecutor) EndNodeExecution(runID, nodeID string) {
+	if e.sessions == nil || runID == "" {
+		return
+	}
+	e.sessions.evict(runID, e.sessionKeyOf(nodeID))
+}
+
+// attempt is task as the next attempt runs it.
+func (c *toolTurnsAnchorCarry) attempt(task delegate.Task) delegate.Task {
+	task.ToolTurnsAnchor = c.anchor
+	return task
+}
+
+// observe reads an attempt's result: the first anchor reported is the
+// execution's, kept beside the session.
+func (c *toolTurnsAnchorCarry) observe(res delegate.Result) {
+	if c.anchor != nil || res.ToolTurnsAnchor == nil {
+		return
+	}
+	anchor := *res.ToolTurnsAnchor
+	c.anchor = &anchor
+	c.store.keepAnchor(c.runID, c.key, anchor)
+}
+
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
 // the caller has a fallback route that would take THIS failure, which
 // lets it skip a budget that cannot succeed (see shouldRetryInPlace).
@@ -401,6 +476,15 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	// log line; the budget clocks its own elapsed), but a node that spent
 	// five minutes before a 30s retry reported the 30s.
 	next.Duration += prev.Duration
+	// Thinking and the tool turns are per-attempt counts like the tokens:
+	// every backend reports the thinking of its own turns and claw the tool
+	// turns of its own invocation, so the attempts' figures are disjoint
+	// and SUM. The later attempt's alone would report a node whose attempts
+	// thought 463k tokens as its last attempt's 185k, and a last attempt
+	// that reported no usage as no thinking at all.
+	next.ThinkingTokens += prev.ThinkingTokens
+	next.ThinkingMs += prev.ThinkingMs
+	next.ToolTurns += prev.ToolTurns
 	// The attempts are the same element's: one that names no session
 	// identity of its own — a refusal before any call, an attempt
 	// cancelled in backoff — keeps the one before it, so the spend folded
@@ -730,6 +814,10 @@ type chainSpend struct {
 	// unreported counts the failed routes' calls whose usage the provider
 	// did not report: their tokens and cost above are a lower bound.
 	unreported int
+	// thinkingTokens and thinkingMs are the failed routes' thinking, which
+	// sums across routes like their tokens (foldSpend).
+	thinkingTokens int
+	thinkingMs     int
 	// slices itemises the spend above per abandoned attempt that spent,
 	// under the labels of the element that spent it — what the delegate
 	// event carrying the folded figure hands its consumers
@@ -769,6 +857,8 @@ func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 	s.duration += r.Duration
 	s.costUSD += r.CostUSD
 	s.unreported += r.UnreportedCalls
+	s.thinkingTokens += r.ThinkingTokens
+	s.thinkingMs += r.ThinkingMs
 	if r.Tokens > 0 || r.CostUSD > 0 {
 		s.slices = append(s.slices, SpendSlice{
 			BackendName:    on.backend,
@@ -802,13 +892,15 @@ func (s *chainSpend) discountLastSlice(cost float64, tokens int) {
 // leaving the map at the last route's figure alone would under-report
 // the chain's true cost to max_cost_usd / org caps / donor ledgers.
 func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
-	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 {
+	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 && s.unreported == 0 && s.thinkingTokens == 0 && s.thinkingMs == 0 {
 		return r
 	}
 	r.Tokens += s.tokens
 	r.CostUSD += s.costUSD
 	r.UnreportedCalls += s.unreported
 	r.Duration += s.duration
+	r.ThinkingTokens += s.thinkingTokens
+	r.ThinkingMs += s.thinkingMs
 	// An unallocated map records nothing, and the map is what the caps read
 	// — so the shape that loses the most is the one that had no output at
 	// all: a last element that could not even spawn, folding a whole
@@ -1396,8 +1488,13 @@ func (e *ClawExecutor) dispatchChain(
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
+		// The anchor of this element's attempts, from the one kept beside
+		// the session, and never written to the CACHED task.
+		turnsAnchor := newToolTurnsAnchorCarry(ctx, task)
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			return e.executeDelegate(ctx, backend, *task)
+			res, err := e.executeDelegate(ctx, backend, turnsAnchor.attempt(*task))
+			turnsAnchor.observe(res)
+			return res, err
 		}, "", func(prev delegate.Result) {
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
@@ -1798,7 +1895,11 @@ func (e *ClawExecutor) snapshotTaskSession(ctx context.Context, task *delegate.T
 
 // rollbackTaskSession restores the last-good state captured before a failed
 // route. A named persistent slot therefore keeps the user's conversation while
-// partial output from the failed provider is discarded.
+// partial output from the failed provider is discarded. The tool-step anchor
+// kept beside the session stays: the conversation goes back to the state the
+// node execution's first route started from — whose last completed tool turn
+// is that anchor — or, on the engine's re-run, to the state the dead
+// execution left, which the anchor still charges.
 func (e *ClawExecutor) rollbackTaskSession(ctx context.Context, snapshot taskSessionSnapshot) {
 	runID, sessions := runtimeContextFrom(ctx)
 	if runID == "" || sessions == nil || snapshot.key == "" {

@@ -73,6 +73,7 @@ type IOTask struct {
 	Model                 string           `json:"model,omitempty"`
 	HasTools              bool             `json:"has_tools,omitempty"`
 	ToolMaxSteps          int              `json:"tool_max_steps,omitempty"`
+	ToolTurnsAnchor       *string          `json:"tool_turns_anchor,omitempty"`
 	MaxTokens             int              `json:"max_tokens,omitempty"`
 	WorkDir               string           `json:"work_dir,omitempty"`
 	// WorkspaceTrust travels WITH WorkDir, because the two answer one
@@ -240,6 +241,7 @@ type IOResult struct {
 	PeakInputTokens    int     `json:"peak_input_tokens,omitempty"`
 	ThinkingTokens     int     `json:"thinking_tokens,omitempty"`
 	ThinkingMs         int     `json:"thinking_ms,omitempty"`
+	ToolTurns          int     `json:"tool_turns,omitempty"`
 
 	Output              map[string]any  `json:"output,omitempty"`
 	Tokens              int             `json:"tokens,omitempty"`
@@ -317,6 +319,7 @@ func ToIOTask(t Task) IOTask {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
+		ToolTurnsAnchor:        t.ToolTurnsAnchor,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
 		WorkspaceTrust:         t.WorkspaceTrust,
@@ -388,6 +391,7 @@ func FromIOTask(t IOTask) Task {
 		Model:                  t.Model,
 		HasTools:               t.HasTools,
 		ToolMaxSteps:           t.ToolMaxSteps,
+		ToolTurnsAnchor:        t.ToolTurnsAnchor,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
 		WorkspaceTrust:         t.WorkspaceTrust,
@@ -448,6 +452,7 @@ func ToIOResult(r Result) IOResult {
 		PeakInputTokens:    r.PeakInputTokens,
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
+		ToolTurns:          r.ToolTurns,
 
 		DurationMS:              r.Duration.Milliseconds(),
 		ExitCode:                r.ExitCode,
@@ -486,6 +491,7 @@ func FromIOResult(r IOResult) Result {
 		PeakInputTokens:    r.PeakInputTokens,
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
+		ToolTurns:          r.ToolTurns,
 
 		Duration:                time.Duration(r.DurationMS) * time.Millisecond,
 		ExitCode:                r.ExitCode,

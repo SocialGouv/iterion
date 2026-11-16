@@ -182,10 +182,52 @@ type nodeSession struct {
 type nodeSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*nodeSession
+	// anchors keeps, beside a session, the tool-step anchor of the node
+	// execution that conversation belongs to (toolTurnsAnchorCarry), until
+	// the node succeeds, pauses for a human, or the session is evicted: an
+	// anchor kept is an execution still running, whose conversation a
+	// persisted slot is not restored over (UnpackSession).
+	anchors map[string]string
 }
 
 func newNodeSessionStore() *nodeSessionStore {
-	return &nodeSessionStore{sessions: map[string]*nodeSession{}}
+	return &nodeSessionStore{sessions: map[string]*nodeSession{}, anchors: map[string]string{}}
+}
+
+// anchorOf is the tool-step anchor kept beside the session, nil when none.
+func (s *nodeSessionStore) anchorOf(runID, key string) *string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	anchor, ok := s.anchors[sessionKey(runID, key)]
+	if !ok {
+		return nil
+	}
+	return &anchor
+}
+
+// keepAnchor keeps anchor beside the session unless one is kept already.
+func (s *nodeSessionStore) keepAnchor(runID, key, anchor string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.anchors[sessionKey(runID, key)]; !ok {
+		s.anchors[sessionKey(runID, key)] = anchor
+	}
+}
+
+// dropAnchor drops the anchor kept beside the session.
+func (s *nodeSessionStore) dropAnchor(runID, key string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.anchors, sessionKey(runID, key))
 }
 
 func sessionKey(runID, key string) string {
@@ -278,6 +320,7 @@ func (s *nodeSessionStore) evict(runID, key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionKey(runID, key))
+	delete(s.anchors, sessionKey(runID, key))
 }
 
 // evictRun drops every session belonging to the given runID. The
@@ -294,6 +337,11 @@ func (s *nodeSessionStore) evictRun(runID string) {
 	for k := range s.sessions {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(s.sessions, k)
+		}
+	}
+	for k := range s.anchors {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.anchors, k)
 		}
 	}
 }
@@ -528,6 +576,10 @@ func applySessionMessages(ctx context.Context, sessKey string, opts GenerationOp
 // on a resumed node: its transient retries grew 11 → 22 → 33 messages, and
 // its schema retry replayed 91 stored messages followed by the 11 it was
 // resuming from.
+//
+// A retry of such a task therefore replays its carried history alone: none
+// of a dead attempt's turns, so the tool-step budget charges it none and it
+// runs the whole bound again from what it carries (claw_step_budget.go).
 func applySessionMessagesForTask(ctx context.Context, task delegate.Task, opts GenerationOptions) GenerationOptions {
 	if len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0 {
 		return opts

@@ -29,6 +29,11 @@ type cutCrossingExecutor struct {
 	gateNode    string
 	started     chan struct{}
 	startedOnce sync.Once
+
+	// expire, when set, spends the run's duration budget once the cut node
+	// has started (expireDurationBudget): the deadline then fires on a node
+	// that is running, never before it was dispatched.
+	expire func()
 }
 
 func (x *cutCrossingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
@@ -37,6 +42,9 @@ func (x *cutCrossingExecutor) Execute(ctx context.Context, node ir.Node, _ map[s
 		x.attempts.Add(1)
 		if x.started != nil {
 			x.startedOnce.Do(func() { close(x.started) })
+		}
+		if x.expire != nil {
+			x.expire()
 		}
 		<-ctx.Done()
 		return nil, errors.New("sandbox runner exited: signal: killed")
@@ -72,9 +80,16 @@ func (x *cutCrossingExecutor) EffectiveFallbackBackends(ir.Node) []string { retu
 // crossing words its death: the engine set the deadline and knows it fired.
 // Read from the crossing's chain alone, the cut fell to recovery and the
 // node was re-run — the very thing the budget stop exists to prevent.
+//
+// The run's age is on a clock the test holds, spent from inside the node
+// once it has started: nothing upstream — the engine's construction, the
+// entry node, a loaded machine — can spend the cap before the node is
+// dispatched (#3309).
 func TestABudgetCutTheCrossingReportsInItsOwnWordsIsABudgetStop(t *testing.T) {
-	x := &cutCrossingExecutor{cutNode: "slow"}
-	err := New(internalTimeoutWorkflow(300*time.Millisecond), tmpStore(t), x).Run(context.Background(), "run-cut-budget", nil)
+	wf := internalTimeoutWorkflow(300 * time.Millisecond)
+	now, spend := expireDurationBudget(t, wf)
+	x := &cutCrossingExecutor{cutNode: "slow", expire: spend}
+	err := New(wf, tmpStore(t), x, WithBudgetClock(now)).Run(context.Background(), "run-cut-budget", nil)
 	var rt *RuntimeError
 	if !errors.As(err, &rt) || rt.Code != ErrCodeBudgetExceeded {
 		t.Fatalf("the run ended with %v; want a %s stop — the engine cut the node at its own deadline and knows it, whatever the crossing said", err, ErrCodeBudgetExceeded)
