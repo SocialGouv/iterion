@@ -253,6 +253,12 @@ func readFS(fsys fs.FS, dir string) (*Package, error) {
 		return nil, fmt.Errorf("spec: parse %s: %w", ConnectorFile, err)
 	}
 	p := &Package{Connector: c, Schemas: map[string]Schema{}}
+	// The icon is read at load, like every field a route serves without
+	// re-reading its file: the catalog's icon route serves p.IconSVG, so
+	// what it holds is what the load judged.
+	if err := loadIcon(fsys, dir, p, os.Getenv); err != nil {
+		return nil, err
+	}
 
 	if sb, err := fs.ReadFile(fsys, path.Join(dir, SchemasFile)); err == nil {
 		if err := checkDocVersion(SchemasFile, sb); err != nil {

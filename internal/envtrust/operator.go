@@ -339,6 +339,7 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_SCHEDULES_FILE":            true,
 	"ITERION_SCHEDULER_INTERVAL":        true,
 	"ITERION_CONNECTOR_WORKER_INTERVAL": true,
+	"ITERION_CONNECTOR_ICON_MAX_BYTES":  true,
 	"ITERION_SERVER_URL":                true,
 	"ITERION_NATIVE_INDEX_RESCAN":       true,
 	"ITERION_ORPHAN_RECONCILE_INTERVAL": true,
