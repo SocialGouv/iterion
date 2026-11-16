@@ -473,3 +473,44 @@ a spread it refuses to conclude under, **and a reliability precondition** —
 the task must be one the model completes exactly, measured before the run,
 or the measurement keeps billing for the model. Spend: **$10.67** for this
 run, on top of the first measurement's $1.37.
+
+## Amendment — 2026-11-16 (bis): CM-17 measured on a synthetic corpus; the default stays opt-in
+
+The 11-15 amendment demanded a reliability precondition before any further
+measurement; the operator decided the direction the same day: measure the
+MECHANISM on a synthetic corpus, where the counting task's answer is exact by
+construction and the model's competence stops being the confound.
+
+**The corpus**: 98 directories × 42 files × 5 functions = 20 580 declarations,
+generated deterministically — every property the scale measurement relied on
+holds: a whole-corpus grep is **744 KiB against the 64 KiB per-result bound**,
+no single directory overflows it, and the mechanical strategy costs ~100
+calls — above the default 64, below 256.
+
+**Three arms, interleaved, the headline pair differing by one declaration**
+(B: codemode at the default bounds; C: `tool_calls: 256`):
+
+- **All six runs EXACT** — 20 580 total, 98 directories, per the manifest.
+  The reliability precondition is met by construction; the competence
+  confound is gone.
+- **The bound's bite, clean**: budget refusals — 3 runs × 1 in B, **0 in C**.
+  C: **−21 % turns, −31 % mean cost (1.09 vs 1.57 $), −22 % wall**, at equal
+  mean tokens (527 k vs 766 k — the spreads overlap).
+- Arm A (no codemode, n=1, context only): answered **1 050** — it covered 5
+  of 98 directories after its whole-corpus grep hit the truncation bound,
+  and said so in `method` while leaving `bound_hit` empty.
+- Side lesson from #3327's first CI attempt, recorded for the next witness
+  author: a real-child witness that resolves the INSTALLED binary fails in
+  CI ("exec: no command"); re-execute the test binary (childHost) and assert
+  what the seam owes — Clamp fires OnClamp before any spawn attempt.
+
+**The decision**: codemode's default **stays opt-in**. The mechanism is
+proven — the raised bound removes the wall and every budget refusal while
+every run lands exact — but the win axes are refusals/wall/cost, **not
+turns** (−21 % only), and the 11-13 abandonment criterion was written on the
+turn axis. That criterion stays AS WRITTEN with this caveat now recorded:
+the turn axis was refuted as codemode's win axis on BOTH corpora, so it will
+never fire a flip; a flip, if ever, would be decided on the measured axes
+per workload. An operator reading this record decides per workload; the
+measurement is the base. Total measurement spend across the three runs of
+records: **$1.37 + $10.67 + ~$8**.
