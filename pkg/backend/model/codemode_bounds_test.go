@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
@@ -97,23 +98,18 @@ func TestADeclaredToolCallBoundAllowsTheCallsUnderIt(t *testing.T) {
 // the child ran with 64 MiB, and nothing in the run said why.
 func TestOnClampReportsAFloorRaise(t *testing.T) {
 	t.Parallel()
-	source := `1+1`
-	in, err := json.Marshal(map[string]string{"source": source})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var onClampReq, onClampApplied *scripthost.Limits
-	var opts GenerationOptions
-	installCodemode(&opts, &scripthost.Limits{Memory: 8 << 20}, func(requested, applied scripthost.Limits) {
+	h := childHost()
+	h.OnClamp = func(requested, applied scripthost.Limits) {
 		onClampReq, onClampApplied = &requested, &applied
-	})
-	if len(opts.Tools) != 1 {
-		t.Fatalf("installCodemode appended %d tool(s), want 1", len(opts.Tools))
 	}
-	_, ctx := newToolDispatcher(context.Background(), map[string]*GenerationTool{}, nil, nil, nil, nil, nil)
-	if _, err := opts.Tools[0].Execute(ctx, in); err != nil {
-		t.Fatalf("a trivial program under a floor-raised bound failed: %v", err)
-	}
+	// The run's OUTCOME is irrelevant to this witness — in CI there is no
+	// installed iterion for a production-path child to resolve (the first
+	// CI attempt failed exactly there: "exec: no command"), so the assertion
+	// is the CAPTURE: Clamp fires OnClamp BEFORE any spawn attempt
+	// (host.go: clamped → OnClamp → exec), and the report says the 8 MiB
+	// the witness wrote became the floor.
+	_, _ = h.Run(context.Background(), `1+1`, scripthost.Limits{Memory: 8 << 20, Wall: 20 * time.Second, CPU: 15 * time.Second})
 	if onClampReq == nil || onClampApplied == nil {
 		t.Fatalf("OnClamp never fired on a floor raise: the operator wrote 8 MiB and nothing said the child ran with more")
 	}
