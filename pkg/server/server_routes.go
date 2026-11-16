@@ -454,6 +454,13 @@ func (s *Server) routes() {
 		}
 		s.registerTeamTriggerRoutes()
 	}
+	// The catalog's icon route, and the source catalog read model: any
+	// deployment that resolves connector packages (the static catalog or
+	// the durable tiers) can serve both.
+	if s.connectorCatalog != nil || s.connectorPackages != nil {
+		s.registerConnectorIconRoutes()
+		s.registerSourcesRoutes()
+	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).
 	s.registerRunsStatsRoutes()

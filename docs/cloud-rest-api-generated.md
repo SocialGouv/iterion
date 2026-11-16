@@ -191,6 +191,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `PATCH` | `/api/config-share/{id}/config` | open | yes |
 | `GET` | `/api/config-share/{id}/meta` | open | yes |
 
+## `/api/connectors` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/connectors/{id}/icon` | session | yes |
+
 ## `/api/effort-capabilities` family
 
 | Method | Path | Auth | Spec |
@@ -605,6 +611,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 |---|---|---|---|
 | `GET` | `/api/server/info` | open | yes |
 
+## `/api/sources` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/v1/sources` | session | yes |
+
 ## `/api/teams` family
 
 | Method | Path | Auth | Spec |
@@ -722,6 +734,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/teams/{id}/secrets` | session | yes |
 | `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | session | yes |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | session | yes |
+| `GET` | `/api/teams/{id}/sources` | session | yes |
 | `POST` | `/api/teams/{id}/status` | session | yes |
 | `GET` | `/api/teams/{id}/triggers` | session | yes |
 | `POST` | `/api/teams/{id}/triggers` | session | yes |
