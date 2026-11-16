@@ -18,6 +18,10 @@ import (
 // so it is refused at load rather than served broken.
 var brandColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
+// ValidBrandColor reports whether s is the one shape a package's accent
+// takes — the check the monogram fallback re-applies before rendering.
+func ValidBrandColor(s string) bool { return brandColorRe.MatchString(s) }
+
 // OpsFile is one ops/<domain>.yaml: a slice of a connector's operations,
 // grouped by the vendor's own tag so a 500-operation API stays readable and
 // a diff shows which domain moved.
