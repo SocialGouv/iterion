@@ -316,3 +316,24 @@ func TestTheConnectorSubmitterReadsTheLocalScopeWithoutATeamTier(t *testing.T) {
 		t.Fatalf("a bot absent everywhere = (%v, %v), want the clean absence", found, err)
 	}
 }
+
+// The two halves of the strict-read guard are pinned: a real tenant with a
+// wired store reads it strictly (an outage surfaces), and the local scope
+// never touches it (tenant "" with a wired store falls back, a real tenant
+// with an unwired store falls back — no panic, no error).
+func TestTheConnectorSubmitterGuardHalvesArePinned(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.botSources = outageBotSources{botsource.NewMemoryStore()}
+	sub := s.connectorSubmitter()
+	if _, _, err := sub.botVars(context.Background(), "t1", "chatbot"); err == nil {
+		t.Fatal("a real tenant with a wired store must read it strictly: the outage must surface")
+	}
+	if _, found, err := sub.botVars(context.Background(), "", "chatbot"); err != nil || found {
+		t.Fatalf("tenant \"\" with a wired store must fall back, never read it: (%v, %v)", found, err)
+	}
+	s2 := newOrgTestServer(t)
+	s2.connectorCatalog = connection.NewMemoryCatalog(submitChatPackage())
+	if _, _, err := s2.connectorSubmitter().botVars(context.Background(), "t1", "chatbot"); err != nil {
+		t.Fatalf("an unwired store with a real tenant must fall back, never panic or error: %v", err)
+	}
+}

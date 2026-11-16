@@ -339,3 +339,14 @@ func TestInvocationKeyIgnoresAListReorder(t *testing.T) {
 		t.Fatal("a changed board kept the identity")
 	}
 }
+
+// The digest reads a copy: the manifest's board block is never reordered in
+// place — manifests are shared between readers.
+func TestInvocationKeyDoesNotMutateItsInput(t *testing.T) {
+	b := &InvocationBoard{On: []string{"b", "a"}, ToStates: []string{"y", "x"}, AllLabels: []string{"l2", "l1"}}
+	in := []Invocation{{Kind: InvocationKindBoard, Board: b}}
+	_ = InvocationKey(in, 0)
+	if b.On[0] != "b" || b.ToStates[0] != "y" || b.AllLabels[0] != "l2" {
+		t.Fatalf("the digest reordered its input in place: %+v", b)
+	}
+}
