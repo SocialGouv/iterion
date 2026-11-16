@@ -429,7 +429,7 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 // outputLocked is converse_output from what the reads returned: the draft
 // when the diff was read, an honest skipped_reason when no tool ever ran.
 func (m *converseModel) outputLocked() string {
-	out := map[string]any{"answer": "", "forge": m.forge, "skipped_reason": "", "summary": "Question: why does A return 2 now?"}
+	out := map[string]any{"answer": "", "forge": m.forge, "skipped_reason": "", "summary": "Question: why does A return 2 now?", "unchecked": ""}
 	if strings.Contains(m.seen.results["diff"], "return 2") {
 		out["answer"] = m.answer
 		out["summary"] = "Answered from the diff (app.go:3)."
@@ -575,7 +575,7 @@ func TestReviConverseStepLimitedDraftIsStillPublished(t *testing.T) {
 			env[name] = val
 		}
 	}
-	pub, err := e.Execute(withCarriedEnv(ctx, env), publish, map[string]any{"answer": out["answer"], "skipped_reason": out["skipped_reason"]})
+	pub, err := e.Execute(withCarriedEnv(ctx, env), publish, map[string]any{"answer": out["answer"], "skipped_reason": out["skipped_reason"], "unchecked": out["unchecked"]})
 	if err != nil {
 		t.Fatalf("publish_reply: %v", err)
 	}
@@ -623,7 +623,7 @@ func (m *stepHungryModel) StreamResponse(_ context.Context, req api.CreateMessag
 	}
 	m.requests = append(m.requests, fmt.Sprintf("final=%v tools=%d msgs=%d", final, len(names), len(req.Messages)))
 	output := func() string {
-		b, _ := json.Marshal(map[string]any{"answer": m.answer, "forge": "gitlab", "skipped_reason": "N/A", "summary": "Stopped at the step limit."})
+		b, _ := json.Marshal(map[string]any{"answer": m.answer, "forge": "gitlab", "skipped_reason": "N/A", "summary": "Stopped at the step limit.", "unchecked": ""})
 		return string(b)
 	}
 	var evs []api.StreamEvent

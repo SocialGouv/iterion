@@ -488,10 +488,12 @@ type Server struct {
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
 	// realWebhookNoteGate. Returns (authorized, replyInThread, threadContext,
-	// reason, err): replyInThread marks a plain reply in a Revi thread (no
-	// /revi command); threadContext is the discussion transcript the converse
-	// bot receives as {{vars.thread_context}} ("" when not fetched).
-	webhookNoteGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, err error)
+	// reason, anchor, err): replyInThread marks a plain reply in a Revi
+	// thread (no /revi command); threadContext is the discussion transcript
+	// the converse bot receives as {{vars.thread_context}} ("" when not
+	// fetched); anchor is the thread ROOT's diff position (the discussion
+	// fetch already had it), which the converse bot focuses its diff read on.
+	webhookNoteGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error)
 	// webhookCommandGate overrides the generic slash-command replier gate
 	// (forge token + loop-guard + allowlist/role authz, honouring the route's
 	// per-command MinReplierRole — test seam). nil → realWebhookCommandGate.

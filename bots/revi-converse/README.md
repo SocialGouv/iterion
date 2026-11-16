@@ -32,21 +32,32 @@ declares `when_args_present`, so `/revi <question>` routes here.
 ## How it runs
 
 ```
+converse_scope  (tool, deterministic python script — no LLM, the entry node)
+  → computes the diff facts the answer grounds in: the reviewed head, the
+    merge-base with a best-effort refreshed base_ref (a failed fetch says
+    base_is_current: false in the block), workspace anomalies, the changed
+    files with their stat, and the hunk the thread's anchor names — one
+    precomputed SCOPE block, capped at 48000 characters with a visible
+    marker; its facts repeat review-pr's diff_precheck (the bots suite
+    runs both scripts on the same fixture repos and compares the common
+    ones), and changed_files: -1 stays the "scope unknown" sentinel
 converse_agent  (agent, claude_code, session: fresh)
-  → reads the operator's question + `git diff $(git merge-base base_ref HEAD)`
-    (and the thread, read-only, when the transcript is missing), drafts the
-    answer and hands it back in `converse_output.answer` — it never posts
+  → reads the SCOPE block, the thread and the operator's question, drafts
+    the answer and hands it back in `converse_output.answer` — it never
+    posts; what it could NOT verify (its step bound cutting the reads
+    short, a failed fetch) rides `converse_output.unchecked`
 publish_reply   (tool, deterministic python script — no LLM)
   → reads the thread once (a note that is an exact copy of this run's reply
-    means it already posted), posts the draft with the forge_token, then
-    re-reads the created note by its id; emits posted, reply_url and a
-    skipped_reason saying why not
+    means it already posted), posts the draft with the forge_token —
+    rendering the agent's `unchecked` as a visible "Lecture partielle"
+    note — then re-reads the created note by its id; emits posted,
+    reply_url and a skipped_reason saying why not
 converse_health (tool, deterministic — no LLM)
   → asserts the invariant: degraded=true unless posted=true with an http(s)
     reply_url on the host of `pr_url`, plus a banner (UNVERIFIED, the
     skipped_reason, or MISSING) — or a reply withheld in evaluation mode,
     which reads `evaluation mode`, neither OK nor degraded; the run still
-    succeeds
+    succeeds. It reads nothing of `unchecked`: an admission is not a claim
 done
 ```
 
@@ -61,11 +72,36 @@ stay shut: `--strict-mcp-config` holds for this node whatever
 `ITERION_CLAUDE_CODE_STRICT_MCP` says); codex, which cannot switch off the
 servers of its own configuration, refuses the node when that configuration
 lists one — and it has no web tool. It answers from the diff and
-the repository. Its tool loop only reads:
-a question that runs out of steps still hands back its draft (claw's recovery
-pass), and the draft is still posted — posting no longer depends on how many
-steps the model spent reading (VAO !48: a reply that took 61 steps was
-drafted and never posted). A drafted answer is posted whatever the agent's
+the repository. Its tool loop is bounded at **20 steps** (was 60; the
+re-cut window stays within [20,24] — a raise past 24 quietly re-inflates
+the per-question cost the bound caps): the SCOPE block already carries the
+diff facts, so the loop spends its steps on what the block lacks —
+surrounding code, the sources a claim cites — and running out still hands
+back its draft (claw's recovery pass), still posted — posting no longer
+depends on how many steps the model spent reading (VAO !48: a reply that
+took 61 steps was drafted and never posted).
+
+**What the bound costs, said up front (#3283 D8):** a draft at the bound is
+a *partially-read* answer, and the run says so three ways. The agent fills
+the new `converse_output.unchecked` field with what it did not get to;
+`publish_reply` renders it in the thread as a visible
+`> Lecture partielle : …` blockquote, screened by the same guards as the
+answer (credential refusal, quick-action guard, size cap); and the
+measurement counts runs stopped by the bound — `formatting_pass_used` on
+`delegate_finished` — rather than trusting any gate to infer it.
+`converse_health` reads nothing of `unchecked`: an admission is not a
+claim, and a partial answer is still a posted, verified reply. Beside an
+empty draft no note is rendered — the reason speaks for that one. The
+system prompt carries no `{{vars.*}}` at all: the workspace path, the base
+ref and every per-run fact live in the user message (scope, thread,
+question, path, in that order), so the provider's prefix cache serves the
+next run from this one's bytes (#3283 S3 — the cross-run prefix; the
+engine half is claw's ambient AGENTS.md header spelled relative to the
+workspace). The workspace is named in the user message as the directory
+the shell starts in (claw guarantees the cwd), so the prompts say plain
+`git diff`, not `git -C <path>`.
+
+A drafted answer is posted whatever the agent's
 `skipped_reason` says: the field is required, and a step-limited model fills
 it ("N/A"). The reason is the banner when the draft is empty — or, beside the
 reason, only filler ("N/A", "none", "-", "null", no run of three letters) —
@@ -153,13 +189,22 @@ report.
 | `converse_question` | string | `""` | The question itself — the args after `/revi`. Empty falls back to `trigger_note`. |
 | `thread_context` | string | `""` | The discussion transcript fetched and injected by the webhook handler. Empty on manual runs; the agent then reads the thread itself (a GET). |
 | `replier` | string | `""` | Forge username of the operator who asked, used to address the answer. |
+| `thread_anchor_path` | string | `""` | The thread ROOT's anchor file (the review comment the thread hangs on), set by the webhook lanes on both GitLab entries and the GitHub/Forgejo review-thread reply. Empty when the thread hangs off the conversation or the forge names no position. |
+| `thread_anchor_old_path` | string | `""` | The file before a rename, when the forge reports one (GitLab's `old_path`). |
+| `thread_anchor_line` | string | `""` | The CURRENT line the anchor renders on (absent on an outdated comment). |
+| `thread_anchor_old_line` | string | `""` | The PRE-IMAGE hint the forge keeps (GitHub's `original_line`, GitLab's paired old line) — never read as a current line. |
+| `thread_anchor_side` | string | `""` | `"new"` (the post-image line) or `"old"` (a line the change removed). |
+| `thread_anchor_commit` | string | `""` | The commit the anchor was taken on. `converse_scope` isolates the anchored hunk only when it names the head under review; stale, removed-side or line-less it shows the file's whole diff and says so. |
 | `publish_mode` | string `""` \| `"off"` | `""` | Evaluation mode: `off` drafts the answer and sends nothing to the forge (see above). Set by an operator or a bot holding `board.create`, never by a webhook payload. |
 
 The studio launch form renders `converse_question` and `pr_url` top-level;
-`discussion_id`, `trigger_note`, `thread_context`, `replier` and
-`forge_base_url` are webhook plumbing hidden from the form, and
-`publish_mode` an operator's evaluation switch hidden from it too (all still
-settable via `--var` or `bot_args`).
+`discussion_id`, `trigger_note`, `thread_context`, `replier`,
+`forge_base_url`, the six `thread_anchor_*` keys and `publish_mode` are
+hidden from the form (all still settable via `--var` or `bot_args`). A
+manual run can pass the anchor vars too — `--var
+thread_anchor_path=app.go --var thread_anchor_line=42 --var
+thread_anchor_side=new --var thread_anchor_commit=<head-sha>` focuses the
+scope the same way a webhook thread does.
 
 ## Invocation
 
@@ -202,8 +247,8 @@ Omitting `discussion_id` posts a new PR comment instead of a thread reply.
 - **Workflow block**: `repo_devbox: off` (answering a question about a diff
   reads the repo, it never builds it); no `worktree:` and no `sandbox:` are
   declared. Budget: `max_parallel_branches: 1`, `max_duration: 30m` (the
-  agent's 60-step loop at up to ~30 s a step on the gateway), `max_cost_usd:
-  5`.
+  agent's 20-step loop at up to ~30 s a step on the gateway, with the
+  deterministic steps on top), `max_cost_usd: 5`.
 - **Read-only by construction**: the only write is `publish_reply`'s POST,
   withheld in evaluation mode (`publish_mode=off`). No board writes, no
   source mutation.

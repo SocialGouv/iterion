@@ -66,14 +66,14 @@ func TestReviConversePublishesWithoutAModel(t *testing.T) {
 			if _, ok := n.(*ir.AgentNode); !ok {
 				t.Errorf("converse_agent is %T, want the one *ir.AgentNode", n)
 			}
-		case "publish_reply", "converse_health":
+		case "converse_scope", "publish_reply", "converse_health":
 			if _, ok := n.(*ir.ToolNode); !ok {
-				t.Errorf("%s is %T, want a deterministic *ir.ToolNode — publishing must not spend a model call", id, n)
+				t.Errorf("%s is %T, want a deterministic *ir.ToolNode — the scope facts and publishing must not spend a model call", id, n)
 			}
 		}
 	}
 	slices.Sort(ids)
-	if want := []string{"converse_agent", "converse_health", "publish_reply"}; !slices.Equal(ids, want) {
+	if want := []string{"converse_agent", "converse_health", "converse_scope", "publish_reply"}; !slices.Equal(ids, want) {
 		t.Errorf("revi-converse nodes = %v, want %v", ids, want)
 	}
 	var chain []string
@@ -81,7 +81,10 @@ func TestReviConversePublishesWithoutAModel(t *testing.T) {
 		chain = append(chain, e.From+"->"+e.To)
 	}
 	slices.Sort(chain)
-	if want := []string{"converse_agent->publish_reply", "converse_health->done", "publish_reply->converse_health"}; !slices.Equal(chain, want) {
+	if want := []string{
+		"converse_agent->publish_reply", "converse_health->done",
+		"converse_scope->converse_agent", "publish_reply->converse_health",
+	}; !slices.Equal(chain, want) {
 		t.Errorf("revi-converse edges = %v, want %v", chain, want)
 	}
 }
@@ -517,7 +520,7 @@ func TestReviConversePublishReplyPostsOnEachForge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, pr := newCaseForge(t, tc)
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 				publishVars(tc, f.srv.URL, pr), publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 
@@ -590,7 +593,7 @@ func TestReviConversePublishReplyDoesNotPostTwice(t *testing.T) {
 						f.hold(heldID, c.held)
 					}
 					script := renderReviConversePublish(t,
-						map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+						map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 						publishVars(tc, f.srv.URL, pr), publishRunURL, writeToken(t))
 					res, raw := runPublish(t, script, noProxyEnv())
 					if !*res.Posted {
@@ -632,7 +635,7 @@ func TestReviConversePublishReplyNeverPostsACommand(t *testing.T) {
 				pr := f.srv.URL + prPath
 				f.htmlFor = func(id int) string { return issueComment(pr, id) }
 				script := renderReviConversePublish(t,
-					map[string]any{"answer": answer, "skipped_reason": ""},
+					map[string]any{"answer": answer, "skipped_reason": "", "unchecked": ""},
 					map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 				res, raw := runPublish(t, script, noProxyEnv())
 				if !*res.Posted {
@@ -719,7 +722,7 @@ func TestReviConversePublishReplyTreatsAFillerDraftAsEmpty(t *testing.T) {
 			pr := f.srv.URL + "/o/r/pull/42"
 			f.htmlFor = func(id int) string { return issueComment(pr, id) }
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": c.answer, "skipped_reason": c.skipped},
+				map[string]any{"answer": c.answer, "skipped_reason": c.skipped, "unchecked": ""},
 				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if *res.Posted != c.wantPosted {
@@ -750,7 +753,7 @@ func TestReviConversePublishReplyPostsADraftWhateverItsSkippedReasonSays(t *test
 			pr := f.srv.URL + "/o/r/pull/42"
 			f.htmlFor = func(id int) string { return issueComment(pr, id) }
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": skipped},
+				map[string]any{"answer": publishAnswer, "skipped_reason": skipped, "unchecked": ""},
 				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if !*res.Posted || res.SkippedReason != "" {
@@ -775,7 +778,7 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 		pr := f.srv.URL + "/o/r/pull/42"
 		f.htmlFor = func(id int) string { return issueComment(pr, id) }
 		script := renderReviConversePublish(t,
-			map[string]any{"answer": "Re: op\n\nA NUL\x00 sits here (app.go:3).", "skipped_reason": ""},
+			map[string]any{"answer": "Re: op\n\nA NUL\x00 sits here (app.go:3).", "skipped_reason": "", "unchecked": ""},
 			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 		res, raw := runPublish(t, script, noProxyEnv())
 		if !*res.Posted {
@@ -792,7 +795,7 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 		f.htmlFor = func(id int) string { return issueComment(pr, id) }
 		answer := "{{ .Values.image }} is read from values.yaml (chart.yaml:3)."
 		script := renderReviConversePublish(t,
-			map[string]any{"answer": answer, "skipped_reason": ""},
+			map[string]any{"answer": answer, "skipped_reason": "", "unchecked": ""},
 			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 		res, raw := runPublish(t, script, noProxyEnv())
 		if !*res.Posted {
@@ -808,7 +811,7 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 		f := newConverseFakeForge(t)
 		pr := f.srv.URL + "/o/r/pull/42"
 		script := renderReviConversePublish(t,
-			map[string]any{"answer": "", "skipped_reason": "no question\x00 in the note"},
+			map[string]any{"answer": "", "skipped_reason": "no question\x00 in the note", "unchecked": ""},
 			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 		res, raw := runPublish(t, script, noProxyEnv())
 		if *res.Posted || res.SkippedReason != "no question in the note" {
@@ -823,7 +826,7 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 		f.postStatus, f.postAnswer = http.StatusBadRequest, `{"message":"bad\u0000body"}`
 		pr := f.srv.URL + "/o/r/pull/42"
 		script := renderReviConversePublish(t,
-			map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+			map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 		res, raw := runPublish(t, script, noProxyEnv())
 		if *res.Posted || !strings.Contains(res.SkippedReason, "badbody") {
@@ -838,7 +841,7 @@ func TestReviConversePublishReplySurvivesAnyBytes(t *testing.T) {
 		pr := f.srv.URL + "/o/r/pull/42"
 		reason := strings.Repeat("the diff could not be read; ", 5000)
 		script := renderReviConversePublish(t,
-			map[string]any{"answer": "", "skipped_reason": reason},
+			map[string]any{"answer": "", "skipped_reason": reason, "unchecked": ""},
 			map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 		res, raw := runPublish(t, script, noProxyEnv())
 		if *res.Posted || !strings.HasPrefix(res.SkippedReason, "the diff could not be read") {
@@ -871,11 +874,11 @@ func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
 		unmapped   bool
 		wantReason string
 	}
-	answer := map[string]any{"answer": publishAnswer, "skipped_reason": ""}
+	answer := map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""}
 	for _, c := range []tc{
-		{name: "empty answer", input: map[string]any{"answer": "", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
-		{name: "blank answer", input: map[string]any{"answer": " \n\t\x00", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
-		{name: "the agent skipped", input: map[string]any{"answer": "", "skipped_reason": "no question in the note"}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
+		{name: "empty answer", input: map[string]any{"answer": "", "skipped_reason": "", "unchecked": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
+		{name: "blank answer", input: map[string]any{"answer": " \n\t\x00", "skipped_reason": "", "unchecked": ""}, prPath: "/o/r/pull/1", wantReason: "empty answer"},
+		{name: "the agent skipped", input: map[string]any{"answer": "", "skipped_reason": "no question in the note", "unchecked": ""}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
 		{name: "no token mounted", input: answer, prPath: "/o/r/pull/1", noToken: true, wantReason: "forge_token is not mounted"},
 		{name: "the token file unreadable", input: answer, prPath: "/o/r/pull/1", unreadable: true, wantReason: "forge_token is mounted but unreadable"},
 		{name: "pr_url empty", input: answer, prPath: "", wantReason: "pr_url is empty"},
@@ -916,7 +919,9 @@ func TestReviConversePublishReplyPostsNothingWhenItCannot(t *testing.T) {
 			}
 			var unresolved []string
 			if c.unmapped {
-				unresolved = []string{"input.answer"}
+				// answer AND unchecked: the two fields that only exist
+				// once the agent's draft reached the node.
+				unresolved = []string{"input.answer", "input.unchecked"}
 			}
 			script := renderReviConversePublish(t, c.input, vars, publishRunURL, tokenPath, unresolved...)
 			res, raw := runPublish(t, script, noProxyEnv())
@@ -975,7 +980,7 @@ func TestReviConversePublishReplyRefusesToPostTheForgeToken(t *testing.T) {
 			f := newConverseFakeForge(t)
 			pr := f.srv.URL + "/g/p/-/merge_requests/7"
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": "Re: op — « what is the key? »\n\n" + c.carried + " (app.go:3).", "skipped_reason": ""},
+				map[string]any{"answer": "Re: op — « what is the key? »\n\n" + c.carried + " (app.go:3).", "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": pr, "discussion_id": "6a1f0c"}, publishRunURL, writeToken(t))
 			res, out := runPublish(t, script, noProxyEnv())
 			if *res.Posted || res.ReplyURL != "" {
@@ -1022,7 +1027,7 @@ func TestReviConversePublishReplyReportsTheForgesRefusal(t *testing.T) {
 			}
 			pr := f.srv.URL + "/g/p/-/merge_requests/7"
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": pr, "discussion_id": "6a1f0c"}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if *res.Posted || res.ReplyURL != "" {
@@ -1073,7 +1078,7 @@ func TestReviConversePublishReplyNeedsTheReReadToFindTheNote(t *testing.T) {
 			pr := f.srv.URL + "/o/r/pull/42"
 			f.htmlFor = func(id int) string { return issueComment(pr, id) }
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if *res.Posted || res.ReplyURL != "" {
@@ -1118,7 +1123,7 @@ func TestReviConversePublishReplyTruncationKeepsTheRunLink(t *testing.T) {
 			pr := f.srv.URL + "/o/r/pull/42"
 			f.htmlFor = func(id int) string { return issueComment(pr, id) }
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": c.answer, "skipped_reason": ""},
+				map[string]any{"answer": c.answer, "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": pr}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if !*res.Posted {
@@ -1169,7 +1174,7 @@ func TestReviConversePublishReplyFooterFollowsTheRunLinkRules(t *testing.T) {
 			pr := f.srv.URL + "/o/r/pull/42"
 			f.htmlFor = func(id int) string { return issueComment(pr, id) }
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": pr}, c.runURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv())
 			if !*res.Posted {
@@ -1241,7 +1246,7 @@ func TestReviConversePublishReplyDerivesTheProductionAPIBase(t *testing.T) {
 		t.Run(c.wantURL, func(t *testing.T) {
 			proxy, seen := connectLogger(t)
 			script := renderReviConversePublish(t,
-				map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+				map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 				map[string]any{"pr_url": c.pr, "discussion_id": c.disc}, publishRunURL, writeToken(t))
 			res, raw := runPublish(t, script, noProxyEnv("HTTPS_PROXY="+proxy, "https_proxy="+proxy))
 			if *res.Posted {
@@ -1261,4 +1266,69 @@ func TestReviConversePublishReplyDerivesTheProductionAPIBase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// D8 (#3283): the agent's own note of what it could NOT verify — reads its
+// 20-step bound cut short, a failed fetch — rides the reply as a visible
+// "Lecture partielle" blockquote. Pinned at the script level: rendered
+// inside the body BEFORE the guards, so the note meets the same credential
+// refusal, the GitLab quick-action guard, the command defusing and the
+// size cap the answer does; never rendered beside an empty draft (the
+// reason speaks for that one).
+func TestReviConversePublishReplyRendersTheUncheckedNote(t *testing.T) {
+	requirePython(t)
+	// A fresh forge per case: the one-write count is the forge's own, and
+	// a shared fake would carry the previous case's note into it.
+	newGitLabCase := func(t *testing.T) (*converseFakeForge, string) {
+		t.Helper()
+		return newCaseForge(t, publishForgeCases()[0])
+	}
+
+	t.Run("the note rides the posted body", func(t *testing.T) {
+		f, pr := newGitLabCase(t)
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": "I could not open pkg/x/y.go; the base refresh failed."},
+			publishVars(publishForgeCases()[0], f.srv.URL, pr), publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if !*res.Posted {
+			t.Fatalf("posted = %v (%s)", *res.Posted, raw)
+		}
+		hits := f.seen()
+		w := writes(hits)
+		if len(w) != 1 {
+			t.Fatalf("the forge saw %d writes, want one: %+v", len(w), hits)
+		}
+		body := postedBody(t, w[0])
+		if !strings.Contains(body, "> Lecture partielle : I could not open pkg/x/y.go; the base refresh failed.") {
+			t.Errorf("the posted body must render the unchecked note:\n%q", body)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(body), publishAnswer[:20]) {
+			t.Errorf("the note must ride AFTER the answer, not replace it:\n%q", body)
+		}
+	})
+
+	t.Run("a placeholder quoted in the note is refused like one in the answer", func(t *testing.T) {
+		f, pr := newGitLabCase(t)
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": "the diff quotes " + tokenPlaceholder + " at a.go:3"},
+			publishVars(publishForgeCases()[0], f.srv.URL, pr), publishRunURL, writeToken(t))
+		res, raw := runPublish(t, script, noProxyEnv())
+		if *res.Posted {
+			t.Fatalf("posted = true — a credential in the note reached the body (%s)", raw)
+		}
+		if !strings.Contains(res.SkippedReason, "the answer carries") {
+			t.Errorf("skipped_reason %q must name the credential refusal", res.SkippedReason)
+		}
+	})
+
+	t.Run("no note beside an empty draft", func(t *testing.T) {
+		f, pr := newGitLabCase(t)
+		script := renderReviConversePublish(t,
+			map[string]any{"answer": "", "skipped_reason": "no question in the note", "unchecked": "half-read"},
+			publishVars(publishForgeCases()[0], f.srv.URL, pr), publishRunURL, writeToken(t))
+		res, _ := runPublish(t, script, noProxyEnv())
+		if *res.Posted || len(writes(f.seen())) != 0 {
+			t.Fatalf("posted = %v — an empty draft posts nothing, note or not", *res.Posted)
+		}
+	})
 }

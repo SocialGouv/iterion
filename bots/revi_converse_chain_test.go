@@ -3,6 +3,7 @@ package bots
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -184,10 +185,10 @@ func chainDraft(t *testing.T, wf *ir.Workflow, answer, skipped string) map[strin
 	for _, f := range wf.Schemas["converse_output"].Fields {
 		fields = append(fields, f.Name)
 	}
-	if strings.Join(fields, ",") != "answer,forge,skipped_reason,summary" {
-		t.Fatalf("converse_output fields = %v, want [answer forge skipped_reason summary] — the agent drafts; posting is publish_reply's", fields)
+	if strings.Join(fields, ",") != "answer,forge,skipped_reason,summary,unchecked" {
+		t.Fatalf("converse_output fields = %v, want [answer forge skipped_reason summary unchecked] — the agent drafts; posting is publish_reply's; unchecked is the D8 admission, last", fields)
 	}
-	return map[string]any{"answer": answer, "forge": "gitlab", "skipped_reason": skipped, "summary": "Question: why does A return 2?"}
+	return map[string]any{"answer": answer, "forge": "gitlab", "skipped_reason": skipped, "summary": "Question: why does A return 2?", "unchecked": ""}
 }
 
 func chainFooter() string {
@@ -361,5 +362,45 @@ func TestReviConverseChainRefusesAnAnswerQuotingTheTokenPlaceholder(t *testing.T
 				t.Errorf("degraded = %v, banner %q — want degraded, saying nothing was posted", degraded, banner)
 			}
 		})
+	}
+}
+
+// D8 (#3283) end to end: the agent declares what it could NOT verify in
+// converse_output.unchecked, the workflow carries it across the edge, and
+// publish_reply renders it in the thread as a "Lecture partielle"
+// blockquote. It is an admission, not a claim: converse_health reads none
+// of it — the reply reads OK exactly as a fully-verified one does, and the
+// gate's input schema names no unchecked field, so no future mapping can
+// hand the admission to the gates as if it were evidence.
+func TestReviConverseChainRendersTheUncheckedNoteAndTheGateIgnoresIt(t *testing.T) {
+	chainEnv(t)
+	wf := reviConverseWorkflow(t)
+	draft := chainDraft(t, wf, publishAnswer, "")
+	draft["unchecked"] = "the reads stopped at the step bound; the callers of A are unverified."
+	r := runChain(t, wf, draft, true, nil)
+	if r.runErr != nil {
+		t.Fatalf("the run failed: %v", r.runErr)
+	}
+	w := writes(r.forge.seen())
+	if len(w) != 1 {
+		t.Fatalf("the forge saw %d writes, want one: %+v", len(w), r.forge.seen())
+	}
+	body := postedBody(t, w[0])
+	if !strings.Contains(body, "> Lecture partielle : the reads stopped at the step bound; the callers of A are unverified.") {
+		t.Errorf("the posted body must render the agent's unchecked note:\n%q", body)
+	}
+	degraded, banner := r.health(t)
+	if degraded != false || !strings.Contains(banner, "forge reply OK") {
+		t.Errorf("degraded = %v, banner %q — an admitted partial read is still a posted, verified reply", degraded, banner)
+	}
+	// The gates read nothing of it: the health input names exactly the
+	// fields a verified post carries.
+	var fields []string
+	for _, f := range wf.Schemas["converse_health_input"].Fields {
+		fields = append(fields, f.Name)
+	}
+	slices.Sort(fields)
+	if strings.Join(fields, ",") != "evaluation,posted,pr_url,reply_url,skipped_reason" {
+		t.Errorf("converse_health_input fields = %v — the admission must not ride into the gate", fields)
 	}
 }

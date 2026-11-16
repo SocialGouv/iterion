@@ -108,13 +108,16 @@ func (a API) MemberAccessLevel(ctx context.Context, projectID, userID int64) (le
 
 // DiscussionNote is one note of an MR discussion thread — just the fields
 // the conversational layer needs: authorship for the reply-in-thread
-// classification (NotesHaveAuthor) and body for the thread transcript the
-// converse bot receives (FormatThreadTranscript).
+// classification (NotesHaveAuthor), body for the thread transcript the
+// converse bot receives (FormatThreadTranscript), and the diff position a
+// thread's root note carries (Position, read by ThreadRootAnchor — the
+// anchor the converse bot focuses its diff read on).
 type DiscussionNote struct {
 	AuthorID       int64
 	AuthorUsername string
 	Body           string
 	System         bool
+	Position       *NotePosition
 }
 
 // Discussion fetches the notes of one MR discussion thread, in API order
@@ -130,8 +133,9 @@ func (a API) Discussion(ctx context.Context, projectID, mrIID int64, discussionI
 				ID       int64  `json:"id"`
 				Username string `json:"username"`
 			} `json:"author"`
-			Body   string `json:"body"`
-			System bool   `json:"system"`
+			Body     string        `json:"body"`
+			System   bool          `json:"system"`
+			Position *NotePosition `json:"position"`
 		} `json:"notes"`
 	}
 	code, err := a.get(ctx, fmt.Sprintf("/projects/%d/merge_requests/%d/discussions/%s", projectID, mrIID, url.PathEscape(discussionID)), &d)
@@ -142,7 +146,7 @@ func (a API) Discussion(ctx context.Context, projectID, mrIID int64, discussionI
 	case http.StatusOK:
 		notes := make([]DiscussionNote, 0, len(d.Notes))
 		for _, n := range d.Notes {
-			notes = append(notes, DiscussionNote{AuthorID: n.Author.ID, AuthorUsername: n.Author.Username, Body: n.Body, System: n.System})
+			notes = append(notes, DiscussionNote{AuthorID: n.Author.ID, AuthorUsername: n.Author.Username, Body: n.Body, System: n.System, Position: n.Position})
 		}
 		return notes, nil
 	case http.StatusNotFound:
@@ -165,6 +169,22 @@ func NotesHaveAuthor(notes []DiscussionNote, userID int64) bool {
 		}
 	}
 	return false
+}
+
+// ThreadRootAnchor returns the diff position of the thread's ROOT note —
+// the anchor a conversational bot focuses its diff read on. GitLab attaches
+// a position to the note that opened a diff thread and to no reply, so the
+// thread holds at most one; the walk takes the first (chronological API
+// order, the discussion's own contract), which is the root's whenever one
+// exists. No positioned note — a general thread — means no anchor, and the
+// consumer degrades on that instead of guessing.
+func ThreadRootAnchor(notes []DiscussionNote) webhooks.ThreadAnchor {
+	for _, n := range notes {
+		if a := positionAnchor(n.Position); a.Set() {
+			return a
+		}
+	}
+	return webhooks.ThreadAnchor{}
 }
 
 // FormatThreadTranscript renders a discussion's notes as the plain-text
