@@ -146,17 +146,44 @@ func runScript(vm *goja.Runtime, src string, wall time.Duration, resultBytes int
 		// error, not by running script code.
 		var exception *goja.Exception
 		if errors.As(err, &exception) {
-			// The thrown value is goja's NewGoError wrapper: its Export is a
-			// map carrying the ORIGINAL Go error under the key "value" —
-			// probed, not assumed, and the shape is vendor-pinned with
-			// TestABrokenChannelIsHostDiedWhateverTheCatch as the guard: if
-			// goja's export shape moves, that test reddens with
-			// script_error and this unwrap is the first suspect.
-			if exported, ok := exception.Value().Export().(map[string]any); ok {
-				if wrapped, ok := exported["value"].(error); ok && errors.Is(wrapped, errToolChannelBroken) {
-					return Refuse(RefusalHostDied,
-						"the script was stopped because its tool channel failed: %s", wrapped.Error())
+			// The read is GUARDED, because Export() on a script-thrown value
+			// RUNS script code: goja walks the thrown object's own properties
+			// and invokes getters and Proxy traps (the hazard this file's
+			// encodeValue comment documents as the reason Export was
+			// abandoned for encoding — and the reason safeErrorText carries
+			// its own recover). Two measured failures without the guard:
+			// `throw {get x(){throw 1}}` panicked through Export into the
+			// outer belt, degrading the message to "could not be evaluated",
+			// and `throw {get x(){while(true){}}}` looped PAST the wall bound
+			// — the timer is stopped and the interrupt cleared before this
+			// error path — for the parent to later report wall_clock_exceeded
+			// about what is a script throw. So: recover around the read, and
+			// re-arm the wall interrupt for its duration. A panic here falls
+			// through to the generic rendering below — the verdict class
+			// never moves.
+			wrapped := func() (wrapped error) {
+				defer func() {
+					if recover() != nil {
+						wrapped = nil
+					}
+				}()
+				var guard *time.Timer
+				if wall > 0 {
+					guard = time.AfterFunc(wall, func() { vm.Interrupt(RefusalWallClock) })
 				}
+				if guard != nil {
+					defer guard.Stop()
+				}
+				exported, ok := exception.Value().Export().(map[string]any)
+				if !ok {
+					return nil
+				}
+				wrapped, _ = exported["value"].(error)
+				return wrapped
+			}()
+			if wrapped != nil && errors.Is(wrapped, errToolChannelBroken) {
+				return Refuse(RefusalHostDied,
+					"the script was stopped because its tool channel failed: %s", wrapped.Error())
 			}
 		}
 		// Matched on the type, because the message is a bare stack trace:

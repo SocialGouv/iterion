@@ -65,6 +65,38 @@ func TestABrokenChannelIsHostDiedWhateverTheCatch(t *testing.T) {
 		})
 	}
 
+	// HOSTILE THROWS, from the gate review of this very fix: Export() on a
+	// script-thrown object runs its getters, so the guarded read above is
+	// what keeps a hostile throw from (a) panicking the error path with the
+	// message degraded, or (b) looping past the disarmed wall bound for the
+	// parent to misreport as wall_clock_exceeded. Both rows must come back
+	// script_error WITHIN the wall bound, with a rendered message — and
+	// without the guard both were measured failing (the hang row hangs the
+	// whole binary).
+	// NOTE: these throws are the program ITSELF, not routed through `call` —
+	// a channel error's interrupt preempts the catch block, so routing them
+	// through call never reaches the hostile throw. The gate review probed
+	// them as top-level throws, which is the path the unwrap sees.
+	bindAndRunHostile := func(src string) Response {
+		vm := newRuntime([32]byte{11}, epoch)
+		lim := DefaultLimits()
+		return runScript(vm, src, lim.Wall, lim.ResultBytes)
+	}
+	for _, row := range []struct{ name, src string }{
+		{"throwing getter", `throw { get x(){ throw 1 } }`},
+		{"looping getter", `throw { get x(){ for(;;){} } }`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			resp := bindAndRunHostile(row.src)
+			if resp.Refusal != RefusalScriptError {
+				t.Errorf("refusal = %q (message %.120q), want %q — a script throw must stay the script's own verdict", resp.Refusal, resp.Message, RefusalScriptError)
+			}
+			if strings.Contains(resp.Message, "could not be evaluated") {
+				t.Errorf("the thrown value's message degraded: %.200q", resp.Message)
+			}
+		})
+	}
+
 	// The other arm: a script's OWN throw is still script_error. The
 	// unwrapping must key on errToolChannelBroken and nothing else, or every
 	// ordinary script exception would be reported as a broken deployment.
