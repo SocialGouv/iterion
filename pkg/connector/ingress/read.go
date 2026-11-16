@@ -124,7 +124,14 @@ func Read(req Request) (Delivery, error) {
 	headers := listedHeaders(visible, req.Header)
 	ctx := spec.NewDeliveryContext(event, req.Header, visible)
 
-	d := Delivery{DedupKey: dedupKey(req.Body), Ack: ack(in)}
+	dedupBody := req.Body
+	if in.Timestamp != nil && in.Timestamp.In == "body" && in.Timestamp.Name != "" {
+		// A vendor re-signs its retry at a new instant; the retry must meet
+		// the row its first delivery opened. The signature still covers the
+		// whole body — the digest alone ignores the volatile member.
+		dedupBody = dedupBodyWithout(in.Timestamp.Name, req.Body)
+	}
+	d := Delivery{DedupKey: dedupKey(dedupBody), Ack: ack(in)}
 	// The handshake comes before the installation: a vendor verifying its
 	// endpoint (Slack's url_verification) carries no installation, the
 	// signature already proved the sender, and a handshake routes no event.
@@ -715,6 +722,25 @@ func listedHeaders(visible []string, h http.Header) map[string]string {
 // its own instant — its third comes five minutes on, past a window that kept
 // the first instant) is part of it: a replay inside the window and a
 // vendor's retry both meet the row of the first delivery.
+// dedupBodyWithout returns the delivery body with a top-level member
+// elided. A body that is not an object, or without the member, digests as
+// it is.
+func dedupBodyWithout(member string, raw []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	if _, ok := m[member]; !ok {
+		return raw
+	}
+	delete(m, member)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 func dedupKey(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])

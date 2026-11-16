@@ -361,7 +361,7 @@ func writeTriggerExists(w http.ResponseWriter, kind bundle.InvocationKind, id st
 // botHomeTriggerOrigin marks subscriptions created by the bot home's
 // one-click invocation enablement — the dedup key distinguishing them
 // from hand-authored ("operator") subscriptions.
-const botHomeTriggerOrigin = "bot-home"
+const botHomeTriggerOrigin = trigger.BotHomeOrigin
 
 // maxEmitVarsBytes caps the cumulative size of the custom-emit Vars map.
 // The endpoint is authenticated, but a buggy/abusive integration could

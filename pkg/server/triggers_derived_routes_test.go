@@ -18,7 +18,7 @@ import (
 func TestTriggerFromInvocation_DerivedRowLifecycle(t *testing.T) {
 	srv := newFromInvocationServer(t)
 	ctx := context.Background()
-	id := trigger.DerivedSubscriptionID("", "trig-bot", bundle.InvocationKindSchedule, "0", "")
+	id := trigger.DerivedSubscriptionID("", "trig-bot", bundle.InvocationKindSchedule, "0 7 * * 1", "")
 
 	rec := postFromInvocation(t, srv, "trig-bot", `{"index":0}`)
 	if rec.Code != http.StatusCreated {
@@ -100,7 +100,7 @@ func TestTriggerFromInvocation_TwoInvocationsOfOneKindAreTwoRows(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if want := trigger.DerivedSubscriptionID("", "trig-bot", bundle.InvocationKindSchedule, "1", ""); second.ID != want {
+	if want := trigger.DerivedSubscriptionID("", "trig-bot", bundle.InvocationKindSchedule, "0 9 * * 5", ""); second.ID != want {
 		t.Fatalf("the second schedule's id = %q, want %q", second.ID, want)
 	}
 }

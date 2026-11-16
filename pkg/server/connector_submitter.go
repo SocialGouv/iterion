@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/binding"
@@ -130,20 +131,33 @@ func (s *Server) connectorSubmitter() *connectorSubmitter {
 		matcher:  s.connectorMatcher(),
 		launcher: s.triggerLauncher(),
 		botVars: func(ctx context.Context, tenantID, botID string) ([]string, bool, error) {
+			// The team tier is read strictly: a store outage is a retried
+			// attempt, never a permanent refusal — only the platform
+			// fallback may answer "absent" without an error.
+			if entry, found, err := s.storedBotEntry(ctx, tenantID, botID); err != nil {
+				return nil, false, err
+			} else if found {
+				return botVarNames(entry), true, nil
+			}
 			entry, found, err := s.effectiveFindByNameForTeam(ctx, tenantID, botID)
 			if err != nil || !found {
 				return nil, found, err
 			}
-			var names []string
-			if entry.Vars != nil {
-				for _, f := range entry.Vars.Fields {
-					names = append(names, f.Name)
-				}
-			}
-			return names, true, nil
+			return botVarNames(entry), true, nil
 		},
 		repoTrusted: s.connectorRepoTrusted,
 	}
+}
+
+// botVarNames lists the var names a bot's schema declares.
+func botVarNames(entry botregistry.EntryWithSchema) []string {
+	var names []string
+	if entry.Vars != nil {
+		for _, f := range entry.Vars.Fields {
+			names = append(names, f.Name)
+		}
+	}
+	return names
 }
 
 // connectorMatcher is the matcher over the server's subscription store and

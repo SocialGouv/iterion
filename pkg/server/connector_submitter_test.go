@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/binding"
@@ -254,5 +255,35 @@ func TestTheConnectorSubmitterRefusesAVanishedTrigger(t *testing.T) {
 	_, err := w.sub.Submit(ctx, w.in, w.pair)
 	if reason, refused := pairRefusalOf(err); !refused || !strings.Contains(reason, "no longer declares") || len(w.launch.plans) != 0 {
 		t.Fatalf("a vanished trigger = %v (%d launches), want a refusal naming it", err, len(w.launch.plans))
+	}
+}
+
+// failingBotSources answers every read with an outage: the team tier's
+// store is down.
+type outageBotSources struct{ botsource.Store }
+
+func (f outageBotSources) GetBySlug(context.Context, string, string) (botsource.BotSource, error) {
+	return botsource.BotSource{}, errors.New("PROBE: the team bot store is down")
+}
+
+// The team tier of the bot catalog is read strictly: a store outage is a
+// retried attempt, never a permanent refusal of the pair — only a bot
+// absent from every tier refuses.
+func TestTheConnectorSubmitterRetriesATeamTierOutage(t *testing.T) {
+	w := newSubmitWorld(t, "")
+	s := newOrgTestServer(t)
+	s.cfg.TriggerStore = w.subs
+	s.connectorCatalog = connection.NewMemoryCatalog(submitChatPackage())
+	s.botSources = outageBotSources{botsource.NewMemoryStore()}
+	sub := s.connectorSubmitter()
+	if _, found, err := sub.botVars(context.Background(), "t1", "chatbot"); err == nil || found {
+		t.Fatalf("a team tier outage = (%v, %v); want an error the worker retries", found, err)
+	}
+	_, err := sub.Submit(context.Background(), w.in, w.pair)
+	if reason, refused := pairRefusalOf(err); refused {
+		t.Fatalf("a team tier outage refused the pair (%s); want an error", reason)
+	}
+	if len(w.launch.plans) != 0 {
+		t.Fatal("an outage launched")
 	}
 }

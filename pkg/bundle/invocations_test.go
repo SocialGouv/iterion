@@ -83,6 +83,16 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 		want string
 	}{
 		{
+			name: "two schedules one cron",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: schedule\n    schedule:\n      suggested_cron: \"0 2 * * 1\"\n  - kind: schedule\n    schedule:\n      suggested_cron: \"0 2 * * 1\"\n",
+			want: "derives the same subscription",
+		},
+		{
+			name: "two connectors one trigger",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: connector\n    connector:\n      trigger: slack.message.posted\n  - kind: connector\n    connector:\n      trigger: slack.message.posted\n",
+			want: "derives the same subscription",
+		},
+		{
 			name: "unknown kind",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: webhook\n",
 			want: `unknown kind "webhook"`,

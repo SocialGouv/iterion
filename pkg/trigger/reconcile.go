@@ -85,6 +85,12 @@ func ReconcileManifests(ctx context.Context, st SubscriptionStore, tenantID stri
 			errs = append(errs, fmt.Errorf("subscription %s (%s): %w", id, sub.BotID, err))
 			continue
 		}
+		// The cron of a row the operator enabled is the operator's own (the
+		// from-invocation override): the manifest's suggestion never
+		// rewrites it.
+		if cur.Origin == BotHomeOrigin {
+			sub.Cron = cur.Cron
+		}
 		if sameManifestFields(cur, sub) {
 			continue
 		}

@@ -58,8 +58,17 @@ func (s *MongoSubscriptionStore) EnsureDerived(ctx context.Context, sub Subscrip
 	if !IsDerivedID(sub.ID) {
 		return false, fmt.Errorf("trigger: %q is not a derived subscription id", sub.ID)
 	}
-	if dead, err := s.tombstoned(ctx, sub.ID); err != nil || dead {
+	dead, err := s.tombstoned(ctx, sub.ID)
+	if err != nil {
 		return false, err
+	}
+	if dead {
+		// Heal the residue of a lost race: the withdraw of a row created
+		// beside an operator's delete may itself have failed once.
+		if _, derr := s.coll.DeleteOne(ctx, bson.M{"_id": sub.ID}); derr != nil {
+			return false, fmt.Errorf("trigger: retire the derived subscription its tombstone outlives: %w", derr)
+		}
+		return false, nil
 	}
 	sub.normalize()
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
@@ -71,7 +80,7 @@ func (s *MongoSubscriptionStore) EnsureDerived(ctx context.Context, sub Subscrip
 	if s.afterDerivedInsert != nil {
 		s.afterDerivedInsert()
 	}
-	dead, err := s.tombstoned(ctx, sub.ID)
+	dead, err = s.tombstoned(ctx, sub.ID)
 	if err != nil {
 		return true, err
 	}

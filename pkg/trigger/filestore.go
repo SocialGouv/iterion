@@ -54,7 +54,11 @@ type fileSubscriptionJournal struct {
 }
 
 // withState loads the journal into a memory twin, runs fn on it, and writes
-// the journal back when fn changed it.
+// the journal back when fn changed it. The journal is rewritten WHOLE, and
+// unknown members decode away: two builds sharing one store directory drop
+// each other's fields on their next write — run one build at a time. A
+// caller classifies the error with errors.Is (the unlock's own error joins
+// every return), never with ==.
 func (f *FileSubscriptionStore) withState(ctx context.Context, fn func(*MemorySubscriptionStore) error) (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

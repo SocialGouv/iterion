@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"strconv"
 	"strings"
 	"time"
 
@@ -36,23 +35,20 @@ func DerivedSubscriptionID(tenantID, botID string, kind bundle.InvocationKind, k
 // IsDerivedID reports whether id names a manifest-derived subscription.
 func IsDerivedID(id string) bool { return strings.HasPrefix(id, DerivedIDPrefix) }
 
-// DerivedInvocationKey is the key of invocations[index] within its bot's
-// manifest: the package trigger id for a connector invocation, else the
-// invocation's ordinal among the invocations of its kind — so reordering two
-// kinds keeps every id, and two invocations of one kind keep theirs apart.
+// DerivedInvocationKey is the identity of invocations[index] within its
+// bot's manifest, intrinsic to what the invocation says (a reorder or an
+// insertion of another invocation never moves it): the package trigger id
+// for a connector invocation, the normalized cron for a schedule, the
+// canonical interval for a keepalive, a digest of the board block. ""
+// derives no subscription (the builders refuse it); two invocations of one
+// kind sharing a key derive the same subscription and are refused at parse.
 func DerivedInvocationKey(invs []bundle.Invocation, index int) string {
-	inv := invs[index]
-	if inv.Kind == bundle.InvocationKindConnector && inv.Connector != nil {
-		return inv.Connector.Trigger
-	}
-	ordinal := 0
-	for _, other := range invs[:index] {
-		if other.Kind == inv.Kind {
-			ordinal++
-		}
-	}
-	return strconv.Itoa(ordinal)
+	return bundle.InvocationKey(invs, index)
 }
+
+// BotHomeOrigin is the Origin of a subscription the operator enabled from
+// the bot home (the server's from-invocation route).
+const BotHomeOrigin = "bot-home"
 
 // Tombstone records that an operator deleted a derived subscription: no
 // reconciliation re-creates the row until an operator re-enables it.

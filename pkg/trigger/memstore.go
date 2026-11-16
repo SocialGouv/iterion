@@ -39,10 +39,14 @@ func (m *MemorySubscriptionStore) EnsureDerived(_ context.Context, s Subscriptio
 	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.items[s.ID]; ok {
+	// A tombstone outranks a standing row: an operator's delete may have
+	// died between its tombstone and the row's delete — the next
+	// EnsureDerived finishes it.
+	if _, dead := m.tombstones[s.ID]; dead {
+		delete(m.items, s.ID)
 		return false, nil
 	}
-	if _, ok := m.tombstones[s.ID]; ok {
+	if _, ok := m.items[s.ID]; ok {
 		return false, nil
 	}
 	m.items[s.ID] = storekit.Snapshot(s)

@@ -33,7 +33,7 @@ func TestTheLocalTriggerStoreSurvivesARestart(t *testing.T) {
 	ctx := context.Background()
 	storeDir, botsDir := t.TempDir(), t.TempDir()
 	writeTriggerBot(t, botsDir, "reporter", "name: reporter\nschema_version: 1\ninvocations:\n  - kind: schedule\n    schedule:\n      suggested_cron: \"0 7 * * 1\"\n")
-	id := trigger.DerivedSubscriptionID("", "reporter", bundle.InvocationKindSchedule, "0", "")
+	id := trigger.DerivedSubscriptionID("", "reporter", bundle.InvocationKindSchedule, "0 7 * * 1", "")
 
 	first := openLocalTriggerStore(storeDir, []string{botsDir}, nil)
 	row, err := first.Get(ctx, id)

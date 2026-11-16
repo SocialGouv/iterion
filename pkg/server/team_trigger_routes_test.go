@@ -91,4 +91,25 @@ func TestTheTeamTriggerFamilyIsScopedByItsPath(t *testing.T) {
 	if rows, _ := subs.ListByTenant(ctx, "t1"); len(rows) != 1 {
 		t.Fatalf("t1 holds %d rows, want the member's one", len(rows))
 	}
+
+	// The pins gate judges the path's team, not the credential's active
+	// one: an admin of the active team who is a mere member of the path's
+	// team pins nothing.
+	if _, err := s.authStore().CreateUser(ctx, identity.User{ID: "boss", Email: "boss@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "boss", TeamID: "t2", Role: identity.RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "boss", TeamID: "t1", Role: identity.RoleMember}); err != nil {
+		t.Fatal(err)
+	}
+	boss := auth.Identity{UserID: "boss", TeamID: "t2", Role: identity.RoleAdmin}
+	rec = do(boss, http.MethodPost, "/api/teams/t1/triggers", `{"bot_id":"b","invocation":"forge","match":{},"key_overrides":{"anthropic":"key-1"}}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("an active-team admin pinning via the path team = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	if rows, _ := subs.ListByTenant(ctx, "t1"); len(rows) != 1 {
+		t.Fatalf("the refused create stored a row: t1 holds %d", len(rows))
+	}
 }

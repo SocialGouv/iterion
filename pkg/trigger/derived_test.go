@@ -36,18 +36,57 @@ func TestDerivedSubscriptionIDIsStableAndSeparatesEveryField(t *testing.T) {
 	}
 }
 
-func TestDerivedInvocationKeyIsTheOrdinalWithinItsKind(t *testing.T) {
+func TestDerivedInvocationKeysAreIntrinsic(t *testing.T) {
 	invs := []bundle.Invocation{
-		{Kind: bundle.InvocationKindSchedule},
-		{Kind: bundle.InvocationKindBoard},
-		{Kind: bundle.InvocationKindSchedule},
+		{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0  7 * * 1"}},
+		{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 7 * * 1"}},
+		{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 9 * * 5"}},
+		{Kind: bundle.InvocationKindKeepalive, Keepalive: &bundle.InvocationKeepalive{Interval: "5m"}},
+		{Kind: bundle.InvocationKindKeepalive, Keepalive: &bundle.InvocationKeepalive{Interval: "300s"}},
+		{Kind: bundle.InvocationKindBoard, Board: &bundle.InvocationBoard{On: []string{KindCardMoved}}},
 		{Kind: bundle.InvocationKindConnector, Connector: &bundle.InvocationConnector{Trigger: "slack.message.posted"}},
+		{Kind: bundle.InvocationKindSchedule}, // derives nothing
 	}
-	for i, want := range []string{"0", "0", "1", "slack.message.posted"} {
-		if got := DerivedInvocationKey(invs, i); got != want {
-			t.Errorf("key of invocations[%d] = %q, want %q", i, got, want)
+	if DerivedInvocationKey(invs, 0) != "0 7 * * 1" || DerivedInvocationKey(invs, 0) != DerivedInvocationKey(invs, 1) {
+		t.Errorf("the same cron spelled differently derived %q and %q", DerivedInvocationKey(invs, 0), DerivedInvocationKey(invs, 1))
+	}
+	if DerivedInvocationKey(invs, 0) == DerivedInvocationKey(invs, 2) {
+		t.Error("two different crons derived one key")
+	}
+	if DerivedInvocationKey(invs, 3) != DerivedInvocationKey(invs, 4) {
+		t.Errorf("5m and 300s derived %q and %q", DerivedInvocationKey(invs, 3), DerivedInvocationKey(invs, 4))
+	}
+	if got := DerivedInvocationKey(invs, 5); got == "" || got == DerivedInvocationKey(invs, 0) {
+		t.Errorf("board key = %q, want a digest apart from the crons", got)
+	}
+	if got := DerivedInvocationKey(invs, 6); got != "slack.message.posted" {
+		t.Errorf("connector key = %q, want its trigger", got)
+	}
+	if got := DerivedInvocationKey(invs, 7); got != "" {
+		t.Errorf("an invocation that derives nothing keyed %q", got)
+	}
+}
+
+// A row standing beside its tombstone is retired by the next EnsureDerived:
+// an operator's delete may have died between its tombstone and the row's
+// delete, and the Mongo withdraw may have failed once.
+func TestATombstoneRetiresAStandingRow(t *testing.T) {
+	onSubscriptionTwins(t, func(t *testing.T, st SubscriptionStore) {
+		ctx := context.Background()
+		id := DerivedSubscriptionID("t1", "bot", bundle.InvocationKindBoard, "0", "")
+		if err := st.Create(ctx, Subscription{ID: id, TenantID: "t1", BotID: "bot", Enabled: true}); err != nil {
+			t.Fatal(err)
 		}
-	}
+		if err := st.Tombstone(ctx, Tombstone{ID: id, TenantID: "t1", DeletedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if created, err := st.EnsureDerived(ctx, Subscription{ID: id, TenantID: "t1", BotID: "bot"}); err != nil || created {
+			t.Fatalf("EnsureDerived beside a tombstone = %v, %v; want no create", created, err)
+		}
+		if _, err := st.Get(ctx, id); !errors.Is(err, ErrSubscriptionNotFound) {
+			t.Fatalf("the row the tombstone outlives is still stored: %v", err)
+		}
+	})
 }
 
 // EnsureDerived creates once and never over a row or a tombstone; a

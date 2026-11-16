@@ -1,6 +1,9 @@
 package bundle
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -943,6 +946,41 @@ func ResolveMode(kind InvocationKind, mode ExecutionMode, site string) (Executio
 	return "", &UnsupportedError{Kind: kind, Mode: mode, Site: site, Reason: "not a known execution mode"}
 }
 
+// InvocationKey is the identity of invocations[index] within its bot's
+// manifest, intrinsic to what the invocation says: the package trigger id
+// for a connector invocation, the normalized cron for a schedule, the
+// canonical interval for a keepalive, a digest of the board block. ""
+// derives no subscription (the builders refuse it).
+func InvocationKey(invs []Invocation, index int) string {
+	inv := invs[index]
+	switch inv.Kind {
+	case InvocationKindConnector:
+		if inv.Connector != nil {
+			return inv.Connector.Trigger
+		}
+	case InvocationKindSchedule:
+		if inv.Schedule != nil {
+			if cron := strings.Join(strings.Fields(inv.Schedule.SuggestedCron), " "); cron != "" {
+				return cron
+			}
+		}
+	case InvocationKindKeepalive:
+		if inv.Keepalive != nil {
+			if d, err := time.ParseDuration(strings.TrimSpace(inv.Keepalive.Interval)); err == nil {
+				return d.String()
+			}
+		}
+	case InvocationKindBoard:
+		if inv.Board != nil {
+			if raw, err := json.Marshal(inv.Board); err == nil {
+				sum := sha256.Sum256(raw)
+				return hex.EncodeToString(sum[:])[:16]
+			}
+		}
+	}
+	return ""
+}
+
 // Invocation declares one way this bot can be triggered, plus the execution
 // mode that path uses. The payload field that applies is selected by Kind
 // (Forge for kind=forge, Command for kind=command, Schedule for
@@ -1121,6 +1159,7 @@ var (
 // are a provisioning-time concern (pkg/forge), not a manifest one.
 func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
+	seenKey := map[string]bool{}
 	for idx, inv := range invs {
 		if !knownInvocationKinds[inv.Kind] {
 			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive, connector)", idx, inv.Kind)
@@ -1223,8 +1262,30 @@ func validateInvocations(invs []Invocation) error {
 				return fmt.Errorf("invocations[%d]: %w", idx, err)
 			}
 		}
+		// Two invocations of one kind sharing an identity derive the same
+		// subscription: one row cannot answer for both.
+		if key := InvocationKey(invs, idx); key != "" {
+			if seenKey[string(inv.Kind)+"\x00"+key] {
+				return fmt.Errorf("invocations[%d]: a second %s invocation derives the same subscription (%s %q) — two of one kind must differ", idx, inv.Kind, keyField(inv.Kind), key)
+			}
+			seenKey[string(inv.Kind)+"\x00"+key] = true
+		}
 	}
 	return nil
+}
+
+// keyField names what an invocation key is made of, for the duplicate
+// refusal.
+func keyField(kind InvocationKind) string {
+	switch kind {
+	case InvocationKindConnector:
+		return "trigger"
+	case InvocationKindSchedule:
+		return "cron"
+	case InvocationKindKeepalive:
+		return "interval"
+	}
+	return "board block"
 }
 
 // validateConnectorInvocation checks a kind=connector invocation's shape. What
