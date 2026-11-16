@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io/fs"
@@ -37,6 +38,11 @@ func (s *FilesystemRunStore) newRunFromSpec(ctx context.Context, spec RunCreateS
 	}
 	if err = sanitizePathComponent("run ID", spec.ID); err != nil {
 		return nil, err
+	}
+	if len(spec.ID) > 255 {
+		// The same bound the stream open enforces: a run this store cannot
+		// stream must never be created.
+		return nil, errors.Join(ErrInvalidRunDataIdentity, fmt.Errorf("run id is %d bytes", len(spec.ID)))
 	}
 	if spec.Status == "" {
 		spec.Status = RunStatusRunning

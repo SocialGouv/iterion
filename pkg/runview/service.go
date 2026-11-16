@@ -1056,6 +1056,10 @@ type Service struct {
 	streamSrc runstream.Source
 	// observedEvents owns only explicit observed feeds, never the legacy Source.
 	observedEvents *observedEventBridges
+	// liveEvents owns the retained per-client event subscriptions
+	// StreamSource serves on the native filesystem store; nil on any other
+	// store or with an injected streamSrc.
+	liveEvents *liveEventStreams
 
 	// fileSrcs tracks on-demand events.jsonl tailers started by
 	// ensureEventSource for runs not produced in this process (e.g.
@@ -1525,6 +1529,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.startPipelineScheduler()
 	}
 	s.initObservedEventFeeds()
+	s.initLiveEventStreams()
 	return s, nil
 }
 

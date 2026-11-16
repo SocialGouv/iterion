@@ -39,6 +39,12 @@ func (s *FilesystemRunStore) BeginRunBirth(ctx context.Context, id string) (RunB
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
+	if len(id) > 255 {
+		// The same bound creation and the stream open enforce, before the
+		// birth lock opens an ID-named file the OS may refuse in its own
+		// words.
+		return nil, errors.Join(ErrInvalidRunDataIdentity, fmt.Errorf("run id is %d bytes", len(id)))
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

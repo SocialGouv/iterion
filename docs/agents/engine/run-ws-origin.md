@@ -101,7 +101,8 @@ No other broker payload is delivered. Runs another process produces keep the
 ID-keyed events tailer: it feeds alert detection. A terminal status ends the
 events once a terminal event was read (`run_finished`, `run_failed`,
 `run_cancelled`, `run_interrupted`; `run_resumed` or `run_rewound` reopens),
-even one the cursor had passed; else a 500 ms settle window, then the status is
+even one the cursor had passed; a Terminal hint runs that end check at once,
+without the settle window; else a 500 ms settle window, then the status is
 read again: still terminal ends quietly (status-only terminal writers are
 legitimate), resumed keeps tailing. A transient open failure (a permission, no
 descriptor) is retried, not a replaced run. Format-one numbers decode as

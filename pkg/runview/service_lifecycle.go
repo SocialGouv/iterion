@@ -502,10 +502,12 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, lo
 	}
 }
 
-// StopBackground first cancels and joins explicitly acquired observed event feeds,
-// within ctx, then ends every PERIODIC worker the service owns — the orphan
-// reconcile ticker, the pipeline scheduler, the alert manager's stall poll —
-// and leaves the in-flight runs strictly alone.
+// StopBackground first cancels and joins explicitly acquired observed event feeds
+// and the live event streams StreamSource serves (each ends with
+// runstream.ErrSourceClosed, not a terminal completion), within ctx, then ends
+// every PERIODIC worker the service owns — the orphan reconcile ticker, the
+// pipeline scheduler, the alert manager's stall poll — and leaves the
+// in-flight runs strictly alone.
 //
 // It exists for the caller that REPLACES a service without draining it (the
 // studio's project hot-swap): the engines that already captured this service
@@ -518,8 +520,17 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, lo
 // stopPeriodicReconcile), so a scan wedged in a store call degrades the
 // promise loudly rather than hanging the caller.
 func (s *Service) StopBackground(ctx context.Context) {
+	s.stopBackground(ctx, true)
+}
+
+// stopBackground is StopBackground; liveEvents false leaves the live event
+// streams to the caller, Drain, which ends them after the runs they observe.
+func (s *Service) stopBackground(ctx context.Context, liveEvents bool) {
 	if err := s.observedEvents.stop(ctx); err != nil {
 		s.logger.Warn("observed event feeds: shutdown cleanup not joined: %v", err)
+	}
+	if liveEvents {
+		s.stopLiveEvents(ctx)
 	}
 	s.stopPeriodicReconcile(ctx)
 	// Queued pipelines stay persisted as queued docs and are recovered by the
@@ -557,13 +568,26 @@ func (s *Service) Stop(ctx context.Context) {
 //     emits EventRunInterrupted. A verdict the engine already recorded — in
 //     particular an undecided effect — keeps its own classification.
 //
+// The live event streams end last, on both return paths: a stream of a
+// drained run first gets up to liveEventsDrainGrace (within ctx) to end on its
+// own with its run, delivering what the run persisted on its way out; every
+// stream still open then ends with runstream.ErrSourceClosed.
+//
 // Drain is intended to be called once during process shutdown. After
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
-	s.StopBackground(ctx)
+	s.stopBackground(ctx, false)
 
 	handles := s.manager.Snapshot()
+	drained := make(map[string]bool, len(handles))
+	for _, h := range handles {
+		drained[h.RunID] = true
+	}
+	defer func() {
+		s.liveEvents.awaitRuns(ctx, drained, liveEventsDrainGrace)
+		s.stopLiveEvents(ctx)
+	}()
 
 	for _, h := range handles {
 		h.Cancel()
@@ -584,6 +608,10 @@ func (s *Service) Drain(ctx context.Context) {
 		s.markInterrupted(h.RunID)
 	}
 }
+
+// liveEventsDrainGrace bounds how long Drain lets the event streams of the
+// runs it drained end on their own before it stops them.
+const liveEventsDrainGrace = 2 * time.Second
 
 // markRemainingInterrupted marks every snapshot handle as interrupted.
 // Used on the deadline-exceeded path where we can't tell which

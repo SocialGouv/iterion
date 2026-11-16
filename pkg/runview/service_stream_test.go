@@ -63,8 +63,8 @@ func drainEventBatches(t *testing.T, sub runstream.EventSubscription, prior []*s
 
 // TestStreamSource_EventsReplayThenLiveDedup: the persisted backlog
 // replays as a batch, the on-demand tailer's redundant re-publish of
-// the same events is deduped by seq, and a genuinely new live event
-// arrives exactly once.
+// the same events is never re-delivered, and a genuinely new live event —
+// persisted, then published the way the engine does — arrives exactly once.
 func TestStreamSource_EventsReplayThenLiveDedup(t *testing.T) {
 	svc, _ := newStreamTestService(t)
 	const runID = "run-splice"
@@ -86,7 +86,11 @@ func TestStreamSource_EventsReplayThenLiveDedup(t *testing.T) {
 	// The run is not Active (no in-process manager entry), so an
 	// events.jsonl tailer was attached and re-published seq 0..2 into
 	// the broker — those must be deduped. A NEW live event must pass.
-	svc.broker.Publish(store.Event{Seq: 3, Type: store.EventNodeFinished, RunID: runID, NodeID: "n"})
+	persisted, err := svc.store.AppendEvent(context.Background(), runID, store.Event{Type: store.EventNodeFinished, RunID: runID, NodeID: "n"})
+	if err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	svc.broker.Publish(*persisted)
 
 	got = drainEventBatches(t, sub, got, 5*time.Second, func(evs []*store.Event) bool { return len(evs) >= 4 })
 	if got[3].Seq != 3 {

@@ -16,12 +16,18 @@ func tryStreamReadLock(path, _ string) (RunLock, streamReadLockOutcome, error) {
 		return nil, streamReadLockQuiescent, nil
 	}
 	if e != nil {
-		return nil, streamReadLockFailure, e
+		// A link where the lock belongs, or a lock path through a file, is a
+		// replaced node; a permission or descriptor failure stays transient.
+		return nil, streamReadLockFailure, streamNodeError(e)
 	}
 	info, e := f.Stat()
-	if e != nil || !info.Mode().IsRegular() {
+	if e != nil {
 		f.Close()
-		return nil, streamReadLockFailure, errors.Join(ErrRunDataIdentityChanged, e)
+		return nil, streamReadLockFailure, streamNodeError(e)
+	}
+	if !info.Mode().IsRegular() {
+		f.Close()
+		return nil, streamReadLockFailure, ErrRunDataIdentityChanged
 	}
 	if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
 		f.Close()

@@ -70,10 +70,15 @@ func TestServiceCursorAlertHighwaterPreserved(t *testing.T) {
 	if rows[0].Seq != 5 || rows[0].Type != store.EventAlert {
 		t.Fatal(rows)
 	}
-	svc.Broker().Publish(store.Event{RunID: "r", Seq: 4, Type: store.EventNodeStarted})
-	svc.Broker().Publish(store.Event{RunID: "r", Seq: 6, Type: store.EventNodeFinished})
-	rows = drainEventBatches(t, sub, nil, time.Second, func(rows []*store.Event) bool { return len(rows) > 0 })
-	if len(rows) != 1 || rows[0].Seq != 6 {
+	// An alert carrying Seq 5 must not move the persisted cursor: seq 3 and 4,
+	// appended after it, are both delivered.
+	for _, node := range []string{"three", "four"} {
+		if _, e := svc.store.AppendEvent(ctx, "r", store.Event{Type: store.EventNodeStarted, NodeID: node}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	rows = drainEventBatches(t, sub, nil, 5*time.Second, func(rows []*store.Event) bool { return len(rows) >= 2 })
+	if len(rows) != 2 || rows[0].Seq != 3 || rows[1].Seq != 4 {
 		t.Fatal("live alert highwater changed", rows)
 	}
 }

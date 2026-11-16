@@ -9,23 +9,26 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// svcEventTerminalPollInterval bounds how often an external/dispatcher
-// run's event subscription re-reads run.json to detect a terminal
-// status. Runs produced in THIS process close their broker channel via
-// broker.CloseRun; runs produced elsewhere (external `iterion run`,
+// svcEventTerminalPollInterval bounds how often an event subscription
+// re-reads run.json to detect a terminal status. Runs produced in THIS
+// process close their broker channel via broker.CloseRun, which triggers the
+// check at once; runs produced elsewhere (external `iterion run`,
 // dispatcher-spawned) never do, so without this poll the live tail would
 // block forever on a finished run and the WS would never emit
-// `terminated`. The FS twin of MongoSource's runIsTerminal poll and
-// FileSource.tailUntilTerminal. A var so tests can tighten it.
+// `terminated`. The FS twin of MongoSource's runIsTerminal poll. A var so
+// tests can tighten it.
 var svcEventTerminalPollInterval = 5 * time.Second
 
 // This file exposes the ADR-053 streaming seam on the Service: one
 // runstream.Source for the primary store, whatever the mode. Cloud mode
-// delegates to the injected change-stream source; local mode wraps the
-// Service's own fan-out machinery (EventBroker + RunLogBuffer, fed
-// directly by in-process runs and by the on-demand fsnotify tailers for
-// everything else) behind the same contract, so the WS layer never
-// branches on how a run was produced.
+// delegates to the injected change-stream source. On the native filesystem
+// store, events are retained per-client replay (service_live_events.go): each
+// subscription reads the run it was opened on from disk, and the broker
+// contributes only alerts and wake hints. Logs, and events of any other
+// store, use the Service's own fan-out machinery (EventBroker +
+// RunLogBuffer, fed directly by in-process runs and by the on-demand fsnotify
+// tailers for everything else) behind the same contract, so the WS layer
+// never branches on how a run was produced.
 
 // StreamSource returns the store-agnostic streaming source for the
 // primary store: the injected cloud source when one was wired
@@ -49,8 +52,10 @@ func (v *svcSource) Close() error { return nil }
 // CheckBoundObservationSource admits this handle itself: its store reads —
 // replay, terminal catch-up, log admission and persisted log ranges — run
 // under the subscription context, and their permanent refusals end the
-// subscription through Fail. What arrives after admission on the
-// process-local broker, log buffers and alerts stays routed by run ID.
+// subscription through Fail. On the native filesystem store, persisted
+// events are read from the bound run's retained selection only; alerts, log
+// buffers and tailers, and the events of other stores after admission, stay
+// routed by run ID.
 func (v *svcSource) CheckBoundObservationSource(actual runstream.Source) error {
 	receiver, ok := actual.(*svcSource)
 	if v == nil || v.s == nil || !ok || receiver != v {
@@ -59,12 +64,13 @@ func (v *svcSource) CheckBoundObservationSource(actual runstream.Source) error {
 	return nil
 }
 
-// SubscribeEvents delivers seq >= fromSeq: paginated store replay first,
-// then the live broker tail, deduped against the replay high-water mark.
-// The broker subscription is opened BEFORE the replay so no event can
-// fall between the two phases; the overlap is dropped by seq. Alert
-// events (store.EventAlert, Seq==0, never persisted) bypass the dedup —
-// they only ever arrive on the live tail.
+// SubscribeEvents delivers seq >= fromSeq. On the native filesystem store it
+// is a retained per-client replay (liveEventStreams). Otherwise: paginated
+// store replay first, then the live broker tail, deduped against the replay
+// high-water mark. The broker subscription is opened BEFORE the replay so no
+// event can fall between the two phases; the overlap is dropped by seq. Alert
+// events (store.EventAlert, Seq==0, never persisted) bypass the dedup on both
+// paths — they only ever arrive on the live tail.
 func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq int64) (runstream.EventSubscription, error) {
 	return v.SubscribeEventsCursor(ctx, runID, runstream.EventCursor{Seq: fromSeq})
 }
@@ -73,6 +79,9 @@ func (v *svcSource) SubscribeEventsCursor(ctx context.Context, runID string, pos
 		return nil, err
 	}
 	s := v.s
+	if s.liveEvents != nil {
+		return s.liveEvents.subscribe(ctx, runID, position)
+	}
 	// Read once, by the subscriber: the producer goroutine never reads the
 	// package variable a test may tighten after this subscription began.
 	terminalPoll := svcEventTerminalPollInterval

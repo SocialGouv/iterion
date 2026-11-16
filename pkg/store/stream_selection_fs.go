@@ -1,12 +1,16 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -51,14 +55,30 @@ func streamChild(parent *os.Root, name string) (*os.Root, os.FileInfo, bool, err
 	}
 	child, e := parent.OpenRoot(name)
 	if e != nil {
-		return nil, nil, false, errors.Join(ErrRunDataIdentityChanged, e)
+		return nil, nil, false, streamNodeError(e)
 	}
 	after, e := child.Stat(".")
-	if e != nil || !os.SameFile(before, after) {
+	if e != nil {
 		child.Close()
-		return nil, nil, false, errors.Join(ErrRunDataIdentityChanged, e)
+		return nil, nil, false, streamNodeError(e)
+	}
+	if !os.SameFile(before, after) {
+		child.Close()
+		return nil, nil, false, ErrRunDataIdentityChanged
 	}
 	return child, after, true, nil
+}
+
+// streamNodeError classifies a failed observation of a retained node. Only a
+// failure saying the node is gone or is no longer what was retained (absent,
+// not a directory, a link where none may be) refuses the stream as a
+// replacement; any other failure (a permission, descriptor exhaustion, an I/O
+// error) is returned as it is, transient for the caller.
+func streamNodeError(e error) error {
+	if errors.Is(e, os.ErrNotExist) || errors.Is(e, syscall.ENOTDIR) || errors.Is(e, syscall.ELOOP) {
+		return errors.Join(ErrRunDataIdentityChanged, e)
+	}
+	return e
 }
 func (n *filesystemStreamSelection) addChild(parent *os.Root, name string) (*os.Root, bool, error) {
 	root, info, found, e := streamChild(parent, name)
@@ -115,7 +135,13 @@ func (s *FilesystemRunStore) OpenFilesystemStream(ctx context.Context, id string
 		return nil, false, err
 	}
 	if err = sanitizePathComponent("run ID", id); err != nil {
-		return nil, false, err
+		// No retry can make an invalid ID valid.
+		return nil, false, errors.Join(ErrInvalidRunDataIdentity, err)
+	}
+	if len(id) > 255 {
+		// The one bound every platform shares: refuse before any syscall, so
+		// a native long-name error cannot become an endless retry.
+		return nil, false, errors.Join(ErrInvalidRunDataIdentity, fmt.Errorf("run id is %d bytes", len(id)))
 	}
 	if _, err = ValueFormatForWrite(ctx, id); err != nil {
 		return nil, false, err
@@ -127,6 +153,11 @@ func (s *FilesystemRunStore) OpenFilesystemStream(ctx context.Context, id string
 	defer func() {
 		if err == nil {
 			err = ctx.Err()
+		}
+		if errors.Is(err, syscall.ENAMETOOLONG) {
+			// The run ID is the only name this open varies: one too long for
+			// the file system is as invalid as a malformed one.
+			err = errors.Join(ErrInvalidRunDataIdentity, err)
 		}
 		if err != nil || !observed {
 			n.Close()
@@ -295,7 +326,12 @@ func (n *filesystemStreamSelection) captureBase(ctx context.Context, wait bool) 
 			break
 		}
 		if !errors.Is(err, os.ErrNotExist) {
-			return false, err
+			// EvalSymlinks words a link loop its own way: the kernel's answer
+			// for the same path classifies it.
+			if _, statErr := os.Stat(path); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				err = errors.Join(err, statErr)
+			}
+			return false, streamNodeError(err)
 		}
 		// Configuration aliases are trusted, including initially dangling ones.
 		// Resolve their target once before retaining the nearest existing ancestor.
@@ -337,8 +373,11 @@ func (n *filesystemStreamSelection) captureBase(ctx context.Context, wait bool) 
 	}
 	n.roots = append(n.roots, n.base)
 	info, e := n.base.Stat(".")
-	if e != nil || !os.SameFile(n.baseInfo, info) {
-		return false, errors.Join(ErrRunDataIdentityChanged, e)
+	if e != nil {
+		return false, streamNodeError(e)
+	}
+	if !os.SameFile(n.baseInfo, info) {
+		return false, ErrRunDataIdentityChanged
 	}
 	initial := n.physical
 	parts := append([]string(nil), missing...)
@@ -379,13 +418,19 @@ func (n *filesystemStreamSelection) captureBase(ctx context.Context, wait bool) 
 
 func (n *filesystemStreamSelection) validateRoots() error {
 	current, e := os.Stat(n.physical)
-	if e != nil || !os.SameFile(n.baseInfo, current) {
-		return errors.Join(ErrRunDataIdentityChanged, e)
+	if e != nil {
+		return streamNodeError(e)
+	}
+	if !os.SameFile(n.baseInfo, current) {
+		return ErrRunDataIdentityChanged
 	}
 	for _, link := range n.links {
 		current, e := link.parent.Lstat(link.name)
-		if e != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(link.info, current) {
-			return errors.Join(ErrRunDataIdentityChanged, e)
+		if e != nil {
+			return streamNodeError(e)
+		}
+		if !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(link.info, current) {
+			return ErrRunDataIdentityChanged
 		}
 	}
 	return nil
@@ -455,6 +500,11 @@ func (n *filesystemStreamSelection) operation(ctx context.Context) (context.Cont
 func (n *filesystemStreamSelection) check(ctx context.Context) (context.Context, []byte, error) {
 	ctx, e := n.operation(ctx)
 	if e != nil {
+		return nil, nil, e
+	}
+	// The lock path goes through the retained roots: they are checked first,
+	// so a replaced ancestor is refused, not retried as a lock.
+	if e = n.validateRoots(); e != nil {
 		return nil, nil, e
 	}
 	lock, state, e := acquireStreamMetadataReadAt(ctx, n.id, n.physical)
@@ -604,7 +654,7 @@ func (n *filesystemStreamSelection) DecodeEvent(ctx context.Context, raw []byte)
 		}
 	}
 	var evt Event
-	if e = DecodeValueRecordJSON(ctx, format, ExactEvent, raw, &evt); e != nil {
+	if e = decodeStreamEventJSON(ctx, format, raw, &evt); e != nil {
 		if format == ExactValueFormat {
 			if filesystemContextErrorOnly(e) {
 				return nil, e
@@ -617,6 +667,42 @@ func (n *filesystemStreamSelection) DecodeEvent(ctx context.Context, raw []byte)
 		return nil, ErrRunDataIdentityChanged
 	}
 	return &evt, nil
+}
+
+// decodeStreamEventJSON decodes one persisted event line for a filesystem
+// stream. A legacy-format line keeps its numbers as written (json.Number):
+// streamed events are re-encoded for their consumers, never through float64,
+// so an integer past 2^53 stays exact and a number past the float64 range is
+// delivered instead of skipped as undecodable. The exact format has its own
+// codec. Other legacy readers keep DecodeValueRecordJSON's float64 numbers.
+func decodeStreamEventJSON(ctx context.Context, f ValueFormat, raw []byte, dst *Event) error {
+	f, err := NormalizeValueFormat(int(f))
+	if err != nil {
+		return err
+	}
+	if f == ExactValueFormat {
+		return DecodeValueRecordJSON(ctx, f, ExactEvent, raw, dst)
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value Event
+	if err = dec.Decode(&value); err != nil {
+		return err
+	}
+	if _, err = dec.Token(); err != io.EOF {
+		if err == nil {
+			err = errors.New("store: data after the event record")
+		}
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	*dst = value
+	return nil
 }
 func (n *filesystemStreamSelection) WatchHints() (string, string) { return n.watch, n.watch }
 func (n *filesystemStreamSelection) Close() error {

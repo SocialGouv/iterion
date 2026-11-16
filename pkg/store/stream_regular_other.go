@@ -3,7 +3,6 @@
 package store
 
 import (
-	"errors"
 	"io/fs"
 	"os"
 )
@@ -24,14 +23,22 @@ func openStreamRegular(root *os.Root, name string) (*os.File, fs.FileInfo, error
 		return nil, nil, e
 	}
 	after, e := f.Stat()
-	if e != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+	if e != nil {
 		f.Close()
-		return nil, nil, errors.Join(ErrRunDataIdentityChanged, e)
+		return nil, nil, streamNodeError(e)
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		f.Close()
+		return nil, nil, ErrRunDataIdentityChanged
 	}
 	current, e := root.Lstat(name)
-	if e != nil || !current.Mode().IsRegular() || !os.SameFile(after, current) {
+	if e != nil {
 		f.Close()
-		return nil, nil, errors.Join(ErrRunDataIdentityChanged, e)
+		return nil, nil, streamNodeError(e)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(after, current) {
+		f.Close()
+		return nil, nil, ErrRunDataIdentityChanged
 	}
 	return f, after, nil
 }

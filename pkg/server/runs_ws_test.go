@@ -146,7 +146,7 @@ func TestRunsWS_TerminatedRunEmitsEventTerminated(t *testing.T) {
 func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	srv, hs := newTestServer(t)
 	// Create the run with an empty event stream so the snapshot is
-	// trivial; we'll publish events after subscribe.
+	// trivial; we'll append events after subscribe.
 	st, err := store.New(srv.cfg.StoreDir)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -160,14 +160,18 @@ func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	_ = readEnvelope(t, c, wsTypeSnapshot)
 	awaitBrokerSubscriber(t, srv, "run-live")
 
-	// Publish an event through the broker — same path the engine uses.
-	srv.runs.Broker().Publish(store.Event{
-		Seq:    0,
+	// Persist then publish the persisted copy — the engine's order. The
+	// socket delivers what the run persisted, never a broker payload.
+	persisted, err := st.AppendEvent(context.Background(), "run-live", store.Event{
 		Type:   store.EventNodeStarted,
 		RunID:  "run-live",
 		NodeID: "analyze",
 		Data:   map[string]any{"kind": "agent"},
 	})
+	if err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	srv.runs.Broker().Publish(*persisted)
 
 	env := readEnvelope(t, c, wsTypeEvent)
 	var ev store.Event
