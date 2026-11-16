@@ -8932,6 +8932,7 @@ export interface components {
             tokens_out: number;
         };
         previewCostRequest: {
+            ambient_context?: string;
             backend?: string;
             backend_names?: string[];
             file_path?: string;
@@ -8949,6 +8950,9 @@ export interface components {
             effective?: components["schemas"]["previewEffectiveSettings"];
             nodes: components["schemas"]["previewCostNode"][];
             notes?: string[];
+            route_refusals?: {
+                [key: string]: string;
+            };
             tokens_max: number;
             tokens_min: number;
         };

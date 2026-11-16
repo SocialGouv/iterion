@@ -75,6 +75,7 @@ export default function EngineOptionsSection({
         backendOptions={overrides.nodeBackendOptions}
         backendOptionsReady={overrides.nodeBackendOptionsReady}
         backendOptionsError={overrides.nodeBackendOptionsError}
+        routeRefusals={overrides.routeRefusals}
         onChange={(name, patch) =>
           overrides.setModelOverrides((prev) => ({
             ...prev,

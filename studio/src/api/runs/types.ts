@@ -1053,6 +1053,13 @@ export interface PreviewCostResponse {
   // list becoming inert on a CLI backend, or the tools claude_code withholds
   // from every node whatever the list says (#2815).
   backend_options?: Record<string, Record<string, PreviewBackendOption>>;
+  // Per LLM node (#3259): why the backend the run will ACTUALLY take — the
+  // inherit route, resolved exactly as runtime admission resolves it — is
+  // refused by a declared capability (codemode, ambient_context). The
+  // refusal is terminal at dispatch, so the launch dialog renders it on the
+  // node row: the "inherit" choice is the node's declaration and cannot be
+  // deselected, so saying so is the only screen before the run.
+  route_refusals?: Record<string, string>;
 }
 
 export interface PreviewBackendOption {

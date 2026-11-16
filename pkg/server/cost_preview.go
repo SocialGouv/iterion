@@ -25,11 +25,12 @@ func unitNoteFor(err error) string {
 }
 
 type previewCostRequest struct {
-	FilePath     string   `json:"file_path,omitempty"`
-	Source       string   `json:"source,omitempty"`
-	Permission   string   `json:"permission,omitempty"`
-	Backend      string   `json:"backend,omitempty"`
-	BackendNames []string `json:"backend_names,omitempty"`
+	FilePath       string   `json:"file_path,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Permission     string   `json:"permission,omitempty"`
+	Backend        string   `json:"backend,omitempty"`
+	AmbientContext string   `json:"ambient_context,omitempty"`
+	BackendNames   []string `json:"backend_names,omitempty"`
 }
 
 // CostMin == 0 with CostMax == 0 signals "no pricing data" so the
@@ -61,6 +62,13 @@ type previewCostResponse struct {
 	// The client layers its own override on top (it owns the selects,
 	// so "run_override" never appears here).
 	Effective *previewEffectiveSettings `json:"effective,omitempty"`
+	// RouteRefusals (#3259) names, per LLM node, why the backend the run
+	// will actually take — the inherit route, resolved exactly as
+	// resolveBackendName resolves it — is refused by a DECLARED capability
+	// (codemode, ambient_context). Terminal at dispatch: no fallbacks:
+	// route carries a node past them, so a launch on this route dies at the
+	// first node. Said here, before the launch.
+	RouteRefusals map[string]string `json:"route_refusals,omitempty"`
 	// BackendOptions is keyed by node id, then by the backend names the
 	// Studio is actually offering. The server computes the exact launch-time
 	// permission precedence and capability crossing so the picker cannot
@@ -237,14 +245,21 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	backendOptions, routeRefusals := buildBackendOverrideOptions(
+		cr.Workflow,
+		req.Permission,
+		req.Backend,
+		req.AmbientContext,
+		req.BackendNames,
+	)
 	resp := previewCostResponse{
 		Effective: buildEffectiveSettings(cr.Workflow),
-		BackendOptions: buildBackendOverrideOptions(
-			cr.Workflow,
-			req.Permission,
-			req.Backend,
-			req.BackendNames,
-		),
+		// The ROUTE screen (#3259): per LLM node, why the backend the run
+		// will actually take — the inherit route — is refused by a DECLARED
+		// capability. The per-candidate loop cannot say it: the operator
+		// touching no per-node dropdown launches on exactly this route.
+		RouteRefusals:  routeRefusals,
+		BackendOptions: backendOptions,
 	}
 	hasPricing := false
 	for _, node := range cr.Workflow.Nodes {
