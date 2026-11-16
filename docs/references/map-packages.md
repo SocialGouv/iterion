@@ -198,7 +198,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/connector/ingress` | reads one inbound delivery the way a connector package declares it (ADR-168 §3, §4): bounded extraction of the credential, the verification of the… | — |
 | `pkg/connector/intake` | holds what a connector source owes after it answered a vendor (ADR-168 §8): the durable INTAKE row a delivery or a polled item becomes, and the… | `Matcher`, `Store`, `Submitter` |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — |
-| `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — |
+| `pkg/connector/spec` | stores and judges the catalog identity a connector package may declare about its icon: the load-time sanitation, size cap and digest that let a route… | — |
 | `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `AttachmentStore`, `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` |
 | `pkg/credusage` | meters per-CREDENTIAL monthly LLM spend — the question the org bucket cannot answer. | `Counter` |
 | `pkg/deeplink` | builds the URLs that point a human at a page of the studio. | — |

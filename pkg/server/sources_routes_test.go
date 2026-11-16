@@ -270,7 +270,10 @@ func TestSourcesOutagesAre503(t *testing.T) {
 	}{
 		{"connections", func(s *Server) { s.connectionStore = sourcesFailingConnStore{s.connectionStore} }},
 		{"subscriptions", func(s *Server) { s.cfg.TriggerStore = sourcesFailingSubStore{s.cfg.TriggerStore} }},
-		{"catalog", func(s *Server) { s.connectorPackages = nil; s.connectorCatalog = sourcesFailingCatalog{s.connectorCatalog} }},
+		{"catalog", func(s *Server) {
+			s.connectorPackages = nil
+			s.connectorCatalog = sourcesFailingCatalog{s.connectorCatalog}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A fresh world per case: the stubs wrap the real stores.

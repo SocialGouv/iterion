@@ -381,6 +381,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/e2e-stabilisation-plan.md`](../e2e-stabilisation-plan.md) | E2E stabilisation plan — per surface | recorded below with the decision that settles each; the order is fixed and | — |
 | [`docs/e2e_coverage.md`](../e2e_coverage.md) | E2E coverage matrix | Where each iterion + claw-code-go feature is exercised. | — |
 | [`docs/environment-variables.md`](../environment-variables.md) | Environment variables | Operational `ITERION_*` environment variables read directly by the engine | — |
+| [`docs/event-sources.md`](../event-sources.md) | Event sources | An event source is anything that launches a bot: a connector package's | — |
 | [`docs/examples.md`](../examples.md) | 🤖 Bots and examples | Iterion ships a maintained fleet of production bots — a co-CTO, a feature | — |
 | [`docs/forge-conversations.md`](../forge-conversations.md) | Forge conversations — replying to the bot (forge threads → run → in-thread reply) | How an authorized forge user "talks back" to a bot (reply to its review, | — |
 | [`docs/forge-integrations.md`](../forge-integrations.md) | Forge integrations (connect a repo, auto-provision) | bot (e.g. | — |

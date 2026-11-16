@@ -32,18 +32,19 @@ func identLoad(t *testing.T, identity string) error {
 	return err
 }
 
-// TestCategoryIsAClosedTaxonomy: a known category loads, the empty one
-// loads as uncategorized, and an unknown one is refused as the typo it is.
-func TestCategoryIsAClosedTaxonomy(t *testing.T) {
+// TestCategoryIsAnOpenVocabulary: a declared category loads, the empty one
+// loads as uncategorized, and an unknown one LOADS TOO — a display field
+// never refuses the package that ships it (ADR-168 §2); the studio renders
+// it raw until this build labels it.
+func TestCategoryIsAnOpenVocabulary(t *testing.T) {
 	if err := identLoad(t, "category: source_control\n"); err != nil {
 		t.Fatalf("known category: %v", err)
 	}
 	if err := identLoad(t, ""); err != nil {
 		t.Fatalf("uncategorized: %v", err)
 	}
-	err := identLoad(t, "category: sourc_control\n")
-	if err == nil || !strings.Contains(err.Error(), "sourc_control") {
-		t.Fatalf("typo'd category: err = %v, want a refusal naming it", err)
+	if err := identLoad(t, "category: sourc_control\n"); err != nil {
+		t.Fatalf("unknown category must load raw: %v", err)
 	}
 }
 

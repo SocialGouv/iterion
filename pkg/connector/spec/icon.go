@@ -25,18 +25,21 @@ import (
 const EnvIconMaxBytes = "ITERION_CONNECTOR_ICON_MAX_BYTES"
 
 // IconMaxBytesDefault is the cap when the operator names none: an icon is
-// a mark, not an asset bundle.
-const IconMaxBytesDefault = 32 << 10
+// a mark, not an asset bundle. The operator may RAISE it or remove it with
+// 0 — a bound with no override is a defect (philosophy §1) — but a value
+// that is not a non-negative number refuses the load: a typo'd bound must
+// read as one.
+const IconMaxBytesDefault = 64 << 10
 
-// iconMaxBytes reads the operator's cap.
+// iconMaxBytes reads the operator's cap; 0 is uncapped.
 func iconMaxBytes(getenv func(string) string) (int, error) {
 	v := getenv(EnvIconMaxBytes)
 	if v == "" {
 		return IconMaxBytesDefault, nil
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("spec: %s: %q is not a positive byte count", EnvIconMaxBytes, v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("spec: %s: %q is not a byte count (0 removes the cap)", EnvIconMaxBytes, v)
 	}
 	return n, nil
 }
@@ -80,7 +83,7 @@ func loadIcon(fsys fs.FS, dir string, p *Package, getenv func(string) string) er
 // everything else — while a url() inside one is dropped as the external
 // reference it is.
 func sanitizeSVG(body []byte, cap int) ([]byte, error) {
-	if len(body) > cap {
+	if cap > 0 && len(body) > cap {
 		return nil, fmt.Errorf("icon is %d bytes, over the %d byte cap (%s)", len(body), cap, EnvIconMaxBytes)
 	}
 	dec := xml.NewDecoder(bytes.NewReader(body))

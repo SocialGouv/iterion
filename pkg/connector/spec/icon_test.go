@@ -91,6 +91,13 @@ func TestLoadIconSanitizedAtLoad(t *testing.T) {
 // bytes of an icon exactly at the cap load, one byte over refuse, and the
 // refusal names the operator's var so a surprise reads as the bound it is.
 func TestLoadIconCapIsABoundary(t *testing.T) {
+	// 0 removes the cap: the override is the operator's to state.
+	t.Setenv(spec.EnvIconMaxBytes, "0")
+	big := `<svg xmlns="http://www.w3.org/2000/svg"><text>` + strings.Repeat("x", 80<<10) + `</text></svg>`
+	if _, err := spec.LoadFS(iconPackage(big, nil), "."); err != nil {
+		t.Fatalf("uncapped: %v", err)
+	}
+	t.Setenv(spec.EnvIconMaxBytes, "240")
 	base := loadIconPackage(t, iconPackage(`<svg xmlns="http://www.w3.org/2000/svg"><text>hi</text></svg>`, nil))
 	at := len(base.IconSVG) + 3 // headroom for the boundary pair below
 	t.Setenv(spec.EnvIconMaxBytes, strconv.Itoa(at))
@@ -108,10 +115,10 @@ func TestLoadIconCapIsABoundary(t *testing.T) {
 }
 
 // TestLoadIconBadBoundRefusesTheLoad drives the bound itself: a value that
-// is not a positive byte count refuses the load — a fallback to the
+// is not a non-negative byte count refuses the load — a fallback to the
 // default would serve the file under a bound the operator did not choose.
 func TestLoadIconBadBoundRefusesTheLoad(t *testing.T) {
-	for _, bad := range []string{"abc", "-1", "0"} {
+	for _, bad := range []string{"abc", "-1"} {
 		t.Setenv(spec.EnvIconMaxBytes, bad)
 		_, err := spec.LoadFS(iconPackage(`<svg xmlns="http://www.w3.org/2000/svg"/>`, nil), ".")
 		if err == nil || !strings.Contains(err.Error(), spec.EnvIconMaxBytes) {
@@ -143,7 +150,7 @@ func TestLoadIconPathGuards(t *testing.T) {
 // refuses an oversized icon, and the refusal still names the var.
 func TestLoadIconDefaultCapHolds(t *testing.T) {
 	body := `<svg xmlns="http://www.w3.org/2000/svg"><text>` +
-		strings.Repeat("x", 40<<10) + `</text></svg>`
+		strings.Repeat("x", 80<<10) + `</text></svg>`
 	_, err := spec.LoadFS(iconPackage(body, nil), ".")
 	if err == nil || !strings.Contains(err.Error(), spec.EnvIconMaxBytes) {
 		t.Fatalf("default cap: err = %v, want a refusal naming %s", err, spec.EnvIconMaxBytes)

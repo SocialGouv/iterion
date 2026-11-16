@@ -242,11 +242,11 @@ func (m Maturity) Known() bool {
 	return false
 }
 
-// Category is the catalog's grouping for a connector: the pills the studio's
-// source view filters by. A closed taxonomy, for the reason Maturity's is —
-// the empty value reads as uncategorized (an entry lists under no pill) and
-// an unknown value is a typo that must read as one, not a silent "other"
-// bucket nobody searches.
+// Category is the catalog's grouping for a connector: the pills the
+// studio's source view filters by. An OPEN vocabulary (ADR-168 §2): the
+// declared values are the pills this build labels, an unknown value loads
+// and renders raw — a display field never refuses the package that ships
+// it — and the empty value reads as uncategorized.
 type Category string
 
 const (
@@ -261,13 +261,3 @@ const (
 	// CategoryMonitoring is monitoring, alerting and observability.
 	CategoryMonitoring Category = "monitoring"
 )
-
-// Known reports whether c is one of the declared groups (the empty value
-// is, and reads as uncategorized).
-func (c Category) Known() bool {
-	switch c {
-	case "", CategorySourceControl, CategoryChat, CategoryIssueTracker, CategoryIncident, CategoryMonitoring:
-		return true
-	}
-	return false
-}

@@ -190,13 +190,11 @@ func (p *Package) Validate() error {
 	if err := p.ValidateGenerated(); err != nil {
 		return err
 	}
-	// The catalog identity fields, judged like every closed vocabulary:
-	// an unknown category is a typo and a malformed accent is a broken
-	// monogram; an icon declared but not loaded means the Package was
-	// built by hand rather than loaded, so no unsanitized byte travels.
-	if !c.Category.Known() {
-		return fmt.Errorf("connector %q: unknown category %q (known: source_control, chat, issue_tracker, incident, monitoring)", c.ID, string(c.Category))
-	}
+	// The catalog identity fields: an unknown category is the vendor's or
+	// the operator's newer word and renders raw (ADR-168 §2), a malformed
+	// accent is a broken monogram and is refused, and an icon declared but
+	// not loaded means the Package was built by hand rather than loaded,
+	// so no unsanitized byte travels.
 	if c.BrandColor != "" && !brandColorRe.MatchString(c.BrandColor) {
 		return fmt.Errorf("connector %q: brand_color %q is not \"#rrggbb\"", c.ID, c.BrandColor)
 	}
