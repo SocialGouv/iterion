@@ -131,6 +131,34 @@ func runScript(vm *goja.Runtime, src string, wall time.Duration, resultBytes int
 			}
 			return Refuse(RefusalWallClock, "script interrupted after %s: the wall-clock bound elapsed", wall)
 		}
+		// A tool-channel failure reaches here TOO, when the script had no
+		// `catch` to make the bridge's interrupt win the race: the bridge's
+		// panic surfaces as a *goja.Exception whose thrown value wraps
+		// errToolChannelBroken, and the InterruptedError branch above never
+		// matches. Measured both ways before this existed: the SAME broken
+		// channel came back script_error without a catch and
+		// script_host_died with one — and script_error is the class
+		// errToolChannelBroken's doc forbids, because a script told "your
+		// call failed" would retry a broken deployment in a loop, which is
+		// exactly the shape a bare `call(...)` — what a model writes — makes
+		// the common case. Unwrap the exception and read the thrown value.
+		// Export here is safe: the value was built by the bridge from a Go
+		// error, not by running script code.
+		var exception *goja.Exception
+		if errors.As(err, &exception) {
+			// The thrown value is goja's NewGoError wrapper: its Export is a
+			// map carrying the ORIGINAL Go error under the key "value" —
+			// probed, not assumed, and the shape is vendor-pinned with
+			// TestABrokenChannelIsHostDiedWhateverTheCatch as the guard: if
+			// goja's export shape moves, that test reddens with
+			// script_error and this unwrap is the first suspect.
+			if exported, ok := exception.Value().Export().(map[string]any); ok {
+				if wrapped, ok := exported["value"].(error); ok && errors.Is(wrapped, errToolChannelBroken) {
+					return Refuse(RefusalHostDied,
+						"the script was stopped because its tool channel failed: %s", wrapped.Error())
+				}
+			}
+		}
 		// Matched on the type, because the message is a bare stack trace:
 		// goja's StackOverflowError carries no sentence, so the cause has to be
 		// supplied here or the model receives a file:line and nothing else.

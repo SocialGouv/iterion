@@ -1,0 +1,79 @@
+package scripthost
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dop251/goja"
+)
+
+// The ticket's witness (#3316): a program with NO try/catch whose channel
+// breaks under a call must come back script_host_died, and the same program
+// WITH a try/catch must too.
+//
+// Measured before the fix, by fault injection: the same broken channel came
+// back script_error without a catch and script_host_died with one — and
+// script_error is the class errToolChannelBroken's doc forbids, because a
+// script told "your call failed" would retry a broken deployment in a loop.
+// Why the classes differed: with a catch, the bridge's interrupt wins the
+// race and the InterruptedError branch classifies; without one, the bridge's
+// panic surfaces as a *goja.Exception and fell to the generic refusal.
+//
+// This test reproduces the bridge's EXACT panic shape — `panic(vm.NewGoError(
+// fmt.Errorf("%w: …", errToolChannelBroken)))`, the same construction
+// toolcall_child.go's binding performs — bound as `call`, because the channel
+// itself cannot be broken through the public surface any more: since the
+// frame caps became coherent, both directions refuse by construction.
+func TestABrokenChannelIsHostDiedWhateverTheCatch(t *testing.T) {
+	t.Parallel()
+
+	bindAndRun := func(src string) Response {
+		vm := newRuntime([32]byte{9}, epoch)
+		vm.Set("call", func(call goja.FunctionCall) goja.Value {
+			// The bridge's own double gesture, verbatim in shape
+			// (toolcall_child.go): post the interrupt, THEN panic. The
+			// interrupt cannot be caught, so with a catch it wins the race
+			// and classifies; without one, the panic surfaces as an
+			// exception — which is the row that classified wrong.
+			err := fmt.Errorf("%w: reading the result of call 1: the frame was refused",
+				errToolChannelBroken)
+			vm.Interrupt(err)
+			panic(vm.NewGoError(err))
+		})
+		lim := DefaultLimits()
+		return runScript(vm, src, lim.Wall, lim.ResultBytes)
+	}
+
+	for _, row := range []struct {
+		name string
+		src  string
+	}{
+		{"no catch (the shape a model writes)", `call('x', {})`},
+		{"try/catch returning its own answer", `try { call('x', {}) } catch (e) { 'swallowed' }`},
+		{"try/finally", `try { call('x', {}) } finally { }`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			resp := bindAndRun(row.src)
+			if resp.Refusal != RefusalHostDied {
+				t.Fatalf("refusal = %q (message %q), want %q — the verdict must not depend on whether the program happens to have a catch", resp.Refusal, resp.Message, RefusalHostDied)
+			}
+			if !strings.Contains(resp.Message, "tool channel failed") {
+				t.Errorf("the message does not name the channel: %q", resp.Message)
+			}
+		})
+	}
+
+	// The other arm: a script's OWN throw is still script_error. The
+	// unwrapping must key on errToolChannelBroken and nothing else, or every
+	// ordinary script exception would be reported as a broken deployment.
+	vm := newRuntime([32]byte{10}, epoch)
+	vm.Set("call", func(call goja.FunctionCall) goja.Value {
+		panic(vm.NewGoError(fmt.Errorf("some ordinary tool failure, not a channel defect")))
+	})
+	resp := runScript(vm, `try { call('x', {}) } catch (e) { throw new Error('rethrown: ' + e.message) }`, 10*time.Second, 1<<20)
+	if resp.Refusal != RefusalScriptError {
+		t.Errorf("an ordinary tool failure thrown and rethrown by the script = %q, want %q", resp.Refusal, RefusalScriptError)
+	}
+}
