@@ -270,15 +270,21 @@ func (e *ClawExecutor) FinalizeCorrectedOutput(ctx context.Context, node ir.Node
 	return nil
 }
 func (e *ClawExecutor) finalizeNodeOutput(ctx context.Context, node ir.Node, output map[string]any) {
+	// The node execution is over: the next one starts a tool-step
+	// budget of its own (toolTurnsAnchorCarry). Only the end of the
+	// execution drops it — the correction settle shares
+	// finalizeNodeOutputFacts and runs mid-execution.
+	if e.sessions != nil {
+		if runID := RunIDFromContext(ctx); runID != "" {
+			e.sessions.dropAnchor(runID, nodeSessionKey(node))
+		}
+	}
 	llm, isLLM := node.(ir.LLMNode)
 	e.finalizeNodeOutputFacts(ctx, node.NodeID(), nodeSessionKey(node), isLLM && llm.GetSession() == ir.SessionPersist, output)
 }
 func (e *ClawExecutor) finalizeNodeOutputFacts(ctx context.Context, nodeID, key string, persist bool, output map[string]any) {
 	runID := RunIDFromContext(ctx)
 	if e.sessions != nil && runID != "" {
-		// The node execution is over: the next one starts a tool-step
-		// budget of its own (toolTurnsAnchorCarry).
-		e.sessions.dropAnchor(runID, key)
 		if persist && output != nil {
 			sid, _ := output[delegate.SessionIDKey].(string)
 			fingerprint, _ := output[delegate.SessionFingerprintKey].(string)
