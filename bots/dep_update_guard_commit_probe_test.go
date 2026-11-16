@@ -88,7 +88,8 @@ func runCommitProbe(t *testing.T, ws, prepared, reported, tokenPath string, remo
 // comparison (the unpushed case certifies a commit the PR does not carry);
 // restore the report-first exit on an empty report (the pushed-but-
 // unreported case is refused again); refuse a report that names no commit
-// id instead of setting it aside (the odd-report case); test only that the
+// id instead of setting it aside (the odd-report case); set aside an id of
+// no legal commit width (the mis-transcribed-id cases); test only that the
 // audited commit is an ancestor (the someone-else's-commit cases); honour
 // replace refs or grafts (the dressed cases); read the workspace's origin,
 // its config or the global config for the push evidence (the pushed-
@@ -150,6 +151,29 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 			got := read(t, ws, prepared, reported)
 			if !got.Moved || got.SHA != aligned || !strings.Contains(got.Reason, "set aside") {
 				t.Fatalf("a pushed alignment with the report %q was not certified on the git evidence: %+v", reported, got)
+			}
+		})
+	}
+	// An id of no legal commit width — the live run dropped two hex digits
+	// of the pushed sha, 40 became 38 — cannot name a commit in any
+	// repository: it is a mis-transcription, set aside like a report
+	// without a commit id, and the git evidence decides. Refusing on it
+	// held a good alignment red until a manual /vetty.
+	for _, reported := range []string{aligned[:19] + aligned[21:], strings.Repeat("d", 39), strings.Repeat("f", 20)} {
+		t.Run("pushed, an id of no legal width is set aside/"+reported[:12], func(t *testing.T) {
+			got := read(t, ws, prepared, reported)
+			if !got.Moved || got.SHA != aligned || !strings.Contains(got.Reason, "set aside") {
+				t.Fatalf("a pushed alignment with the mis-transcribed id %q was not certified on the git evidence: %+v", reported, got)
+			}
+		})
+	}
+	// A full-width id the workspace cannot resolve names a real commit
+	// somewhere — a foreign one — and still refuses: the run's account and
+	// the workspace contradict each other.
+	for _, reported := range []string{strings.Repeat("d", 40), strings.Repeat("0", 64)} {
+		t.Run("pushed, a full-width id the workspace does not hold is refused/"+reported[:12], func(t *testing.T) {
+			if got := read(t, ws, prepared, reported); got.Moved || got.SHA != "" || !strings.Contains(got.Reason, "not the workspace head") {
+				t.Fatalf("a report naming a commit the workspace does not hold was certified: %+v", got)
 			}
 		})
 	}
