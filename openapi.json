@@ -15710,6 +15710,38 @@
         ]
       }
     },
+    "/api/teams/{id}/bots/{name}/triggers/from-invocation": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotsByNameTriggersFromInvocation",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bots/{name}/triggers/from-invocation",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/config-editor/shares": {
       "get": {
         "operationId": "getTeamsByIdConfigEditorShares",
@@ -16893,6 +16925,94 @@
         ]
       }
     },
+    "/api/teams/{id}/intakes": {
+      "get": {
+        "operationId": "getTeamsByIdIntakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}": {
+      "get": {
+        "operationId": "getTeamsByIdIntakesBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdIntakesBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/intakes/{sub}/replay",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/invitations": {
       "get": {
         "operationId": "getTeamsByIdInvitations",
@@ -17242,6 +17362,62 @@
           }
         },
         "summary": "POST /api/teams/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/pairs": {
+      "get": {
+        "operationId": "getTeamsByIdPairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pairs",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/pairs/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdPairsBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/pairs/{sub}/replay",
         "tags": [
           "teams"
         ]
@@ -17778,6 +17954,122 @@
           }
         },
         "summary": "POST /api/teams/{id}/status",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers": {
+      "get": {
+        "operationId": "getTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers/preview",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/{sub}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/triggers/{sub}",
         "tags": [
           "teams"
         ]

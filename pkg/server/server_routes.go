@@ -452,6 +452,7 @@ func (s *Server) routes() {
 		if s.connectorIntakes != nil {
 			s.registerConnectorDeadLetterRoutes()
 		}
+		s.registerTeamTriggerRoutes()
 	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).

@@ -176,6 +176,9 @@ func (s *Server) handleTriggersHealth(w http.ResponseWriter, r *http.Request) {
 // JWT's active team in cloud mode, "" in the local single-host scope (where
 // the identity carries no team).
 func (s *Server) triggerTenant(r *http.Request) string {
+	if team, ok := teamScopedTenant(r.Context()); ok {
+		return team
+	}
 	id, _ := auth.FromContext(r.Context())
 	return id.TeamID
 }
