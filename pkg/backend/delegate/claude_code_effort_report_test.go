@@ -12,10 +12,15 @@ import (
 )
 
 // effortStandInCLI records, per spawn, the CLAUDE_CODE_EFFORT_LEVEL it was
-// started with, and answers the minimum stream-json the SDK needs to end a
-// turn once it has read the user message.
+// started with and the flag settings object its --settings names, and
+// answers the minimum stream-json the SDK needs to end a turn once it has
+// read the user message.
 const effortStandInCLI = `#!/bin/sh
 printf '%s\n' "${CLAUDE_CODE_EFFORT_LEVEL-<unset>}" >> "$EFFORT_LOG"
+settings=; prev=
+for a in "$@"; do if [ "$prev" = --settings ]; then settings=$a; fi; prev=$a; done
+if [ -n "$settings" ] && [ -f "$settings" ]; then tr '\n' ' ' < "$settings" >> "$SETTINGS_FILE_LOG"; fi
+printf '\n' >> "$SETTINGS_FILE_LOG"
 case "$*" in *--input-format*)
 	while read -r line; do case "$line" in *'"type":"user"'*) break ;; esac; done ;;
 esac
@@ -23,40 +28,64 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1","model":"fake
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"s1"}'
 `
 
+// runEffortStandIn runs the real backend on task against the stand-in and
+// answers the Result, every spawn's effort env, and every spawn's settings.
+func runEffortStandIn(t *testing.T, task Task) (Result, []string, []string) {
+	t.Helper()
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "claude")
+	if err := os.WriteFile(cli, []byte(effortStandInCLI), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	effortLog, settingsLog := filepath.Join(dir, "effort.log"), filepath.Join(dir, "settings.log")
+	t.Setenv("EFFORT_LOG", effortLog)
+	t.Setenv("SETTINGS_FILE_LOG", settingsLog)
+	t.Setenv("TMPDIR", t.TempDir())
+	task.Command, task.WorkDir, task.UserPrompt = cli, dir, "x"
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
+	res, err := b.Execute(context.Background(), task)
+	t.Logf("Execute: err=%v", err)
+	efforts, rerr := os.ReadFile(effortLog)
+	if rerr != nil {
+		t.Fatalf("the stand-in was never spawned: %v", rerr)
+	}
+	settings, _ := os.ReadFile(settingsLog)
+	return res, strings.Fields(string(efforts)), strings.Split(strings.TrimSpace(string(settings)), "\n")
+}
+
 // TestClaudeCodeReportsTheEffortItHandsTheCLI runs the real backend against a
 // stand-in CLI and compares the effort the Result reports with the one every
-// spawn was started with: the node's level, `none` raised to `low`, and the
-// backend's default when the task names none. The report is what a node's
-// record says the model was asked to spend.
+// spawn was started with: the node's level, `none` raised to `low`, the
+// backend's default when the task names none. The level is PINNED: a task's
+// ExtraEnv entry for the variable is dropped, and the --settings env block —
+// which outranks a user or project settings `env` on the CLI (measured,
+// TestCLILiveClaudeCodeEffort) — carries the same level.
 //
 // Mutation that reddens it: drop the reportClaudeCodeEffort defer from
-// Execute, or report task.ReasoningEffort instead of claudeCodeSpawnEffort.
+// Execute; drop the claudeEffortLevelEnv pin from claudeEnvPinsAndDropped.
 func TestClaudeCodeReportsTheEffortItHandsTheCLI(t *testing.T) {
-	for _, tc := range []struct{ handed, want string }{
-		{"high", "high"},
-		{"none", "low"},
-		{"", defaultClaudeCodeEffort},
+	for _, tc := range []struct {
+		name, handed, extra, want string
+	}{
+		{"high", "high", "", "high"},
+		{"none", "none", "", "low"},
+		{"no level", "", "", defaultClaudeCodeEffort},
+		{"an ExtraEnv entry for the variable", "high", "low", "high"},
 	} {
-		t.Run("handed "+tc.handed, func(t *testing.T) {
-			dir := t.TempDir()
-			cli := filepath.Join(dir, "claude")
-			if err := os.WriteFile(cli, []byte(effortStandInCLI), 0o755); err != nil {
-				t.Fatal(err)
+		t.Run(tc.name, func(t *testing.T) {
+			task := Task{ReasoningEffort: tc.handed, Model: "claude-opus-5-5"}
+			if tc.extra != "" {
+				task.ExtraEnv = []string{claudeEffortLevelEnv + "=" + tc.extra}
 			}
-			logPath := filepath.Join(dir, "effort.log")
-			t.Setenv("EFFORT_LOG", logPath)
-			t.Setenv("TMPDIR", t.TempDir())
-			b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
-			res, err := b.Execute(context.Background(), Task{Command: cli, WorkDir: dir, UserPrompt: "x", ReasoningEffort: tc.handed})
-			t.Logf("Execute: err=%v", err)
-			raw, rerr := os.ReadFile(logPath)
-			if rerr != nil {
-				t.Fatalf("the stand-in was never spawned: %v", rerr)
-			}
-			spawned := strings.Fields(string(raw))
-			for _, got := range spawned {
+			res, efforts, settings := runEffortStandIn(t, task)
+			for _, got := range efforts {
 				if got != tc.want {
-					t.Errorf("a spawn got CLAUDE_CODE_EFFORT_LEVEL=%q, want %q", got, tc.want)
+					t.Errorf("a spawn got %s=%q, want %q", claudeEffortLevelEnv, got, tc.want)
+				}
+			}
+			for _, s := range settings {
+				if !strings.Contains(s, `"`+claudeEffortLevelEnv+`":"`+tc.want+`"`) {
+					t.Errorf("a spawn's --settings env does not pin %s=%q: %s", claudeEffortLevelEnv, tc.want, s)
 				}
 			}
 			if !res.WireReasoningEffortReported || res.WireReasoningEffort != tc.want || res.WireReasoningEffortLast != tc.want {
@@ -64,4 +93,51 @@ func TestClaudeCodeReportsTheEffortItHandsTheCLI(t *testing.T) {
 			}
 		})
 	}
+}
+
+// claudeCLIEffortMeasurements is what claude CLI 2.1.282 put in a request's
+// output_config.effort when started with CLAUDE_CODE_EFFORT_LEVEL=level for
+// model, against a recording Anthropic endpoint (rva-s12-c, 2026-11-16;
+// TestCLILiveClaudeCodeEffort re-measures it): "" is no effort sent.
+var claudeCLIEffortMeasurements = []struct{ model, level, sent string }{
+	{"claude-haiku-4-5", "high", ""},
+	{"claude-haiku-4-5", "low", ""},
+	{"claude-sonnet-4-5", "high", ""},
+	{"claude-sonnet-4-6", "xhigh", "high"},
+	{"claude-opus-4-7", "high", "high"},
+	{"claude-opus-5-5", "high", "high"},
+	{"claude-sonnet-5", "high", "high"},
+	{"claude-opus-5-5", "max", "max"},
+	{"glm-5.3", "high", "high"},
+}
+
+// TestClaudeCodeReportsWhatTheCLISendsForItsModel pins the CLI's own rule:
+// the backend reports, model by model, the level the CLI was measured
+// sending — none for a Claude model with no effort matrix, a clamp onto the
+// model's accepted set, any other id as handed — through the real backend
+// and its stand-in. A call that never reaches the model reports none.
+//
+// Mutation that reddens it: report claudeCodeSpawnEffort instead of
+// claudeCodeWireEffort; report a level when the call reached no model.
+func TestClaudeCodeReportsWhatTheCLISendsForItsModel(t *testing.T) {
+	for _, m := range claudeCLIEffortMeasurements {
+		t.Run(m.model+"/"+m.level, func(t *testing.T) {
+			res, _, _ := runEffortStandIn(t, Task{Model: m.model, ReasoningEffort: m.level})
+			if !res.WireReasoningEffortReported || res.WireReasoningEffort != m.sent {
+				t.Errorf("reported %q (reported=%v), the CLI sends %q", res.WireReasoningEffort, res.WireReasoningEffortReported, m.sent)
+			}
+		})
+	}
+	t.Run("a call that reaches no model", func(t *testing.T) {
+		dir := t.TempDir()
+		missing := filepath.Join(dir, "no-such-claude")
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
+		res, err := b.Execute(context.Background(), Task{Command: missing, WorkDir: dir, UserPrompt: "x", Model: "claude-opus-5-5", ReasoningEffort: "high"})
+		if err == nil {
+			t.Fatal("premise: a missing CLI should fail the call")
+		}
+		if !res.WireReasoningEffortReported || res.WireReasoningEffort != "" {
+			t.Errorf("reported %q (reported=%v) for a call that never reached the model", res.WireReasoningEffort, res.WireReasoningEffortReported)
+		}
+	})
 }

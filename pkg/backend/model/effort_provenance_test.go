@@ -124,3 +124,30 @@ func TestTheNodeOutputCarriesTheEffortTheCallRanAt(t *testing.T) {
 		})
 	}
 }
+
+// TestACellWinningAtTheLaunchRowsLevelIsTheCells names the override's layer
+// by the rule that won, not by its level: a launch row on the node's kind and
+// a routing cell on the node's id both say `low`; the cell's more specific
+// selector decides the node, and the record says so.
+//
+// Mutation that reddens it: compare the levels alone in requestedEffort.
+func TestACellWinningAtTheLaunchRowsLevelIsTheCells(t *testing.T) {
+	var launch, folded ModelOverrides
+	launch.SetEffort("judge", "low")
+	folded.SetEffort("j", "low")
+	folded.SetEffort("judge", "low")
+	e := newTestClawExecutor(NewRegistry(), verdictWorkflow(), WithLogger(iterlog.Nop()),
+		WithModelOverrides(folded), WithLaunchModelOverrides(launch))
+	node := verdictJudge("claw")
+	node.ID = "j"
+	if effort, source := e.requestedEffort(node, "", nil); effort != "low" || source != EffortSourceCell {
+		t.Errorf("requested %q from %q, want low from %q", effort, source, EffortSourceCell)
+	}
+	launch = ModelOverrides{}
+	launch.SetEffort("j", "low")
+	e = newTestClawExecutor(NewRegistry(), verdictWorkflow(), WithLogger(iterlog.Nop()),
+		WithModelOverrides(folded), WithLaunchModelOverrides(launch))
+	if effort, source := e.requestedEffort(node, "", nil); effort != "low" || source != EffortSourceLaunch {
+		t.Errorf("control: the launch row on the winning selector reads %q from %q, want low from %q", effort, source, EffortSourceLaunch)
+	}
+}

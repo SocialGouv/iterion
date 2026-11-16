@@ -2088,9 +2088,10 @@ records what the call sent: `_reasoning_effort_applied` is the level the first
 model request carried — the claw backend reports it from its requests, after
 the model's accepted set and the client's own rule (an Anthropic Messages
 client sends no effort for a model outside its matrix; bedrock and vertex
-send none), claude_code reports the level it hands the CLI, its default
-included, and for the other backends it is the level the executor handed
-them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
+send none), claude_code reports the level its CLI sends for the model —
+the level handed it, clamped by the CLI's own rule to what the model
+accepts, nothing when the model takes no effort or no request went out —
+and for the other backends it is the level the executor handed them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
 cell), `launch` (the launch's own row), `override` (either, when the executor
 was not told which rows the launch carried), `node`, `dial:<VAR>` (an operator
 set the node's `${VAR:-default}`), `edge`, the list's source when the mapping

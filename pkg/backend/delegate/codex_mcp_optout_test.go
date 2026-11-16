@@ -19,14 +19,15 @@ import (
 )
 
 // codexStandInCLI answers the version probe and `mcp list --json` with the
-// servers $CODEX_MCP_LIST names, and records every other spawn — the SDK's
-// app-server — before failing it.
+// servers its CODEX_HOME's mcp.json lists, and records, for that listing and
+// for every other spawn (the SDK's app-server), the CODEX_HOME and working
+// directory it ran with, before failing the app-server.
 const codexStandInCLI = `#!/bin/sh
 case "$1" in
 --version) echo "codex-cli 0.156.1"; exit 0 ;;
-mcp) printf 'mcp %s\n' "$*" >> "$CODEX_ARGV_LOG"; printf '%s\n' "$CODEX_MCP_LIST"; exit 0 ;;
+mcp) printf 'mcp home=%s pwd=%s\n' "$CODEX_HOME" "$(pwd -P)" >> "$CODEX_ARGV_LOG"; cat "$CODEX_HOME/mcp.json"; exit 0 ;;
 esac
-printf 'run %s\n' "$*" >> "$CODEX_ARGV_LOG"
+printf 'run home=%s pwd=%s %s\n' "$CODEX_HOME" "$(pwd -P)" "$*" >> "$CODEX_ARGV_LOG"
 exit 3
 `
 
@@ -37,8 +38,14 @@ exit 3
 // server off (TestCodexAppServerRefusesAStringForABoolean). With none
 // enabled, or for a node that did not opt out, codex runs.
 //
+// The listing is asked of the codex the node runs: under the spawn's own
+// CODEX_HOME — the default ambient policy gives the spawn an overlay home,
+// not the process's — and in the node's working directory, where the
+// app-server runs.
+//
 // Mutation that reddens it: drop the MCPInheritDisabled block of
-// CodexBackend.Execute, or the refusal on a non-empty list.
+// CodexBackend.Execute, or the refusal on a non-empty list; hand
+// codexConfiguredMCPServers no environment, or drop its cmd.Dir.
 func TestCodexRefusesAnOptedOutNodeItsConfigurationGivesServers(t *testing.T) {
 	enabled := `[{"name":"probe","enabled":true},{"name":"projprobe","enabled":true}]`
 	for _, tc := range []struct {
@@ -59,22 +66,56 @@ func TestCodexRefusesAnOptedOutNodeItsConfigurationGivesServers(t *testing.T) {
 			}
 			logPath := filepath.Join(dir, "argv.log")
 			t.Setenv("CODEX_ARGV_LOG", logPath)
-			t.Setenv("CODEX_MCP_LIST", tc.list)
-			t.Setenv("CODEX_HOME", filepath.Join(dir, "codex-home"))
+			home := filepath.Join(dir, "codex-home")
+			mustWriteFile(t, filepath.Join(home, "mcp.json"), tc.list)
+			// Instruction files in the home: the default ambient policy then
+			// serves the spawn an overlay home without them.
+			mustWriteFile(t, filepath.Join(home, "AGENTS.md"), "operator instructions\n")
+			t.Setenv("CODEX_HOME", home)
 			t.Setenv("HOME", t.TempDir())
+			work, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			b := &CodexBackend{Command: cli, Logger: iterlog.New(iterlog.LevelDebug, io.Discard)}
-			_, err := b.Execute(context.Background(), Task{NodeID: "converse_agent", WorkDir: t.TempDir(), UserPrompt: "x", AmbientContext: ambient.All, MCPInheritDisabled: tc.optOut})
+			_, err = b.Execute(context.Background(), Task{NodeID: "converse_agent", WorkDir: work, UserPrompt: "x", AmbientContext: ambient.Workspace, MCPInheritDisabled: tc.optOut})
 			raw, _ := os.ReadFile(logPath)
-			ran := strings.Contains(string(raw), "run ")
+			var listed, ran []string
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				kind, rest, _ := strings.Cut(line, " ")
+				where := strings.Join(strings.Fields(rest)[:2], " ")
+				switch kind {
+				case "mcp":
+					listed = append(listed, where)
+				case "run":
+					ran = append(ran, where)
+				}
+			}
 			var refusal *ErrCapabilityUnsupported
 			if refused := errors.As(err, &refusal); refused != tc.refused {
 				t.Fatalf("refused = %v (err %v), want %v", refused, err, tc.refused)
 			}
-			if tc.refused && (ran || !strings.Contains(err.Error(), "probe, projprobe")) {
-				t.Errorf("a refused node still ran codex (%v) or the refusal names no server: %v\n%s", ran, err, raw)
+			if tc.refused && (len(ran) != 0 || !strings.Contains(err.Error(), "probe, projprobe")) {
+				t.Errorf("a refused node still ran codex (%q) or the refusal names no server: %v", ran, err)
 			}
-			if !tc.refused && !ran {
+			if !tc.refused && len(ran) == 0 {
 				t.Errorf("codex never ran: %v\n%s", err, raw)
+			}
+			if asked := len(listed) > 0; asked != tc.optOut {
+				t.Fatalf("codex was asked for its MCP servers: %v, want %v (%q)", asked, tc.optOut, listed)
+			}
+			for _, l := range listed {
+				if !strings.HasSuffix(l, "pwd="+work) {
+					t.Errorf("the listing ran in %q, not the node's working directory %s", l, work)
+				}
+				if strings.HasPrefix(l, "home="+home+" ") {
+					t.Errorf("the listing read the process's CODEX_HOME (%s), not the spawn's: %q", home, l)
+				}
+				for _, r := range ran {
+					if r != l {
+						t.Errorf("the listing ran as %q, the app-server as %q: the listing does not read the codex the node runs", l, r)
+					}
+				}
 			}
 		})
 	}

@@ -448,16 +448,22 @@ func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[
 
 // requestedEffort is effortForNode with the provenance of its answer
 // (EffortSource*): "" with an empty effort.
+//
+// The override's layer is read off the RULE that won, not its level: the
+// launch's own rows resolve the node to the same rule (the same selector,
+// the same level) only when the launch row is what decided. A routing cell
+// that wins on a more specific selector at the level a launch row also
+// names stays the cell's.
 func (e *ClawExecutor) requestedEffort(node ir.Node, nodeEffort string, input map[string]any) (effort, source string) {
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
-		switch {
-		case e.launchOverrides == nil:
+	if ov, won := e.modelOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind()); ov.Effort != "" {
+		if e.launchOverrides == nil {
 			return ov.Effort, EffortSourceOverride
-		case e.launchOverrides.ForNode(node.NodeID(), node.NodeKind()).Effort == ov.Effort:
-			return ov.Effort, EffortSourceLaunch
-		default:
-			return ov.Effort, EffortSourceCell
 		}
+		lov, lwon := e.launchOverrides.ForNodeFieldSources(node.NodeID(), node.NodeKind())
+		if lov.Effort == ov.Effort && lwon.Effort == won.Effort {
+			return ov.Effort, EffortSourceLaunch
+		}
+		return ov.Effort, EffortSourceCell
 	}
 	return sourcedReasoningEffort(nodeEffort, input)
 }

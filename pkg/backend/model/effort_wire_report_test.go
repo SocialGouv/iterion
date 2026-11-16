@@ -6,12 +6,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	anthropicprovider "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/anthropic"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -207,3 +210,55 @@ const structuredOutputSSE = "event: message_start\n" +
 	`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}` + "\n\n" +
 	"event: message_stop\n" +
 	`data: {"type":"message_stop"}` + "\n\n"
+
+// TestClawAndClaudeCodeRecordTheSameEffortForAClaudeModel holds the two
+// backends' records to one fact on the same Claude model: what the request
+// carried. claw's is read off its real Anthropic client's request body;
+// claude_code's is its report for the level the claude CLI was measured
+// sending (delegate.claudeCodeWireEffort) — none for a model with no effort
+// matrix, a clamp onto the accepted set otherwise.
+func TestClawAndClaudeCodeRecordTheSameEffortForAClaudeModel(t *testing.T) {
+	for _, tc := range []struct{ model, level string }{
+		{"claude-haiku-4-5", "high"},
+		{"claude-sonnet-4-6", "xhigh"},
+		{"claude-opus-5-5", "high"},
+		{"claude-opus-5-5", "max"},
+	} {
+		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, structuredOutputSSE)
+			}))
+			defer srv.Close()
+			reg := NewRegistry()
+			reg.Register("anthropic", func(m string) (api.APIClient, error) {
+				return anthropicprovider.New().NewClient(api.ProviderConfig{APIKey: "k", Model: m, BaseURL: srv.URL})
+			})
+			e := newTestClawExecutor(reg, verdictWorkflow(), WithLogger(iterlog.Nop()))
+			node := verdictJudge("claw")
+			node.Model = "anthropic/" + tc.model
+			node.ReasoningEffort = tc.level
+			out, err := e.Execute(context.Background(), node, map[string]any{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claw, _ := out[OutputReasoningEffortApplied].(string)
+
+			dir := t.TempDir()
+			cli := filepath.Join(dir, "claude")
+			if err := os.WriteFile(cli, []byte(converseStandInCLI), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CATALOG_LOG", filepath.Join(dir, "catalog.log"))
+			t.Setenv("TMPDIR", t.TempDir())
+			b := &delegate.ClaudeCodeBackend{Logger: iterlog.Nop()}
+			res, _ := b.Execute(context.Background(), delegate.Task{Command: cli, WorkDir: dir, UserPrompt: "x", Model: tc.model, ReasoningEffort: tc.level})
+			if !res.WireReasoningEffortReported || res.WireReasoningEffort != claw {
+				t.Errorf("claw recorded %q, claude_code reports %q (reported=%v)", claw, res.WireReasoningEffort, res.WireReasoningEffortReported)
+			}
+		})
+	}
+}

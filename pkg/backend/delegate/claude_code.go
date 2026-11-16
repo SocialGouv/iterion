@@ -20,9 +20,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/backend/effortlevel"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/apikit"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -70,6 +72,9 @@ const defaultClaudeCodeModel = "claude-opus-5-5"
 // recommends starting at "xhigh" (platform.claude.com/docs/en/build-with-claude/effort).
 // Workflows can always override via `reasoning_effort:`.
 const defaultClaudeCodeEffort = "xhigh"
+
+// claudeEffortLevelEnv is the variable the claude CLI reads its effort from.
+const claudeEffortLevelEnv = "CLAUDE_CODE_EFFORT_LEVEL"
 
 // claudeNativeTools is the built-in Claude Code surface which remains present
 // unless explicitly removed with --disallowedTools. The DSL's tools: list is
@@ -961,15 +966,16 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// the probes). The task carries the trust the engine stamped
 	// (stampWorkspace), never re-derived from the workspace.
 	ctx = credroute.WithRunTrust(ctx, task.WorkspaceTrust)
-	// What every spawn of this call hands the CLI as its effort
-	// (perTaskSpawnOpts), on every exit: the node's record names that level,
-	// not only the one the executor handed this backend.
-	defer func() { reportClaudeCodeEffort(&result, task) }()
 	// cliTurnCompleted records that the CLI carried this call to its own
 	// ResultMessage. It is the discriminator turnFinished needs and the
 	// defer below cannot read: `rm` is declared further down, so the
 	// closure registered here cannot close over it.
 	var cliTurnCompleted bool
+	// The effort the CLI's requests of this call carried, on every exit
+	// (reportClaudeCodeEffort): the node's record names that level, not only
+	// the one the executor handed this backend — and nothing when the call
+	// never reached the model.
+	defer func() { reportClaudeCodeEffort(&result, task, cliTurnCompleted || result.Tokens > 0) }()
 	// Fire OnTurnFinished once on the way out, when the runtime wired
 	// the hook and the delegate produced a SessionID. Wrapped in a
 	// defer so every return path that HAS a turn (Pass 1, recovery,
@@ -1893,7 +1899,7 @@ func hostSpawnEnv(extra map[string]string) []string {
 // settings layer through the one `--settings` object. ExtraEnv never carries a
 // pinned key (claudeExtraEnvEntries), so no provisioning layer can move one.
 func perTaskSpawnOpts(task Task) []claudesdk.Option {
-	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", claudeCodeSpawnEffort(task))}
+	var opts []claudesdk.Option
 	env, settings := claudeSpawnPins(task)
 	opts = append(opts, claudesdk.WithSettingsJSON(settings))
 	opts = append(opts, taskExtraEnvOpts(task)...)
@@ -1917,12 +1923,40 @@ func claudeCodeSpawnEffort(task Task) string {
 	return claudeCodeEffort(effort)
 }
 
-// reportClaudeCodeEffort states on result the effort every spawn of the
-// call handed the CLI (Result.WireReasoningEffort): one level for both
-// passes, which share the spawn options.
-func reportClaudeCodeEffort(result *Result, task Task) {
-	effort := claudeCodeSpawnEffort(task)
+// reportClaudeCodeEffort states on result the effort the CLI's requests of
+// the call carried (Result.WireReasoningEffort): one level for both passes,
+// which share the spawn options, as the CLI sends it for the task's model
+// (claudeCodeWireEffort); none when the call never reached the model.
+func reportClaudeCodeEffort(result *Result, task Task, reachedModel bool) {
+	effort := ""
+	if reachedModel {
+		effort = claudeCodeWireEffort(task.Model, claudeCodeSpawnEffort(task))
+	}
 	result.WireReasoningEffort, result.WireReasoningEffortLast, result.WireReasoningEffortReported = effort, effort, true
+}
+
+// claudeCodeWireEffort is the effort the claude CLI puts on its requests for
+// model when CLAUDE_CODE_EFFORT_LEVEL says level, as measured on claude CLI
+// 2.1.282 against a recording Anthropic endpoint: a Claude model sends the
+// level its accepted set takes — none for a model with no effort matrix
+// (haiku-4-5, an id the registry does not know such as sonnet-4-5), the
+// highest accepted level at or below the one handed otherwise (sonnet-4-6
+// sends high for xhigh) — the matrix and the rule the claw backend sends by
+// (apikit.EffortCapabilities, effortlevel.Coerce); any other id (a GLM id on
+// a facade) is sent as handed.
+func claudeCodeWireEffort(model, level string) string {
+	if level == "" {
+		return ""
+	}
+	id := apikit.ResolveModelAlias(strings.TrimSpace(model))
+	if !strings.HasPrefix(strings.ToLower(id), "claude-") {
+		return level
+	}
+	supported, def := apikit.EffortCapabilities(id)
+	if len(supported) == 0 {
+		return ""
+	}
+	return effortlevel.Coerce(level, supported, def)
 }
 
 // claudeCodeEffort coerces an iterion effort level to one Claude Code
@@ -2001,6 +2035,12 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 		}
 		pins[k] = v
 	}
+	// The effort the node runs at: a task's ExtraEnv entry (a desktop or
+	// studio project env), a user or project settings `env` block would
+	// otherwise move it under the level the node's record states — the
+	// `--settings` env this pin rides outranks both (measured on claude CLI
+	// 2.1.282).
+	pin(claudeEffortLevelEnv, claudeCodeSpawnEffort(task))
 	pin(backgroundTasksOffEnv, background)
 	pin(autoMemoryDisableEnv, disable)
 	pin(bashDefaultTimeoutEnv, strconv.FormatInt(defaultMs, 10))

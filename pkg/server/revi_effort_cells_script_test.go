@@ -185,14 +185,20 @@ func (in *reviEffortInstance) write(teamID, id string, block llmroute.Policy) {
 	}
 }
 
-// run executes the script; it answers its output, its exit code, and the
-// PATCHes it sent.
+// run executes the script on the repository's fixture; it answers its
+// output, its exit code, and the PATCHes it sent.
 func (in *reviEffortInstance) run(args ...string) (string, int, int) {
+	in.t.Helper()
+	return in.runWith(reviEffortFixture, args...)
+}
+
+// runWith is run on another fixture file.
+func (in *reviEffortInstance) runWith(fixture string, args ...string) (string, int, int) {
 	in.t.Helper()
 	in.mu.Lock()
 	before := in.patches
 	in.mu.Unlock()
-	cmd := exec.Command("python3", append([]string{"-I", reviEffortScript, "--fixture", reviEffortFixture}, args...)...)
+	cmd := exec.Command("python3", append([]string{"-I", reviEffortScript, "--fixture", fixture}, args...)...)
 	cmd.Env = append(os.Environ(), "PATH="+in.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	code := 0
@@ -272,6 +278,53 @@ func hasCell(p *llmroute.Policy, sel string) bool {
 	return false
 }
 
+// withCell is p with fn applied to the cell of selector sel.
+func withCell(t *testing.T, p *llmroute.Policy, sel string, fn func(*llmroute.Override)) llmroute.Policy {
+	t.Helper()
+	out := cloneBlock(t, p)
+	for i := range out.Overrides {
+		if out.Overrides[i].Selector == sel {
+			fn(&out.Overrides[i])
+			return out
+		}
+	}
+	t.Fatalf("no cell %s", sel)
+	return out
+}
+
+// reRouted moves a cell off the gateway route, its effort kept.
+func reRouted(o *llmroute.Override) {
+	o.Backend, o.Provider, o.Model = "claude_code", "anthropic", "claude-opus-5-5"
+}
+
+// updatedFixture writes the repository's fixture with one effort changed,
+// the file a fixture update would leave, and answers its path.
+func updatedFixture(t *testing.T, sel, effort string) string {
+	t.Helper()
+	raw, err := os.ReadFile(reviEffortFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f map[string]any
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, o := range f["routing"].(map[string]any)["overrides"].([]any) {
+		if cell := o.(map[string]any); cell["selector"] == sel {
+			cell["effort"], found = effort, true
+		}
+	}
+	if !found {
+		t.Fatalf("the fixture has no cell %s", sel)
+	}
+	path := filepath.Join(t.TempDir(), "fixture.json")
+	if err := os.WriteFile(path, mustJSON(t, f), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func sameEfforts(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
@@ -294,7 +347,14 @@ func sameEfforts(a, b map[string]string) bool {
 // moved-since-backup refusal, or its re-read before the PATCH; drop the
 // read-back of apply or of restore; ignore the route fields when matching a
 // cell; let restore write the backup block whole; stop the --all loop at the
-// first failure; let --only take a repository name two teams share.
+// first failure; let --only take a repository name two teams share; compare
+// the backup and the stored block with their efforts unmasked; let a second
+// backup overwrite, or refuse, the first; write a new backup of a block that
+// already carries the fixture's efforts; let restore drop a backed-up
+// effort; drop apply's no-longer-a-target recheck; let restore skip, or
+// reverse, a re-routed cell carrying the fixture's effort; let verify
+// answer 0 with a target behind, or drop an integration that is no longer a
+// target.
 func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 	gl := newMockGitLab()
 	glSrv := gl.server()
@@ -518,6 +578,134 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		out, code, sent = in.run("restore", "--dir", b, "--only", i2, "--yes")
 		if code == 0 || sent != 0 || blockEfforts(in.integ(i2).Routing)["review-pr/reviewer_claude"] != "xhigh" {
 			t.Fatalf("restore over an effort someone changed exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+	t.Run("an effort carried before the backup comes back on restore", func(t *testing.T) {
+		reset()
+		seeded := withCell(t, &prod, "review-pr/reviewer_claude", func(o *llmroute.Override) { o.Effort = "medium" })
+		in.write("t1", i1, seeded)
+		b := filepath.Join(dir, "seeded")
+		if out, code, _ := in.run("backup", "--dir", b); code != 0 {
+			t.Fatalf("backup of a block carrying a non-fixture effort exited %d:\n%s", code, out)
+		}
+		if out, code, _ := in.run("apply", "--dir", b, "--only", i1, "--yes"); code != 0 || !sameEfforts(blockEfforts(in.integ(i1).Routing), want) {
+			t.Fatalf("apply exited %d, efforts %v:\n%s", code, blockEfforts(in.integ(i1).Routing), out)
+		}
+		out, code, sent := in.run("restore", "--dir", b, "--only", i1, "--yes")
+		if got := blockEfforts(in.integ(i1).Routing); code != 0 || sent != 1 || !sameEfforts(got, map[string]string{"review-pr/reviewer_claude": "medium"}) {
+			t.Fatalf("restore exited %d after %d PATCH(es), efforts %v, want reviewer_claude back to medium:\n%s", code, sent, got, out)
+		}
+	})
+
+	t.Run("a second backup into the same dir keeps the first byte for byte", func(t *testing.T) {
+		reset()
+		b := filepath.Join(dir, "twice")
+		in.run("backup", "--dir", b)
+		path := filepath.Join(b, i1+".json")
+		first, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.run("apply", "--dir", b, "--only", i1, "--yes")
+		out, code, _ := in.run("backup", "--dir", b)
+		if code != 0 || !strings.Contains(out, "kept     group/api ("+i1+")") {
+			t.Fatalf("a backup over the applied block exited %d, want the first kept:\n%s", code, out)
+		}
+		if again, _ := os.ReadFile(path); string(again) != string(first) {
+			t.Fatalf("the second backup rewrote %s:\n%s\nwas\n%s", path, again, first)
+		}
+		in.write("t1", i1, withExtraCell(t, in.integ(i1).Routing, "review-pr/reviewer_gpt#glm"))
+		out, code, _ = in.run("backup", "--dir", b)
+		if again, _ := os.ReadFile(path); code == 0 || !strings.Contains(out, "DIFFERENT backup") || string(again) != string(first) {
+			t.Fatalf("a backup over a block that moved exited %d, file kept=%v:\n%s", code, string(again) == string(first), out)
+		}
+	})
+
+	t.Run("a new backup of a block carrying the fixture's efforts is refused", func(t *testing.T) {
+		reset()
+		b := filepath.Join(dir, "first")
+		in.run("backup", "--dir", b)
+		in.run("apply", "--dir", b, "--only", i1, "--yes")
+		fresh := filepath.Join(dir, "fresh")
+		out, code, _ := in.run("backup", "--dir", fresh)
+		if _, err := os.Stat(filepath.Join(fresh, i1+".json")); code == 0 || !strings.Contains(out, "already carries the fixture's effort") || err == nil {
+			t.Fatalf("a new backup of the applied block exited %d, written=%v:\n%s", code, err == nil, out)
+		}
+	})
+
+	t.Run("a fixture update applies and restores over the original backup", func(t *testing.T) {
+		reset()
+		b := filepath.Join(dir, "update")
+		in.run("backup", "--dir", b)
+		in.run("apply", "--dir", b, "--only", i1, "--yes")
+		updated := updatedFixture(t, "review-pr/reviewer_claude", "medium")
+		out, code, sent := in.runWith(updated, "apply", "--dir", b, "--only", i1, "--yes")
+		if code != 0 || sent != 1 || blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"] != "medium" {
+			t.Fatalf("the updated fixture's apply exited %d after %d PATCH(es), reviewer_claude %q:\n%s", code, sent, blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"], out)
+		}
+		out, code, _ = in.runWith(updated, "restore", "--dir", b, "--only", i1, "--yes")
+		if e := blockEfforts(in.integ(i1).Routing); code != 0 || len(e) != 0 {
+			t.Fatalf("restore after the update exited %d, efforts left %v:\n%s", code, e, out)
+		}
+	})
+
+	t.Run("verify exits 1 before the apply and 0 after", func(t *testing.T) {
+		reset()
+		if out, code, sent := in.run("verify"); code != 1 || sent != 0 || !strings.Contains(out, "NOT APPLIED") {
+			t.Fatalf("verify before the apply exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		b := filepath.Join(dir, "verify")
+		in.run("backup", "--dir", b)
+		in.run("apply", "--dir", b, "--all", "--yes")
+		if out, code, _ := in.run("verify"); code != 0 || strings.Count(out, "applied     group/api") != 2 {
+			t.Fatalf("verify after the apply exited %d:\n%s", code, out)
+		}
+	})
+
+	t.Run("apply rechecks the verdict on the block it re-reads", func(t *testing.T) {
+		reset()
+		b := filepath.Join(dir, "verdict")
+		in.run("backup", "--dir", b)
+		in.mu.Lock()
+		base := in.gets["t2"]
+		in.beforeG["t2"] = func(n int) {
+			if n == base+2 { // the integration's own read, after discovery's
+				in.write("t2", i2, withCell(t, &prod, "review-pr/reviewer_claude", reRouted))
+			}
+		}
+		in.mu.Unlock()
+		out, code, sent := in.run("apply", "--dir", b, "--only", i2, "--yes")
+		in.mu.Lock()
+		delete(in.beforeG, "t2")
+		in.mu.Unlock()
+		if code == 0 || sent != 0 || !strings.Contains(out, "no longer a target: partial: no gateway cell for review-pr/reviewer_claude") {
+			t.Fatalf("apply on a block re-routed after the listing exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+
+	t.Run("a cell re-routed since the apply is refused by restore and reported by verify", func(t *testing.T) {
+		reset()
+		b := filepath.Join(dir, "rerouted")
+		in.run("backup", "--dir", b)
+		in.run("apply", "--dir", b, "--only", i1, "--yes")
+		in.write("t1", i1, withCell(t, in.integ(i1).Routing, "review-pr/reviewer_claude", reRouted))
+		out, code, sent := in.run("restore", "--dir", b, "--only", i1, "--yes")
+		if code == 0 || sent != 0 || !strings.Contains(out, "review-pr/reviewer_claude carries the fixture's effort 'high' but is not routed to the gateway") ||
+			blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"] != "high" {
+			t.Fatalf("restore over a re-routed cell exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		if out, code, _ := in.run("verify", "--only", i1); code != 1 || !strings.Contains(out, "RE-ROUTED   group/api ("+i1+")") {
+			t.Fatalf("verify over a re-routed cell exited %d:\n%s", code, out)
+		}
+		every := cloneBlock(t, in.integ(i1).Routing)
+		for i := range every.Overrides {
+			if want[every.Overrides[i].Selector] != "" {
+				reRouted(&every.Overrides[i])
+			}
+		}
+		in.write("t1", i1, every)
+		if out, code, _ := in.run("verify"); code != 1 || !strings.Contains(out, "RE-ROUTED   group/api ("+i1+"): none") {
+			t.Fatalf("verify over a block whose every effort cell was re-routed exited %d:\n%s", code, out)
 		}
 	})
 }

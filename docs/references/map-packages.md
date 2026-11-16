@@ -88,6 +88,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — |
 | `pkg/backend/delegate/pisdk` | a Go port of the client surface pi (https://pi.dev, github.com/earendil-works/pi) publishes for driving its coding agent from another process. | — |
 | `pkg/backend/detect` | probes the host environment for available LLM credentials and CLI binaries, producing a Report consumed by the studio (UI hints) and the runtime… | — |
+| `pkg/backend/effortlevel` | orders the reasoning-effort levels and coerces one onto a model's accepted set: the one rule the claw backend sends by (model.coerceEffortForModel)… | — |
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |

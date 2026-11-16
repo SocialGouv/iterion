@@ -30,13 +30,24 @@ Commands (all but apply and restore are read-only on the instance):
 X is an integration id, or a repository full name that names one integration
 only (a name two teams share is refused: name the id).
 
-apply refuses an integration with no backup in D, or whose stored block moved
-since the backup (other than by this script's own efforts). restore reverses
-the effort fields only, on the block as it is stored now: a cell or a change
-made after the apply stays; an effort cell whose effort is neither the
-fixture's nor the backup's was changed by someone else and is refused, not
-overwritten. Both are idempotent: a block already in the asked state is not
-written again.
+backup never overwrites a backup: one already in D is kept when the stored
+block is that backup with this procedure's efforts on it, refused otherwise;
+and it refuses to write a new one for a block that already carries a fixture
+effort — that backup would restore the efforts, not the block before them.
+
+apply refuses an integration with no backup in D, one that is no longer a
+target, or one whose stored block moved since the backup — the efforts of
+the fixture's cells set aside, so a fixture update applies over the original
+backup dir. restore reverses the effort fields only, on the block as it is
+stored now: a cell or a change made after the apply stays; an effort cell
+whose effort is neither the fixture's nor the backup's was changed by someone
+else, and one off the gateway route that carries the fixture's effort
+(re-routed since the apply, or set by hand) cannot be judged: both are
+refused, not overwritten. Both are idempotent: a block already in the asked
+state is not written again. verify reads every integration back and exits 1
+when a target
+is behind, or when one that is not a target carries a fixture effort on a
+fixture selector's cell (re-routed since the apply, or set by hand).
 
 Each integration is read again just before its check and its PATCH. That
 narrows, without closing, the window in which another writer's change lands
@@ -178,28 +189,52 @@ def wanted_block(routing, cells):
 
 
 def restored_block(stored, backup, cells):
-    """(block, changes): stored with each effort cell put back to its
-    backed-up effort — only where it carries the fixture's effort, every
-    other field and cell as stored. An effort cell carrying neither is a
-    change someone else made: refused."""
+    """(block, changes): stored with each cell of a fixture selector put
+    back to its backed-up effort — only where it carries the fixture's
+    effort on the gateway route, every other field and cell as stored. A
+    cell carrying neither effort is a change someone else made, and one off
+    the gateway route that carries the fixture's effort cannot be judged
+    (re-routed since the apply, or set by hand): both are refused."""
     backed = {}
     for o in (backup or {}).get("overrides") or []:
         backed[o.get("selector")] = o.get("effort", "")
     block = copy.deepcopy(stored)
+    on_gateway = gateway_cells(block, cells)
     changes = []
-    for sel, i in sorted(gateway_cells(block, cells).items()):
-        cell = block["overrides"][i]
+    for i, cell in enumerate((block or {}).get("overrides") or []):
+        sel = cell.get("selector")
+        if sel not in cells:
+            continue
         have, original = cell.get("effort", ""), backed.get(sel, "")
         if have == original:
             continue
         if have != cells[sel]["effort"]:
             raise Refusal("cell %s carries effort %r, neither the fixture's %r nor the backup's %r: changed since the apply, not restored" % (sel, have, cells[sel]["effort"], original))
+        if sel not in on_gateway or on_gateway[sel] != i:
+            raise Refusal("cell %s carries the fixture's effort %r but is not routed to the gateway: re-routed since the apply, or set by hand — not restored" % (sel, have))
         if original:
             cell["effort"] = original
         else:
             cell.pop("effort", None)
         changes.append((sel, have, original or "unset"))
     return block, changes
+
+
+def masked(routing, cells):
+    """routing with the effort of every fixture cell removed: what is left
+    when this procedure's own writes — whichever fixture version made them —
+    are set aside."""
+    block = copy.deepcopy(routing) or {}
+    for cell in block.get("overrides") or []:
+        if cell.get("selector") in cells:
+            cell.pop("effort", None)
+    return block
+
+
+def carries_fixture_efforts(routing, cells):
+    """The gateway cells of routing that carry the fixture's own effort."""
+    overrides = (routing or {}).get("overrides") or []
+    return sorted(sel for sel, i in gateway_cells(routing, cells).items() if overrides[i].get("effort", "") == cells[sel]["effort"])
 
 
 def describe(changes):
@@ -268,10 +303,15 @@ def cmd_backup(args, cells):
         if os.path.exists(path):
             with open(path) as f:
                 kept = json.load(f)
-            if not same(kept["routing"], integ["routing"]):
+            # The block apply leaves over this backup — whichever fixture
+            # version wrote the efforts — is the backup's, kept as written.
+            if not same(masked(kept["routing"], cells), masked(integ["routing"], cells)):
                 raise Refusal("%s already holds a DIFFERENT backup of %s: a backup is never overwritten — use a new --dir" % (path, integ["repo"]))
             print("kept     %s (%s)" % (integ["repo"], integ["id"]))
             continue
+        carried = carries_fixture_efforts(integ["routing"], cells)
+        if carried:
+            raise Refusal("%s (%s) already carries the fixture's effort on %s: a backup now would restore those efforts — back up from the original backup dir, or remove them first" % (integ["repo"], integ["id"], ", ".join(carried)))
         with open(path, "w") as f:
             json.dump(record, f, indent=2, sort_keys=True)
             f.write("\n")
@@ -293,13 +333,14 @@ def apply_one(args, cells, integ):
     """Apply the efforts to one integration; answer True when it holds them."""
     backup = read_backup(args.dir, integ)
     stored = stored_routing(integ["team_id"], integ["id"])
-    if not same(backup["routing"], stored):
-        _, wanted_from_backup, _ = wanted_block(backup["routing"], cells)
-        if not same(stored, wanted_from_backup):
-            raise Refusal("the stored block moved since the backup in %s — back it up again in a new --dir" % args.dir)
     verdict, wanted, changes = wanted_block(stored, cells)
     if verdict != "target":
         raise Refusal("no longer a target: " + verdict)
+    # Moved since the backup, the efforts of the fixture's cells set aside:
+    # those are this procedure's own writes, so a fixture update applies
+    # over the ORIGINAL backup dir.
+    if not same(masked(backup["routing"], cells), masked(stored, cells)):
+        raise Refusal("the stored block moved since the backup in %s — back it up again in a new --dir" % args.dir)
     if not changes:
         print("unchanged %s (%s): already applied" % (integ["repo"], integ["id"]))
         return True
@@ -353,14 +394,32 @@ def cmd_apply(args, cells):
     return each(picked, "applied", lambda integ: apply_one(args, cells, integ))
 
 
+def carried_off_target(routing, cells):
+    """The fixture selectors whose cell carries the fixture's effort."""
+    return sorted(o.get("selector") for o in (routing or {}).get("overrides") or []
+                  if o.get("selector") in cells and o.get("effort", "") == cells[o.get("selector")]["effort"])
+
+
 def cmd_verify(args, cells):
-    integs = targets_of(cells)
+    """Read every integration back. A target holds the efforts or is behind;
+    one that is not a target is skipped unless a cell of a fixture selector
+    carries the fixture's effort — re-routed since the apply, or set by hand,
+    and nothing this script can verify. A target behind and such a cell both
+    exit 1."""
+    integs = discover()
     if args.only:
         integs = selected(integs, args.only, False)
     behind = 0
     for integ in integs:
-        _, _, changes = wanted_block(integ["routing"], cells)
-        if changes:
+        verdict, _, changes = wanted_block(integ["routing"], cells)
+        if verdict != "target":
+            carried = carried_off_target(integ["routing"], cells)
+            if carried:
+                behind += 1
+                print("RE-ROUTED   %s (%s): %s, yet %s carry the fixture's effort — re-routed since the apply, or set by hand" % (integ["repo"], integ["id"], verdict, ", ".join(carried)))
+            elif verdict != "none":
+                print("skipped     %s (%s): %s" % (integ["repo"], integ["id"], verdict))
+        elif changes:
             behind += 1
             print("NOT APPLIED %s (%s): %s" % (integ["repo"], integ["id"], describe(changes)))
         else:
