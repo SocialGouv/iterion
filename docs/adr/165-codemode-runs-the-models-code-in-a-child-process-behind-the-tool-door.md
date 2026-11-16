@@ -426,3 +426,50 @@ spread it refuses to conclude under, decided before its own measurement runs.
   ([#3311](https://github.com/SocialGouv/iterion/issues/3311)); the sentence is
   fixed in this slice because the description was already being touched.
 
+
+## Amendment — 2026-11-16: the bounds measured at scale, and what that does to CM-17
+
+The 11-15 amendment reported the small A/B and its non-result. The second
+measurement ran the same read-only audit node — `assessment.survey`'s shape,
+`claw` + `openai/gpt-6-sol` — at a scale chosen so the question could not be
+answered by the baseline's aggregation, and in **three arms** instead of two:
+arm A without codemode, arm B with codemode at the **default** bounds, arm C
+with the bound **declared** (`tool_calls: 256`). B and C differ by exactly one
+declaration, so that pair is immune to "grep aggregates well" and measures
+this record's surface itself.
+
+**The scale.** The corpus is this repository's Go tests: 21 478 matches across
+98 top-level directories of `pkg/`. A whole-repository grep result is
+**2 148 KiB against the 64 KiB per-tool-result bound**; 7 of the 98
+directories overflow it on their own; the mechanical strategy — one grep per
+directory plus a sub-split — costs ~130 calls. **Above the default 64, below
+256**: the bound the surface declares sits exactly across the wall.
+
+**The bound bit, measured.** Arm B hit the tool-call budget **14 times** in
+three runs (one run collapsing into eight blind retries and 206 k tokens);
+arm C hit it **twice**. Arm C finished **−29 % turns, −17 % wall, −39 % mean
+error at equal token cost** (845 k vs 838 k). The ceiling's doc sentence —
+*"ask the operator to raise the bound"* — now names a bound an author can
+actually raise, which is what #3301 delivers. Control: on the pre-CM-5d
+binary, arm C is a **syntax error** (`E002`/`E003`), arm B compiles — the
+third arm provably exercises the new surface.
+
+**The oracle was wrong, and the arms caught it.** The stated question counts
+test functions declared `(t *testing.T)`; the first oracle also counted the
+83 `TestMain(m *testing.M)` functions, so it answered 21 478 where the true
+answer is **21 395**. The discrepancy surfaced because all three arms
+clustered just below the wrong number — a gap too regular for noise. An
+oracle is subject to the same rule as any sentence a fix writes: it executes,
+or it is the next finding.
+
+**What this measurement does NOT establish, stated as firmly**: **no arm was
+exact.** The best run of arm B landed 23 off; arm C's best two were ~250 off;
+and one run of B and one of C collapsed onto the **same wrong 4 161** — a
+shared partial-coverage path, not noise. The task again exceeded the model's
+competence, so what the scale run establishes is the bound's bite and its
+cost, **not a CM-17 win for the declared surface**. Together with the 11-15
+amendment the criterion gap is now precise: CM-17 owes a replicate count **n**,
+a spread it refuses to conclude under, **and a reliability precondition** —
+the task must be one the model completes exactly, measured before the run,
+or the measurement keeps billing for the model. Spend: **$10.67** for this
+run, on top of the first measurement's $1.37.
