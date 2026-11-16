@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.3.4](https://github.com/SocialGouv/iterion/compare/v7.3.3...v7.3.4) (2026-11-16)
+
+### Bug Fixes
+
+* **preview:** the launch picker screens declared capabilities on the run-level route ([#3259](https://github.com/SocialGouv/iterion/issues/3259)) ([14a9bbc](https://github.com/SocialGouv/iterion/commit/14a9bbc083060f531c2888523a7539a0c46f1651)), references [#3153](https://github.com/SocialGouv/iterion/issues/3153) [#3333](https://github.com/SocialGouv/iterion/issues/3333)
+
+    <details><summary>why</summary>
+
+    The launch preview's picker promised "cannot drift from runtime admission" and drifted on two declared capabilities, in the same place, for the same reason: the per-candidate loop never asked the route the run actually takes.
+
+    </details>
+
 ## [7.3.3](https://github.com/SocialGouv/iterion/compare/v7.3.2...v7.3.3) (2026-11-16)
 
 ### Bug Fixes
