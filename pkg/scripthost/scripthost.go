@@ -175,6 +175,27 @@ func DefaultLimits() Limits {
 	}
 }
 
+// MemoryFloor is the smallest RLIMIT_DATA a child RELIABLY starts and works
+// under: 64 MiB, a quarter of the default. Measured, not guessed — the two
+// records that name the number:
+//
+//   - the package comment: 64 MiB "was measured to start a Go child and to
+//     kill a 400 MiB allocation" — the child starts there, and real work
+//     happens;
+//   - #3290: a memory BOMB at 64 MiB died of SIGSEGV on the shipped image —
+//     allocation pressure at the floor is where an untyped death used to
+//     live, now reported as the typed memory refusal.
+//
+// Below the floor a child may still start (a trivial 1+1 completed at
+// 1 MiB in the same session's probe), but real work cannot: bounds below
+// the floor are raised to it by [Limits.Clamp] and reported through OnClamp,
+// per philosophy 1 — warn rather than silently replace. A bound of zero
+// stays "nobody chose" and takes the default; the floor only raises values
+// an author actually wrote.
+func MemoryFloor() Limits {
+	return Limits{Memory: 64 << 20}
+}
+
 // Ceiling is the platform bound a tenant cannot raise. The precedent is
 // applyCloudBudgetCeiling in pkg/runner: a value a bundle may set, clamped by
 // a value only the deployment may set.
@@ -218,11 +239,31 @@ func (l Limits) Clamp() (Limits, bool) {
 		}
 		return v
 	}
+	// Memory ALSO has a FLOOR (#3290): a bound below the measured minimum a
+	// child works under cannot do real work — every program dies of the
+	// typed memory refusal at once — so Clamp raises it to the floor and
+	// REPORTS the raise (philosophy 1: warn rather than silently replace;
+	// the OnClamp seam is the report). Zero stays "nobody chose": the floor
+	// only raises values an author actually wrote.
+	clampMem := func(v int64) int64 {
+		floor := MemoryFloor().Memory
+		switch {
+		case v <= 0:
+			return def.Memory
+		case v < floor:
+			clamped = true
+			return floor
+		case v > ceil.Memory:
+			clamped = true
+			return ceil.Memory
+		}
+		return v
+	}
 
 	return Limits{
 		Wall:        clampDur(l.Wall, def.Wall, ceil.Wall),
 		CPU:         clampDur(l.CPU, def.CPU, ceil.CPU),
-		Memory:      clampInt(l.Memory, def.Memory, ceil.Memory),
+		Memory:      clampMem(l.Memory),
 		ScriptBytes: clampInt(l.ScriptBytes, def.ScriptBytes, ceil.ScriptBytes),
 		ResultBytes: clampInt(l.ResultBytes, def.ResultBytes, ceil.ResultBytes),
 

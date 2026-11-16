@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
@@ -87,6 +88,34 @@ func TestADeclaredToolCallBoundAllowsTheCallsUnderIt(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Errorf("the node's door was reached %d time(s), want 3", calls)
+	}
+}
+
+// TestOnClampReportsAFloorRaise pins the report half of #3290's floor: a
+// bound the child cannot work under is RAISED by Clamp and the raise travels
+// OnClamp — the operator's warning — exactly as a ceiling reduction does.
+// Without this row, a floor raise was silent: the operator wrote 8 MiB and
+// the child ran with 64 MiB, and nothing in the run said why.
+func TestOnClampReportsAFloorRaise(t *testing.T) {
+	t.Parallel()
+	var onClampReq, onClampApplied *scripthost.Limits
+	h := childHost()
+	h.OnClamp = func(requested, applied scripthost.Limits) {
+		onClampReq, onClampApplied = &requested, &applied
+	}
+	// The run's OUTCOME is irrelevant to this witness — in CI there is no
+	// installed iterion for a production-path child to resolve (the first
+	// CI attempt failed exactly there: "exec: no command"), so the assertion
+	// is the CAPTURE: Clamp fires OnClamp BEFORE any spawn attempt
+	// (host.go: clamped → OnClamp → exec), and the report says the 8 MiB
+	// the witness wrote became the floor.
+	_, _ = h.Run(context.Background(), `1+1`, scripthost.Limits{Memory: 8 << 20, Wall: 20 * time.Second, CPU: 15 * time.Second})
+	if onClampReq == nil || onClampApplied == nil {
+		t.Fatalf("OnClamp never fired on a floor raise: the operator wrote 8 MiB and nothing said the child ran with more")
+	}
+	floor := scripthost.MemoryFloor().Memory
+	if onClampReq.Memory != 8<<20 || onClampApplied.Memory != floor {
+		t.Errorf("OnClamp (requested %+v, applied %+v), want 8 MiB raised to the floor %d", *onClampReq, *onClampApplied, floor)
 	}
 }
 

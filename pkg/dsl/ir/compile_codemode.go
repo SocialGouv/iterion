@@ -101,6 +101,17 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 				"%s %q declares a codemode bound above the platform ceiling (%s): it is clamped to the ceiling where the program is spawned, not refused. Lower the value to say what will happen",
 				scope, name, phrase)
 		}
+		// The FLOOR half of the same story (#3290): a memory bound below the
+		// measured minimum a Go child works under cannot do real work — the
+		// platform raises it where it spawns the program and reports the
+		// raise. Warned here for the reason the ceiling is: the author
+		// learns at compile, not from a run that came back with more memory
+		// than they declared.
+		if floor := scripthost.MemoryFloor().Memory; b.Memory > 0 && b.Memory < floor {
+			c.warnfAtProperty(DiagCodemodeMemoryBelowFloor, scope, name, "codemode",
+				"%s %q declares codemode memory: %d, below the %d-byte floor a Go child works under: the platform raises the bound to the floor where the program is spawned, and allocation past it is refused (typed). Declare %d or more, or drop the line and take the default",
+				scope, name, b.Memory, floor, floor)
+		}
 	}
 	return &b
 }

@@ -447,7 +447,10 @@ count are **bare integers**, because this DSL has no byte-size value form and
 inventing one is its own lot. **A bound of `0` is the DEFAULT, not a ban** —
 `Limits.Clamp` reads any non-positive bound as "nobody chose", so
 `tool_calls: 0` is sixty-four calls. There is deliberately no way to spell a
-ban: a node that must run no program declares `codemode: off`. An unreadable or negative duration is **C349**
+ban: a node that must run no program declares `codemode: off`. And there is a **floor** on `memory:`: a bound below 64 MiB — the measured
+minimum a Go child works under — is raised to the floor where the program
+spawns (the platform reports the raise), so **C350** tells the author at
+compile. The floor is measured, not guessed (#3290). An unreadable or negative duration is **C349**
 and falls back to its default. Mind the direction: the default is tighter than
 a bound you were RAISING and looser than one you were LOWERING — a mistyped
 `wall: "5 s"` is enforced as the 30-second default, six times what was meant.

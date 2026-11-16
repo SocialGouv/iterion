@@ -236,9 +236,10 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 
 	// Below the ceiling, the caller's choice survives untouched: a bound that
 	// quietly replaced an explicit value would be the defect philosophy 1
-	// names.
+	// names. Memory sits AT the floor (#3290) — between the floor and the
+	// ceiling, honoured like any other value.
 	modest := Limits{
-		Wall: time.Second, CPU: 2 * time.Second, Memory: 1 << 20, ScriptBytes: 10, ResultBytes: 20,
+		Wall: time.Second, CPU: 2 * time.Second, Memory: MemoryFloor().Memory, ScriptBytes: 10, ResultBytes: 20,
 		ToolCalls: 7, ToolResultBytes: 512,
 	}
 	got, clamped = modest.Clamp()
@@ -247,6 +248,24 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 	}
 	if got != modest {
 		t.Errorf("a modest request was rewritten to %+v, want %+v", got, modest)
+	}
+
+	// And the FLOOR is the mirror of the greedy case (#3290): a bound the
+	// child cannot work under is RAISED to the floor, and the raise is
+	// reported — a clamp is a replacement of the operator's choice whichever
+	// direction it moves.
+	underFloor := Limits{
+		Wall: time.Second, CPU: 2 * time.Second, Memory: 8 << 20, ScriptBytes: 10, ResultBytes: 20,
+		ToolCalls: 7, ToolResultBytes: 512,
+	}
+	got, clamped = underFloor.Clamp()
+	if !clamped {
+		t.Error("a request under the memory floor reported no clamp: the operator would never be warned")
+	}
+	want := underFloor
+	want.Memory = MemoryFloor().Memory
+	if got != want {
+		t.Errorf("a request under the memory floor gave %+v, want %+v — every field honoured except Memory raised to the floor", got, want)
 	}
 }
 

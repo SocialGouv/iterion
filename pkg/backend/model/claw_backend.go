@@ -779,7 +779,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	if task.Codemode {
 		installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
-				b.logger.Warn("[%s] codemode: the platform ceiling reduced this node's script bounds (requested %+v, applied %+v)", task.NodeID, requested, applied)
+				// Both directions travel this seam (#3290): the ceiling REDUCES
+				// an over-reaching bound, the floor RAISES one the child could
+				// not work under. Either way the applied bounds are not what
+				// was declared, and the operator owes the why.
+				b.logger.Warn("[%s] codemode: the platform adjusted this node's script bounds to what a child can work under (requested %+v, applied %+v)", task.NodeID, requested, applied)
 			}
 		})
 	}
