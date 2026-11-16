@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ type scopeOut struct {
 	BaseIsCurrent    bool   `json:"base_is_current"`
 	WorkspaceAnomaly string `json:"workspace_anomaly"`
 	ChangedFiles     int    `json:"changed_files"`
+	Truncated        bool   `json:"truncated"`
 }
 
 // scopeAnchor is the thread root's diff position as the webhook lanes set
@@ -367,8 +369,8 @@ func TestReviConverseScopeFocusFollowsTheThreadAnchor(t *testing.T) {
 	// carries both; a focused read carries one.
 	const hunkA = "func A() int { return 2 }"
 	const hunkB = "func B() int { return 2 }"
-	lineOfA := 3    // A() is line 3 in the new file
-	lineOfB := 18   // B() is line 18 in the new file
+	lineOfA := 3  // A() is line 3 in the new file
+	lineOfB := 18 // B() is line 18 in the new file
 
 	t.Run("fresh anchor isolates its hunk", func(t *testing.T) {
 		got := runFixtureScope(t, f, scopeAnchor{path: "app.go", line: scopeItoa(lineOfA), side: "new", commit: f.head})
@@ -395,8 +397,8 @@ func TestReviConverseScopeFocusFollowsTheThreadAnchor(t *testing.T) {
 		if !strings.Contains(got.Block, hunkA) || !strings.Contains(got.Block, hunkB) {
 			t.Errorf("a removed line anchors no single hunk — the file's whole diff must show: %.600q", got.Block)
 		}
-		if !strings.Contains(got.Block, "a line the change removed") {
-			t.Errorf("the block must say why it degraded: %.300q", got.Block)
+		if !strings.Contains(got.Block, "the pre-image (old) side") {
+			t.Errorf("the block must say why it degraded (without claiming removal it cannot know): %.300q", got.Block)
 		}
 	})
 
@@ -426,6 +428,17 @@ func TestReviConverseScopeFocusFollowsTheThreadAnchor(t *testing.T) {
 		}
 		if !strings.Contains(got.Block, "may be outdated") {
 			t.Errorf("the block must name the staleness: %.300q", got.Block)
+		}
+	})
+
+	t.Run("a file-level position names the file, no line on either image", func(t *testing.T) {
+		// GitLab's position_type: "file" — old_path/new_path, no lines.
+		got := runFixtureScope(t, f, scopeAnchor{path: "app.go", side: "", commit: f.head})
+		if !strings.Contains(got.Block, "the whole diff of app.go") {
+			t.Errorf("a file-level anchor still shows the file's whole diff: %.400q", got.Block)
+		}
+		if !strings.Contains(got.Block, "no line on either image — a file- or image-level position") {
+			t.Errorf("the label must not call a file-level position an outdated comment: %.300q", got.Block)
 		}
 	})
 
@@ -537,4 +550,209 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// scopeCapFixture is a WIDE PR: many long-named files (the list alone
+// approaches the cap) around the changed files an answer actually anchors
+// to, plus the anchor file.
+func scopeCapFixture(t *testing.T, anchorFile string, noiseFiles int) (string, string) {
+	t.Helper()
+	ws := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		return gittest.Run(t, ws, args...)
+	}
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(ws, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write("app.go", "package app\n\nfunc A() int { return 1 }\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("checkout", "-q", "-b", "feat")
+	write("app.go", "package app\n\nfunc A() int { return 2 }\n")
+	for i := 0; i < noiseFiles; i++ {
+		name := fmt.Sprintf("pkg/generated/very/long/path/tables/generated_table_number_%04d_with_a_long_suffix.go", i)
+		write(name, "package generated\n\nfunc T"+scopeItoa(i)+"() int { return 0 }\n")
+	}
+	write(anchorFile, "package focus\n\nfunc F() int { return 2 }\n")
+	git("add", "-A")
+	git("commit", "-q", "-am", "wide change")
+	return ws, git("rev-parse", "HEAD")
+}
+
+// TestReviConverseScopeKeepsTheFocusUnderTheCap holds the cap against its
+// own trap: the cap cuts the block from the END, so on a wide PR the parts
+// that sort after the cut die first. The focus — the anchor hunk the
+// system prompt tells the agent to read FIRST — must survive the cut on a
+// PR whose changed-files list alone approaches the bound, whatever the
+// anchor's sort position; and the block must SAY it was cut, on the
+// output schema too (truncated), so the run can know the scope was
+// partial (D8-compatible: the workflow reads it, nothing infers it).
+func TestReviConverseScopeKeepsTheFocusUnderTheCap(t *testing.T) {
+	requirePython(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	t.Run("wide PR, anchor file sorting last", func(t *testing.T) {
+		ws, head := scopeCapFixture(t, "zz_focus.go", 300)
+		vars := map[string]any{"workspace_dir": ws, "base_ref": "main"}
+		for k, v := range (scopeAnchor{path: "zz_focus.go", line: "3", side: "new", commit: head}).vars() {
+			vars[k] = v
+		}
+		got := runScope(t, renderReviConverseScope(t, vars), ws)
+		if got.ChangedFiles != 302 {
+			t.Fatalf("changed_files = %d, want the 302-file change", got.ChangedFiles)
+		}
+		if !strings.Contains(got.Block, "scope capped at 48000 characters") {
+			t.Errorf("this PR's list alone nears the cap — the block must say it was cut: tail %q", tail(got.Block, 200))
+		}
+		if !strings.Contains(got.Block, "- focus:") {
+			t.Errorf("THE FOCUS IS GONE: the capped block never reaches '- focus:' — the anchor hunk the prompt says to read first is not in the block at all")
+		}
+		if !strings.Contains(got.Block, "the hunk(s) of zz_focus.go") {
+			t.Errorf("the kept prefix must carry the anchor's focus label: tail %q", tail(got.Block, 200))
+		}
+		if !got.Truncated {
+			t.Errorf("truncated = false — nothing downstream can know the scope was capped")
+		}
+	})
+
+	t.Run("narrow PR: focus present, nothing cut", func(t *testing.T) {
+		ws, head := scopeCapFixture(t, "zz_focus.go", 5)
+		vars := map[string]any{"workspace_dir": ws, "base_ref": "main"}
+		for k, v := range (scopeAnchor{path: "zz_focus.go", line: "3", side: "new", commit: head}).vars() {
+			vars[k] = v
+		}
+		got := runScope(t, renderReviConverseScope(t, vars), ws)
+		if strings.Contains(got.Block, "scope capped at 48000 characters") {
+			t.Errorf("a narrow block must not claim it was cut")
+		}
+		if !strings.Contains(got.Block, "the hunk(s) of zz_focus.go") || !strings.Contains(got.Block, "- focus:") {
+			t.Errorf("a narrow block must carry the focus: tail %q", tail(got.Block, 200))
+		}
+		if got.Truncated {
+			t.Errorf("truncated = true on a block that was not cut")
+		}
+	})
+}
+
+// TestReviConverseScopeFocusOnAPathspecNamedFile holds the focus against
+// git's pathspec grammar: a filename that DOUBLES as pathspec magic
+// (":x.go" is a legal repo name and a magic pathspec prefix) must still
+// focus its own hunk — the anchor goes to git as a LITERAL pathspec — and
+// the block must never claim "the file shows no diff any more" for a file
+// the change carries. Round-1 B-M2.
+func TestReviConverseScopeFocusOnAPathspecNamedFile(t *testing.T) {
+	requirePython(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ws := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		return gittest.Run(t, ws, args...)
+	}
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(ws, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write("app.go", "package app\n\nfunc A() int { return 1 }\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("checkout", "-q", "-b", "feat")
+	write("app.go", "package app\n\nfunc A() int { return 2 }\n")
+	// Legal on Linux, magic to git's default pathspec: the whole reason
+	// the anchor needs a literal pathspec.
+	write(":weird.go", "package weird\n\nfunc W() int { return 2 }\n")
+	write("p*go.txt", "package star\n\nfunc S() int { return 2 }\n")
+	git("add", "-A")
+	git("commit", "-q", "-am", "magic names")
+	head := git("rev-parse", "HEAD")
+
+	t.Run("a colon-prefixed filename focuses its own hunk", func(t *testing.T) {
+		got := runFixtureScope(t, scopeFixture{ws: ws, head: head}, scopeAnchor{path: ":weird.go", line: "3", side: "new", commit: head})
+		if !strings.Contains(got.Block, "func W() int { return 2 }") {
+			t.Errorf("the anchored file's hunk must show (a literal pathspec reaches it): %.600q", got.Block)
+		}
+		if strings.Contains(got.Block, "shows no diff against the merge-base any more") {
+			t.Errorf("FALSE claim: the file IS in the change — the block must not say it shows no diff any more: %.600q", got.Block)
+		}
+		if !strings.Contains(got.Block, "the hunk(s) of :weird.go") {
+			t.Errorf("the focus label must name the anchored file: %.300q", got.Block)
+		}
+	})
+
+	t.Run("a star-named file must not glob other files into the focus", func(t *testing.T) {
+		got := runFixtureScope(t, scopeFixture{ws: ws, head: head}, scopeAnchor{path: "p*go.txt", line: "3", side: "new", commit: head})
+		if !strings.Contains(got.Block, "func S() int { return 2 }") {
+			t.Errorf("the anchored file's hunk must show: %.600q", got.Block)
+		}
+		if strings.Contains(got.Block, "func A() int { return 2 }") && !strings.Contains(got.Block, "- focus: the hunk(s) of p*go.txt") {
+			t.Errorf("the focus must not glob app.go into the anchored file's hunks: %.600q", got.Block)
+		}
+	})
+
+	t.Run("an anchor file the change does not carry says so TRULY", func(t *testing.T) {
+		// The thread anchors a file the diff does not touch: the fallback
+		// fires, and its claim is TRUE there — the file shows no diff
+		// against the merge-base, because it is not in the change.
+		got := runFixtureScope(t, scopeFixture{ws: ws, head: head}, scopeAnchor{path: "absent.go", line: "1", side: "new", commit: head})
+		if !strings.Contains(got.Block, "shows no diff against the merge-base any more") {
+			t.Errorf("a genuinely absent file must say so: %.400q", got.Block)
+		}
+	})
+}
+
+// TestReviConverseScopeNamesADirtyAnchoredFile holds the focus label to
+// the truth about its own bytes: git diff reads the WORK TREE, so when the
+// anchored file carries an uncommitted edit, the "focused hunk" shows the
+// work tree's line — and a label claiming "its commit is the reviewed
+// head" without saying so presents work-tree bytes as the reviewed head's.
+// The anomaly is already disclosed as a block line; the focus label must
+// tie it to the focus. Round-1 B-M3.
+func TestReviConverseScopeNamesADirtyAnchoredFile(t *testing.T) {
+	requirePython(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dirty := newScopeFixture(t)
+	if err := os.WriteFile(filepath.Join(dirty.ws, "app.go"), []byte("package app\n\nfunc A() int { return 999 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := runFixtureScope(t, dirty, scopeAnchor{path: "app.go", line: "3", side: "new", commit: dirty.head})
+	if !strings.Contains(got.WorkspaceAnomaly, "app.go") {
+		t.Fatalf("the fixture carries the anomaly: %q", got.WorkspaceAnomaly)
+	}
+	if !strings.Contains(got.Block, "func A() int { return 999 }") {
+		t.Errorf("the focused hunk shows the work tree's bytes (git diff reads the work tree): %.600q", got.Block)
+	}
+	if !strings.Contains(got.Block, "The work tree carries uncommitted edits on this file") {
+		t.Errorf("the focus label must say the shown hunk is the WORK TREE's, not silently claim the reviewed head's: %.400q", got.Block)
+	}
+
+	// The clean twin keeps the plain fresh-anchor label.
+	clean := newScopeFixture(t)
+	ok := runFixtureScope(t, clean, scopeAnchor{path: "app.go", line: "3", side: "new", commit: clean.head})
+	if strings.Contains(ok.Block, "uncommitted edits on this file") {
+		t.Errorf("a clean anchored file must not carry the dirty caveat: %.400q", ok.Block)
+	}
+	if !strings.Contains(ok.Block, "the thread's anchor: its commit is the reviewed head") {
+		t.Errorf("the clean focus label must keep the freshness claim: %.300q", ok.Block)
+	}
 }

@@ -209,3 +209,110 @@ func TestGitlabNoteGateReturnsTheThreadRootAnchor(t *testing.T) {
 }
 
 func int64Ptr(n int64) *int64 { return &n }
+
+// The operator's pinned launch vars win over the anchor block on BOTH
+// GitLab entries: the lanes merge the anchor into the vars BEFORE the
+// webhook's var layers (cfg.LaunchVars apply last), so an EMPTY anchor
+// clobbers nothing and a REAL anchor cannot silently replace an
+// operator's explicit choice ("never silently replace an operator's
+// explicit choice"). The GitHub/Forgejo lane has merged before the layers
+// since it shipped (buildPRForgeReviewReplyVars). Round-1 B-M1.
+func TestGitLabWebhookCommandLaneOperatorPinBeatsTheAnchor(t *testing.T) {
+	newServer := func(t *testing.T) (*Server, *map[string]string) {
+		t.Helper()
+		s := newWebhookTestServer(t)
+		s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+		var gotVars map[string]string
+		s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+			gotVars = vars
+			return "run-anchor-4", nil
+		}
+		return s, &gotVars
+	}
+	commandMap := func() webhooks.Config {
+		cfg := glConfig()
+		cfg.BotIDs = []string{"review-pr", "revi-converse"}
+		cfg.CommandMap = map[string][]webhooks.CommandRoute{
+			"revi": {
+				{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"},
+				{BotID: "revi-converse", Scope: "pr", Disambiguator: "when_args_present", ArgsVar: "converse_question"},
+			},
+		}
+		return cfg
+	}
+	pinned := func(cfg webhooks.Config) webhooks.Config {
+		cfg.LaunchVars = map[string]string{
+			"thread_anchor_path":   "pinned-by-operator.go",
+			"thread_anchor_commit": "operatorsha",
+		}
+		return cfg
+	}
+
+	t.Run("an empty anchor must not clobber the pin", func(t *testing.T) {
+		s, got := newServer(t)
+		body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why?"`, 1)
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(pinned(commandMap())), body))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("command: code=%d body=%s", w.Code, w.Body.String())
+		}
+		assertAnchorBlock(t, "command lane with an operator pin, no anchor", *got, map[string]string{
+			"thread_anchor_path":   "pinned-by-operator.go",
+			"thread_anchor_commit": "operatorsha",
+		})
+	})
+
+	t.Run("a real anchor must not silently replace the pin either", func(t *testing.T) {
+		s, got := newServer(t)
+		body := strings.Replace(glNoteRevi, `"note": "/revi"`,
+			`"note": "/revi why here?", "position": {"head_sha": "h9", "old_path": "a.go", "new_path": "a.go", "new_line": 6, "position_type": "text"}`, 1)
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(pinned(commandMap())), body))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("command: code=%d body=%s", w.Code, w.Body.String())
+		}
+		assertAnchorBlock(t, "command lane with an operator pin and a real anchor", *got, map[string]string{
+			"thread_anchor_path":   "pinned-by-operator.go",
+			"thread_anchor_commit": "operatorsha",
+		})
+	})
+}
+
+// The prforge lane's precedence is pinned too: the operator's pinned vars
+// beat the payload's anchor (the merge sits before the var layers).
+func TestPRForgeReviewReplyOperatorPinBeatsTheAnchor(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotVars = vars
+		return "run-anchor-5", nil
+	}
+	s.webhookPRForgeReviewReplyGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedReviewComment, string) (bool, string, string, error) {
+		return true, "transcript", "allowlist", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.EventAllowlist = []string{"pull_request_review_comment"}
+	cfg.LaunchVars = map[string]string{"thread_anchor_path": "pinned-by-operator.go", "thread_anchor_commit": "operatorsha"}
+	body := `{
+		"action": "created",
+		"repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+		"comment": {"id": 9002, "in_reply_to_id": 9001, "body": "why?",
+			"html_url": "https://github.com/acme/widgets/pull/7#discussion_r9002",
+			"path": "pkg/x/y.go", "line": 42, "side": "RIGHT", "commit_id": "c0ffee1", "user": {"login": "alice"}},
+		"pull_request": {"number": 7, "state": "open", "title": "T", "body": "d",
+			"html_url": "https://github.com/acme/widgets/pull/7",
+			"head": {"sha": "abc123", "ref": "feature/x", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
+		"sender": {"login": "alice"}
+	}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderReviewComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("reply: code=%d body=%s", w.Code, w.Body.String())
+	}
+	assertAnchorBlock(t, "prforge lane with an operator pin", gotVars, map[string]string{
+		"thread_anchor_path":   "pinned-by-operator.go",
+		"thread_anchor_commit": "operatorsha",
+	})
+}

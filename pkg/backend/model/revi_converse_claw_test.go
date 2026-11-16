@@ -335,7 +335,11 @@ type converseModel struct {
 
 // converseSeen is what claw sent the scripted model.
 type converseSeen struct {
-	offered      []string
+	offered []string
+	// defsJSON is the offered tools' FULL definitions (name, description,
+	// input schema) as the wire carried them, marshalled once — the
+	// byte-stability witnesses compare defs, not just names.
+	defsJSON     []byte
 	results      map[string]string
 	system, user string
 	schema       map[string]bool
@@ -403,6 +407,12 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 	for _, tl := range req.Tools {
 		names = append(names, tl.Name)
 	}
+	if m.seen.defsJSON == nil && len(req.Tools) > 0 {
+		// Marshalled once, on the first tooled request: encoding/json is
+		// field-order deterministic for one struct shape, so two runs
+		// marshal to identical bytes unless a def differs.
+		m.seen.defsJSON, _ = json.Marshal(req.Tools)
+	}
 	var evs []api.StreamEvent
 	switch {
 	case slices.Contains(names, "bash") && m.next < len(steps):
@@ -468,6 +478,7 @@ func (m *converseModel) observed() converseSeen {
 	s := m.seen
 	s.offered = slices.Clone(m.seen.offered)
 	s.results = make(map[string]string, len(m.seen.results))
+	s.defsJSON = slices.Clone(m.seen.defsJSON)
 	for k, v := range m.seen.results {
 		s.results[k] = v
 	}

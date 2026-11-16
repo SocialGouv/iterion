@@ -612,7 +612,31 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
-		vars = applyWebhookVarLayers(withForgeBaseURL(buildCommandVars(p, route, cmdArgs, nil), cfg), cfg, store.RunTrustDefault)
+		// The thread ROOT's diff position: the anchor a command fired
+		// INSIDE a diff thread (a `/revi <question>` as a reply to Revi's
+		// inline comment) focuses its scope read on. The same best-effort
+		// fetch that grounds the transcript carries it; the arriving
+		// note's own position — present only on the note that opened a
+		// diff thread — covers the rest.
+		anchor := webhooks.ThreadAnchor{}
+		transcript := ""
+		if strings.TrimSpace(cmdArgs) != "" {
+			tc, rootAnchor := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID)
+			if tc != "" {
+				transcript = tc
+			}
+			anchor = rootAnchor
+		}
+		if !anchor.Set() {
+			anchor = p.ThreadAnchor()
+		}
+		// The anchor block merges into the vars BEFORE the webhook's var
+		// layers: cfg.LaunchVars (the operator's explicit pins) apply last
+		// and win, so an EMPTY anchor clobbers nothing and a real one
+		// cannot silently replace a pinned thread_anchor_* — the same
+		// precedence the reply lane and the prforge lane already have
+		// (round-1 B-M1).
+		vars = applyWebhookVarLayers(withForgeBaseURL(mergeVarsInto(buildCommandVars(p, route, cmdArgs, nil), anchor.LaunchVars()), cfg), cfg, store.RunTrustDefault)
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.
@@ -629,6 +653,12 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars["trigger_command"] = cmd
 		vars["trigger_args"] = cmdArgs
 		vars["replier"] = p.AuthorUsername
+		// thread_context is the same best-effort transcript the reply lane
+		// carries (a fetch failure leaves it absent, never a refusal); it
+		// rides after the layers like the reply lane's does.
+		if transcript != "" {
+			vars["thread_context"] = transcript
+		}
 		// re_review marks the posted summary the way review-pr's bare
 		// `/revi` always has: a when_args_present sibling sharing the same
 		// command (revi-converse) is answering a QUESTION, not re-reviewing,
@@ -637,30 +667,6 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		// pair inherits the same convention for free.
 		if route.Disambiguator == "when_args_empty" {
 			vars["re_review"] = "true"
-		}
-		// thread_context is best-effort and gate-fetched: one API call,
-		// worth paying only when the command carries text to ground (a bare
-		// command has nothing to ground). A fetch failure degrades to an
-		// absent var, never a refusal. The same fetch carries the thread
-		// ROOT's diff position: the anchor a command fired INSIDE a diff
-		// thread (a `/revi <question>` as a reply to Revi's inline comment)
-		// focuses its scope read on. The arriving note's own position —
-		// present only on the note that opened a diff thread — covers the
-		// rest; the converse bot then isolates the anchored hunk instead of
-		// walking the whole change.
-		anchor := webhooks.ThreadAnchor{}
-		if strings.TrimSpace(cmdArgs) != "" {
-			tc, rootAnchor := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID)
-			if tc != "" {
-				vars["thread_context"] = tc
-			}
-			anchor = rootAnchor
-		}
-		if !anchor.Set() {
-			anchor = p.ThreadAnchor()
-		}
-		for k, v := range anchor.LaunchVars() {
-			vars[k] = v
 		}
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.

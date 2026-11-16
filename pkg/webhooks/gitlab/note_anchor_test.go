@@ -156,3 +156,31 @@ func TestDiscussionParsesNotePositions(t *testing.T) {
 }
 
 func int64p(n int64) *int64 { return &n }
+
+// The root identity is the thread's FIRST note, not "first positioned": a
+// GitLab that ever positioned a reply must not move the anchor to whatever
+// order the fetch lists. And a system note never carries the diff anchor.
+func TestThreadRootAnchorPrefersTheRootNote(t *testing.T) {
+	root := &NotePosition{NewPath: "pkg/x/y.go", NewLine: int64p(42), HeadSHA: "h1"}
+	reply := &NotePosition{NewPath: "pkg/x/y.go", NewLine: int64p(99), HeadSHA: "h2"}
+	// The root is notes[0] (chronological API order); its position wins
+	// over any later note's — the anchor is the root's identity, not
+	// "first positioned in the slice".
+	a := ThreadRootAnchor([]DiscussionNote{
+		{AuthorID: 1, Body: "the root", Position: root},
+		{AuthorID: 2, Body: "a reply", Position: reply},
+	})
+	if a.Line != 42 || a.Commit != "h1" {
+		t.Errorf("the ROOT note's position wins, not a later positioned one: %+v", a)
+	}
+	// A system note never carries the diff anchor — not even from the
+	// first slot: skip it and take the first non-system positioned note.
+	sys := &NotePosition{NewPath: "pkg/sys.go", NewLine: int64p(7), HeadSHA: "h3"}
+	a = ThreadRootAnchor([]DiscussionNote{
+		{AuthorID: 1, Body: "closed the thread", System: true, Position: sys},
+		{AuthorID: 1, Body: "the review comment", Position: root},
+	})
+	if a.Line != 42 || a.Commit != "h1" {
+		t.Errorf("a system-positioned note is skipped: %+v", a)
+	}
+}

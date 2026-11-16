@@ -363,6 +363,12 @@ schema converse_scope_output:
   ## How many files the change touches. -1 is the SENTINEL for "the
   ## scope is unknown" — never read as "no files changed".
   changed_files: int
+  ## The 48000-character cap cut the block. True says the block is
+  ## partial: the agent reads the marker, the workflow can read the flag —
+  ## the run knows its scope was capped without trusting any gate to
+  ## infer it (D8-compatible: a fact on the output, not a claim on the
+  ## gates).
+  truncated: bool
 
 ## What the agent hands back: a draft, never a claim about the forge.
 schema converse_output:
@@ -577,15 +583,15 @@ tool converse_scope:
         except OSError as err:
             return subprocess.CompletedProcess(["git", *args], 1, "", str(err))
 
-    def emit(block, reviewed, based, current, anomaly, n_files):
+    def emit(block, reviewed, based, current, anomaly, n_files, truncated=false):
         print(json.dumps({"block": block, "reviewed_sha": reviewed, "base_sha": based,
                           "base_is_current": bool(current), "workspace_anomaly": anomaly,
-                          "changed_files": int(n_files)}))
+                          "changed_files": int(n_files), "truncated": bool(truncated)}))
         raise SystemExit(0)
 
     head = git("rev-parse", "HEAD").stdout.strip()
     if not head:
-        emit("Precomputed scope: UNAVAILABLE — the workspace has no HEAD to review. Read what you can and say what you could not.", "", base, false, "", -1)
+        emit("Precomputed scope: UNAVAILABLE — the workspace has no HEAD to review. Read what you can and say what you could not.", "", base, false, "", -1, false)
 
     # Workspace anomaly — the same read review-pr's diff_precheck makes
     # (the bots test suite asserts the parity of these facts): a TRACKED
@@ -626,7 +632,7 @@ tool converse_scope:
         emit("Precomputed scope: UNAVAILABLE — the change could not be scoped against base ref "
              + (base_tried or "(unset)") + " (no merge-base, or the diff failed). "
              "List and read the changed files yourself before answering, and say in unchecked what you could not read.",
-             head, base_tried, false, anomaly, -1)
+             head, base_tried, false, anomaly, -1, false)
 
     mb = git("merge-base", base, "HEAD").stdout.strip()
     if not mb:
@@ -666,34 +672,61 @@ tool converse_scope:
     rename_note = ""
     if anchor_old_path and anchor_old_path != anchor_path:
         rename_note = " The thread anchors a file renamed from " + anchor_old_path + "; the diff below is the new path."
+    # The anchor path reaches git as a LITERAL pathspec: a filename that
+    # doubles as pathspec magic (":x.go" is a legal repo name) or carries
+    # a wildcard would otherwise isolate nothing and stack false reasons
+    # on the block (round-1 B-M2).
+    literal = ":(literal)" + anchor_path if anchor_path else ""
     if not anchor_path:
+        # No anchor: the whole change's diff is read whole into memory
+        # before the 48000-character cap trims the BLOCK — the cap bounds
+        # what is passed to the model, not what this step holds. A giant
+        # PR pays that read once per run; the stat above is the cheaper
+        # sibling read (round-1 B-L5, flagged not fixed).
         focus_text = git("diff", mb).stdout
         focus_label = "the whole change (no thread anchor: the thread hangs off the conversation, not the diff)"
     elif anchor_side == "old":
-        focus_text = git("diff", mb, "--", anchor_path).stdout
+        focus_text = git("diff", mb, "--", literal).stdout
         focus_label = ("the whole diff of " + anchor_path
-                       + " (the anchor points at a line the change removed — a pre-image line, never read as a current one)")
+                       + " (the anchor points at the pre-image (old) side — a line the change removed or an old-image context line; never read as a current one)")
     elif line <= 0:
-        focus_text = git("diff", mb, "--", anchor_path).stdout
-        focus_label = ("the whole diff of " + anchor_path
-                       + " (the anchor carries no current line — an outdated comment; its original line is never read as a current one)")
+        focus_text = git("diff", mb, "--", literal).stdout
+        if anchor_side == "new":
+            focus_label = ("the whole diff of " + anchor_path
+                           + " (the anchor carries no current line — an outdated comment; its original line is never read as a current one)")
+        else:
+            focus_label = ("the whole diff of " + anchor_path
+                           + " (the anchor names the file but no line on either image — a file- or image-level position)")
     elif not anchor_commit or anchor_commit != head:
-        focus_text = git("diff", mb, "--", anchor_path).stdout
+        focus_text = git("diff", mb, "--", literal).stdout
         focus_label = ("the whole diff of " + anchor_path
                        + " (the anchor's commit " + (anchor_commit[:12] or "unknown") + " is not the reviewed head — the comment may be outdated)")
     else:
-        selected = hunks_covering(git("diff", mb, "--", anchor_path).stdout, line)
+        selected = hunks_covering(git("diff", mb, "--", literal).stdout, line)
         if selected:
             focus_text = selected
             focus_label = ("the hunk(s) of " + anchor_path + " around line " + str(line)
                            + " (the thread's anchor: its commit is the reviewed head)")
         else:
-            focus_text = git("diff", mb, "--", anchor_path).stdout
+            focus_text = git("diff", mb, "--", literal).stdout
             focus_label = ("the whole diff of " + anchor_path
                            + " (the anchor line sits outside the changed hunks — a context line, or the change moved on)")
+    # The focus label tells the truth about its own bytes: git diff reads
+    # the WORK TREE, so when the anchored file carries an uncommitted edit,
+    # the shown hunk is the work tree's — say so right where the label
+    # would otherwise claim the reviewed head's bytes. The anomaly entry
+    # match is exact (porcelain "XY <path>", the path at [3:]), never a
+    # substring of a longer name (round-1 B-M3).
+    anchor_dirty = bool(anomaly) and any(len(entry) > 3 and entry[3:] == anchor_path
+                                         for entry in anomaly.split(chr(10)))
+    if anchor_path and anchor_dirty:
+        focus_label += " The work tree carries uncommitted edits on this file — the hunk shown is the work tree's."
     if anchor_path and not focus_text.strip():
         focus_text = git("diff", mb).stdout
-        focus_label += rename_note + " That file shows no diff against the merge-base any more; the whole change is shown instead."
+        if anchor_path not in files:
+            focus_label += rename_note + " That file shows no diff against the merge-base any more; the whole change is shown instead."
+        else:
+            focus_label += rename_note + " The file's own diff could not be isolated; the whole change is shown instead."
     elif rename_note:
         focus_label += rename_note
 
@@ -719,13 +752,20 @@ tool converse_scope:
             parts.append("  " + shown.replace(chr(10), chr(10) + "  "))
         else:
             parts.append("- workspace anomaly: none")
+    # Focus FIRST, before the changed-files list and the stat: the cap
+    # cuts the block from the END, and on a wide PR the list alone can
+    # approach the bound — the anchor hunk the prompt tells the agent to
+    # read first must never be the first thing the cut loses (adversarial
+    # round 1, A-F2).
+    parts.append("- focus: " + focus_label + (chr(10) + focus_text if focus_text.strip() else ""))
     parts.append("- changed files: " + str(len(files)) + (chr(10) + "  " + chr(10).join("  " + f for f in files) if files else ""))
     parts.append("- diff stat:" + (chr(10) + stat if stat.strip() else " (none)"))
-    parts.append("- focus: " + focus_label + (chr(10) + focus_text if focus_text.strip() else ""))
     block = chr(10).join(parts)
+    truncated = false
     if len(block) > CAP:
         block = block[:CAP] + chr(10) + "[... scope capped at 48000 characters — run git for the rest ...]"
-    emit(block, head, mb, base_is_current, anomaly, len(files))
+        truncated = true
+    emit(block, head, mb, base_is_current, anomaly, len(files), truncated)
   language: py
   output: converse_scope_output
 

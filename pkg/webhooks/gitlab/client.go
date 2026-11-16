@@ -174,12 +174,24 @@ func NotesHaveAuthor(notes []DiscussionNote, userID int64) bool {
 // ThreadRootAnchor returns the diff position of the thread's ROOT note —
 // the anchor a conversational bot focuses its diff read on. GitLab attaches
 // a position to the note that opened a diff thread and to no reply, so the
-// thread holds at most one; the walk takes the first (chronological API
-// order, the discussion's own contract), which is the root's whenever one
-// exists. No positioned note — a general thread — means no anchor, and the
-// consumer degrades on that instead of guessing.
+// thread holds at most one — but the identity is pinned to the ROOT note
+// (the discussion's first, in its chronological API order) rather than to
+// "first positioned": a future GitLab that ever positioned a reply must not
+// move the anchor to whatever the fetch lists first (round-1 B-L2). System
+// notes carry no position by contract; if one ever does, it is not the
+// thread's diff anchor and is skipped. No positioned note — a general
+// thread — means no anchor, and the consumer degrades on that instead of
+// guessing.
 func ThreadRootAnchor(notes []DiscussionNote) webhooks.ThreadAnchor {
+	if len(notes) > 0 && !notes[0].System {
+		if a := positionAnchor(notes[0].Position); a.Set() {
+			return a
+		}
+	}
 	for _, n := range notes {
+		if n.System {
+			continue
+		}
 		if a := positionAnchor(n.Position); a.Set() {
 			return a
 		}

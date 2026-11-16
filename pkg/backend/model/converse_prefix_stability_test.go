@@ -71,8 +71,8 @@ func TestConverseAssembledRequestIsByteStableAcrossWorkspaces(t *testing.T) {
 	build := func(t *testing.T, ws, home string) assembled {
 		t.Helper()
 		guard := secretguard.New([]secretguard.Secret{{
-			Name:       "forge_token",
-			Value:      token,
+			Name:        "forge_token",
+			Value:       token,
 			Placeholder: secretguard.PlaceholderForName("forge_token"),
 			// The sandbox mount spelling, identical in both runs: what a
 			// sandboxed runner bind-mounts, and what the prompt renders.
@@ -128,40 +128,73 @@ func TestConverseAssembledRequestIsByteStableAcrossWorkspaces(t *testing.T) {
 		return assembled{blocks: blocks, tools: toolsJSON}
 	}
 
-	// Two checkouts of the same tree: same AGENTS.md bytes, same committed
-	// content, different absolute paths (and different depths, so an
-	// absolute spelling cannot pass by coincidence).
-	wsA := prefixWorkspace(t)
-	wsB := prefixWorkspace(t)
-	if wsA == wsB {
-		t.Fatalf("both workspaces resolved to %s", wsA)
-	}
+	// Two checkouts of the same tree per SHAPE: same instruction bytes,
+	// different absolute paths (and different depths, so an absolute
+	// spelling cannot pass by coincidence). Two shapes, because the block
+	// reaches its bytes two ways: the fallback's own AGENTS.md header, and
+	// a CLAUDE.md whose @imports pull the same file — iterion's committed
+	// CLAUDE.md is exactly `@AGENTS.md`, so that shape is the flagship lane.
+	for _, shape := range []struct {
+		name     string
+		make     func(t *testing.T) string
+		nonEmpty func(t *testing.T, ambient string)
+	}{
+		{
+			name: "the fallback's own AGENTS.md",
+			make: prefixWorkspace,
+			nonEmpty: func(t *testing.T, ambient string) {
+				t.Helper()
+				if !strings.Contains(ambient, "## AGENTS.md (AGENTS.md)") {
+					t.Fatalf("the ambient block does not carry the workspace AGENTS.md under a relative header: %.200q", ambient)
+				}
+			},
+		},
+		{
+			name: "a CLAUDE.md importing it (@AGENTS.md)",
+			make: prefixWorkspaceWithImports,
+			nonEmpty: func(t *testing.T, ambient string) {
+				t.Helper()
+				if !strings.Contains(ambient, "### Imported: AGENTS.md") {
+					t.Fatalf("the ambient block does not carry the @import under the REF AS WRITTEN: %.300q", ambient)
+				}
+			},
+		},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			wsA := shape.make(t)
+			wsB := shape.make(t)
+			if wsA == wsB {
+				t.Fatalf("both workspaces resolved to %s", wsA)
+			}
 
-	a := build(t, wsA, t.TempDir())
-	b := build(t, wsB, t.TempDir())
+			a := build(t, wsA, t.TempDir())
+			b := build(t, wsB, t.TempDir())
 
-	if len(a.blocks) != len(b.blocks) {
-		t.Fatalf("system block count differs: %d vs %d", len(a.blocks), len(b.blocks))
-	}
-	for i := range a.blocks {
-		if off, ok := firstDivergentByte(a.blocks[i], b.blocks[i]); !ok {
-			continue
-		} else {
-			ctxA := a.blocks[i][max(0, off-60):min(len(a.blocks[i]), off+60)]
-			ctxB := b.blocks[i][max(0, off-60):min(len(b.blocks[i]), off+60)]
-			t.Fatalf("system block %d diverges at byte %d: A %q vs B %q — the cross-run prefix cache cuts here",
-				i, off, ctxA, ctxB)
-		}
-	}
-	if off, ok := firstDivergentByte(string(a.tools), string(b.tools)); ok {
-		t.Fatalf("tool schemas diverge at byte %d: A %q vs B %q", off,
-			a.tools[max(0, off-60):min(len(a.tools), off+60)],
-			b.tools[max(0, off-60):min(len(b.tools), off+60)])
-	}
-	// And the promise is not vacuous: the ambient block really carries the
-	// workspace's AGENTS.md, spelled relative to the workspace.
-	if len(a.blocks) < 2 || !strings.Contains(a.blocks[1], "## AGENTS.md (AGENTS.md)") {
-		t.Fatalf("the ambient block does not carry the workspace AGENTS.md under a relative header: %.200q", a.blocks)
+			if len(a.blocks) != len(b.blocks) {
+				t.Fatalf("system block count differs: %d vs %d", len(a.blocks), len(b.blocks))
+			}
+			for i := range a.blocks {
+				if off, ok := firstDivergentByte(a.blocks[i], b.blocks[i]); !ok {
+					continue
+				} else {
+					ctxA := a.blocks[i][max(0, off-60):min(len(a.blocks[i]), off+60)]
+					ctxB := b.blocks[i][max(0, off-60):min(len(b.blocks[i]), off+60)]
+					t.Fatalf("system block %d diverges at byte %d: A %q vs B %q — the cross-run prefix cache cuts here",
+						i, off, ctxA, ctxB)
+				}
+			}
+			if off, ok := firstDivergentByte(string(a.tools), string(b.tools)); ok {
+				t.Fatalf("tool schemas diverge at byte %d: A %q vs B %q", off,
+					a.tools[max(0, off-60):min(len(a.tools), off+60)],
+					b.tools[max(0, off-60):min(len(b.tools), off+60)])
+			}
+			// And the promise is not vacuous: the ambient block really
+			// carries this shape's instruction bytes, workspace-relative.
+			if len(a.blocks) < 2 {
+				t.Fatalf("no ambient block at all: %.200q", a.blocks)
+			}
+			shape.nonEmpty(t, a.blocks[1])
+		})
 	}
 }
 
@@ -249,7 +282,7 @@ func TestConverseWireRequestIsByteStableAcrossWorkspaces(t *testing.T) {
 	if !ok {
 		t.Fatalf("converse_agent is %T, want *ir.AgentNode", wf.Nodes["converse_agent"])
 	}
-	capture := func(t *testing.T, ws string) (string, string) {
+	capture := func(t *testing.T, ws string) (string, []byte) {
 		t.Helper()
 		home := t.TempDir()
 		mdl := &converseModel{ws: ws, answer: "Re: op — « why? »", forge: "gitlab"}
@@ -279,16 +312,45 @@ func TestConverseWireRequestIsByteStableAcrossWorkspaces(t *testing.T) {
 			t.Fatalf("converse_agent on claw (%s): %v", ws, err)
 		}
 		seen := mdl.observed()
-		names, _ := json.Marshal(seen.offered)
-		return seen.system, string(names)
+		return seen.system, seen.defsJSON
 	}
-	sysA, toolsA := capture(t, prefixWorkspace(t))
-	sysB, toolsB := capture(t, prefixWorkspace(t))
-	if off, ok := firstDivergentByte(sysA, sysB); ok {
-		t.Fatalf("the wire system diverges at byte %d: A %q vs B %q — the cross-run prefix cache cuts here",
-			off, sysA[max(0, off-60):min(len(sysA), off+60)], sysB[max(0, off-60):min(len(sysB), off+60)])
+	// Both shapes: the fallback's own AGENTS.md and the import-carrying
+	// CLAUDE.md — the flagship lane's route into the same instructions.
+	for _, make := range []func(t *testing.T) string{prefixWorkspace, prefixWorkspaceWithImports} {
+		sysA, defsA := capture(t, make(t))
+		sysB, defsB := capture(t, make(t))
+		if off, ok := firstDivergentByte(sysA, sysB); ok {
+			t.Fatalf("the wire system diverges at byte %d: A %q vs B %q — the cross-run prefix cache cuts here",
+				off, sysA[max(0, off-60):min(len(sysA), off+60)], sysB[max(0, off-60):min(len(sysB), off+60)])
+		}
+		if off, ok := firstDivergentByte(string(defsA), string(defsB)); ok {
+			t.Fatalf("the wire TOOL DEFS diverge at byte %d: A %q vs B %q — the promise covers defs, not names",
+				off, defsA[max(0, off-60):min(len(defsA), off+60)], defsB[max(0, off-60):min(len(defsB), off+60)])
+		}
 	}
-	if off, ok := firstDivergentByte(toolsA, toolsB); ok {
-		t.Fatalf("the wire tool list diverges at byte %d: %q vs %q", off, toolsA, toolsB)
+}
+
+// prefixWorkspaceWithImports is the flagship lane's shape: the workspace's
+// CLAUDE.md is exactly `@AGENTS.md` — iterion's own committed spelling — so
+// the ambient block reaches the same instructions through the walk's import
+// expansion. A label spelled from the RESOLVED path here (`### Imported:
+// /checkout/AGENTS.md`) carries the checkout's path on every run and cuts
+// the cross-run prefix cache on this lane alone.
+func prefixWorkspaceWithImports(t *testing.T) string {
+	t.Helper()
+	ws := prefixWorkspace(t)
+	if err := os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("@AGENTS.md\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	git := gittest.Cmd(ws, "add", "-A")
+	git.Env = append(git.Env, "HOME="+t.TempDir())
+	if out, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	c := gittest.Cmd(ws, "commit", "-q", "-m", "instructions")
+	c.Env = append(c.Env, "HOME="+t.TempDir())
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	return ws
 }

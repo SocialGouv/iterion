@@ -107,6 +107,29 @@ it ("N/A"). The reason is the banner when the draft is empty — or, beside the
 reason, only filler ("N/A", "none", "-", "null", no run of three letters) —
 and it is carried into `publish_reply`'s summary whenever the agent gave one.
 
+**What byte-stability does and does not cover** (the cross-run prefix, said
+exactly): stable — the system blocks and the tool schemas for two checkouts
+of one tree, both ambient shapes (the fallback's own AGENTS.md and a
+CLAUDE.md whose `@AGENTS.md` import pulls it — iterion's committed spelling,
+the flagship lane), at the sandbox secret mount. Not stable, said where they
+live: a HOST (unsandboxed) run materializes secret files into a per-run temp
+dir whose path enters the prompt (S3 did not set out to fix that; sandbox
+runs — the measured lane — bind-mount the stable path); and a workspace that
+is a SUB-DIRECTORY of its repository gets the claw walk's `Ancestor (<abs
+path>)` labels for instructions sitting above it — run workspaces are
+checkout roots, so webhook lanes never hit it; manual sub-dir runs do. The
+wire witness compares full tool defs, not names.
+
+**Lane notes on the anchor vars** (round-1 review): the lanes set the six
+`thread_anchor_*` keys on every pr-surface launch they build — a bare
+`/revi` (the review-pr route) and any other command bot receive them too and
+simply never read them; the vars merge BEFORE the webhook's var layers, so
+an operator's pinned `thread_anchor_*` wins over a payload's anchor and an
+empty anchor clobbers nothing. Forgejo/Gitea payloads of the review-comment
+event carry the fields Gitea implements (the file path, when any): a payload
+that names no side has no current line to focus, and degrades to the file's
+whole diff, said in the block.
+
 `publish_reply` reads the forge from `pr_url`'s path and posts where each
 forge's REST API takes a reply:
 
