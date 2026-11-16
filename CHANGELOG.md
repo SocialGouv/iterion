@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.4.0](https://github.com/SocialGouv/iterion/compare/v7.3.5...v7.4.0) (2026-11-16)
+
+### Features
+
+* **revi:** converse inherits no ambient MCP; the effort lives in the PLIAGE routing cells and the report tells what ran ([#3283](https://github.com/SocialGouv/iterion/issues/3283)) ([#3339](https://github.com/SocialGouv/iterion/issues/3339)) ([3e3251c](https://github.com/SocialGouv/iterion/commit/3e3251cdd3ed802dd9dd9908a9ab00f16d8791ac)), references [#3338](https://github.com/SocialGouv/iterion/issues/3338) [#3259](https://github.com/SocialGouv/iterion/issues/3259) [#3328](https://github.com/SocialGouv/iterion/issues/3328) [#3290](https://github.com/SocialGouv/iterion/issues/3290) [#3281](https://github.com/SocialGouv/iterion/issues/3281)
+
+    <details><summary>why</summary>
+
+    S1: revi-converse 0.1.10's converse_agent inherits no ambient MCP (the 31 tool schemas per request M1 measured drop to the node's own); claude_code keeps --strict-mcp-config for the node, codex is typed-refused when its own configuration lists an enabled server (the pinned SDK cannot disable them, measured on codex-cli 0.156.1) and a fallback route takes over.
+
+    </details>
+
 ## [7.3.5](https://github.com/SocialGouv/iterion/compare/v7.3.4...v7.3.5) (2026-11-16)
 
 ### Bug Fixes
