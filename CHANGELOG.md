@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.5.0](https://github.com/SocialGouv/iterion/compare/v7.4.0...v7.5.0) (2026-11-16)
+
+### Features
+
+* **connectors:** subscriptions bound to connector packages — the matcher, the submitter, the routes (L1d, [#3271](https://github.com/SocialGouv/iterion/issues/3271)) ([#3334](https://github.com/SocialGouv/iterion/issues/3334)) ([85b0312](https://github.com/SocialGouv/iterion/commit/85b0312e191765e7feb7c36e21857f4531e555fb)), closes [#3305](https://github.com/SocialGouv/iterion/issues/3305), references [#3305](https://github.com/SocialGouv/iterion/issues/3305) [#3136](https://github.com/SocialGouv/iterion/issues/3136) [#3274](https://github.com/SocialGouv/iterion/issues/3274) [#3296](https://github.com/SocialGouv/iterion/issues/3296) [#3296](https://github.com/SocialGouv/iterion/issues/3296) [#3136](https://github.com/SocialGouv/iterion/issues/3136) [#1931](https://github.com/SocialGouv/iterion/issues/1931)
+
+    <details><summary>why</summary>
+
+    The L1c closing re-read's below-high product findings, ticketed by the loop's rule, fixed with a witness each: - a timed-out intake write is re-read under a bound of its own (the write's deadline was the one that failed it), so a row proven absent gives its quota unit back; Server.ingressWriteLimit is the test seam; - intake.MongoStore.Accept returns `created` along with a read-back error, and the lane gives the unit back when the row it then finds is a concurrent twin's; - the legacy Forgejo…
+
+    </details>
+
 ## [7.4.0](https://github.com/SocialGouv/iterion/compare/v7.3.5...v7.4.0) (2026-11-16)
 
 ### Features
