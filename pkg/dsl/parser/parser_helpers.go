@@ -1173,6 +1173,27 @@ func (p *parser) expectInt() int {
 	return 0
 }
 
+// expectInt64 is expectInt for a value whose range needs the wider type. A
+// codemode `memory:` is a byte count and its platform ceiling (2 GiB) is
+// already one past what an int32 holds, so `strconv.Atoi` — whose int is
+// 32 bits on a 32-bit build — refuses the very value the registry documents.
+// Measured under GOARCH=386 before this existed: `memory: 2147483648` drew
+// E002 "value out of range". The AST field and the author writer were widened
+// on purpose; the reader was the half left behind.
+func (p *parser) expectInt64() int64 {
+	t := p.next()
+	if t.Type == TokenInt {
+		v, err := strconv.ParseInt(t.Value, 10, 64)
+		if err != nil {
+			p.addError(DiagExpectedToken, t, fmt.Sprintf("invalid integer %q: %v", t.Value, err))
+			return 0
+		}
+		return v
+	}
+	p.expectFailed(t, TokenInt, "expected integer, got "+t.Type.String())
+	return 0
+}
+
 func (p *parser) expectNumber() float64 {
 	t := p.next()
 	switch t.Type {

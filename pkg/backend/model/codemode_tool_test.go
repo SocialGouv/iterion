@@ -454,6 +454,29 @@ func TestTheShippedCellsAreExactlyTheLoopsThatInstallTheTool(t *testing.T) {
 				}
 				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "installCodemode" {
 					callers = append(callers, filepath.ToSlash(rel))
+					// And WHAT it passes, not only who calls it. The
+					// bounds argument must be the TASK's, read from the
+					// field: `installCodemode(&opts, nil, …)` compiles
+					// and leaves every program on DefaultLimits while the
+					// author declared otherwise, and it was measured to
+					// survive the whole of ./pkg/backend/model/.
+					//
+					// This is a SOURCE guard, not a behavioural one, and
+					// it is here because the behavioural reach is the
+					// generation loop's opts — which no seam exposes
+					// without a live model. The sandbox crossing has the
+					// behavioural witness for its own direction
+					// (TestCodemodeChangesNothingOnTheWireToASandboxRunner),
+					// and production is the NON-sandboxed path, so this
+					// one call is what carries it there.
+					if len(call.Args) < 2 {
+						t.Errorf("%s: installCodemode called with %d argument(s)", rel, len(call.Args))
+					} else {
+						sel, ok := call.Args[1].(*ast.SelectorExpr)
+						if !ok || sel.Sel == nil || sel.Sel.Name != "CodemodeBounds" {
+							t.Errorf("%s: installCodemode's bounds argument is %T, want the task's .CodemodeBounds — a literal there runs every program on the defaults", rel, call.Args[1])
+						}
+					}
 				}
 				return true
 			})

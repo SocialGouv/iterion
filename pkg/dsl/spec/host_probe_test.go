@@ -21,6 +21,11 @@ var hostProbes = map[string]map[string]string{
 		"agent":    "agent a:\n  mcp:\n    %s: 1\n",
 		"judge":    "judge j:\n  mcp:\n    %s: 1\n",
 	},
+	"codemode": {
+		"workflow": "workflow w:\n  codemode:\n    %s: 1\n",
+		"agent":    "agent a:\n  codemode:\n    %s: 1\n",
+		"judge":    "judge j:\n  codemode:\n    %s: 1\n",
+	},
 	"sandbox": {
 		"workflow": "workflow w:\n  sandbox:\n    %s: 1\n",
 		"agent":    "agent a:\n  sandbox:\n    %s: 1\n",
@@ -78,7 +83,9 @@ func TestTheEnclosingKindRemedyNamesTheHostTheBlockIsIn(t *testing.T) {
 	// change that removes a candidate turns the guard red rather than quiet.
 	// A legitimate change (a host gaining or losing a property) updates the
 	// number here, on purpose, with the review that made it.
-	const expectedAssertions = 32
+	// 39 since the `codemode` block joined the registry on three hosts
+	// (workflow, agent, judge), each with its own remedy assertion.
+	const expectedAssertions = 39
 	asserted := 0
 	defer func() {
 		if asserted != expectedAssertions {

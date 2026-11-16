@@ -284,10 +284,15 @@ func TestTheParentRefusesEveryFrameItDoesNotServe(t *testing.T) {
 func TestAnOversizedFrameIsRefusedRatherThanBuffered(t *testing.T) {
 	t.Parallel()
 
+	// The knob is callFrameCap(), derived from MaxToolInputBytes, not
+	// Limits.ScriptBytes — which used to stand here and made two caps bound
+	// one frame with the JSON envelope as the whole window between them. The
+	// GUARANTEE is unchanged and is what this test is for: the parent is the
+	// one process no rlimit covers, so it must refuse an oversized frame
+	// rather than buffer whatever a compromised child chooses to write.
 	limits, _ := smallLimits().Clamp()
-	limits.ScriptBytes = 1 << 10
 
-	huge := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + strings.Repeat("x", 4<<10) + `"}}`
+	huge := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + strings.Repeat("x", int(callFrameCap())+(4<<10)) + `"}}`
 	var out strings.Builder
 	_, err := serveToolCalls(context.Background(), strings.NewReader(huge+"\n"), &out, &recordingServer{}, limits)
 	if err == nil {
@@ -322,5 +327,38 @@ func TestAChildRefusesAToolChannelItDoesNotSpeak(t *testing.T) {
 	}
 	if !strings.Contains(resp.Message, "not the same build") {
 		t.Errorf("the refusal does not name the skew: %q", resp.Message)
+	}
+}
+
+// An input the CHILD admits must reach the parent. The two caps bound one
+// frame, and round 2's fix made them coherent — but nothing witnessed it:
+// mutating the parent's cap back to `limits.ScriptBytes` left both suites
+// green, because the oversized-frame test derives its payload FROM the cap
+// and so exceeds either number. It pinned "a cap exists", not which one.
+//
+// 262100 bytes is inside MaxToolInputBytes (262144) and was measured being
+// refused by the parent at the pre-fix cap, with the JSON envelope as the
+// whole window between the two numbers.
+func TestAnInputTheChildAdmitsReachesTheParent(t *testing.T) {
+	t.Parallel()
+
+	var got int
+	srv := &recordingServer{}
+	limits, _ := smallLimits().Clamp()
+	// The cap under test is the PARENT's frame cap; the result side is left
+	// at its default so this test cannot pass for the other cap's reason.
+	pad := strings.Repeat("x", 262100)
+	frame := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + pad + `"}}`
+	var out strings.Builder
+	n, err := serveToolCalls(context.Background(), strings.NewReader(frame+"\n"), &out, srv, limits)
+	if err != nil {
+		t.Fatalf("an input of %d bytes — inside the child's own MaxToolInputBytes of %d — was refused by the parent: %v", len(pad), MaxToolInputBytes, err)
+	}
+	if n != 1 {
+		t.Errorf("served %d call(s), want 1", n)
+	}
+	got = len(pad)
+	if got != 262100 {
+		t.Errorf("padding length = %d", got)
 	}
 }

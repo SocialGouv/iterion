@@ -256,7 +256,27 @@ import (
 // version fence cannot catch that and is not what answers it: the migration
 // sentence on ADR-165 is — re-route the node to claw, or declare
 // `codemode: off`.
-const SchemaVersion = 31
+// v32 adds the codemode BOUNDS to the same carrier. They ride `ir_compiled`
+// inside the `codemode` object — `ir_compiled` is the compiled AST, so the
+// bounds travel as the block's own fields (`tool_calls`, `wall`, …) beside
+// its mode, and NOT under a key of their own. An earlier draft named a
+// `codemode_bounds` key here: that name is real but belongs to ANOTHER wire,
+// `delegate.IOTask`'s sandbox relay, and on this one it existed only as three
+// json tags on a struct family nothing marshals; they are gone. No RunMessage field was added, and the bump
+// is the additive-field rule's case rather than a formality.
+//
+// The direction is the opposite of v31's and the rule still asks for a bump.
+// A pre-bounds runner drops the key and runs the program under
+// scripthost.DefaultLimits — TIGHTER than anything an author raises them to,
+// so it cannot fail OPEN and the refusal it produces is loud ("the script has
+// spent its budget of 64 tool calls"). That is only the EXEMPTION's first
+// condition though, not the whole of it: the exemption also asks that the
+// field "carries no operator choice", which is what let `cap_imposed` in
+// without a bump. Declared bounds are an operator's choice, named by the rule
+// itself ("budget caps"), so a stale runner silently re-making it is the
+// correctness bug the rule exists for. Hence 31 → 32, and
+// MinSchemaVersion stays 27.
+const SchemaVersion = 32
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its

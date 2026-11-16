@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/plugin"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -164,6 +165,7 @@ type IOTask struct {
 	AmbientContext         string                 `json:"ambient_context,omitempty"`
 	AmbientContextSource   string                 `json:"ambient_context_source,omitempty"`
 	Codemode               bool                   `json:"codemode,omitempty"`
+	CodemodeBounds         *scripthost.Limits     `json:"codemode_bounds,omitempty"`
 	CompressMode           string                 `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec  `json:"rewriters,omitempty"`
 	SettingsHooks          json.RawMessage        `json:"settings_hooks,omitempty"`
@@ -348,6 +350,7 @@ func ToIOTask(t Task) IOTask {
 		AmbientContext:         t.AmbientContext.String(),
 		AmbientContextSource:   t.AmbientContextSource,
 		Codemode:               t.Codemode,
+		CodemodeBounds:         t.CodemodeBounds,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,
@@ -418,6 +421,7 @@ func FromIOTask(t IOTask) Task {
 		AmbientContext:         ambientFromIO(t.AmbientContext),
 		AmbientContextSource:   t.AmbientContextSource,
 		Codemode:               t.Codemode,
+		CodemodeBounds:         t.CodemodeBounds,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 		SettingsHooks:          t.SettingsHooks,

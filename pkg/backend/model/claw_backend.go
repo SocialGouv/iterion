@@ -777,7 +777,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// declared `on` this backend could not serve before building the task —
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
-		installCodemode(&opts, func(requested, applied scripthost.Limits) {
+		installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				b.logger.Warn("[%s] codemode: the platform ceiling reduced this node's script bounds (requested %+v, applied %+v)", task.NodeID, requested, applied)
 			}

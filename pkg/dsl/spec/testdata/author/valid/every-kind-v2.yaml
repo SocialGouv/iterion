@@ -188,7 +188,15 @@ nodes:
     compress: on
     auto_memory: off
     ambient_context: none
-    codemode: "on"
+    codemode:
+      mode: "on"
+      tool_calls: 256
+      wall: "2m"
+      cpu: "45s"
+      memory: 536870912
+      script_bytes: 524288
+      result_bytes: 2097152
+      tool_result_bytes: 131072
     permission: ask
     allow: ["Read(**)"]
     ask: ["Bash(git *)"]

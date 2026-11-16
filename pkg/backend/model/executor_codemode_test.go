@@ -33,7 +33,7 @@ func TestTheExecutorResolvesCodemodeByPrecedence(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := &ClawExecutor{wfCodemode: c.workflow}
-			got, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Claw)
+			got, _, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Claw)
 			if err != nil {
 				t.Fatalf("on the backend that serves it: %v", err)
 			}
@@ -60,7 +60,7 @@ func TestTheExecutorResolvesCodemodeByPrecedence(t *testing.T) {
 func TestTheExecutorRefusesCodemodeOnABackendThatCannotServeIt(t *testing.T) {
 	t.Parallel()
 	e := &ClawExecutor{}
-	_, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Codex)
+	_, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backendcaps.Codex)
 	var refusal *delegate.ErrCapabilityUnsupported
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %v, want a *delegate.ErrCapabilityUnsupported", err)
@@ -91,7 +91,7 @@ func TestTheExecutorRefusesOnlyWhatWasDeclared(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := &ClawExecutor{wfCodemode: c.workflow}
-			if _, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Codex); err != nil {
+			if _, _, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Codex); err != nil {
 				t.Errorf("codex refused a node that asked for nothing: %v", err)
 			}
 		})
@@ -130,7 +130,7 @@ func TestTheExecutorAndTheCompilerRefuseTheSameBackends(t *testing.T) {
 	var served, refused int
 	for _, backend := range backendcaps.Names() {
 		e := &ClawExecutor{}
-		_, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backend)
+		_, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, backend)
 		engineRefuses := err != nil
 		compilerRefuses := ir.CodemodeRefusedBy(backend)
 		if engineRefuses != compilerRefuses {
@@ -259,8 +259,8 @@ func TestTheStaticExecutorCarriesTheWorkflowRungToo(t *testing.T) {
 	static := NewProgramExecutor(wf)
 	engine := &ClawExecutor{wfCodemode: wf.Codemode}
 
-	gotStatic, staticErr := static.codemodePolicy(fields, backendcaps.Claw)
-	gotEngine, engineErr := engine.codemodePolicy(fields, backendcaps.Claw)
+	gotStatic, _, staticErr := static.codemodePolicy(fields, backendcaps.Claw)
+	gotEngine, _, engineErr := engine.codemodePolicy(fields, backendcaps.Claw)
 	if gotStatic != gotEngine || (staticErr == nil) != (engineErr == nil) {
 		t.Errorf("the static reading says %+v (err=%v) and the engine says %+v (err=%v) for the same workflow",
 			gotStatic, staticErr, gotEngine, engineErr)
@@ -272,7 +272,7 @@ func TestTheStaticExecutorCarriesTheWorkflowRungToo(t *testing.T) {
 	// And the refusal it would produce agrees too, on a backend that cannot
 	// serve it: a pre-run analysis that misses the refusal is the shape that
 	// lets an operator launch a node the engine then stops.
-	if _, err := static.codemodePolicy(fields, backendcaps.Codex); err == nil {
+	if _, _, err := static.codemodePolicy(fields, backendcaps.Codex); err == nil {
 		t.Error("the static reading does not refuse codex, so a pre-run analysis would miss the refusal the dispatch makes")
 	}
 }
@@ -303,7 +303,7 @@ func TestTheEngineAsksThePositiveQuestion(t *testing.T) {
 	}
 
 	e := &ClawExecutor{}
-	_, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, unknown)
+	_, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on"}, unknown)
 	var refusal *delegate.ErrCapabilityUnsupported
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %v, want a refusal: a backend the registry does not carry installs no codemode tool, so granting it is the silent drop this slice exists to prevent", err)

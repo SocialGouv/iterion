@@ -26,7 +26,7 @@ import (
 // not keep.
 const codemodeDescription = `Run a JavaScript program that calls this node's other tools, so a loop, a filter or a large intermediate result stays out of the conversation. Return only what you need: the program's LAST EXPRESSION is what you get back, JSON-encoded.
 
-call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tool names are the ones you already have, MINUS the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. A program cannot open a file, a socket or a process, and holds no credential: tools are its whole world. There is no console, no require, no process, no timers, and no network.
+call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tool names are the ones you already have, MINUS the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. A program cannot open a file, a socket or a process, and holds no credential: tools are its whole world. call() is SYNCHRONOUS: it returns the result, not a promise. Do not write await, and do not declare anything async — there is no event loop to settle a promise, and await is a syntax error that costs you the whole program. There is no console, no require, no process, no timers, and no network.
 
 Prefer this when the work is many calls, or one call whose output you only need a part of; call a tool directly when you need exactly one result.`
 
@@ -57,8 +57,18 @@ var codemodeInputSchema = json.RawMessage(`{
 // Nothing else about the node changes: the tool joins opts.Tools, which is
 // the same list a direct call is resolved against, so the node's own door is
 // what a program reaches.
-func installCodemode(opts *GenerationOptions, onClamp func(requested, applied scripthost.Limits)) {
-	opts.Tools = append(opts.Tools, codemodeTool(scripthost.Host{OnClamp: onClamp}, scripthost.Limits{}))
+//
+// `want` is the author's declared bounds, already resolved node-over-workflow
+// by the executor; nil means nobody chose. It is passed THROUGH, not
+// inspected: Limits.Clamp in the parent is what fills the unset fields from
+// DefaultLimits and holds the rest under Ceiling, and a second opinion here
+// would be a bound with two owners. OnClamp is how a reduction is reported.
+func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits)) {
+	var limits scripthost.Limits
+	if want != nil {
+		limits = *want
+	}
+	opts.Tools = append(opts.Tools, codemodeTool(scripthost.Host{OnClamp: onClamp}, limits))
 }
 
 // codemodeTool is the tool whose input is a program.
@@ -74,10 +84,11 @@ func installCodemode(opts *GenerationOptions, onClamp func(requested, applied sc
 //
 // want is the limits the caller chose; the zero value means "nobody chose",
 // and Clamp fills every unset field from DefaultLimits and holds the rest
-// under Ceiling. There is no DSL surface for these yet, which is why the zero
-// value is what [installCodemode] passes and why OnClamp — the seam that
-// refuses to replace an operator's explicit choice in silence — is wired
-// before anything can produce a clamp.
+// under Ceiling. The DSL surface that fills it is the `codemode:` block
+// (ADR-165), resolved node-over-workflow field by field, with C347 at compile
+// where a declared value is above the ceiling — OnClamp stays the seam that
+// refuses to replace an operator's explicit choice in silence, and is now
+// reachable by an author rather than only by a future lot.
 func codemodeTool(host scripthost.Host, want scripthost.Limits) GenerationTool {
 	return GenerationTool{
 		Name:        ScriptHostToolName,

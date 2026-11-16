@@ -760,7 +760,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Codemode: a.Codemode, Permission: a.Permission,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, AmbientContext: a.AmbientContext, Codemode: codemodeShortMode(a.Codemode), Permission: a.Permission,
 			Allow: a.Allow, Ask: a.Ask, Deny: a.Deny, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
@@ -769,6 +769,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		if a.Memory != nil {
 			writeMemory(&w.b, a.Memory, "  ", false)
 		}
+		writeCodemodeBlock(&w.b, a.Codemode, "  ")
 		writeSandboxBlock(&w.b, a.Sandbox, "  ")
 		if a.Cursors != nil {
 			writeCursorsBlock(&w.b, a.Cursors, "  ")
@@ -799,7 +800,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Codemode: j.Codemode, Permission: j.Permission,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, AmbientContext: j.AmbientContext, Codemode: codemodeShortMode(j.Codemode), Permission: j.Permission,
 			Allow: j.Allow, Ask: j.Ask, Deny: j.Deny, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
@@ -808,6 +809,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		if j.Memory != nil {
 			writeMemory(&w.b, j.Memory, "  ", false)
 		}
+		writeCodemodeBlock(&w.b, j.Codemode, "  ")
 		writeSandboxBlock(&w.b, j.Sandbox, "  ")
 		if j.Cursors != nil {
 			writeCursorsBlock(&w.b, j.Cursors, "  ")
@@ -1290,8 +1292,8 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "ambient_context", wf.AmbientContext)
 		}
 
-		if wf.Codemode != "" {
-			writeProp(&w.b, "codemode", wf.Codemode)
+		if m := codemodeShortMode(wf.Codemode); m != "" {
+			writeProp(&w.b, "codemode", m)
 		}
 
 		if wf.LoopBudgetGuard != "" {
@@ -1319,6 +1321,7 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			fmt.Fprintf(&w.b, "  deny: [%s]\n", quoteList(&w.b, wf.Deny))
 		}
 
+		writeCodemodeBlock(&w.b, wf.Codemode, "  ")
 		writeSandboxBlock(&w.b, wf.Sandbox, "  ")
 
 		if wf.Entry != "" {
@@ -1932,6 +1935,66 @@ func writeAgentFields(b *buf, f llmFields) {
 // Round-trip stability: parser → IR → unparse → parser must produce
 // the same AST. Tests in pkg/dsl/unparse/unparse_test.go and
 // pkg/dsl/ir/sandbox_test.go pin the contract.
+// codemodeShortMode is the mode to write as a one-line `codemode: <mode>`
+// property, or "" when there is none to write that way — nothing declared,
+// or a block form that writeCodemodeBlock will emit instead.
+//
+// The split keeps the short form at the POSITION it has always had, between
+// `ambient_context:` and `permission:` in the scalar run, so every file that
+// says `codemode: on` round-trips byte-identically through `iterion fmt`.
+// Writing it among the blocks instead would reorder those files to say the
+// same thing — allowed, since fmt only promises the same program, but a
+// reordering nobody asked for is a diff reviewers have to read.
+func codemodeShortMode(cb *ast.CodemodeBlock) string {
+	if cb == nil || cb.Bounded() {
+		return ""
+	}
+	return cb.Mode
+}
+
+// writeCodemodeBlock writes the indented `codemode:` block, and nothing at
+// all unless a bound is declared — the mode-only case is the short form,
+// handled by codemodeShortMode above.
+//
+// `mode:` is written first and only when it is not the implied `on`: the
+// block form implies the capability it bounds, so emitting `mode: on` beside
+// bounds would add a line the author did not write and the parser does not
+// need. An explicit `off` IS written — it is the one the author must see,
+// since it makes the bounds beside it inert (C348).
+func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
+	if cb == nil || !cb.Bounded() {
+		return
+	}
+	inner := indent + "  "
+	fmt.Fprintf(b, "%scodemode:\n", indent)
+	if cb.Mode != "" && cb.Mode != "on" {
+		fmt.Fprintf(b, "%smode: %s\n", inner, cb.Mode)
+	}
+	// The order of the DSL block's own listing, so the written form and the
+	// reference read alike.
+	if cb.ToolCalls != 0 {
+		fmt.Fprintf(b, "%stool_calls: %d\n", inner, cb.ToolCalls)
+	}
+	if cb.Wall != "" {
+		writeStrProp(b, inner, "wall", cb.Wall)
+	}
+	if cb.CPU != "" {
+		writeStrProp(b, inner, "cpu", cb.CPU)
+	}
+	if cb.Memory != 0 {
+		fmt.Fprintf(b, "%smemory: %d\n", inner, cb.Memory)
+	}
+	if cb.ScriptBytes != 0 {
+		fmt.Fprintf(b, "%sscript_bytes: %d\n", inner, cb.ScriptBytes)
+	}
+	if cb.ResultBytes != 0 {
+		fmt.Fprintf(b, "%sresult_bytes: %d\n", inner, cb.ResultBytes)
+	}
+	if cb.ToolResultBytes != 0 {
+		fmt.Fprintf(b, "%stool_result_bytes: %d\n", inner, cb.ToolResultBytes)
+	}
+}
+
 func writeSandboxBlock(b *buf, sb *ast.SandboxBlock, indent string) {
 	if sb == nil {
 		return

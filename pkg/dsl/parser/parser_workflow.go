@@ -102,9 +102,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.skipNewlines()
 
 		case TokenCodemode:
-			p.next() // consume "codemode"
-			p.expect(TokenColon)
-			wd.Codemode = p.expectIdent()
+			// Both forms, the mode folded into the block — the
+			// parseCodemodeBlock reader consumes the keyword itself.
+			wd.Codemode = p.parseCodemodeBlock("workflow")
 			p.skipNewlines()
 
 		case TokenLoopBudgetGuard:

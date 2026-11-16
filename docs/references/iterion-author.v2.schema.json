@@ -163,6 +163,56 @@
       },
       "type": "object"
     },
+    "codemode": {
+      "additionalProperties": false,
+      "description": "Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.",
+      "properties": {
+        "cpu": {
+          "description": "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP",
+          "type": "string"
+        },
+        "memory": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "description": "on or off — the short form's value, written out (C337 on another word)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "result_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "script_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_calls": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_result_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall": {
+          "description": "How long the child may live, e.g. \"60s\" (default \"30s\", ceiling \"10m\") — the parent's backstop, including for a child that never starts",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "compaction": {
       "additionalProperties": false,
       "description": "When and how a session's context is compacted.",
@@ -789,9 +839,16 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -1339,9 +1396,16 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -2457,9 +2521,16 @@
           "type": "array"
         },
         "codemode": {
-          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339)",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/codemode"
+            }
+          ],
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: a bare mode (on, off) or an indented block that declares the bounds the program runs under — served by claw, refused on the backends whose loop owns no tool dispatcher (ADR-165; C337/C339/C347)"
         },
         "compaction": {
           "$ref": "#/$defs/compaction",

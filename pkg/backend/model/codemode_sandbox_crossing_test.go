@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // TestCodemodeChangesNothingOnTheWireToASandboxRunner holds what the
@@ -40,7 +42,13 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		HasTools:     false,
 		Codemode:     true,
-		WorkDir:      dir,
+		// The bounds cross on the same envelope, and this is the link the
+		// SchemaVersion 31→32 bump is justified by: "a runner that drops
+		// them silently re-makes an operator's choice". Measured as
+		// unwitnessed — mutants dropping the field in ToIOTask and in
+		// FromIOTask each survived delegate + model + ir + queue.
+		CodemodeBounds: &scripthost.Limits{ToolCalls: 256, Wall: 2 * time.Minute},
+		WorkDir:        dir,
 		Sandbox: &scriptedSandbox{
 			script: "IFS= read -r line\nprintf '%s' \"$line\" > \"$1\"\nexit 1\n",
 			args:   []string{captured},
@@ -78,6 +86,18 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 	}
 	if got, present := task["codemode"]; !present || got != true {
 		t.Errorf("the envelope does not carry codemode=true (got %v, present=%v)", got, present)
+	}
+	bounds, present := task["codemode_bounds"].(map[string]any)
+	if !present {
+		t.Fatalf("the envelope does not carry codemode_bounds, so a sandboxed runner runs the DEFAULTS while the author declared otherwise.\nenvelope task: %v", task)
+	}
+	// The wire names, which are the host's own (`wall_ns`, not `wall_ms`:
+	// that spelling was once enforced a million times tighter).
+	if got := bounds["tool_calls"]; got != float64(256) {
+		t.Errorf("codemode_bounds.tool_calls = %v, want 256", got)
+	}
+	if got := bounds["wall_ns"]; got != float64(2*time.Minute) {
+		t.Errorf("codemode_bounds.wall_ns = %v, want %d", got, 2*time.Minute)
 	}
 	if _, present := task["has_tools"]; present {
 		t.Errorf("has_tools crossed for a node that declared no tools: a runner that cannot read `codemode` gets a tool loop with no tools.\nenvelope task: %v", task)

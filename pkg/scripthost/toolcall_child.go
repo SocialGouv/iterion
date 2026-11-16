@@ -104,6 +104,25 @@ func (b *toolBridge) install(vm *goja.Runtime) error {
 			panic(vm.NewTypeError("call(%q, input): the input is %d bytes, over the %d-byte bound",
 				name, len(input), MaxToolInputBytes))
 		}
+		// And the FRAME, measured the way the parent measures it. Bounding
+		// only the input left the two caps on one frame still uncompared:
+		// the NAME is `fc.Argument(0).String()` — the script picks it, with
+		// no bound of its own — so a legal 262143-byte input with a 1 KiB
+		// name was measured producing a frame the parent refuses, and a
+		// refused call frame costs the whole wall deadline before the model
+		// is told the deployment is broken (filed as #3316). An earlier
+		// comment called the envelope "small and fixed"; a script-chosen
+		// name is neither.
+		//
+		// Refused HERE it is a catchable TypeError naming the number, which
+		// is a thing a program can act on, and it is the same side that owns
+		// the name.
+		if frame, err := json.Marshal(&Frame{Type: FrameCall, ID: b.nextID + 1, Name: name, Input: input}); err == nil {
+			if int64(len(frame)) > callFrameCap() {
+				panic(vm.NewTypeError("call(%q, input): the call is %d bytes framed, over the %d-byte channel bound — the tool NAME counts too",
+					name, len(frame), callFrameCap()))
+			}
+		}
 
 		out, err := b.roundTrip(name, input)
 		if err != nil {
@@ -168,7 +187,26 @@ func (b *toolBridge) roundTrip(name string, input []byte) (Frame, error) {
 		return Frame{}, fmt.Errorf("%w: writing call %d: %v", errToolChannelBroken, b.nextID, err)
 	}
 
-	line, err := readFrameLine(b.in, b.limits.ScriptBytes)
+	// The cap is derived from what this frame CARRIES, not from the source
+	// size. A result frame holds text the parent already clipped to
+	// ToolResultBytes, so resultFrameCap is the bound that describes it;
+	// ScriptBytes stood here and describes a program's length, which is a
+	// different number that happened to be larger while neither could be
+	// declared. Measured once both could: `tool_result_bytes: 524288` —
+	// half its own platform ceiling — with the DEFAULT 256 KiB
+	// `script_bytes` made the child refuse a frame its own parent had
+	// written, as "a tool-channel frame passed 262144 bytes".
+	//
+	// An earlier draft of this comment added "and codemodeTool classifies
+	// that as a deployment failure". Measured: it does not. That branch
+	// fires only when Host.Run returns an error, which is the CALL
+	// direction. This refusal comes back as a `!resp.OK()` verdict, and
+	// WHICH one depends on whether the program has a try/catch —
+	// script_error without it, script_host_died with. That flip is a defect
+	// of its own, pre-existing and filed: errToolChannelBroken's own doc
+	// says the host-died class is what a broken channel must produce,
+	// precisely so a model is not told "your call failed" about a channel.
+	line, err := readFrameLine(b.in, resultFrameCap(b.limits))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return Frame{}, fmt.Errorf("%w: the parent closed the channel while call %d was in flight",

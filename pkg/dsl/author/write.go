@@ -355,6 +355,15 @@ func (p *props) int(name string, v int) {
 	}
 }
 
+// int64 is int for a value whose range needs the wider type: a codemode
+// memory bound is a byte count, and the platform ceiling (2 GiB) is already
+// one past what an int32 holds.
+func (p *props) int64(name string, v int64) {
+	if v != 0 {
+		p.set(name, intNode(v))
+	}
+}
+
 func (p *props) bool(name string, v bool) {
 	if v {
 		p.set(name, boolNode(true))
@@ -1072,7 +1081,9 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("compress", d.Compress)
 	p.str("auto_memory", d.AutoMemory)
 	p.str("ambient_context", d.AmbientContext)
-	p.str("codemode", d.Codemode)
+	if d.Codemode != nil {
+		p.set("codemode", w.codemode(d.Codemode))
+	}
 	p.str("permission", d.Permission)
 	p.set("allow", strList(d.Allow))
 	p.set("ask", strList(d.Ask))
@@ -1170,6 +1181,33 @@ func (w *writer) memory(m *ast.MemoryBlock) *yaml.Node {
 // sandbox writes the short form (`auto`, `none`) when the block holds a
 // mode and nothing else, the block form otherwise (mode `inline` is what
 // a block form reads as, and is not written).
+// codemode writes a `codemode:` declaration as a bare MODE STRING while
+// there is nothing but a mode to say, and as a mapping once a bound is
+// declared — the author document's spelling of the DSL's `ident | block`
+// duality, and `sandbox` below does the same thing for the same reason. It is
+// also what keeps every document written before the bounds existed
+// byte-identical: `codemode: on` reads and writes as it did.
+func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
+	if !cb.Bounded() {
+		return str(cb.Mode)
+	}
+	p := w.props("codemode")
+	// The implied `on` is not written back: the block form implies the
+	// capability it bounds, so the line would be one the author never wrote.
+	// An explicit `off` IS, because it is what makes the bounds inert (C348).
+	if cb.Mode != "" && cb.Mode != "on" {
+		p.str("mode", cb.Mode)
+	}
+	p.int64("tool_calls", cb.ToolCalls)
+	p.str("wall", cb.Wall)
+	p.str("cpu", cb.CPU)
+	p.int64("memory", cb.Memory)
+	p.int64("script_bytes", cb.ScriptBytes)
+	p.int64("result_bytes", cb.ResultBytes)
+	p.int64("tool_result_bytes", cb.ToolResultBytes)
+	return p.node()
+}
+
 func (w *writer) sandbox(sb *ast.SandboxBlock) *yaml.Node {
 	bodyEmpty := sb.Image == "" && sb.Build == nil && sb.User == "" && sb.WorkspaceFolder == "" && sb.HostState == "" && sb.PostCreate == "" && sb.Env == nil && len(sb.Mounts) == 0 && sb.Network == nil
 	if bodyEmpty && sb.Mode != "" && sb.Mode != "inline" {
@@ -1434,7 +1472,9 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	p.str("compress", wf.Compress)
 	p.str("auto_memory", wf.AutoMemory)
 	p.str("ambient_context", wf.AmbientContext)
-	p.str("codemode", wf.Codemode)
+	if wf.Codemode != nil {
+		p.set("codemode", w.codemode(wf.Codemode))
+	}
 	p.str("loop_budget_guard", wf.LoopBudgetGuard)
 	p.str("repo_devbox", wf.RepoDevbox)
 	p.str("workspace_checkpoint", wf.WorkspaceCheckpoint)

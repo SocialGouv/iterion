@@ -59,6 +59,10 @@ type Workflow struct {
 	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
 	Codemode       string // codemode tool loop default for agent/judge nodes: on|off, lowercased and trimmed at the carry ("" = unset → off; no environment rung, ADR-132)
+	// CodemodeBounds is the workflow-level DEFAULT bound set its agent and
+	// judge nodes inherit field by field (ResolveCodemodeBounds). nil = none
+	// declared, which leaves every field to scripthost.DefaultLimits.
+	CodemodeBounds *CodemodeBounds
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -279,7 +283,16 @@ type AgentNode struct {
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// CodemodeBounds is this node's declared bound set; nil inherits the
+	// workflow's, field by field. Clamped to scripthost.Ceiling in the
+	// parent at spawn, with C347 at compile where a value is above it.
+	//
+	// No LLMNode getter, deliberately: every reader reaches it through the
+	// struct (extractBackendFields), and an interface method nobody calls
+	// is a seam that rots untested. One line adds it back the day a reader
+	// holds an LLMNode rather than the node.
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —
@@ -320,7 +333,11 @@ type JudgeNode struct {
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
 	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	// CodemodeBounds is this node's declared bound set; nil inherits the
+	// workflow's, field by field. Clamped to scripthost.Ceiling in the
+	// parent at spawn, with C347 at compile where a value is above it.
+	CodemodeBounds *CodemodeBounds
+	Permission     string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
 	// empty one inherits it. Read through EffectivePermissionRules —

@@ -56,11 +56,12 @@ type backendFields struct {
 	capabilities     []string
 	skills           []string
 	cursors          *ir.CursorInvocation
-	compress         string // node-level `compress:` value ("" = unset)
-	autoMemory       string // node-level `auto_memory:` value ("" = inherit workflow)
-	ambientContext   string // node-level `ambient_context:` value ("" = inherit workflow)
-	codemode         string // node-level `codemode:` value ("" = inherit workflow)
-	permission       string // node-level `permission:` mode override ("" = inherit)
+	compress         string             // node-level `compress:` value ("" = unset)
+	autoMemory       string             // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext   string             // node-level `ambient_context:` value ("" = inherit workflow)
+	codemode         string             // node-level `codemode:` value ("" = inherit workflow)
+	codemodeBounds   *ir.CodemodeBounds // node-level `codemode:` bounds (nil = inherit workflow, field by field)
+	permission       string             // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
 	// ir.EffectivePermissionRules, the single implementation of that rule.
@@ -112,6 +113,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
 			codemode:         n.Codemode,
+			codemodeBounds:   n.CodemodeBounds,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -142,6 +144,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			autoMemory:       n.AutoMemory,
 			ambientContext:   n.AmbientContext,
 			codemode:         n.Codemode,
+			codemodeBounds:   n.CodemodeBounds,
 			permission:       n.Permission,
 			permAllow:        n.PermissionAllow,
 			permAsk:          n.PermissionAsk,
@@ -1375,7 +1378,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if err != nil {
 		return delegate.Task{}, err
 	}
-	codemodePolicy, err := e.codemodePolicy(f, backendName)
+	codemodePolicy, codemodeBounds, err := e.codemodePolicy(f, backendName)
 	if err != nil {
 		return delegate.Task{}, err
 	}
@@ -1440,6 +1443,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		AmbientContext:        ambientPolicy,
 		AmbientContextSource:  ambientSource,
 		Codemode:              codemodePolicy.On,
+		CodemodeBounds:        codemodeBounds,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,

@@ -87,6 +87,10 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 			// installs it and the node's own HasTools reset is the only thing
 			// keeping it off the wire — a coincidence, not a decision.
 			retryTask.Codemode = false
+			// The bounds go with the capability. Left set they would bound
+			// nothing, and a reader of the retry task would see a node asking
+			// for a budget it cannot spend.
+			retryTask.CodemodeBounds = nil
 			retryTask.ToolMaxSteps = 0
 			retryTask.Sandbox = nil
 			return schemaReask{task: retryTask, mode: ReaskContinueConversation}

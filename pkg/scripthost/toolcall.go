@@ -143,7 +143,7 @@ func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv
 		if ctx.Err() != nil {
 			return served, nil
 		}
-		line, err := readFrameLine(br, limits.ScriptBytes)
+		line, err := readFrameLine(br, callFrameCap())
 		switch {
 		case errors.Is(err, io.EOF):
 			// The child closed its end: the script finished, or it was killed.
@@ -255,3 +255,56 @@ func clipToolText(s string, max int64) (string, bool) {
 // utf8Start reports whether b can begin a UTF-8 sequence — i.e. it is not a
 // continuation byte.
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// callFrameCap bounds one CALL frame — the child-to-parent direction, whose
+// payload is an input the script composed and whose only bound is the child's
+// own [MaxToolInputBytes].
+//
+// Derived from that bound rather than from [Limits.ScriptBytes], which is
+// what stood here. Two caps bounded the same frame and were never compared:
+// the child admits an input up to MaxToolInputBytes (256 KiB) and the parent
+// refused the frame carrying it past ScriptBytes, whose DEFAULT is also
+// 256 KiB — so the ~58-byte envelope was the entire window and a 262100-byte
+// input, legal to the child, was refused by the parent with NO declaration
+// involved. The author surface made it worse by letting `script_bytes` be
+// lowered, which moved the window to everything above the declaration.
+//
+// A cap is still kept, for the reason TestAnOversizedFrameIsRefusedRatherThanBuffered
+// states: the parent is the one process no rlimit covers, so it must not
+// buffer whatever a compromised child chooses to write.
+func callFrameCap() int64 {
+	// The envelope: type, id, name and the remaining count. Small and fixed.
+	const envelope = 1 << 10
+	return MaxToolInputBytes + envelope
+}
+
+// resultFrameCap bounds one RESULT frame — the parent-to-child direction,
+// whose payload the parent itself clipped to [Limits.ToolResultBytes].
+//
+// It is a derived number rather than a Limits field on purpose: a frame size
+// is a property of this protocol, not a bound an operator chooses, and an
+// eighth Limits field would owe a DSL surface it should not have.
+//
+// The factor is JSON escaping, not a margin: `json.Encode` renders a control
+// byte as `\uXXXX`, six bytes for one, and the parent clips on a rune
+// boundary so the text it sends is valid UTF-8 but may be entirely control
+// characters. A cap below that refuses a payload the parent was told to send,
+// which in a blocking path costs as much as a hole — the frame error is not
+// even a refusal the model can act on, it is classified as a broken
+// deployment. The envelope (type, id, flags, the remaining count) is small
+// and fixed; 1 KiB covers it.
+//
+// The CALL direction has [callFrameCap] above, for the same reason and since
+// the same commit: an operator's `script_bytes` described neither frame. The
+// draft of this comment that said the call direction "keeps
+// Limits.ScriptBytes" was true for twenty minutes and false by the time it
+// shipped — the commit that wrote it moved that site too.
+func resultFrameCap(l Limits) int64 {
+	const jsonEscapeWorstCase = 6
+	const envelope = 1 << 10
+	cap := l.ToolResultBytes
+	if cap <= 0 {
+		cap = DefaultLimits().ToolResultBytes
+	}
+	return cap*jsonEscapeWorstCase + envelope
+}

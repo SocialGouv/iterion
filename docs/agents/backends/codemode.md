@@ -53,7 +53,7 @@ refusal ENDS the node — no `fallbacks:` route is tried, as ambient's does not
 either. C338 is retired.
 
 **Not there yet** (claiming it is false): no run-level override, no studio
-form, no DSL surface for the bounds — a node runs under `DefaultLimits`.
+form.
 #3155's bench holds; what it still owes is named in
 [posture bench](../testing/deployment-posture-bench.md). Epic
 [#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
@@ -193,10 +193,12 @@ which clamps a workflow's budget to a ceiling the bundle cannot lift.
 
 The axes: wall clock, CPU time, address space, bytes returned to the model,
 tool calls per script, concurrent tool calls, nested children per invocation
-and per node, and `store()` entries and bytes per run. Values are set with the
-lots that enforce them, and each ships a witness on **both** arms — refused
-above the bound, allowed below — because a false refusal in a blocking path
-costs as much as a hole and is harder to see.
+and per node, and `store()` entries and bytes per run. Seven carry an
+author surface, the `codemode:` block:
+[codemode-confinement](codemode-confinement.md#the-authors-surface). Each
+ships a witness on **both** arms — refused above the bound, allowed below —
+because a false refusal in a blocking path costs as much as a hole and is
+harder to see.
 
 ## Two traps worth knowing before you touch the guards
 

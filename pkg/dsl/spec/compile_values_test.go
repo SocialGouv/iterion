@@ -73,6 +73,13 @@ var compileProbes = map[string]map[string]string{
 // host proves the check for that host, and nothing would turn red if a
 // second host stopped reaching it.
 var hostCompileProbes = map[string]map[string]map[string]string{
+	"codemode": {
+		"mode": {
+			"workflow": "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  codemode:\n    mode: %s\n    tool_calls: 128\n  a -> done\n",
+			"agent":    "agent a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    mode: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
+			"judge":    "judge a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    mode: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
+		},
+	},
 	"sandbox": {
 		"mode": {
 			"workflow": "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  sandbox:\n    mode: %s\n    image: \"img\"\n  a -> done\n",

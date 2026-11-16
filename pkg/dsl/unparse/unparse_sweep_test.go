@@ -48,18 +48,22 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"PortDecl.Name":           "written as the entry header",
 		"CriterionDecl.Name":      "written as the entry header",
 		"PublicEffect.Name":       "written as the entry header",
+		"File.Profile":            "the EFFECTIVE profile is written as `dsl: N` for N > 1, through f.EffectiveProfile(); an explicit `dsl: 1` is canonicalised away, same program",
 	}
 	types := []string{
 		"WorkflowDecl", "LLMDecl", "AgentDecl", "JudgeDecl", "RouterDecl", "HumanDecl",
 		"ToolNodeDecl", "ComputeDecl", "ComputeExpr", "SubbotDecl", "EmitDecl", "WaitDecl",
 		"AwaitAnswersDecl", "FailDecl", "GroupDecl", "UseDecl", "Edge", "LoopClause",
 		"ForeachClause", "WhenClause", "WithEntry", "BudgetBlock", "ResourcesBlock",
+		"CodemodeBlock",
 		"SandboxBlock", "SandboxBuildBlock", "SandboxNetworkBlock", "MemoryBlock",
 		"CompactionBlock", "FallbackDecl", "CursorDecl", "CursorEnumValue", "CursorBand",
 		"CursorBlock", "CursorSetting", "SupervisorDecl", "MCPServerDecl", "MCPAuthDecl",
 		"MCPConfigDecl", "RecoveryBlock", "VarField", "SecretField", "AttachmentField",
 		"PromptDecl", "SchemaDecl", "SchemaField", "Preset", "PresetValue", "Literal",
 		"ContractDecl", "PortDecl", "PortFileDecl", "CriterionDecl", "PublicEffect",
+		"File", "Comment", "ImportDecl", "ActionParam",
+		"VarsBlock", "SecretsBlock", "AttachmentsBlock", "PresetsBlock",
 	}
 	var writer []byte
 	for _, file := range []string{"unparse.go", "contracts.go", "comments.go"} {
@@ -73,6 +77,41 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 	for typ, fs := range structFields(t, filepath.Join("..", "ast", "contract.go")) {
 		fields[typ] = fs
 	}
+	// KEPT COMPLETE BY CONSTRUCTION. Until this check existed the sweep only
+	// erred when a LISTED type was missing from ast.go, never the reverse —
+	// so a new declaration type was outside the alarm entirely, and
+	// `CodemodeBlock` was: a mutant that stopped writing a workflow-level
+	// `codemode:` block survived `./pkg/dsl/...` and every importer of this
+	// package, while `iterion fmt` silently deleted the declaration. Since
+	// the block form implies `on`, that does not merely lose seven numbers,
+	// it turns codemode OFF for every node that inherited it. The jsonenc
+	// sweep has had this half since it shipped; this one owed it.
+	// No exclusion list. Measured: seven of the eight names an earlier draft
+	// excluded pass the sweep's own assertion if they are simply LISTED, so
+	// the exclusion bought nothing and set a precedent for the next type. The
+	// eighth, ast.File, hid exactly one real field — Profile, which the
+	// writer renders through f.EffectiveProfile() and a `.Field` regex
+	// therefore cannot see. That field is named in `unwritten` instead.
+	//
+	// One honest limit of this sweep, measured rather than assumed: the regex
+	// matches a field NAME anywhere in the writer source, not a receiver, so
+	// nine of ast.File's list fields (Agents, Judges, Routers, Humans, Tools,
+	// Computes, Comments, Vars, Attachments) are also names a second
+	// declaration carries — dropping `f.<name>` from the writer keeps the
+	// sweep green. Listing File really added only Contracts, Workflows,
+	// Secrets, Presets and Imports. It is a drift alarm on the SOURCE, as
+	// the doc above says, and the value guarantee is the round-trip tests.
+	listed := map[string]bool{}
+	for _, name := range types {
+		listed[name] = true
+	}
+	for typ := range fields {
+		if listed[typ] {
+			continue
+		}
+		t.Errorf("ast.%s is not in the sweep's type list — a declaration outside this alarm loses fields silently, which is how CodemodeBlock got here", typ)
+	}
+
 	for _, typ := range types {
 		fs, ok := fields[typ]
 		if !ok {

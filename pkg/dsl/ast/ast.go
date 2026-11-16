@@ -668,7 +668,7 @@ type LLMDecl struct {
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext    string           // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
-	Codemode          string           // codemode tool loop: on|off ("" = inherit workflow)
+	Codemode          *CodemodeBlock   // codemode tool loop: a mode and its bounds; nil inherits the workflow (ADR-165)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Allow             []string         // node-level permission allow rules; a non-empty list REPLACES the workflow's allow: (empty = inherit)
 	Ask               []string         // node-level permission ask rules; a non-empty list REPLACES the workflow's ask: (empty = inherit)
@@ -1044,7 +1044,7 @@ type WorkflowDecl struct {
 	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	AmbientContext string            // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
-	Codemode       string            // codemode tool loop default for agent/judge nodes: on|off ("" = unset → off; the switch reads no environment, ADR-132)
+	Codemode       *CodemodeBlock    // codemode tool loop default for agent/judge nodes: a mode and its bounds; nil = unset → off (the switch reads no environment, ADR-132)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
@@ -1167,6 +1167,67 @@ type SandboxBlock struct {
 	Mounts          []string             // devcontainer mount syntax
 	Network         *SandboxNetworkBlock // egress filtering
 	Span            Span
+}
+
+// CodemodeBlock is the AST representation of a `codemode:` declaration
+// (ADR-165), in both of its forms:
+//
+//	codemode: on                  # short form — a mode, nothing else
+//	codemode:                     # block form — bounds, and it IMPLIES on
+//	  tool_calls: 256
+//	  wall: "2m"
+//
+// Mode is the activation discriminator the IR and the executor consume; the
+// bound fields are populated only by the block form, and the short form
+// leaves them zero — SandboxBlock's shape, for the same reason.
+//
+// The block form implying `on` is deliberate: bounds for a capability that is
+// off express nothing. An author who means off writes the short form, and a
+// `mode: off` beside a declared bound is C348 rather than a silent drop.
+//
+// The two unit conventions are the ones the rest of this DSL already uses,
+// not new ones: a duration is a QUOTED string (`timeout:`'s spelling), and a
+// byte size or a count is a BARE integer. Measured before choosing: this DSL
+// has no byte-size value form and the repository vendors no parser for one,
+// so a `256KiB` form would be its own lot with its own edges (KiB vs KB,
+// floats, overflow). Ugly and present beats absent — philosophy 1 reads a
+// bound with no override as a defect.
+//
+// A bound is held VERBATIM as the author wrote it so `iterion fmt` round-trips
+// it; the conversion to scripthost.Limits happens at IR compile. Zero (and an
+// empty duration) mean ABSENT, which is what Limits.Clamp already reads as
+// "nobody chose" — so an explicit `tool_calls: 0` is the default, not a ban.
+type CodemodeBlock struct {
+	Mode            string // "on" | "off" | "" (inherit when on a node)
+	ToolCalls       int64  // tool_calls: nested calls one program may make
+	Wall            string // wall: the child's lifetime, e.g. "60s"
+	CPU             string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
+	Memory          int64  // memory: bytes of RLIMIT_DATA
+	ScriptBytes     int64  // script_bytes: bytes of program source
+	ResultBytes     int64  // result_bytes: bytes the program may return
+	ToolResultBytes int64  // tool_result_bytes: bytes of ONE tool result
+	Span            Span
+}
+
+// Bounded reports whether the block declares any bound — i.e. whether it was
+// written in the block form with a body. It is what tells a `codemode: on`
+// short form from a block that happens to carry only `mode: on`, and what the
+// unparser asks to choose a form.
+//
+// It reads a NON-ZERO bound, which makes a block whose only bound is the
+// literal `0` indistinguishable from a mode-only one. That is the shape of
+// `Limits.Clamp`'s own contract — a non-positive bound means "nobody chose" —
+// so the two really are the same program, and `iterion fmt` rewriting
+// `tool_calls: 0` to the short form loses no semantics. What it loses is the
+// chance to TELL the author that zero is the default rather than a ban;
+// saying that needs pointer fields (ast.MemoryBlock's shape, for this exact
+// reason) and is its own lot, filed rather than half-built here.
+func (c *CodemodeBlock) Bounded() bool {
+	if c == nil {
+		return false
+	}
+	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
 }
 
 // SandboxBuildBlock is the AST representation of a `build:` sub-block

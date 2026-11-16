@@ -241,6 +241,16 @@ export const iterDslPropertiesByKind = {
     "on_exceeded",
     "warn_tokens"
   ],
+  "codemode": [
+    "cpu",
+    "memory",
+    "mode",
+    "result_bytes",
+    "script_bytes",
+    "tool_calls",
+    "tool_result_bytes",
+    "wall"
+  ],
   "compaction": [
     "preserve_recent",
     "threshold"

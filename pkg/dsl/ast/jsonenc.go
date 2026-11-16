@@ -482,7 +482,7 @@ type jsonAgentDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
-	Codemode          string               `json:"codemode,omitempty"`
+	Codemode          *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -534,7 +534,7 @@ type jsonJudgeDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
-	Codemode          string               `json:"codemode,omitempty"`
+	Codemode          *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -692,6 +692,120 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 		MaxAgentAttempts:  j.MaxAgentAttempts,
 		Model:             j.Model,
 		AgentTools:        j.AgentTools,
+	}
+}
+
+// jsonCodemodeBlock is the JSON form of an ast.CodemodeBlock.
+//
+// It marshals as a bare STRING when the block carries only a mode, and as an
+// object once a bound is declared — the author document's spelling of the
+// DSL's own `ident | block` duality, and the reason every document written
+// before the bounds existed stays byte-identical: `"codemode": "on"` reads
+// and writes exactly as it did. A reader that only took the object form would
+// refuse every stored document, and a writer that only emitted it would churn
+// every golden to say the same thing.
+type jsonCodemodeBlock struct {
+	Mode            string `json:"mode,omitempty"`
+	ToolCalls       int64  `json:"tool_calls,omitempty"`
+	Wall            string `json:"wall,omitempty"`
+	CPU             string `json:"cpu,omitempty"`
+	Memory          int64  `json:"memory,omitempty"`
+	ScriptBytes     int64  `json:"script_bytes,omitempty"`
+	ResultBytes     int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+}
+
+// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared.
+func (c *jsonCodemodeBlock) bounded() bool {
+	if c == nil {
+		return false
+	}
+	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
+}
+
+// MarshalJSON writes the short form while there is nothing but a mode to say.
+func (c jsonCodemodeBlock) MarshalJSON() ([]byte, error) {
+	if !c.bounded() {
+		return json.Marshal(c.Mode)
+	}
+	type plain jsonCodemodeBlock // no recursion through this method
+	return json.Marshal(plain(c))
+}
+
+// UnmarshalJSON accepts both forms. A string is the mode; an object is the
+// block. Anything else is reported as the type error it is rather than left
+// as a zero value, which would read as "no codemode declared".
+func (c *jsonCodemodeBlock) UnmarshalJSON(b []byte) error {
+	var mode string
+	if err := json.Unmarshal(b, &mode); err == nil {
+		*c = jsonCodemodeBlock{Mode: mode}
+		return nil
+	}
+	type plain jsonCodemodeBlock
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("codemode: expected a mode string or a bounds object: %w", err)
+	}
+	*c = jsonCodemodeBlock(p)
+	return nil
+}
+
+func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
+	if c == nil {
+		return nil
+	}
+	return &jsonCodemodeBlock{
+		Mode:            c.Mode,
+		ToolCalls:       c.ToolCalls,
+		Wall:            c.Wall,
+		CPU:             c.CPU,
+		Memory:          c.Memory,
+		ScriptBytes:     c.ScriptBytes,
+		ResultBytes:     c.ResultBytes,
+		ToolResultBytes: c.ToolResultBytes,
+	}
+}
+
+func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
+	if j == nil {
+		return nil
+	}
+	// The two rules sandboxBlockFromJSON states forty lines below, and they
+	// are rules rather than tidiness: UnmarshalFile BYPASSES the parser
+	// (compile.go says so where it enforces its own invariants), so every
+	// default the parser applies has to be applied here too or the same
+	// document is two programs. The first draft of this function was a
+	// verbatim field copy — it took the struct's shape and left both rules,
+	// and an adversarial round measured the result: a bounds block whose
+	// mode was not repeated compiled to `on` through the parser and to ""
+	// through the transport, with no diagnostic on either side, because
+	// C348 keys on "off" and never on "".
+	//
+	// `codemode: {}` — a block a canvas created and did not fill in — has
+	// no mode and no bound, which no .bot text can express, and means what
+	// its absence means: inherit. It is read as absent, so the document
+	// saves and reads back the same.
+	if j.Mode == "" && !j.bounded() {
+		return nil
+	}
+	// A block with bounds but no mode is the block form, which the parser
+	// reads as `on` — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode. A mode written out is kept as
+	// written: this fills a hole, it does not overwrite a choice.
+	mode := j.Mode
+	if mode == "" {
+		mode = "on"
+	}
+	return &CodemodeBlock{
+		Mode:            mode,
+		ToolCalls:       j.ToolCalls,
+		Wall:            j.Wall,
+		CPU:             j.CPU,
+		Memory:          j.Memory,
+		ScriptBytes:     j.ScriptBytes,
+		ResultBytes:     j.ResultBytes,
+		ToolResultBytes: j.ToolResultBytes,
 	}
 }
 
@@ -907,7 +1021,7 @@ type jsonWorkflowDecl struct {
 	Compress            string               `json:"compress,omitempty"`
 	AutoMemory          string               `json:"auto_memory,omitempty"`
 	AmbientContext      string               `json:"ambient_context,omitempty"`
-	Codemode            string               `json:"codemode,omitempty"`
+	Codemode            *jsonCodemodeBlock   `json:"codemode,omitempty"`
 	LoopBudgetGuard     string               `json:"loop_budget_guard,omitempty"`
 	RepoDevbox          string               `json:"repo_devbox,omitempty"`
 	WorkspaceCheckpoint string               `json:"workspace_checkpoint,omitempty"`
@@ -1575,7 +1689,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
 		AmbientContext:    a.AmbientContext,
-		Codemode:          a.Codemode,
+		Codemode:          codemodeBlockToJSON(a.Codemode),
 		Permission:        a.Permission,
 		Allow:             a.Allow,
 		Ask:               a.Ask,
@@ -1625,7 +1739,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
 		AmbientContext:    j.AmbientContext,
-		Codemode:          j.Codemode,
+		Codemode:          codemodeBlockToJSON(j.Codemode),
 		Permission:        j.Permission,
 		Allow:             j.Allow,
 		Ask:               j.Ask,
@@ -1673,7 +1787,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Compress:            w.Compress,
 		AutoMemory:          w.AutoMemory,
 		AmbientContext:      w.AmbientContext,
-		Codemode:            w.Codemode,
+		Codemode:            codemodeBlockToJSON(w.Codemode),
 		LoopBudgetGuard:     w.LoopBudgetGuard,
 		RepoDevbox:          w.RepoDevbox,
 		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
@@ -2412,7 +2526,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
 			AmbientContext:    ja.AmbientContext,
-			Codemode:          ja.Codemode,
+			Codemode:          codemodeBlockFromJSON(ja.Codemode),
 			Permission:        ja.Permission,
 			Allow:             ja.Allow,
 			Ask:               ja.Ask,
@@ -2476,7 +2590,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
 			AmbientContext:    jj.AmbientContext,
-			Codemode:          jj.Codemode,
+			Codemode:          codemodeBlockFromJSON(jj.Codemode),
 			Permission:        jj.Permission,
 			Allow:             jj.Allow,
 			Ask:               jj.Ask,
@@ -2541,7 +2655,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Compress:            jw.Compress,
 		AutoMemory:          jw.AutoMemory,
 		AmbientContext:      jw.AmbientContext,
-		Codemode:            jw.Codemode,
+		Codemode:            codemodeBlockFromJSON(jw.Codemode),
 		LoopBudgetGuard:     jw.LoopBudgetGuard,
 		RepoDevbox:          jw.RepoDevbox,
 		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,

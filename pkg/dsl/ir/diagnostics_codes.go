@@ -518,4 +518,10 @@ const (
 	DiagShellScriptDataCommand DiagCode = "C345" // a data reference as a command word in a sh/bash script — the shell runs the value as a program (warning)
 
 	DiagShellScriptDataCode DiagCode = "C346" // a data reference where another shell parses the value as code (a double-quoted sh -c / eval / trap argument, an unquoted heredoc fed to a shell, a mapfile -C callback, PS4/BASH_ENV/ENV, alias, ssh) (warning)
+
+	DiagCodemodeBoundAboveCeiling DiagCode = "C347" // a codemode: bound above the platform ceiling (scripthost.Ceiling) — clamped where the program is spawned, never refused, so the declaration says something that will not happen (warning)
+
+	DiagCodemodeBoundsWithModeOff DiagCode = "C348" // codemode: bounds declared beside `mode: off` — no program runs, so the bounds are inert (warning)
+
+	DiagCodemodeBoundUnreadable DiagCode = "C349" // a codemode: duration that is not readable as one, or is negative — the default applies instead, which is tighter than a bound being raised and looser than one being lowered (warning)
 )
