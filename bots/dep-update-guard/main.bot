@@ -4202,11 +4202,14 @@ tool arm_automerge:
 ## alignment, or a merge of the remote, would otherwise ride on a verdict
 ## that never saw it — (2) the forge's branch holds exactly it — the push
 ## evidence, read with `git ls-remote` — and (3) the agent's report, when it
-## names a commit id at all, resolves to it. A report the agent left empty,
-## or wrote without a commit id ("pushed", "N/A"), no longer pins the verdict
-## to the head this run moved away from (the server then refuses it as "head
-## moved" onto the run's own push): git is the evidence. A report that names
-## another commit still refuses. Replace refs, grafts and the commit-graph
+## names a commit id the workspace can resolve, names the workspace head. A
+## report the agent left empty, wrote without a commit id ("pushed", "N/A"),
+## or with an id of no legal commit width — a mis-transcribed one — no
+## longer pins the verdict to the head this run moved away from (the server
+## then refuses it as "head moved" onto the run's own push): git is the
+## evidence. A report that names another commit — including a full-width id
+## the workspace does not hold — still refuses. Replace refs, grafts and the
+## commit-graph
 ## file are switched off for every reading of the workspace. The push evidence is read from the repository pr_url names,
 ## from a scratch repository this node creates, with system and global config
 ## cut off: the workspace's remote, its url rewrites and the global ones are
@@ -4318,7 +4321,18 @@ tool commit_probe:
         tip, base = resolve("HEAD"), resolve(prepared)
         if not tip or not base or tip == base:
             emit("", "the workspace head did not move from the audited commit")
-        if reported and resolve(reported) != tip:
+        # A report whose id has no legal commit width — 40 hex for sha-1,
+        # 64 for sha-256, the widths `git rev-parse` prints — cannot name a
+        # commit in any repository: a mis-transcription, set aside like a
+        # report without a commit id, and the git evidence decides. A
+        # full-width id the workspace cannot resolve names a commit the
+        # workspace does not hold, and refuses.
+        named = resolve(reported) if reported else ""
+        if reported and not named:
+            if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", reported):
+                emit("", "the commit report names " + reported[:12] + ", which is not the workspace head")
+            aside = "; the commit report named a commit id of no legal width (a mis-transcribed one) and was set aside"
+        elif named and named != tip:
             emit("", "the commit report names " + reported[:12] + ", which is not the workspace head")
         p = git("rev-list", "--parents", "-n", "1", "--end-of-options", tip)
         parents = p.stdout.decode().split()[1:] if p.returncode == 0 else []
