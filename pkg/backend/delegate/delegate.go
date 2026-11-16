@@ -2243,8 +2243,9 @@ type Result struct {
 	// then the client's (an Anthropic Messages client sends no effort for a
 	// model outside its matrix, "" then); claude_code: the level its CLI sends
 	// for the model — the level handed it after the CLI's per-model rule
-	// (claudeCodeWireEffort), "" when the model takes no effort and when no
-	// request went out. WireReasoningEffortLast is the
+	// (claudeCodeWireEffort), "" when the model takes no effort and when the
+	// call never reached the model — a call that fails mid-stream may already
+	// have carried a request the record cannot name. WireReasoningEffortLast is the
 	// effort of the call's LAST request, whose answer the output is: lower
 	// than the first when claw re-asked a cut turn, or ran its recovery pass,
 	// at a reduced effort. WireReasoningEffortReported says the backend filled

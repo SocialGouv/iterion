@@ -2088,10 +2088,17 @@ records what the call sent: `_reasoning_effort_applied` is the level the first
 model request carried — the claw backend reports it from its requests, after
 the model's accepted set and the client's own rule (an Anthropic Messages
 client sends no effort for a model outside its matrix; bedrock and vertex
-send none), claude_code reports the level its CLI sends for the model —
-the level handed it, clamped by the CLI's own rule to what the model
-accepts, nothing when the model takes no effort or no request went out —
-and for the other backends it is the level the executor handed them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
+send none), claude_code reports the level its CLI sends for the model,
+read from the id the spawn hands the CLI — slot prefixes stripped, alias
+and snapshot date resolved (`claude-opus-5-5-20260101` is opus 5.5): none
+for the measured no-effort ids (the haiku line, sonnet-4-5,
+claude-3-5-sonnet), a clamp onto the model's accepted set otherwise
+(sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards every level), a
+Claude id with neither an accepted set nor a measurement as handed (what
+the CLI would send is not known), and "" when the call never reached the
+model — one that fails mid-stream may already have carried a request the
+record cannot name — and for the other backends it is the level the
+executor handed them. `_reasoning_effort_source` says who decided it: `cell` (a routing-policy
 cell), `launch` (the launch's own row), `override` (either, when the executor
 was not told which rows the launch carried), `node`, `dial:<VAR>` (an operator
 set the node's `${VAR:-default}`), `edge`, the list's source when the mapping

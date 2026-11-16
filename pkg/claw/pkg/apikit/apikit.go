@@ -32,6 +32,11 @@ var ModelTokenLimitForModel = apikit.ModelTokenLimitForModel
 // documentation; see internal/apikit/effort.go for sources.
 var EffortCapabilities = apikit.EffortCapabilities
 
+// NormalizeModelName resolves a model name or alias the way every registry
+// lookup reads it: the alias resolved to its canonical form, a trailing
+// snapshot date (claude-opus-5-5-20260101) stripped.
+var NormalizeModelName = apikit.NormalizeModelName
+
 // AnthropicWireProfile describes the Messages API requirements of a model.
 type AnthropicWireProfile = apikit.AnthropicWireProfile
 

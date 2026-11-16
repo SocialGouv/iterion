@@ -109,22 +109,60 @@ var claudeCLIEffortMeasurements = []struct{ model, level, sent string }{
 	{"claude-sonnet-5", "high", "high"},
 	{"claude-opus-5-5", "max", "max"},
 	{"glm-5.3", "high", "high"},
+	// The closing review's shapes: a registry row whose matrix was not yet
+	// documented, a dated snapshot of a known model, a second level for the
+	// no-effort models.
+	{"claude-sonnet-4-7", "high", "high"},
+	{"claude-sonnet-4-7", "xhigh", "xhigh"},
+	{"claude-sonnet-4-7", "low", "low"},
+	{"claude-sonnet-4-7", "medium", "medium"},
+	{"claude-sonnet-4-7", "max", "max"},
+	{"claude-opus-5-5-20260101", "high", "high"},
+	{"claude-opus-5-5-20260101", "xhigh", "xhigh"},
+	{"claude-sonnet-4-5", "medium", ""},
+	{"claude-haiku-4-5-20251001", "high", ""},
+}
+
+// claudeCLIEffortPrefixedMeasurements are the id spellings the tree writes
+// that the bare table cannot carry: a slot-prefixed spec the spawn strips
+// before the CLI sees it (its sent value is the stripped id's measurement,
+// proven end to end by the closing review's probe against the real CLI), and
+// a Claude id with no registry matrix and no measurement — the CLI's
+// behaviour for it is not known (a fabricated id would not run), so the
+// report degrades to the level as handed rather than claim none.
+var claudeCLIEffortPrefixedMeasurements = []struct{ model, level, sent string }{
+	{"anthropic/claude-sonnet-4-6", "xhigh", "high"},
+	{"anthropic/claude-haiku-4-5-20251001", "high", ""},
+	{"claude-nova-9", "high", "high"},
 }
 
 // TestClaudeCodeReportsWhatTheCLISendsForItsModel pins the CLI's own rule:
 // the backend reports, model by model, the level the CLI was measured
-// sending — none for a Claude model with no effort matrix, a clamp onto the
-// model's accepted set, any other id as handed — through the real backend
-// and its stand-in. A call that never reaches the model reports none.
+// sending — none for the measured no-effort ids, a clamp onto the model's
+// accepted set, any other id as handed — through the real backend and its
+// stand-in, on the bare ids and on the prefixed spellings the tree writes.
+// A call that never reaches the model reports none.
 //
-// Mutation that reddens it: report claudeCodeSpawnEffort instead of
-// claudeCodeWireEffort; report a level when the call reached no model.
+// Mutations that redden it: report claudeCodeSpawnEffort instead of
+// claudeCodeWireEffort; report a level when the call reached no model;
+// resolve the task's model without the spawn's prefix strip (the prefixed
+// rows); drop the registry's date normalization (the dated rows); report ""
+// for an id with no matrix instead of the handed level (the unmeasured row);
+// drop the measured no-effort set (the sonnet-4-5 and haiku rows).
 func TestClaudeCodeReportsWhatTheCLISendsForItsModel(t *testing.T) {
 	for _, m := range claudeCLIEffortMeasurements {
 		t.Run(m.model+"/"+m.level, func(t *testing.T) {
 			res, _, _ := runEffortStandIn(t, Task{Model: m.model, ReasoningEffort: m.level})
 			if !res.WireReasoningEffortReported || res.WireReasoningEffort != m.sent {
 				t.Errorf("reported %q (reported=%v), the CLI sends %q", res.WireReasoningEffort, res.WireReasoningEffortReported, m.sent)
+			}
+		})
+	}
+	for _, m := range claudeCLIEffortPrefixedMeasurements {
+		t.Run("prefixed "+m.model+"/"+m.level, func(t *testing.T) {
+			res, _, _ := runEffortStandIn(t, Task{Model: m.model, ReasoningEffort: m.level})
+			if !res.WireReasoningEffortReported || res.WireReasoningEffort != m.sent {
+				t.Errorf("reported %q (reported=%v), the CLI sends %q for the stripped id", res.WireReasoningEffort, res.WireReasoningEffortReported, m.sent)
 			}
 		})
 	}

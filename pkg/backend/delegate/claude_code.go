@@ -1935,26 +1935,46 @@ func reportClaudeCodeEffort(result *Result, task Task, reachedModel bool) {
 	result.WireReasoningEffort, result.WireReasoningEffortLast, result.WireReasoningEffortReported = effort, effort, true
 }
 
+// claudeCodeNoEffortModels are the Claude ids the claude CLI is measured
+// serving with NO effort on the wire, whatever handed (claude CLI 2.1.282,
+// recorded requests): sonnet-4-5 and the haiku line predate the effort dial
+// and claude-3-5-sonnet-20241022 is out of it. Matched on the id after the
+// spawn's prefix strip and the registry's alias and date normalization —
+// claude-haiku-4-5-20251001 lands here as claude-haiku-4-5.
+var claudeCodeNoEffortModels = map[string]bool{
+	"claude-sonnet-4-5": true,
+	"claude-haiku-4-5":  true,
+	"claude-3-5-sonnet": true,
+}
+
 // claudeCodeWireEffort is the effort the claude CLI puts on its requests for
 // model when CLAUDE_CODE_EFFORT_LEVEL says level, as measured on claude CLI
-// 2.1.282 against a recording Anthropic endpoint: a Claude model sends the
-// level its accepted set takes — none for a model with no effort matrix
-// (haiku-4-5, an id the registry does not know such as sonnet-4-5), the
-// highest accepted level at or below the one handed otherwise (sonnet-4-6
-// sends high for xhigh) — the matrix and the rule the claw backend sends by
-// (apikit.EffortCapabilities, effortlevel.Coerce); any other id (a GLM id on
-// a facade) is sent as handed.
+// 2.1.282 against a recording Anthropic endpoint. The id read is the one the
+// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), resolved
+// the way every registry lookup reads it — alias resolved, a dated snapshot
+// suffix stripped (apikit.NormalizeModelName). A Claude model sends the
+// level its accepted set takes: none for the measured no-effort ids
+// (claudeCodeNoEffortModels), the highest accepted level at or below the one
+// handed otherwise (sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards
+// every level) — the matrix and the rule the claw backend sends by
+// (apikit.EffortCapabilities, effortlevel.Coerce). Any other id (a GLM id on
+// a facade) is sent as handed. A Claude id with no accepted set and no
+// measurement is reported as handed: what the CLI would send for it is not
+// known, and a claim of none would be a guess.
 func claudeCodeWireEffort(model, level string) string {
 	if level == "" {
 		return ""
 	}
-	id := apikit.ResolveModelAlias(strings.TrimSpace(model))
+	id := apikit.NormalizeModelName(strings.TrimSpace(claudeCodeModelID(model)))
 	if !strings.HasPrefix(strings.ToLower(id), "claude-") {
 		return level
 	}
+	if claudeCodeNoEffortModels[strings.ToLower(id)] {
+		return ""
+	}
 	supported, def := apikit.EffortCapabilities(id)
 	if len(supported) == 0 {
-		return ""
+		return level
 	}
 	return effortlevel.Coerce(level, supported, def)
 }

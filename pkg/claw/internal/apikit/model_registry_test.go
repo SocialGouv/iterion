@@ -32,6 +32,11 @@ func TestModelRegistryLookup(t *testing.T) {
 		{"gpt-5.5", false, "gpt-5.5", 128_000},
 		{"openai/gpt-5.5", false, "gpt-5.5", 128_000},
 		{"unknown-model", true, "", 0},
+		// A dated snapshot of a known model is that model; an unknown id is
+		// not turned into one by stripping its date.
+		{"claude-opus-5-5-20260101", false, "claude-opus-5-5", 128_000},
+		{"claude-haiku-4-5-20251001", false, "claude-haiku-4-5", 64_000},
+		{"unknown-model-20260101", true, "", 0},
 	}
 
 	for _, tt := range tests {
@@ -249,5 +254,28 @@ func TestModelRegistryRegisterAndLookupConcurrently(t *testing.T) {
 
 	for i := 0; i < N*2; i++ {
 		<-done
+	}
+}
+
+// TestModelRegistryNormalizeModelName pins the name every lookup reads:
+// the alias resolved, a trailing snapshot date stripped, an unknown id
+// otherwise unchanged.
+//
+// Mutation that reddens it: drop the date strip from NormalizeModelName
+// (the dated rows answer the suffixed id).
+func TestModelRegistryNormalizeModelName(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"opus", "claude-opus-5-5"},
+		{"claude-opus-5-5", "claude-opus-5-5"},
+		{"claude-opus-5-5-20260101", "claude-opus-5-5"},
+		{"claude-haiku-4-5-20251001", "claude-haiku-4-5"},
+		{"claude-sonnet-4-5", "claude-sonnet-4-5"},
+		{"claude-nova-9", "claude-nova-9"},
+		{"unknown-model-20260101", "unknown-model"},
+		{"gpt-5.5", "gpt-5.5"},
+	} {
+		if got := NormalizeModelName(tt.in); got != tt.want {
+			t.Errorf("NormalizeModelName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

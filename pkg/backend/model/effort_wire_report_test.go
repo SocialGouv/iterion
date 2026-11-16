@@ -218,12 +218,18 @@ const structuredOutputSSE = "event: message_start\n" +
 // sending (delegate.claudeCodeWireEffort) — none for a model with no effort
 // matrix, a clamp onto the accepted set otherwise.
 func TestClawAndClaudeCodeRecordTheSameEffortForAClaudeModel(t *testing.T) {
-	for _, tc := range []struct{ model, level string }{
-		{"claude-haiku-4-5", "high"},
-		{"claude-sonnet-4-6", "xhigh"},
-		{"claude-opus-5-5", "high"},
-		{"claude-opus-5-5", "max"},
+	for _, tc := range []struct{ model, level, claudeModel string }{
+		{"claude-haiku-4-5", "high", ""},
+		{"claude-sonnet-4-6", "xhigh", ""},
+		{"claude-opus-5-5", "high", ""},
+		{"claude-opus-5-5", "max", ""},
+		// The prefixed spelling a workflow writes, which the spawn strips
+		// before the CLI sees it: the same record as the bare id's.
+		{"claude-sonnet-4-6", "xhigh", "anthropic/claude-sonnet-4-6"},
 	} {
+		if tc.claudeModel == "" {
+			tc.claudeModel = tc.model
+		}
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
@@ -255,7 +261,7 @@ func TestClawAndClaudeCodeRecordTheSameEffortForAClaudeModel(t *testing.T) {
 			t.Setenv("CATALOG_LOG", filepath.Join(dir, "catalog.log"))
 			t.Setenv("TMPDIR", t.TempDir())
 			b := &delegate.ClaudeCodeBackend{Logger: iterlog.Nop()}
-			res, _ := b.Execute(context.Background(), delegate.Task{Command: cli, WorkDir: dir, UserPrompt: "x", Model: tc.model, ReasoningEffort: tc.level})
+			res, _ := b.Execute(context.Background(), delegate.Task{Command: cli, WorkDir: dir, UserPrompt: "x", Model: tc.claudeModel, ReasoningEffort: tc.level})
 			if !res.WireReasoningEffortReported || res.WireReasoningEffort != claw {
 				t.Errorf("claw recorded %q, claude_code reports %q (reported=%v)", claw, res.WireReasoningEffort, res.WireReasoningEffortReported)
 			}
