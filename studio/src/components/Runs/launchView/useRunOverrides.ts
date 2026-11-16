@@ -115,6 +115,13 @@ export function useRunOverrides(
   const nodeBackendOptions = effectiveQuery.isError
     ? {}
     : effectiveQuery.data?.backend_options ?? {};
+  // The ROUTE screen (#3259): per node, why the inherit route is refused by
+  // a declared capability. Unlike a barred candidate, the inherit choice
+  // cannot be deselected — it IS the node's declaration — so the dialog
+  // renders it as a warning the operator reads before launching.
+  const routeRefusals = effectiveQuery.isError
+    ? {}
+    : effectiveQuery.data?.route_refusals ?? {};
   // Fail closed in the picker while the server-side capability assessment is
   // loading or unavailable. Runtime admission still repeats the check, but a
   // transient preview failure must not briefly advertise an unsafe choice.
@@ -181,6 +188,7 @@ export function useRunOverrides(
     setPermissionOverride,
     effectiveSettings,
     nodeBackendOptions,
+    routeRefusals,
     nodeBackendOptionsReady,
     nodeBackendOptionsError,
     reviewModeOverride,
