@@ -85,6 +85,10 @@ func (e *Engine) executeCorrectionInvocation(ctx context.Context, rs *runState, 
 	rs.correctionInvocation = invocation
 	ctx = context.WithValue(x.context(ctx), correctionInvocationKey{}, invocation)
 	ctx = model.WithExecutionUsageCollector(ctx, invocation.collector)
+	// A cut attempt's cumulative cost may outlive its unnamed CLI session
+	// (a recovery pause dropped it): the epoch mints its synthetic identity,
+	// and settlement keeps declaring the spend instead of refusing it.
+	ctx = model.WithUnaccountedSessionEpoch(ctx, initial.ExecutionEpoch)
 	execCtx := ctx
 	if generic {
 		execCtx = model.WithoutOutputCorrectionOwnership(model.WithExecutionUsageCollector(ctx, nil))

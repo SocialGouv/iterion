@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -35,9 +36,13 @@ type ExecutionUsageCollector struct {
 	components   []store.UsageComponent
 	calls        map[string]bool
 	err          error
+	// unaccountedOrdinal numbers the synthetic identities minted for cut
+	// attempts whose cumulative cost outlived its unnamed CLI session.
+	unaccountedOrdinal int
 }
 type executionUsageKey struct{}
 type executionUsageBackendKey struct{}
+type unaccountedSessionEpochKey struct{}
 
 func WithExecutionUsageCollector(ctx context.Context, c *ExecutionUsageCollector) context.Context {
 	return context.WithValue(ctx, executionUsageKey{}, c)
@@ -48,6 +53,31 @@ func executionUsageCollector(ctx context.Context) *ExecutionUsageCollector {
 }
 func withExecutionUsageBackend(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, executionUsageBackendKey{}, name)
+}
+
+// WithUnaccountedSessionEpoch carries the correction invocation's epoch, so a
+// cut attempt's cumulative session cost — its CLI session died unnamed — is
+// still declared under a per-attempt synthetic identity instead of being
+// refused at settlement. Settlement validation keeps its guarantee: a
+// session-total without any identity still refuses.
+func WithUnaccountedSessionEpoch(ctx context.Context, epoch string) context.Context {
+	return context.WithValue(ctx, unaccountedSessionEpochKey{}, epoch)
+}
+func unaccountedSessionEpoch(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	s, _ := ctx.Value(unaccountedSessionEpochKey{}).(string)
+	return s
+}
+
+// unaccountedSessionID mints one synthetic session identity per cut attempt:
+// distinct dead sessions never dedup into one, and each keeps its own max.
+func (c *ExecutionUsageCollector) unaccountedSessionID(epoch string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unaccountedOrdinal++
+	return "unaccounted:" + epoch + ":" + strconv.Itoa(c.unaccountedOrdinal)
 }
 
 func executionUsageFromComponents(collectionID string, components []store.UsageComponent) (ExecutionUsage, error) {
@@ -108,6 +138,9 @@ func observeExecutionUsagePriced(ctx context.Context, task delegate.Task, r dele
 		return
 	}
 	backend, _ := ctx.Value(executionUsageBackendKey{}).(string)
+	if epoch := unaccountedSessionEpoch(ctx); epoch != "" && r.CostIsSessionTotal && r.SessionID == "" && task.SessionID == "" {
+		r.SessionID = c.unaccountedSessionID(epoch)
+	}
 	c.observePriced(firstNonEmpty(r.BackendName, backend), task, r, known)
 }
 func (c *ExecutionUsageCollector) observe(backend string, task delegate.Task, r delegate.Result) {
@@ -120,7 +153,8 @@ func (c *ExecutionUsageCollector) observePriced(backend string, task delegate.Ta
 		component.UnpricedTokens = r.Tokens
 	}
 	// A cumulative declaration without its session identity cannot safely become
-	// additive spend. Preserve the declaration so validation names the missing key.
+	// additive spend. Preserve the declaration so validation names the missing key;
+	// an invocation that carries an epoch minted its identity above instead.
 	if r.CostIsSessionTotal {
 		component.CostKind = store.UsageSessionTotal
 	}
