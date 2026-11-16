@@ -524,4 +524,6 @@ const (
 	DiagCodemodeBoundsWithModeOff DiagCode = "C348" // codemode: bounds declared beside `mode: off` — no program runs, so the bounds are inert (warning)
 
 	DiagCodemodeBoundUnreadable DiagCode = "C349" // a codemode: duration that is not readable as one, or is negative — the default applies instead, which is tighter than a bound being raised and looser than one being lowered (warning)
+
+	DiagCodemodeMemoryBelowFloor DiagCode = "C350" // a codemode: memory bound below the measured floor a Go child works under — the platform raises the bound to the floor where the program is spawned (warning)
 )

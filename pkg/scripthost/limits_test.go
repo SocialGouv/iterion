@@ -89,6 +89,31 @@ func TestEveryBoundIsDefaultedAndCeilinged(t *testing.T) {
 			if clamped {
 				t.Errorf("%s under its ceiling reported a reduction", f.Name)
 			}
+			// 3b. Memory ONLY — the FLOOR (#3290): a bound under the measured
+			// minimum a child works under is RAISED to the floor and the raise
+			// is reported. The first draft of the floor broke property 3 above
+			// for every field; this row keeps the floor scoped to Memory and
+			// pins both halves of the raise.
+			if f.Name == "Memory" {
+				underFloor := Limits{}
+				underFloor.Memory = 4 << 20
+				got, clamped = underFloor.Clamp()
+				floor := MemoryFloor().Memory
+				if got.Memory != floor {
+					t.Errorf("Memory %d (under the %d-byte floor) clamped to %d, want the floor — a bound that cannot do real work must be raised, loudly",
+						underFloor.Memory, floor, got.Memory)
+				}
+				if !clamped {
+					t.Errorf("a floor raise of Memory did not report the adjustment: the operator owes the why")
+				}
+				// And between the floor and the ceiling, honoured as any value.
+				mid := Limits{}
+				mid.Memory = floor + (1 << 20)
+				got, clamped = mid.Clamp()
+				if got.Memory != mid.Memory || clamped {
+					t.Errorf("Memory %d (floor..ceiling) clamped to %d (clamped=%v), want honoured", mid.Memory, got.Memory, clamped)
+				}
+			}
 		})
 	}
 }

@@ -329,7 +329,7 @@
         },
         "memory": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
-          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290",
+          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, floor 67108864, ceiling 2147483648). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",
           "minimum": 0,
           "type": "integer"
         },
@@ -3146,7 +3146,7 @@
         },
         "memory": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
-          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290",
+          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, floor 67108864, ceiling 2147483648). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",
           "minimum": 0,
           "type": "integer"
         },

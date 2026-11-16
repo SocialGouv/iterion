@@ -90,6 +90,39 @@ func TestADeclaredToolCallBoundAllowsTheCallsUnderIt(t *testing.T) {
 	}
 }
 
+// TestOnClampReportsAFloorRaise pins the report half of #3290's floor: a
+// bound the child cannot work under is RAISED by Clamp and the raise travels
+// OnClamp — the operator's warning — exactly as a ceiling reduction does.
+// Without this row, a floor raise was silent: the operator wrote 8 MiB and
+// the child ran with 64 MiB, and nothing in the run said why.
+func TestOnClampReportsAFloorRaise(t *testing.T) {
+	t.Parallel()
+	source := `1+1`
+	in, err := json.Marshal(map[string]string{"source": source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onClampReq, onClampApplied *scripthost.Limits
+	var opts GenerationOptions
+	installCodemode(&opts, &scripthost.Limits{Memory: 8 << 20}, func(requested, applied scripthost.Limits) {
+		onClampReq, onClampApplied = &requested, &applied
+	})
+	if len(opts.Tools) != 1 {
+		t.Fatalf("installCodemode appended %d tool(s), want 1", len(opts.Tools))
+	}
+	_, ctx := newToolDispatcher(context.Background(), map[string]*GenerationTool{}, nil, nil, nil, nil, nil)
+	if _, err := opts.Tools[0].Execute(ctx, in); err != nil {
+		t.Fatalf("a trivial program under a floor-raised bound failed: %v", err)
+	}
+	if onClampReq == nil || onClampApplied == nil {
+		t.Fatalf("OnClamp never fired on a floor raise: the operator wrote 8 MiB and nothing said the child ran with more")
+	}
+	floor := scripthost.MemoryFloor().Memory
+	if onClampReq.Memory != 8<<20 || onClampApplied.Memory != floor {
+		t.Errorf("OnClamp (requested %+v, applied %+v), want 8 MiB raised to the floor %d", *onClampReq, *onClampApplied, floor)
+	}
+}
+
 // TestInstallCodemodePassesTheDeclaredBounds is the ONE line this slice adds
 // to the runtime: installCodemode used to hand the host a zero Limits, so a
 // declared bound could reach the task and stop there.

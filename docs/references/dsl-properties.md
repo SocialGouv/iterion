@@ -651,7 +651,7 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 | `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
 | `wall` | string | How long the child may live, e.g. "60s" (default "30s", ceiling "10m") — the parent's backstop, including for a child that never starts |
 | `cpu` | string | The child's CPU-seconds ceiling, e.g. "30s" (default "10s", ceiling "5m"); RLIMIT_CPU's unit is seconds, so the value is rounded UP |
-| `memory` | int | Bytes of the child's data segment, RLIMIT_DATA (default 268435456, ceiling 2147483648). Below the floor a Go child needs it crashes rather than refusing — #3290 |
+| `memory` | int | Bytes of the child's data segment, RLIMIT_DATA (default 268435456, floor 67108864, ceiling 2147483648). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement |
 | `script_bytes` | int | Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn |
 | `result_bytes` | int | Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced |
 | `tool_result_bytes` | int | Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports |
