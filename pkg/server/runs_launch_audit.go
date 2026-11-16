@@ -136,6 +136,15 @@ func launchErrorRunID(err error, spec runview.LaunchSpec) string {
 
 // launchTriggered is the trigger spine's launch: the spine holds no *Server
 // by design, so it is handed this bound closure instead of the run service.
+// answerTriggeredSubmission reads a keyed trigger launch's run before its
+// gate (serviceLauncher.answer).
+func (s *Server) answerTriggeredSubmission(ctx context.Context, spec *runview.LaunchSpec) (*runview.LaunchResult, error) {
+	if s.runs == nil {
+		return nil, errors.New("launch: no run service wired")
+	}
+	return s.runs.AnswerSubmission(ctx, spec)
+}
+
 func (s *Server) launchTriggered(ctx context.Context, spec runview.LaunchSpec) (*runview.LaunchResult, error) {
 	return s.launchRun(ctx, systemLaunch(triggerSpineActor), spec)
 }

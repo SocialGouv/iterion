@@ -3708,6 +3708,9 @@
           "delivery_id": {
             "type": "string"
           },
+          "intake_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },
@@ -3718,6 +3721,9 @@
             "type": "string"
           },
           "kind": {
+            "type": "string"
+          },
+          "pair_id": {
             "type": "string"
           },
           "schedule_id": {
@@ -4012,6 +4018,12 @@
           "bot_id": {
             "type": "string"
           },
+          "connection_id": {
+            "type": "string"
+          },
+          "connector_key": {
+            "type": "string"
+          },
           "consume_labels": {
             "type": "boolean"
           },
@@ -4027,6 +4039,15 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "filters": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
           },
           "guard": {
             "type": "string"
@@ -4084,10 +4105,16 @@
           "mode": {
             "type": "string"
           },
+          "no_live_run": {
+            "type": "string"
+          },
           "origin": {
             "type": "string"
           },
           "overlap": {
+            "type": "string"
+          },
+          "poller": {
             "type": "string"
           },
           "repo": {
@@ -4120,15 +4147,27 @@
           "tenant_id": {
             "type": "string"
           },
+          "trigger_id": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "var_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "vars": {
             "additionalProperties": {
               "type": "string"
             },
             "type": "object"
+          },
+          "when": {
+            "type": "string"
           }
         },
         "required": [
@@ -15671,6 +15710,38 @@
         ]
       }
     },
+    "/api/teams/{id}/bots/{name}/triggers/from-invocation": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotsByNameTriggersFromInvocation",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bots/{name}/triggers/from-invocation",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/config-editor/shares": {
       "get": {
         "operationId": "getTeamsByIdConfigEditorShares",
@@ -16854,6 +16925,94 @@
         ]
       }
     },
+    "/api/teams/{id}/intakes": {
+      "get": {
+        "operationId": "getTeamsByIdIntakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}": {
+      "get": {
+        "operationId": "getTeamsByIdIntakesBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/intakes/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/intakes/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdIntakesBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/intakes/{sub}/replay",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/invitations": {
       "get": {
         "operationId": "getTeamsByIdInvitations",
@@ -17203,6 +17362,62 @@
           }
         },
         "summary": "POST /api/teams/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/pairs": {
+      "get": {
+        "operationId": "getTeamsByIdPairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pairs",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/pairs/{sub}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdPairsBySubReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/pairs/{sub}/replay",
         "tags": [
           "teams"
         ]
@@ -17744,6 +17959,122 @@
         ]
       }
     },
+    "/api/teams/{id}/triggers": {
+      "get": {
+        "operationId": "getTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdTriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/triggers/preview",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/triggers/{sub}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sub",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdTriggersBySub",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/triggers/{sub}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/webhooks": {
       "get": {
         "operationId": "getTeamsByIdWebhooks",
@@ -18198,6 +18529,68 @@
         ]
       }
     },
+    "/api/v1/intakes": {
+      "get": {
+        "operationId": "getV1Intakes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes",
+        "tags": [
+          "intakes"
+        ]
+      }
+    },
+    "/api/v1/intakes/{id}": {
+      "get": {
+        "operationId": "getV1IntakesById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/intakes/{id}",
+        "tags": [
+          "intakes"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/intakes/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1IntakesByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/intakes/{id}/replay",
+        "tags": [
+          "intakes"
+        ]
+      }
+    },
     "/api/v1/limits/cost": {
       "get": {
         "operationId": "getV1LimitsCost",
@@ -18444,6 +18837,44 @@
           }
         }
       ]
+    },
+    "/api/v1/pairs": {
+      "get": {
+        "operationId": "getV1Pairs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/pairs",
+        "tags": [
+          "pairs"
+        ]
+      }
+    },
+    "/api/v1/pairs/{id}/replay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PairsByIdReplay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pairs/{id}/replay",
+        "tags": [
+          "pairs"
+        ]
+      }
     },
     "/api/v1/pipeline-board": {
       "get": {
@@ -19178,6 +19609,20 @@
           }
         },
         "summary": "GET /api/v1/triggers/health",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/api/v1/triggers/preview": {
+      "post": {
+        "operationId": "postV1TriggersPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/triggers/preview",
         "tags": [
           "triggers"
         ]

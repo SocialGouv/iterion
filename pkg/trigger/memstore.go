@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -22,15 +23,57 @@ import (
 // that delete into Go's unrecoverable concurrent map iteration and map
 // write (#2644).
 type MemorySubscriptionStore struct {
-	mu    sync.RWMutex
-	items map[string]Subscription
+	mu         sync.RWMutex
+	items      map[string]Subscription
+	tombstones map[string]Tombstone
 }
 
 func NewMemorySubscriptionStore() *MemorySubscriptionStore {
-	return &MemorySubscriptionStore{items: make(map[string]Subscription)}
+	return &MemorySubscriptionStore{items: make(map[string]Subscription), tombstones: make(map[string]Tombstone)}
+}
+
+func (m *MemorySubscriptionStore) EnsureDerived(_ context.Context, s Subscription) (bool, error) {
+	if !IsDerivedID(s.ID) {
+		return false, fmt.Errorf("trigger: %q is not a derived subscription id", s.ID)
+	}
+	s.normalize()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A tombstone outranks a standing row: an operator's delete may have
+	// died between its tombstone and the row's delete — the next
+	// EnsureDerived finishes it.
+	if _, dead := m.tombstones[s.ID]; dead {
+		delete(m.items, s.ID)
+		return false, nil
+	}
+	if _, ok := m.items[s.ID]; ok {
+		return false, nil
+	}
+	m.items[s.ID] = storekit.Snapshot(s)
+	return true, nil
+}
+
+func (m *MemorySubscriptionStore) Tombstone(_ context.Context, t Tombstone) error {
+	if !IsDerivedID(t.ID) {
+		return fmt.Errorf("trigger: %q is not a derived subscription id", t.ID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tombstones[t.ID] = t
+	return nil
+}
+
+func (m *MemorySubscriptionStore) ClearTombstone(_ context.Context, tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tombstones[id]; ok && t.TenantID == tenantID {
+		delete(m.tombstones, id)
+	}
+	return nil
 }
 
 func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) error {
+	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.items[s.ID] = storekit.Snapshot(s)
@@ -48,6 +91,7 @@ func (m *MemorySubscriptionStore) Get(_ context.Context, id string) (Subscriptio
 }
 
 func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) error {
+	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.items[s.ID]
@@ -168,9 +212,23 @@ func (m *MemorySubscriptionStore) ListByOrigin(_ context.Context, tenantID, orig
 }
 
 func (m *MemorySubscriptionStore) ListCandidates(_ context.Context, ev Event) ([]Subscription, error) {
+	if ev.Source == SourceConnector {
+		key := ConnectorKey(ev.ConnectionID, ev.Kind)
+		out := m.filter(func(s Subscription) bool {
+			return s.Enabled && s.TenantID == ev.TenantID && key != "" && s.ConnectorKey == key && s.Poller == ev.PollerID
+		})
+		sortByID(out)
+		return out, nil
+	}
 	return m.filter(func(s Subscription) bool {
-		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "")
+		return s.Enabled && s.TenantID == ev.TenantID && (s.Repo == ev.Repo || s.Repo == "") && s.ConnectorKey == ""
 	}), nil
+}
+
+// sortByID is the stable order connector candidates are judged in (ADR-168
+// §8.2): one pair per candidate, written in an order every replica shares.
+func sortByID(subs []Subscription) {
+	sort.Slice(subs, func(i, j int) bool { return subs[i].ID < subs[j].ID })
 }
 
 func (m *MemorySubscriptionStore) filter(keep func(Subscription) bool) []Subscription {

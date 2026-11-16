@@ -389,6 +389,9 @@ start the server rather than read as the default.
 | Variable | Effect | Default |
 |---|---|---|
 | `ITERION_CONNECTOR_INTAKE_BACKLOG_MAX` | A team's cap on unprocessed intakes (pending or claimed). Past it an authenticated delivery answers 503 with `Retry-After` and writes nothing; a redelivery of a stored one is still acknowledged. A soft bound: concurrent deliveries that each read room may overshoot it by the deliveries in flight. `0` removes the cap. | `10000` |
+| `ITERION_CONNECTOR_WORKER_INTERVAL` | How often the connector worker ticks (Go duration): one matching pass over claimable intakes, then one launching pass over claimable pairs. Every replica runs one; the claims keep them off each other's rows. A value that does not parse keeps the worker off, said in the log. | `2s` |
+| `ITERION_CONNECTOR_PAIR_MAX_ATTEMPTS` · `_BACKOFF` · `_BACKOFF_MAX` · `_CLAIM_TTL` | A matched pair's launch policy: attempts before it lands in the dead-letter view (`0` for no bound), the backoff and its ceiling, the claim's lifetime. A concurrency or launch-rate denial and a maintenance hold postpone without spending an attempt. | see `intake.DefaultPolicy` |
+| `ITERION_CONNECTOR_INTAKE_MAX_ATTEMPTS` · `_BACKOFF` · `_BACKOFF_MAX` · `_CLAIM_TTL` | The same policy for matching an intake against its subscriptions. | see `intake.DefaultPolicy` |
 | `ITERION_CONNECTOR_INTAKE_RETENTION` | How long an intake row is kept (Go duration) — the window in which a vendor's redelivery is absorbed. `0` keeps rows. | `720h` (30 days) |
 
 ## Merge gate (server)

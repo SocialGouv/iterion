@@ -452,6 +452,36 @@ func TestWorkerMaintenanceHoldSpendsNoAttempt(t *testing.T) {
 	}
 }
 
+// postponedErr is a transient denial, as the launch gate answers a team at
+// its concurrency cap.
+type postponedErr struct{ after time.Duration }
+
+func (e postponedErr) Error() string                      { return "concurrency cap" }
+func (e postponedErr) PostponeFor() (time.Duration, bool) { return e.after, true }
+
+// A transient denial postpones the pair by the delay it names and spends no
+// attempt, however often it repeats (ADR-168 Q3).
+func TestWorkerPostponesATransientDenialWithoutSpending(t *testing.T) {
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	sub.fail = func(string, int) error { return fmt.Errorf("gate: %w", postponedErr{after: 45 * time.Second}) }
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+	tick(t, w)
+	p := onlyPair(t, s, "t1")
+	if p.State != PairPending || p.Attempts != 0 || !p.NotBefore.Equal(stamp(t0.Add(45*time.Second))) {
+		t.Fatalf("pair = %+v, want pending, attempts whole, due in 45s", p)
+	}
+	for i := 0; i < 10; i++ {
+		clock.Add(time.Minute)
+		tick(t, w)
+	}
+	if p := onlyPair(t, s, "t1"); p.State != PairPending || p.Attempts != 0 {
+		t.Fatalf("pair = %+v after %d denials, want its budget whole", p, sub.calls)
+	}
+}
+
 // A pair whose intake is gone cannot be launched: refused, visibly.
 func TestWorkerRefusesAPairWhoseIntakeIsGone(t *testing.T) {
 	ctx := context.Background()

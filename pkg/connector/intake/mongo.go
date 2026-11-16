@@ -74,7 +74,9 @@ func (s *MongoStore) Accept(ctx context.Context, in Intake) (Intake, bool, error
 	created := err == nil && res.UpsertedCount == 1
 	var stored Intake
 	if err := s.intakes.FindOne(ctx, bson.M{"_id": in.ID}).Decode(&stored); err != nil {
-		return Intake{}, false, fmt.Errorf("intake: read accepted %s: %w", in.ID, err)
+		// The write's verdict stands even when its read-back fails: the
+		// caller tells its own row from a twin's by it.
+		return Intake{}, created, fmt.Errorf("intake: read accepted %s: %w", in.ID, err)
 	}
 	return stored, created, nil
 }
@@ -423,6 +425,38 @@ func (s *MongoStore) ReplayPair(ctx context.Context, tenantID, id string, now ti
 		return Pair{}, rerr
 	}
 	return Pair{}, fmt.Errorf("%w: pair %s changed while it was replayed", ErrNotReplayable, id)
+}
+
+func (s *MongoStore) RejudgePair(ctx context.Context, tenantID, id string, v Verdict, now time.Time) (Pair, error) {
+	state, reason, matchRefusal := rejudged(v)
+	set := bson.M{
+		"state":         state,
+		"match_refusal": matchRefusal,
+		"not_before":    stamp(now),
+		"updated_at":    stamp(now),
+	}
+	unset := bson.M{"last_error": ""}
+	if reason != "" {
+		set["reason"] = reason
+	} else {
+		unset["reason"] = ""
+	}
+	var p Pair
+	err := s.pairs.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "tenant_id": tenantID, "state": PairRefused, "match_refusal": true},
+		bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"generation": 1}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&p)
+	if err == nil {
+		return p, nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return Pair{}, fmt.Errorf("intake: rejudge pair %s: %w", id, err)
+	}
+	cur, gerr := s.GetPair(ctx, tenantID, id)
+	if gerr != nil {
+		return Pair{}, gerr
+	}
+	return Pair{}, fmt.Errorf("%w: pair %s is %s, not refused by matching", ErrNotReplayable, cur.ID, cur.State)
 }
 
 var _ Store = (*MongoStore)(nil)

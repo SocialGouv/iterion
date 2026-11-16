@@ -453,6 +453,10 @@ type Server struct {
 	// vendor's documented request is signed at its own instant). nil →
 	// time.Now().UTC().
 	ingressClock func() time.Time
+	// ingressWriteLimit overrides ingressWriteTimeout (test seam — a test
+	// cannot wait ten seconds for a write to hit its deadline). Zero → the
+	// constant.
+	ingressWriteLimit time.Duration
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
 	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration

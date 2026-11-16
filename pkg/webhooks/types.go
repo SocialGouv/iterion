@@ -453,6 +453,11 @@ type Config struct {
 	// package's `installation:` expression; a delivery carrying another
 	// value is refused. Empty when the package declares none.
 	Installation string `bson:"installation,omitempty" json:"installation,omitempty"`
+	// RepoHosts are the hosts beyond the connection's own a connector
+	// ingress's events may name as a run's clone target (the reserved
+	// repo_url output, ADR-168 §5): a repo_url on any other host refuses the
+	// launch, naming the host. Set only on ProviderConnector.
+	RepoHosts []string `bson:"repo_hosts,omitempty" json:"repo_hosts,omitempty"`
 	// Connector is the connector a connector ingress receives deliveries
 	// for, recorded when it is bound: the sealed secret is that vendor's, so
 	// a re-bind keeps it, and a delivery whose connection now names another

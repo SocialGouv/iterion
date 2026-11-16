@@ -141,6 +141,10 @@ func TestSyncSchedules_CreatesAndIsIdempotent(t *testing.T) {
 		"feature-dev": {
 			{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{}}, // no cron → skipped
 		},
+		// A mode no lane honours schedules nothing (bundle.ResolveMode).
+		"parked-bot": {
+			{Kind: bundle.InvocationKindSchedule, Mode: bundle.ExecutionDeliver, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 3 * * 1"}},
+		},
 	}
 	ctx := context.Background()
 	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1", nil); err != nil {
@@ -148,7 +152,7 @@ func TestSyncSchedules_CreatesAndIsIdempotent(t *testing.T) {
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
 	if len(rows) != 1 {
-		t.Fatalf("want exactly 1 schedule row (only the cron'd one), got %d: %+v", len(rows), rows)
+		t.Fatalf("want exactly 1 schedule row (only the cron'd direct one), got %d: %+v", len(rows), rows)
 	}
 	if rows[0].RepoURL != "https://github.com/org/app.git" {
 		t.Fatalf("schedule must carry the repo clone URL (stateful repo-bound bots), got %q", rows[0].RepoURL)
@@ -256,5 +260,29 @@ func TestSyncSchedules_ReprovisionKeepsOperatorRow(t *testing.T) {
 	}
 	if got.Cron != "0 4 * * 1" {
 		t.Errorf("the operator's cron must survive a re-provision without an explicit cron: got %q", got.Cron)
+	}
+}
+
+// A mode no lane honours (deliver until #3136) provisions nothing: no
+// command route, no forge-event lane — never a launch by default.
+func TestAModeNoLaneHonoursProvisionsNoRoute(t *testing.T) {
+	o := &Orchestrator{Invocations: invLookup(map[string][]bundle.Invocation{
+		"parked-bot": {cmdInv("parkly", "deliver", "", "")},
+	})}
+	m, err := o.buildCommandMap(context.Background(), "t1", []string{"parked-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes, ok := m["parkly"]; ok {
+		t.Fatalf("a deliver command was routed: %+v", routes)
+	}
+
+	rules := buildBotRules([]string{"parked-bot"}, nil, map[string][]bundle.Invocation{
+		"parked-bot": {{Kind: bundle.InvocationKindForge, Mode: bundle.ExecutionDeliver, Forge: &bundle.InvocationForge{Event: bundle.ForgeEventPullRequest}}},
+	})
+	for _, r := range rules {
+		if r.MatchesEvent(bundle.ForgeEventPullRequest) {
+			t.Fatalf("a deliver forge invocation claimed the event lane: %+v", r)
+		}
 	}
 }

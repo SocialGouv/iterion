@@ -88,6 +88,26 @@ func (e *launchDeniedError) Unwrap() error {
 
 // err converts a denial for a caller that reports through an error chain.
 // Nil-safe: an allowed launch has no error.
+// PostponeFor reads a denial waiting lifts — the team at its concurrency
+// cap, its launch rate spent — as a postponement of RetryAfter (a default
+// when the gate names none), so a connector pair waits without spending an
+// attempt (ADR-168 Q3). A monthly cap or a suspension is not lifted by
+// waiting a moment: ok is false and the pair spends its attempt.
+func (e *launchDeniedError) PostponeFor() (time.Duration, bool) {
+	switch e.Reason {
+	case denyConcurrencyCap, denyLaunchRateLimited:
+		if e.RetryAfter > 0 {
+			return e.RetryAfter, true
+		}
+		return defaultDenialPostpone, true
+	}
+	return 0, false
+}
+
+// defaultDenialPostpone is a transient denial's wait when the gate names
+// none.
+const defaultDenialPostpone = 30 * time.Second
+
 func (d *launchDenial) err() error {
 	if d == nil {
 		return nil

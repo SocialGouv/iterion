@@ -18,15 +18,98 @@ import (
 // SubscriptionStore.
 const SubscriptionsCollectionName = "trigger_subscriptions"
 
+// SubscriptionTombstonesCollectionName holds the operator deletes of
+// derived subscriptions, one document per id (ADR-168 §6).
+const SubscriptionTombstonesCollectionName = "trigger_subscription_tombstones"
+
 // MongoSubscriptionStore is the cloud-mode SubscriptionStore. Its index shape
 // mirrors forge.MongoRepoIntegrationStore: a {tenant_id, repo} index for the
 // candidate/by-repo queries and a {tenant_id, bot_id} index for by-bot.
 type MongoSubscriptionStore struct {
-	coll *mongo.Collection
+	coll  *mongo.Collection
+	tombs *mongo.Collection
+	// afterDerivedInsert runs between EnsureDerived's insert and its second
+	// tombstone read; nil outside the test that places an operator's delete
+	// there.
+	afterDerivedInsert func()
 }
 
 func NewMongoSubscriptionStore(db *mongo.Database) *MongoSubscriptionStore {
-	return &MongoSubscriptionStore{coll: db.Collection(SubscriptionsCollectionName)}
+	return &MongoSubscriptionStore{
+		coll:  db.Collection(SubscriptionsCollectionName),
+		tombs: db.Collection(SubscriptionTombstonesCollectionName),
+	}
+}
+
+func (s *MongoSubscriptionStore) tombstoned(ctx context.Context, id string) (bool, error) {
+	n, err := s.tombs.CountDocuments(ctx, bson.M{"_id": id}, options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("trigger: read subscription tombstone: %w", err)
+	}
+	return n > 0, nil
+}
+
+// EnsureDerived inserts the row unless it exists or is tombstoned. The
+// tombstone is read again after the insert: an operator's delete writes its
+// tombstone before deleting, so a creation that raced it either sees the
+// tombstone here and withdraws its own row, or landed before the operator's
+// delete, which removes it.
+func (s *MongoSubscriptionStore) EnsureDerived(ctx context.Context, sub Subscription) (bool, error) {
+	if !IsDerivedID(sub.ID) {
+		return false, fmt.Errorf("trigger: %q is not a derived subscription id", sub.ID)
+	}
+	dead, err := s.tombstoned(ctx, sub.ID)
+	if err != nil {
+		return false, err
+	}
+	if dead {
+		// Heal the residue of a lost race: the withdraw of a row created
+		// beside an operator's delete may itself have failed once.
+		if _, derr := s.coll.DeleteOne(ctx, bson.M{"_id": sub.ID}); derr != nil {
+			return false, fmt.Errorf("trigger: retire the derived subscription its tombstone outlives: %w", derr)
+		}
+		return false, nil
+	}
+	sub.normalize()
+	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("trigger: insert derived subscription: %w", err)
+	}
+	if s.afterDerivedInsert != nil {
+		s.afterDerivedInsert()
+	}
+	dead, err = s.tombstoned(ctx, sub.ID)
+	if err != nil {
+		return true, err
+	}
+	if dead {
+		if _, err := s.coll.DeleteOne(ctx, bson.M{"_id": sub.ID}); err != nil {
+			return true, fmt.Errorf("trigger: withdraw a derived subscription deleted meanwhile: %w", err)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (s *MongoSubscriptionStore) Tombstone(ctx context.Context, t Tombstone) error {
+	if !IsDerivedID(t.ID) {
+		return fmt.Errorf("trigger: %q is not a derived subscription id", t.ID)
+	}
+	_, err := s.tombs.UpdateOne(ctx, bson.M{"_id": t.ID},
+		bson.M{"$set": bson.M{"tenant_id": t.TenantID, "deleted_at": t.DeletedAt}}, options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("trigger: write subscription tombstone: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) ClearTombstone(ctx context.Context, tenantID, id string) error {
+	if _, err := s.tombs.DeleteOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}); err != nil {
+		return fmt.Errorf("trigger: clear subscription tombstone: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
@@ -34,6 +117,9 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "repo", Value: 1}}, Options: options.Index().SetName("tenant_repo")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}}, Options: options.Index().SetName("tenant_bot")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "origin", Value: 1}}, Options: options.Index().SetName("tenant_origin")},
+		// The connector candidate query: three scalar fields (two array
+		// fields cannot share one compound index — ADR-168 §6).
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "enabled", Value: 1}, {Key: "connector_key", Value: 1}}, Options: options.Index().SetName("tenant_enabled_connector_key")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("trigger: ensure subscriptions indexes: %w", err)
@@ -42,6 +128,7 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) error {
+	sub.normalize()
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
 		return fmt.Errorf("trigger: insert subscription: %w", err)
 	}
@@ -74,6 +161,7 @@ var subscriptionHealthFields = []string{
 // the stored stamps (absent ones stay absent), as the webhooks twin keeps
 // last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
+	sub.normalize()
 	filter := storekit.VersionCAS(sub.ID, sub.Version)
 	sub.Version++
 	raw, err := bson.Marshal(sub)
@@ -222,10 +310,29 @@ func (s *MongoSubscriptionStore) ListByOrigin(ctx context.Context, tenantID, ori
 }
 
 func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) ([]Subscription, error) {
+	if ev.Source == SourceConnector {
+		key := ConnectorKey(ev.ConnectionID, ev.Kind)
+		if key == "" {
+			return nil, nil
+		}
+		poller := any(ev.PollerID)
+		if ev.PollerID == "" {
+			// An ingress intake: the subscriptions that name no poller,
+			// whose field is absent (omitempty).
+			poller = bson.M{"$in": bson.A{"", nil}}
+		}
+		return mongoutil.FindAllSorted[Subscription](ctx, s.coll, bson.M{
+			"tenant_id":     ev.TenantID,
+			"enabled":       true,
+			"connector_key": key,
+			"poller":        poller,
+		}, "_id", "trigger: list connector candidates", "trigger: decode connector candidates")
+	}
 	return s.find(ctx, bson.M{
-		"tenant_id": ev.TenantID,
-		"enabled":   true,
-		"repo":      bson.M{"$in": bson.A{ev.Repo, "", nil}},
+		"tenant_id":     ev.TenantID,
+		"enabled":       true,
+		"repo":          bson.M{"$in": bson.A{ev.Repo, "", nil}},
+		"connector_key": bson.M{"$in": bson.A{"", nil}},
 	})
 }
 

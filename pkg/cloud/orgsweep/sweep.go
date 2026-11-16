@@ -70,7 +70,7 @@ var teamScopedCollections = []string{
 	"run_gitmeta", "run_plans", "run_notes", "run_turns", "run_logs",
 	"run_tags", "run_route_decisions", "retry_circuits",
 	// event triggers (pkg/trigger)
-	"trigger_subscriptions",
+	"trigger_subscriptions", "trigger_subscription_tombstones",
 	// inbound webhooks (pkg/webhooks)
 	"webhook_configs", "webhook_deliveries", "webhook_quotas",
 	"webhook_deferred_launches",

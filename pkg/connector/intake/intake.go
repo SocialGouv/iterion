@@ -215,7 +215,8 @@ type Store interface {
 	// Accept writes an intake once. The id is derived (IntakeID) and the
 	// row starts pending; a row that exists is left untouched whatever
 	// state it reached. It returns the stored row and whether this call
-	// wrote it.
+	// wrote it — the latter also with an error, when the write landed and
+	// only reading the row back failed.
 	Accept(ctx context.Context, in Intake) (Intake, bool, error)
 	GetIntake(ctx context.Context, tenantID, id string) (Intake, error)
 	// CountBacklog counts a tenant's unprocessed intakes — pending or
@@ -263,6 +264,12 @@ type Store interface {
 	// launch-refused pair moves to the next epoch, a new submission. A
 	// match-refused pair is not replayable: nothing ever matched it.
 	ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (Pair, error)
+	// RejudgePair records a new matching verdict on a pair matching refused
+	// (MatchRefusal) — the replay such a pair takes instead of a launch
+	// (#3296): matched, it becomes pending with its attempts whole; not
+	// matched, it is not_matched with the reason; refused again, it keeps
+	// its refusal under the new reason. ErrNotReplayable for any other pair.
+	RejudgePair(ctx context.Context, tenantID, id string, v Verdict, now time.Time) (Pair, error)
 }
 
 // prepareIntake validates an intake and fills what Accept derives.

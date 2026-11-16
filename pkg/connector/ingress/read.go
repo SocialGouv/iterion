@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ErrUnauthenticated is the class of every refusal before the sender is
@@ -123,7 +124,14 @@ func Read(req Request) (Delivery, error) {
 	headers := listedHeaders(visible, req.Header)
 	ctx := spec.NewDeliveryContext(event, req.Header, visible)
 
-	d := Delivery{DedupKey: dedupKey(req.Body), Ack: ack(in)}
+	dedupBody := req.Body
+	if in.Timestamp != nil && in.Timestamp.In == "body" && in.Timestamp.Name != "" {
+		// A vendor re-signs its retry at a new instant; the retry must meet
+		// the row its first delivery opened. The signature still covers the
+		// whole body — the digest alone ignores the volatile member.
+		dedupBody = dedupBodyWithout(in.Timestamp.Name, req.Body)
+	}
+	d := Delivery{DedupKey: dedupKey(dedupBody), Ack: ack(in)}
 	// The handshake comes before the installation: a vendor verifying its
 	// endpoint (Slack's url_verification) carries no installation, the
 	// signature already proved the sender, and a handshake routes no event.
@@ -174,21 +182,35 @@ func Read(req Request) (Delivery, error) {
 		return d, nil
 	}
 	d.TriggerID = trig.ID
+	raw, filtered, err := extract(*trig, event, headers, ctx)
+	if err != nil {
+		return Delivery{}, err
+	}
+	d.Filtered = filtered
+	d.Event = raw
+	return d, nil
+}
+
+// extract is what a delivery becomes once its trigger is located: dropped
+// by the trigger's loop guard (filtered says why), or the sanitized event —
+// its outputs, its payload, its listed headers — a subscription is judged
+// against. The lane and the preview share it, so a preview reads a payload
+// exactly as a delivery is read.
+func extract(trig spec.Trigger, event map[string]any, headers map[string]string, ctx *expr.Context) (json.RawMessage, string, error) {
 	if trig.Ignore != "" {
 		drop, err := spec.EvalDelivery(trig.Ignore, ctx)
 		if err != nil {
-			return Delivery{}, fmt.Errorf("%w: %s.ignore: %v", ErrMalformed, trig.ID, err)
+			return nil, "", fmt.Errorf("%w: %s.ignore: %v", ErrMalformed, trig.ID, err)
 		}
 		if drop == true {
-			d.Filtered = fmt.Sprintf("trigger %s's loop guard dropped it", trig.ID)
-			return d, nil
+			return nil, fmt.Sprintf("trigger %s's loop guard dropped it", trig.ID), nil
 		}
 	}
 	outputs := map[string]any{}
 	for _, o := range trig.Outputs {
 		v, err := spec.EvalDelivery(o.From, ctx)
 		if err != nil {
-			return Delivery{}, fmt.Errorf("%w: %s output %s: %v", ErrMalformed, trig.ID, o.Name, err)
+			return nil, "", fmt.Errorf("%w: %s output %s: %v", ErrMalformed, trig.ID, o.Name, err)
 		}
 		if v != nil {
 			outputs[o.Name] = v
@@ -196,10 +218,25 @@ func Read(req Request) (Delivery, error) {
 	}
 	raw, err := encodeEvent(map[string]any{"outputs": outputs, "payload": event, "headers": headers})
 	if err != nil {
-		return Delivery{}, err
+		return nil, "", err
 	}
-	d.Event = raw
-	return d, nil
+	return raw, "", nil
+}
+
+// Preview reads a payload and its headers through a trigger the way the
+// lane reads an authenticated delivery, without verifying, storing or
+// answering anything: the sanitized event a subscription would be judged
+// against — the redact fields and the credential gone from the payload,
+// only the listed headers kept — or why the trigger's loop guard drops it.
+func Preview(in *spec.Ingress, trig spec.Trigger, payload map[string]any, header http.Header) (json.RawMessage, string, error) {
+	if in == nil {
+		return nil, "", fmt.Errorf("%w: the package declares no ingress", ErrMalformed)
+	}
+	normalizeNumbers(payload)
+	event := sanitize(in, payload)
+	visible := visibleHeaders(in)
+	headers := listedHeaders(visible, header)
+	return extract(trig, event, headers, spec.NewDeliveryContext(event, header, visible))
 }
 
 // encodeEvent encodes the event without HTML escaping — a "<" stored as
@@ -330,9 +367,13 @@ func notJSON(err error) error {
 	return fmt.Errorf("%w: the body is not JSON", ErrMalformed)
 }
 
-// normalizeNumbers turns the decoder's json.Number into int64 when integral,
+// NormalizeNumbers turns the decoder's json.Number into int64 when integral,
 // float64 otherwise, so expressions compare numbers as numbers. An integer
 // past int64 keeps its literal: through float64 two ids would read as one.
+// A stored event is decoded through it again, so a matcher reads the numbers
+// the extraction read.
+func NormalizeNumbers(v any) any { return normalizeNumbers(v) }
+
 func normalizeNumbers(v any) any {
 	switch c := v.(type) {
 	case map[string]any:
@@ -681,6 +722,25 @@ func listedHeaders(visible []string, h http.Header) map[string]string {
 // its own instant — its third comes five minutes on, past a window that kept
 // the first instant) is part of it: a replay inside the window and a
 // vendor's retry both meet the row of the first delivery.
+// dedupBodyWithout returns the delivery body with a top-level member
+// elided. A body that is not an object, or without the member, digests as
+// it is.
+func dedupBodyWithout(member string, raw []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	if _, ok := m[member]; !ok {
+		return raw
+	}
+	delete(m, member)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 func dedupKey(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])

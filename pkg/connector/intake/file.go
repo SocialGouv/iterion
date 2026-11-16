@@ -201,6 +201,15 @@ func (f *FileStore) BuryPair(ctx context.Context, id string, generation int64, a
 	return f.withState(ctx, func(m *MemoryStore) error { return m.BuryPair(ctx, id, generation, attempts, lastErr) })
 }
 
+func (f *FileStore) RejudgePair(ctx context.Context, tenantID, id string, v Verdict, now time.Time) (out Pair, err error) {
+	err = f.withState(ctx, func(m *MemoryStore) error {
+		var e error
+		out, e = m.RejudgePair(ctx, tenantID, id, v, now)
+		return e
+	})
+	return out, err
+}
+
 func (f *FileStore) ReplayPair(ctx context.Context, tenantID, id string, now time.Time) (out Pair, err error) {
 	err = f.withState(ctx, func(m *MemoryStore) error {
 		var e error

@@ -183,6 +183,17 @@ var ErrInProcessCannotDescribe = errors.New("runview: refusing a launch the in-p
 // queued cloud run whose submission the publisher completes. A store that
 // cannot answer is an error, never "no run" — read as absence, it would launch
 // a second run beside one it could not see.
+// AnswerSubmission answers a keyed launch from the run its key already
+// derived, when that run was handed on (ClassifySubmission): the caller
+// returns that run instead of spending a launch gate on it again. nil, nil
+// means the key's launch is still owed. spec.RunID is set to the key's run id.
+func (s *Service) AnswerSubmission(parent context.Context, spec *LaunchSpec) (*LaunchResult, error) {
+	if spec.SubmissionKey == "" {
+		return nil, errors.New("runview: AnswerSubmission needs a submission key")
+	}
+	return s.answerSubmission(parent, spec)
+}
+
 func (s *Service) answerSubmission(parent context.Context, spec *LaunchSpec) (*LaunchResult, error) {
 	tenantID, _ := store.TenantFromContext(parent)
 	runID := SubmissionRunID(tenantID, spec.SubmissionKey)

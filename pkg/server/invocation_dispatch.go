@@ -56,7 +56,9 @@ func (d commandDiscovery) LookupCommand(cmd string) (webhooks.CommandRoute, bool
 			}
 			for _, name := range append([]string{inv.Command.Name}, inv.Command.Aliases...) {
 				if strings.EqualFold(strings.TrimSpace(name), cmd) {
-					return commandRouteFromInvocation(e.Name, inv), true
+					// A command whose mode no lane honours routes nowhere
+					// (bundle.ResolveMode): it is never a launch.
+					return commandRouteFromInvocation(e.Name, inv)
 				}
 			}
 		}
@@ -67,17 +69,21 @@ func (d commandDiscovery) LookupCommand(cmd string) (webhooks.CommandRoute, bool
 // commandRouteFromInvocation flattens a bundle command invocation into a
 // webhooks.CommandRoute. Mirrors forge.Orchestrator.buildCommandMap so the
 // live-discovery fallback and the provisioned CommandMap agree.
-func commandRouteFromInvocation(botID string, inv bundle.Invocation) webhooks.CommandRoute {
+func commandRouteFromInvocation(botID string, inv bundle.Invocation) (webhooks.CommandRoute, bool) {
+	mode, err := inv.EffectiveMode()
+	if err != nil {
+		return webhooks.CommandRoute{}, false
+	}
 	return webhooks.CommandRoute{
 		BotID:          botID,
-		Mode:           string(inv.EffectiveMode()),
+		Mode:           string(mode),
 		ArgsVar:        inv.ArgsVar,
 		ContextVars:    inv.ContextVars,
 		Scope:          inv.Command.Scope,
 		MinReplierRole: inv.Command.MinReplierRole,
 		Disambiguator:  inv.Command.Disambiguator,
 		OpensMR:        inv.Command.OpensMR,
-	}
+	}, true
 }
 
 // cmdDiscoveryFor returns the live command-discovery fallback bound to this
@@ -150,6 +156,14 @@ func (s *Server) dispatchInvocation(
 	repoURL, repoRef, payloadHash, srcIP string,
 	prov launchProvenance,
 ) {
+	// A stored route whose mode no lane honours is refused typed and
+	// launches nothing — the board branch below is the only other effect,
+	// and everything else used to fall through to a launch.
+	if _, err := bundle.ResolveMode(bundle.InvocationKindCommand, bundle.ExecutionMode(route.Mode), "webhook dispatch"); err != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, err.Error())
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": err.Error()})
+		return
+	}
 	// Seeding the declared hand-off vars has to happen HERE rather than only in
 	// the launch tail: a board-mode command with a dispatcher never reaches the
 	// tail — the card IS the launch — so the seed would be dropped on exactly

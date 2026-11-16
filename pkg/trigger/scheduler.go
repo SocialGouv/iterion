@@ -306,6 +306,13 @@ func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription, intents 
 }
 
 func (s *Scheduler) fire(ctx context.Context, sub Subscription, intents ...*scheduleIntent) error {
+	// A stored mode no effect honours (a row written before the routes
+	// refused such modes) fires nothing: bundle.ResolveMode is the one
+	// reading of a mode, and the timer's launch is direct only.
+	if _, err := sub.EffectiveMode(); err != nil {
+		s.warn("scheduler: %s (%s) fires nothing: %v", sub.ID, sub.BotID, err)
+		return nil
+	}
 	var prepared *LaunchPlan
 	if len(intents) > 0 {
 		prepared = intents[0].Plan

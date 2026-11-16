@@ -35,10 +35,11 @@ type Matcher interface {
 // acknowledged. Repeating a call for the same key never produces a second
 // run (runview.LaunchSpec.SubmissionKey).
 //
-// Its error is read for three classes, by method so the launch path need not
+// Its error is read for four classes, by method so the launch path need not
 // import this package: SubmissionSpent() true — the key's run never left the
 // launch path, the pair moves to its next epoch; RefusalReason() — no retry
-// of this pair can succeed; schedgate.ErrMaintenanceHold — postponed,
+// of this pair can succeed; PostponeFor() true — a transient denial, the
+// pair waits the duration with its attempts whole; schedgate.ErrMaintenanceHold — postponed,
 // without spending an attempt. Anything else is a transient failure.
 type Submitter interface {
 	Submit(ctx context.Context, in Intake, p Pair) (runID string, err error)
@@ -72,6 +73,16 @@ func refusalReason(err error) (string, bool) {
 		return r.RefusalReason(), true
 	}
 	return "", false
+}
+
+// postponeFor reads a transient denial off err: how long the pair waits
+// before it is tried again, without spending an attempt (ADR-168 Q3).
+func postponeFor(err error) (time.Duration, bool) {
+	var p interface{ PostponeFor() (time.Duration, bool) }
+	if errors.As(err, &p) {
+		return p.PostponeFor()
+	}
+	return 0, false
 }
 
 // submissionSpent reads a spent submission off err.
@@ -344,12 +355,17 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 		}
 		return
 	}
+	delay, postponed := postponeFor(err)
 	switch reason, refused := refusalReason(err); {
 	case refused:
 		w.refusePair(ctx, p, reason)
 	case errors.Is(err, schedgate.ErrMaintenanceHold):
 		// Postponed, not attempted: the attempt budget stays whole.
 		w.retryPair(ctx, p, PairRetry{Attempts: p.Attempts, NotBefore: w.now().Add(w.Pairs.Backoff), LastError: err.Error(), Epoch: p.Epoch})
+	case postponed:
+		// A transient denial — the team's concurrency cap, its launch rate —
+		// is lifted by waiting, not by trying: the budget stays whole too.
+		w.retryPair(ctx, p, PairRetry{Attempts: p.Attempts, NotBefore: w.now().Add(delay), LastError: err.Error(), Epoch: p.Epoch})
 	case submissionSpent(err):
 		// The run of this epoch's key never left the launch path and stays
 		// as it is; the next attempt submits under the next key.
