@@ -6835,6 +6835,9 @@
       },
       "previewCostRequest": {
         "properties": {
+          "ambient_context": {
+            "type": "string"
+          },
           "backend": {
             "type": "string"
           },
@@ -6887,6 +6890,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "route_refusals": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "tokens_max": {
             "type": "integer"
