@@ -3512,6 +3512,14 @@ func (r *Runner) launchOverridesFor(ctx context.Context, msg *queue.RunMessage, 
 func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
+	// The launch's codemode override must be a codemode value. Every current
+	// producer validates before publishing; this is the pod's half of the
+	// same decision — a hand-published message that skipped it would decide
+	// a typo as an off and kill a declared capability in silence, the one
+	// direction a refusal cannot fix after the fact.
+	if !ir.ValidCodemode(msg.Codemode) {
+		return zero, nil, fmt.Errorf("run %s: codemode %q is not a codemode value (on|off, empty inherits the DSL)", msg.RunID, msg.Codemode)
+	}
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return zero, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")

@@ -38,6 +38,34 @@ func (c *codemodeFlagSet) register(f *pflag.FlagSet) {
 	f.Int64Var(&c.toolResultBytes, "codemode-tool-result-bytes", 0, "Raise the per-tool-result bound handed to codemode programs for this run, in bytes (0 = inherit)")
 }
 
+// negativeField names the first flag set below zero, or "". A negative bound
+// is a typo, not a choice: the resolver's pick rule would silently read it
+// as unset, so the CLI refuses it where it validates the mode instead of
+// silently inverting an operator input into an inherit.
+func (c *codemodeFlagSet) negativeField() string {
+	for _, f := range []struct {
+		name string
+		v    int64
+	}{
+		{"--codemode-tool-calls", c.toolCalls},
+		{"--codemode-memory", c.memory},
+		{"--codemode-script-bytes", c.scriptBytes},
+		{"--codemode-result-bytes", c.resultBytes},
+		{"--codemode-tool-result-bytes", c.toolResultBytes},
+	} {
+		if f.v < 0 {
+			return f.name
+		}
+	}
+	if c.wall < 0 {
+		return "--codemode-wall"
+	}
+	if c.cpu < 0 {
+		return "--codemode-cpu"
+	}
+	return ""
+}
+
 // bounds projects the flags onto the resolver's rung type. All-zero is nil:
 // the launch expressed nothing, and a zero struct must not travel as a
 // declaration.

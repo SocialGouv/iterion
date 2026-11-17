@@ -77,12 +77,11 @@ type ResumeOptions struct {
 	// resume, for the same reason AutoMemory does.
 	AmbientContext string
 	// Codemode re-states the run-level codemode override ("", "on", "off")
-	// on resume, for the same reason AutoMemory does: it is not persisted,
-	// so a resume that says nothing falls back to the authored value —
-	// re-arming a capability the operator killed at launch.
-	// CodemodeBounds re-states the launch's bounds raise for the same
-	// reason: a resume that said nothing would run at the authored bounds
-	// again.
+	// on resume. Unlike AutoMemory the launch PERSISTED its choice on the
+	// run doc, so a resume that says nothing replays the launch's decision
+	// (the studio's answers and the retry sweeper depend on that replay);
+	// an explicit re-state here wins over the replay.
+	// CodemodeBounds re-states the launch's bounds raise the same way.
 	Codemode       string
 	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard re-states the run-level loop_budget_guard override on
@@ -182,6 +181,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	if !ir.ValidCodemode(opts.Codemode) {
 		return UserInputError(fmt.Errorf("--codemode: %q is not a codemode value (on|off, empty inherits the DSL)", opts.Codemode))
+	}
+	if name := ir.CodemodeBoundsNegativeField(opts.CodemodeBounds); name != "" {
+		return UserInputError(fmt.Errorf("codemode bound %s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name))
 	}
 
 	// Same anchor as run: a run must be resumable from the directory it was

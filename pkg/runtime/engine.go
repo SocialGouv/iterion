@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -272,6 +273,8 @@ type Engine struct {
 	extraSkills              []string                             // operator-added skills, additive to the workflow
 	extraSkillsOrigin        string                               // flag, env, or resume
 	permissionOverride       string                               // persisted run-level tool gate choice
+	codemodeOverride         string                               // persisted launch-time codemode choice (ADR-165)
+	codemodeBoundsOverride   *scripthost.Limits                   // persisted launch-time codemode bounds raise
 	botOrigin                *store.BotOrigin                     // workflow code provenance, distinct from the triggering action
 	delegation               *store.RunDelegation                 // optional host-owned worker linkage
 	worktreeBaseCommit       string                               // explicit verified base for delegated worktrees

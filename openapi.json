@@ -889,6 +889,32 @@
         ],
         "type": "object"
       },
+      "CodemodeBoundsRequest": {
+        "properties": {
+          "cpu": {
+            "type": "string"
+          },
+          "memory": {
+            "type": "integer"
+          },
+          "result_bytes": {
+            "type": "integer"
+          },
+          "script_bytes": {
+            "type": "integer"
+          },
+          "tool_calls": {
+            "type": "integer"
+          },
+          "tool_result_bytes": {
+            "type": "integer"
+          },
+          "wall": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Comment": {
         "properties": {
           "author": {
@@ -1144,6 +1170,12 @@
         "properties": {
           "bot_id": {
             "type": "string"
+          },
+          "codemode": {
+            "type": "string"
+          },
+          "codemode_bounds": {
+            "$ref": "#/components/schemas/CodemodeBoundsRequest"
           },
           "llm_routing": {
             "$ref": "#/components/schemas/Policy"

@@ -542,9 +542,16 @@ launch request now carries the override, the strongest rung of both ladders:
 - **No environment rung**, again and deliberately (ADR-132 §1): the launch
   request and the queue message (schema v33 — the `off` direction fails open
   on a stale runner, the v21 class) are the only carriers above the DSL.
-- **Resume re-states**, like every run-level override: overrides are not
-  persisted on the run doc, so a resume that says nothing falls back to the
-  authored value — re-arming a capability the operator killed at launch.
+- **Persisted and replayed**, the direction `docs/resume.md` names for
+  ADR-based work: the launch stamps its choice on the run doc
+  (`CodemodeOverride` / `CodemodeBoundsOverride`), and every resume that
+  does not re-state it replays that decision — CLI, studio, cloud runner,
+  retry sweeper. The sibling knobs (ambient, auto-memory) carry the
+  recompute-on-purpose caveat because nothing persists them; codemode's
+  launch choice is authoritative run intent for the same reason the
+  permission gate's is, and a resume that said nothing must not re-arm a
+  capability the operator killed at launch. An explicit resume re-state
+  still wins.
 - **Launch warnings**, not refusals, for the two shapes the compiler already
   warns about (C347 above ceiling, C348 bounds beside an off): the runtime
   still enforces the truth, so the launch names the compile-time twin in its

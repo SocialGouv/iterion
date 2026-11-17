@@ -262,6 +262,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if !ir.ValidCodemode(opts.Codemode) {
 		return UserInputError(fmt.Errorf("--codemode: %q is not a codemode value (on|off, empty inherits the DSL)", opts.Codemode))
 	}
+	if name := ir.CodemodeBoundsNegativeField(opts.CodemodeBounds); name != "" {
+		return UserInputError(fmt.Errorf("codemode bound %s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name))
+	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
 		return err

@@ -605,11 +605,12 @@ type ResumeSpec struct {
 	// to the workflow's value, and could hand the operator's setup to a run
 	// launched with `none`.
 	AmbientContext string
-	// Codemode re-states the run-level codemode override ("", "on", "off"),
-	// for the same reason AutoMemory does: a resume that said nothing would
-	// fall back to the authored value — re-arming a capability the operator
-	// killed at launch. CodemodeBounds re-states the launch's bounds raise:
-	// a resume that said nothing would run at the authored bounds again.
+	// Codemode re-states the run-level codemode override ("", "on", "off").
+	// Unlike AutoMemory the launch PERSISTED its choice on the run doc, so
+	// a resume that says nothing replays the launch's decision
+	// (resumeExecutorSpec reads it); an explicit re-state here wins over
+	// the replay. CodemodeBounds re-states the launch's bounds raise the
+	// same way.
 	Codemode       string
 	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard re-states the run-level back-edge affordability

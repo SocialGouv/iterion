@@ -49,6 +49,18 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// a legal launch and an intended "deny" would bless one the launch
 	// refuses.
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
+	// The codemode launch choice rides to the preview's warnings, the same
+	// way the permission knob rides to its screen: the preview answers for
+	// the launch the caller is about to shape, whose request carries the
+	// same field. An unparsable duration refuses the preview with a 400,
+	// naming the field — the same contract as the launch's own parse.
+	codemodeBounds, err := req.CodemodeBounds.ToBounds()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	spec.Launch.Codemode = req.Codemode
+	spec.Launch.CodemodeBounds = codemodeBounds
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer

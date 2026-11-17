@@ -40,6 +40,12 @@ func buildBackendOverrideOptions(
 		return nil, nil
 	}
 
+	// An invalid launch spelling fails CLOSED here, exactly like the invalid
+	// permission mode below: the dispatch would decide the typo as an off
+	// (ResolveCodemode reads any non-"on" rung value as not-on), the launch
+	// itself 400s, and a silent green screen would be the drift the picker's
+	// contract forbids.
+	badCodemode := runCodemode != "" && !ir.ValidCodemode(runCodemode)
 	result := make(map[string]map[string]previewBackendOption)
 	routeRefusals := make(map[string]string)
 	for _, node := range wf.Nodes {
@@ -66,6 +72,23 @@ func buildBackendOverrideOptions(
 						err,
 					)}
 				}
+			}
+			if len(choices) > 0 {
+				result[llm.NodeID()] = choices
+			}
+			continue
+		}
+		if badCodemode {
+			choices := make(map[string]previewBackendOption, len(backendNames))
+			for _, backend := range backendNames {
+				backend = strings.TrimSpace(backend)
+				if backend == "" {
+					continue
+				}
+				choices[backend] = previewBackendOption{UnavailableReason: fmt.Sprintf(
+					"cannot assess codemode admission until the launch's codemode value is valid (on|off): %q — the launch will refuse it",
+					runCodemode,
+				)}
 			}
 			if len(choices) > 0 {
 				result[llm.NodeID()] = choices

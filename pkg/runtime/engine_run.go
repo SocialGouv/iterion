@@ -526,6 +526,18 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.permissionOverride != "" {
 			run.PermissionOverride = e.permissionOverride
 		}
+		// Same doctrine for the codemode launch choice (ADR-165): durable on
+		// the doc, replayed by every resume that does not re-state it. The
+		// guard mirrors the one above — a resume never re-supplies the
+		// override, and must not clobber the launch's persisted value. The
+		// bounds ride beside the mode: a non-nil pointer stamps, an absent
+		// one preserves whatever a previous attempt stamped.
+		if e.codemodeOverride != "" {
+			run.CodemodeOverride = e.codemodeOverride
+		}
+		if e.codemodeBoundsOverride != nil {
+			run.CodemodeBoundsOverride = e.codemodeBoundsOverride
+		}
 		if run.PermissionOverride != "" {
 			run.PermissionMode = run.PermissionOverride
 		} else {

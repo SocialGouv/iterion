@@ -1,11 +1,14 @@
 package runview
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The launch-surface witnesses of the run-level codemode override (#3345):
@@ -46,26 +49,74 @@ func TestDetachedForwardingCarriesTheLaunchsCodemode(t *testing.T) {
 }
 
 // TestLaunchWarningsNameTheCompileTimeTwins — the launch can produce both
-// shapes the compiler warns about (C348 bounds beside off, C347 above the
-// ceiling). The runtime still enforces the truth, so the launch warns rather
-// than refuses, and each warning names its compile-time twin so a reader can
-// follow the thread.
+// shapes the compiler warns about (C348 bounds beside an off, C347 above the
+// ceiling). The warnings judge the EFFECTIVE mode — the launch's choice
+// where it made one (normalized: "OFF" and " off " warn like "off"), else
+// the authored ladder over the whole workflow — because bounds set for a
+// workflow where no program can ever run are inert whichever rung decided
+// the off, and a ceiling warning about bounds no child will ever carry is
+// noise. The runtime still enforces the truth, so the launch warns rather
+// than refuses, and each warning names its compile-time twin so a reader
+// can follow the thread.
 func TestLaunchWarningsNameTheCompileTimeTwins(t *testing.T) {
 	t.Parallel()
-	warnings := codemodeLaunchWarnings("off", &ir.CodemodeBounds{ToolCalls: 256})
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "C348") {
-		t.Errorf("bounds beside a run-level off warned %+v, want exactly one warning naming C348", warnings)
+	for _, spelling := range []string{"off", "OFF", " off "} {
+		warnings := codemodeLaunchWarnings(nil, spelling, &ir.CodemodeBounds{ToolCalls: 256})
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "C348") {
+			t.Errorf("bounds beside a run-level off (%q) warned %+v, want exactly one warning naming C348", spelling, warnings)
+		}
 	}
-	warnings = codemodeLaunchWarnings("off", nil)
+	warnings := codemodeLaunchWarnings(nil, "off", nil)
 	if len(warnings) != 0 {
 		t.Errorf("an off with no bounds warned %+v, want silence", warnings)
 	}
-	warnings = codemodeLaunchWarnings("on", &ir.CodemodeBounds{ToolCalls: 100000})
+	warnings = codemodeLaunchWarnings(nil, "on", &ir.CodemodeBounds{ToolCalls: 100000})
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "C347") {
 		t.Errorf("bounds above the ceiling warned %+v, want exactly one warning naming C347", warnings)
 	}
-	warnings = codemodeLaunchWarnings("on", &ir.CodemodeBounds{ToolCalls: 256})
+	warnings = codemodeLaunchWarnings(nil, "on", &ir.CodemodeBounds{ToolCalls: 256})
 	if len(warnings) != 0 {
 		t.Errorf("in-bounds bounds warned %+v, want silence", warnings)
+	}
+}
+
+// TestTheLaunchWarningResolvesTheAuthoredMode — an empty launch mode
+// inherits the authored ladder, and the warnings must judge what will
+// ACTUALLY run: bounds set beside a bot whose author turned codemode off
+// everywhere are inert (found by the adversarial round — the first draft
+// keyed the warning on the launch's own spelling alone), and above-ceiling
+// bounds on such a bot do not get the ceiling warning, because no child will
+// ever carry them.
+func TestTheLaunchWarningResolvesTheAuthoredMode(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "authored-off.bot")
+	src := `
+agent a:
+  model: "m"
+  codemode: off
+
+workflow w:
+  entry: a
+  a -> done
+`
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := CompileWorkflow(path, "", store.RunTrustDefault)
+	if err != nil {
+		t.Fatalf("CompileWorkflow: %v", err)
+	}
+	warnings := codemodeLaunchWarnings(wf, "", &ir.CodemodeBounds{ToolCalls: 4096})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "C348") {
+		t.Errorf("launch bounds beside an authored off warned %+v, want exactly one warning naming C348", warnings)
+	}
+	warnings = codemodeLaunchWarnings(wf, "", &ir.CodemodeBounds{ToolCalls: 1 << 40})
+	if len(warnings) != 1 || strings.Contains(warnings[0], "C347") {
+		t.Errorf("above-ceiling bounds on an authored-off bot warned %+v, want only the inert warning", warnings)
+	}
+	// A launch ON beats the authored off: the bounds are live again.
+	warnings = codemodeLaunchWarnings(wf, "on", &ir.CodemodeBounds{ToolCalls: 4096})
+	if len(warnings) != 0 {
+		t.Errorf("a launch on over an authored off warned %+v, want silence — the bounds are live", warnings)
 	}
 }

@@ -33,4 +33,17 @@ func TestCodemodeFlagsProjectBoundsOrNothing(t *testing.T) {
 	if want := (&ir.CodemodeBounds{ToolCalls: 256, Wall: 90 * time.Second}); *b != *want {
 		t.Errorf("bounds = %+v, want %+v", b, want)
 	}
+
+	// A negative flag is a typo, not a choice: the CLI names it instead of
+	// letting the resolver silently read it as unset.
+	neg := codemodeFlagSet{toolCalls: -5}
+	if name := neg.negativeField(); name != "--codemode-tool-calls" {
+		t.Errorf("negativeField() = %q, want --codemode-tool-calls", name)
+	}
+	if name := (&codemodeFlagSet{wall: -time.Second}).negativeField(); name != "--codemode-wall" {
+		t.Errorf("negativeField() = %q, want --codemode-wall", name)
+	}
+	if name := (&codemodeFlagSet{toolCalls: 4}).negativeField(); name != "" {
+		t.Errorf("a clean set named %q, want silence", name)
+	}
 }

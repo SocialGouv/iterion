@@ -560,7 +560,22 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 // permission is the gate replayed from the run doc's PermissionOverride —
 // ResumeSpec has no field of its own, and the subprocess re-resolves the
 // knob from the workflow when nothing is passed.
-func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permission string) (*LaunchResult, error) {
+// resumeDetached forwards the resume's re-stated overrides as CLI args; the
+// run doc fills what the resume did not re-state — permission from its
+// persisted override, codemode (mode and bounds raise) from its persisted
+// launch choice — because the subprocess re-resolves every knob from
+// scratch and a silence would fall back to the authored value, re-arming a
+// capability the operator killed at launch.
+func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permission string, r *store.Run) (*LaunchResult, error) {
+	codemode, codemodeBounds := spec.Codemode, spec.CodemodeBounds
+	if r != nil {
+		if codemode == "" {
+			codemode = r.CodemodeOverride
+		}
+		if codemodeBounds == nil {
+			codemodeBounds = r.CodemodeBoundsOverride
+		}
+	}
 	s.prepareRunLogNoFile(spec.RunID)
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)
@@ -577,8 +592,8 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		StoreDir:          s.storeDir,
 		AutoMemory:        spec.AutoMemory,
 		AmbientContext:    spec.AmbientContext,
-		Codemode:          spec.Codemode,
-		CodemodeBounds:    spec.CodemodeBounds,
+		Codemode:          codemode,
+		CodemodeBounds:    codemodeBounds,
 		LoopBudgetGuard:   spec.LoopBudgetGuard,
 		Supervisors:       spec.Supervisors,
 		Permission:        permission,

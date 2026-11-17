@@ -47,30 +47,69 @@ func TestTheRunRungDecidesTheMode(t *testing.T) {
 // empty launch rung changes nothing (nil stays nil — nobody chose).
 func TestTheRunRungDecidesTheBoundsFieldByField(t *testing.T) {
 	t.Parallel()
-	node := &CodemodeBounds{ToolCalls: 64, Wall: 30 * time.Second, Memory: 256 << 20}
-	workflow := &CodemodeBounds{ToolCalls: 128, Wall: 60 * time.Second, CPU: 20 * time.Second}
-	run := &CodemodeBounds{ToolCalls: 4096}
-
-	got := ResolveCodemodeBounds(run, node, workflow)
+	// EVERY field at the run rung, each with its own value on all three
+	// rungs: one deaf pick closure for ONE field would otherwise stay green
+	// (the launch-time raise is the exact shape the CM-17 measurement saw
+	// the model ask the operator for — a deaf rung drops it in silence).
+	runValues := CodemodeBounds{
+		ToolCalls: 4096, Wall: 91 * time.Second, CPU: 31 * time.Second,
+		Memory: 1 << 30, ScriptBytes: 1 << 20, ResultBytes: 2 << 20,
+		ToolResultBytes: 512 << 10,
+	}
+	nodeValues := CodemodeBounds{
+		ToolCalls: 64, Wall: 30 * time.Second, CPU: 20 * time.Second,
+		Memory: 256 << 20, ScriptBytes: 512 << 10, ResultBytes: 1 << 20,
+		ToolResultBytes: 128 << 10,
+	}
+	workflowValues := CodemodeBounds{
+		ToolCalls: 128, Wall: 60 * time.Second, CPU: 40 * time.Second,
+		Memory: 512 << 20, ScriptBytes: 256 << 10, ResultBytes: 512 << 10,
+		ToolResultBytes: 64 << 10,
+	}
+	got := ResolveCodemodeBounds(&runValues, &nodeValues, &workflowValues)
 	if got == nil {
 		t.Fatal("a run bound set beside authored bounds resolved nil — the operator's raise was dropped")
 	}
-	// The field the operator raised wins over BOTH authored rungs.
-	if got.ToolCalls != 4096 {
-		t.Errorf("ToolCalls = %d, want the launch's 4096 (the run rung is nearest)", got.ToolCalls)
+	for _, row := range []struct {
+		name      string
+		got, want any
+	}{
+		{"tool_calls", got.ToolCalls, runValues.ToolCalls},
+		{"wall", got.Wall, runValues.Wall},
+		{"cpu", got.CPU, runValues.CPU},
+		{"memory", got.Memory, runValues.Memory},
+		{"script_bytes", got.ScriptBytes, runValues.ScriptBytes},
+		{"result_bytes", got.ResultBytes, runValues.ResultBytes},
+		{"tool_result_bytes", got.ToolResultBytes, runValues.ToolResultBytes},
+	} {
+		if row.got != row.want {
+			t.Errorf("%s = %v, want the launch's %v — the run rung went deaf on this field", row.name, row.got, row.want)
+		}
 	}
+
 	// Fields the launch left at zero keep the authored values, nearest first.
-	if got.Wall != 30*time.Second {
-		t.Errorf("Wall = %s, want the node's 30s (the launch did not choose)", got.Wall)
+	partial := ResolveCodemodeBounds(&CodemodeBounds{ToolCalls: 4096}, &nodeValues, &workflowValues)
+	if partial == nil {
+		t.Fatal("a partial run bound resolved nil")
 	}
-	if got.CPU != 20*time.Second {
-		t.Errorf("CPU = %s, want the workflow's 20s (neither the launch nor the node chose)", got.CPU)
+	if partial.ToolCalls != 4096 {
+		t.Errorf("ToolCalls = %d, want the launch's 4096", partial.ToolCalls)
 	}
-	if got.Memory != 256<<20 {
-		t.Errorf("Memory = %d, want the node's 256 MiB (the launch did not choose)", got.Memory)
+	if partial.Wall != 30*time.Second {
+		t.Errorf("Wall = %s, want the node's 30s (the launch did not choose)", partial.Wall)
 	}
+	if partial.CPU != 20*time.Second {
+		t.Errorf("CPU = %s, want the node's 20s (the launch did not choose)", partial.CPU)
+	}
+	if partial.Memory != 256<<20 {
+		t.Errorf("Memory = %d, want the node's 256 MiB", partial.Memory)
+	}
+	if partial.CPU == 40*time.Second {
+		t.Errorf("CPU fell through to the workflow — the node rung is nearer")
+	}
+
 	// A launch bound set beside NO authored bound still lands.
-	if got := ResolveCodemodeBounds(run, nil, nil); got == nil || got.ToolCalls != 4096 {
+	if got := ResolveCodemodeBounds(&CodemodeBounds{ToolCalls: 4096}, nil, nil); got == nil || got.ToolCalls != 4096 {
 		t.Errorf("ResolveCodemodeBounds(run, nil, nil) = %+v, want ToolCalls 4096", got)
 	}
 	// Nobody chose anywhere: nil, not a zero struct that would read as a

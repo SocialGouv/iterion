@@ -173,7 +173,7 @@ type launchRunRequest struct {
 	// value stands. Every value still passes scripthost.Clamp at spawn (the
 	// ceiling, the memory floor, the OnClamp report), so a request can be
 	// warned but never bypass a bound by asking.
-	CodemodeBounds *launchCodemodeBounds `json:"codemode_bounds,omitempty"`
+	CodemodeBounds *runview.CodemodeBoundsRequest `json:"codemode_bounds,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -259,53 +259,6 @@ type launchRunRequest struct {
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
-}
-
-// launchCodemodeBounds is the launch request's bounds raise (ADR-165), with
-// the codemode: block's own seven properties for names — one spelling, so an
-// API caller reads the same vocabulary the DSL documents. Durations parse
-// with time.ParseDuration ("500ms" rounds up the way RLIMIT_CPU's unit
-// demands); a value the platform cannot read is a 400, never an inherit.
-type launchCodemodeBounds struct {
-	ToolCalls       int64  `json:"tool_calls,omitempty"`
-	Wall            string `json:"wall,omitempty"`
-	CPU             string `json:"cpu,omitempty"`
-	Memory          int64  `json:"memory,omitempty"`
-	ScriptBytes     int64  `json:"script_bytes,omitempty"`
-	ResultBytes     int64  `json:"result_bytes,omitempty"`
-	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
-}
-
-// toBounds converts the request shape to the resolver's, parsing the two
-// duration strings. An unparsable duration names the field, the way C349
-// does for the DSL.
-func (b *launchCodemodeBounds) toBounds() (*ir.CodemodeBounds, error) {
-	if b == nil {
-		return nil, nil
-	}
-	out := &ir.CodemodeBounds{
-		ToolCalls:       b.ToolCalls,
-		Memory:          b.Memory,
-		ScriptBytes:     b.ScriptBytes,
-		ResultBytes:     b.ResultBytes,
-		ToolResultBytes: b.ToolResultBytes,
-	}
-	for name, raw := range map[string]*string{"wall": &b.Wall, "cpu": &b.CPU} {
-		v := *raw
-		if v == "" {
-			continue
-		}
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, fmt.Errorf("codemode_bounds.%s: %q is not a duration (e.g. 30s, 5m)", name, v)
-		}
-		if name == "wall" {
-			out.Wall = d
-		} else {
-			out.CPU = d
-		}
-	}
-	return out, nil
 }
 
 // launchFallback accepts the original single-object request and the ordered
@@ -471,7 +424,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid codemode")
 		return
 	}
-	codemodeBounds, err := req.CodemodeBounds.toBounds()
+	codemodeBounds, err := req.CodemodeBounds.ToBounds()
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		span.SetStatus(codes.Error, "invalid codemode_bounds")

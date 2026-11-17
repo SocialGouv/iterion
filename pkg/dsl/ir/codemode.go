@@ -170,6 +170,64 @@ func CodemodeBoundsSet(b *CodemodeBounds) bool {
 		b.ToolCalls > 0 || b.ToolResultBytes > 0)
 }
 
+// CodemodeBoundsNegativeField names the first property of b set BELOW zero,
+// or "". A negative bound is a typo, not a choice: the resolver's pick rule
+// would silently read it as unset, which is the inheritance-without-saying
+// the launch surface refuses everywhere else (a bad value is named, never
+// silently inverted).
+func CodemodeBoundsNegativeField(b *CodemodeBounds) string {
+	if b == nil {
+		return ""
+	}
+	checkInt := func(name string, v int64) string {
+		if v < 0 {
+			return name
+		}
+		return ""
+	}
+	checkDur := func(name string, v time.Duration) string {
+		if v < 0 {
+			return name
+		}
+		return ""
+	}
+	for _, name := range []string{
+		checkInt("tool_calls", b.ToolCalls),
+		checkDur("wall", b.Wall),
+		checkDur("cpu", b.CPU),
+		checkInt("memory", b.Memory),
+		checkInt("script_bytes", b.ScriptBytes),
+		checkInt("result_bytes", b.ResultBytes),
+		checkInt("tool_result_bytes", b.ToolResultBytes),
+	} {
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// CodemodeOnSomewhere reports whether the AUTHORED ladder resolves codemode
+// on for any node of wf (or the workflow rung itself). It is the launch
+// warning's measure of the effective mode when the launch expressed none:
+// bounds set for a workflow where no program can ever run are inert, and
+// saying so at launch is the whole point of the warning.
+func CodemodeOnSomewhere(wf *Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	for _, node := range wf.Nodes {
+		llm, ok := node.(LLMNode)
+		if !ok {
+			continue
+		}
+		if ResolveCodemode("", llm.GetCodemode(), wf.Codemode).On {
+			return true
+		}
+	}
+	return ResolveCodemode("", "", wf.Codemode).On
+}
+
 // The precedence rungs a resolved codemode can come from.
 const (
 	// CodemodeFromRun is the launch request: the operator's explicit choice

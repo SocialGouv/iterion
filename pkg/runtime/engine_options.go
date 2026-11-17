@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -630,6 +631,15 @@ func WithBudgetOverrides(o *store.RunBudgetOverrides) EngineOption {
 // the choice durable across resumes and visible as the effective header mode.
 func WithPermissionOverride(mode string) EngineOption {
 	return func(e *Engine) { e.permissionOverride = mode }
+}
+
+// WithCodemodeOverride records the operator's launch-time codemode choice
+// (ADR-165) and its bounds raise on the run document — the same
+// persisted-and-replayed doctrine as WithPermissionOverride: a resume that
+// says nothing must find the launch's decision on the doc, not fall back to
+// the authored DSL and re-arm a capability the operator killed.
+func WithCodemodeOverride(mode string, bounds *scripthost.Limits) EngineOption {
+	return func(e *Engine) { e.codemodeOverride, e.codemodeBoundsOverride = mode, bounds }
 }
 
 // WithRoutingPolicy pins the launch-frozen outcome contract on the

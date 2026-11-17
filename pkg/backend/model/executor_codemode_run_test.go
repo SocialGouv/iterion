@@ -53,34 +53,49 @@ func TestARunOverrideDecidesTheExecutorPolicy(t *testing.T) {
 
 // TestARunBoundsOverrideBeatsTheAuthoredRungsFieldByField — the bound the
 // launch set wins; the fields it left at zero keep the authored values, node
-// then workflow. Measured on ToolCalls (the bound the CM-17 measurement saw
-// bite) and Wall/CPU as the inherit direction.
+// then workflow. All seven fields carry distinct values on every rung: one
+// deaf field in the resolver would otherwise survive this witness the way it
+// survived the single-field first draft (found by the adversarial round — a
+// mutant dropping Wall alone stayed green everywhere).
 func TestARunBoundsOverrideBeatsTheAuthoredRungsFieldByField(t *testing.T) {
 	t.Parallel()
+	run := &ir.CodemodeBounds{
+		ToolCalls: 4096, Wall: 91 * time.Second, CPU: 31 * time.Second,
+		Memory: 1 << 30, ScriptBytes: 1 << 20, ResultBytes: 2 << 20,
+		ToolResultBytes: 512 << 10,
+	}
+	node := &ir.CodemodeBounds{
+		ToolCalls: 64, Wall: 30 * time.Second, CPU: 20 * time.Second,
+		Memory: 256 << 20, ScriptBytes: 512 << 10, ResultBytes: 1 << 20,
+		ToolResultBytes: 128 << 10,
+	}
 	e := &ClawExecutor{
 		codemodeOverride:       "on",
-		codemodeBoundsOverride: &ir.CodemodeBounds{ToolCalls: 4096},
-		wfCodemodeBounds:       &ir.CodemodeBounds{ToolCalls: 128, CPU: 20 * time.Second},
+		codemodeBoundsOverride: run,
+		wfCodemodeBounds:       &ir.CodemodeBounds{ToolCalls: 128, CPU: 40 * time.Second},
 	}
-	_, bounds, err := e.codemodePolicy(backendFields{
-		id:             "n",
-		codemode:       "on",
-		codemodeBounds: &ir.CodemodeBounds{ToolCalls: 64, Wall: 30 * time.Second},
-	}, backendcaps.Claw)
+	_, bounds, err := e.codemodePolicy(backendFields{id: "n", codemode: "on", codemodeBounds: node}, backendcaps.Claw)
 	if err != nil {
 		t.Fatalf("codemodePolicy returned %v", err)
 	}
 	if bounds == nil {
 		t.Fatal("bounds resolved nil with a launch bound set")
 	}
-	if bounds.ToolCalls != 4096 {
-		t.Errorf("ToolCalls = %d, want the launch's 4096", bounds.ToolCalls)
-	}
-	if bounds.Wall != 30*time.Second {
-		t.Errorf("Wall = %s, want the node's 30s (the launch did not choose)", bounds.Wall)
-	}
-	if bounds.CPU != 20*time.Second {
-		t.Errorf("CPU = %s, want the workflow's 20s", bounds.CPU)
+	for _, row := range []struct {
+		name      string
+		got, want any
+	}{
+		{"tool_calls", bounds.ToolCalls, run.ToolCalls},
+		{"wall", bounds.Wall, run.Wall},
+		{"cpu", bounds.CPU, run.CPU},
+		{"memory", bounds.Memory, run.Memory},
+		{"script_bytes", bounds.ScriptBytes, run.ScriptBytes},
+		{"result_bytes", bounds.ResultBytes, run.ResultBytes},
+		{"tool_result_bytes", bounds.ToolResultBytes, run.ToolResultBytes},
+	} {
+		if row.got != row.want {
+			t.Errorf("%s = %v, want the launch's %v — the run rung went deaf on this field", row.name, row.got, row.want)
+		}
 	}
 }
 
