@@ -268,6 +268,10 @@ export function useLaunchSubmit({
         compress: overrides.compressOverride || undefined,
       ambient_context: overrides.ambientContextOverride || undefined,
       auto_memory: overrides.autoMemoryOverride || undefined,
+      // The codemode override and its bounds raise (ADR-165, CM-5f): the
+      // SAME built payload the preview query carries — one shape, so the
+      // screen cannot answer for a choice other than the one launched.
+      ...overrides.codemodePayload,
         permission: overrides.permissionOverride || undefined,
         review_mode:
           overrides.reviewModeOverride && overrides.reviewModeOverride !== "auto"
