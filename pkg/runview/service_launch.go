@@ -661,8 +661,8 @@ func codemodeLaunchWarnings(wf *ir.Workflow, codemode string, bounds *ir.Codemod
 	// launch or from the author — and a ceiling warning about bounds no
 	// child will ever carry is noise, so it stays behind the same gate.
 	effectiveOn := false
-	switch norm := ir.ResolveCodemode(codemode, "", ""); {
-	case norm.Source == ir.CodemodeFromRun:
+	switch norm := ir.ResolveCodemode(codemode, "", ""); norm.Source {
+	case ir.CodemodeFromRun:
 		effectiveOn = norm.On
 	default:
 		effectiveOn = ir.CodemodeOnSomewhere(wf)
