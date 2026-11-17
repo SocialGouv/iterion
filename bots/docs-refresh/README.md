@@ -176,6 +176,26 @@ target repo (the `.md`-only scope gate refuses it anyway), the code
 still wins over a stale spec, and a claim only the context supports is
 marked `[à confirmer]` or omitted. |
 
+### Models, and the route a facade refuses
+
+The three model nodes (`campaign`, `finalize_mr`, `coverage_audit`) read
+their model from a dial, so an instance can repoint them without
+re-releasing the bot: `ITERION_DOC_ALIGN_MODEL_CLAUDE` (the campaign and the
+merge step, default `claude-opus-5-5`), `ITERION_DOC_ALIGN_MODEL_AUDIT` (the
+validator, same default), `ITERION_DOC_ALIGN_EFFORT_CLAUDE` (default
+`ultracode`) and `ITERION_DOC_ALIGN_MR_EFFORT` (default `medium`).
+
+A claude id is a **typed refusal** on a credential that cannot serve it: an
+instance whose `claude_code` credential is the z.ai facade gets "the zai
+facade does not serve it — it would answer with its own model under the
+requested label" instead of a mislabelled success. Each of the three nodes
+therefore declares the catalog's GLM rescue — `provider: zai`, model
+`${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}`, on the `unavailable`, `auth`
+and `usage_window` classes, `metered: true` — so a facade-routed instance runs
+the pass on a model its credential really serves rather than losing the
+campaign. The dial is one for both claude nodes: an account entitled to a
+different GLM id repoints it without a release.
+
 Retired in v3 (the obligation machinery): `coverage_target_pct`,
 `cli_surface_globs`, `diagnostic_surface_globs`,
 `max_drift_candidates`, `max_review_chunk_docs`,

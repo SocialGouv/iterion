@@ -20,7 +20,7 @@ The bundles under `bots/`, then the skills they carry.
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.12.3 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
-| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
+| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.1 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.4 |
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.1.5 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.7.6 |

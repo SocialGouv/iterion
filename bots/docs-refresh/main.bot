@@ -936,6 +936,24 @@ agent campaign:
   ## never the commit. `claude_code` stays the route that can do the whole job.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
+  fallbacks:
+    ## The claude slot's GLM route, as review-pr and revi-converse declare
+    ## it: a claude_code id it cannot serve is a TYPED refusal, not a
+    ## failure to retry — on an instance whose claude credential is the
+    ## z.ai facade, `claude-opus-5-5` came back "the zai facade does not
+    ## serve it — it would answer with its own model under the requested
+    ## label" and the whole campaign died there (candidature, 2026-11-17).
+    ## `provider:` names the zai slot explicitly so the route resolves its
+    ## own key and base URL; no `backend:`, the node's claude_code is
+    ## inherited (a bare GLM id is not a claw spec, so a claw primary
+    ## fails this route fast rather than silently). One dial covers both
+    ## claude nodes: an account entitled to a different GLM id repoints it
+    ## without re-releasing the bot.
+    glm:
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [unavailable, auth, usage_window]
+      metered: true
 
 agent finalize_mr:
   model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5-5}"
@@ -948,6 +966,15 @@ agent finalize_mr:
   capabilities: [board.read, board.comment]
   tool_max_steps: 20
   reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
+  ## Same GLM route as the campaign: finalize is on the path every
+  ## converged pass takes, and a merge step that dies on a facade-refused
+  ## id would throw away a campaign that already did the work.
+  fallbacks:
+    glm:
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [unavailable, auth, usage_window]
+      metered: true
 
 ## coverage_audit — the SECOND MODEL as validator (the /goal loop's
 ## checker): a cheap, read-only pass that measures the produced docs
@@ -967,6 +994,15 @@ agent coverage_audit:
   tools: [read_file, glob, grep]
   tool_max_steps: 24
   reasoning_effort: low
+  ## Same GLM route: the validator is the pass that decides whether the
+  ## campaign converged, so losing it to a facade-refused id would leave
+  ## the loop with no verdict at all.
+  fallbacks:
+    glm:
+      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      provider: "zai"
+      on: [unavailable, auth, usage_window]
+      metered: true
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 

@@ -1,7 +1,24 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.8.0
+version: 3.8.1
+## 3.8.1 — A MODEL THE CREDENTIAL CANNOT SERVE NO LONGER LOSES THE
+## CAMPAIGN. Live on candidature (2026-11-17, run 01a1ea39): the instance's
+## `claude_code` credential is the z.ai facade, the campaign node asks for
+## `claude-opus-5-5`, and the resolver refuses it — typed, before the spawn,
+## "the zai facade does not serve it — it would answer with its own model
+## under the requested label" — so the node died and the run with it. The
+## refusal is right (a GLM answer under a Claude label is a mislabel, not a
+## serve); the catalog's remedy is a declared route, and Doki's three model
+## nodes now carry it: `provider: zai`, model
+## `${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}`, on `unavailable`, `auth`
+## and `usage_window`, `metered: true` — the same rescue review-pr and
+## revi-converse declare. `finalize_mr` is on the path every converged pass
+## takes and `coverage_audit` is the pass that decides convergence, so
+## leaving either without the route threw away work already done. The README
+## now documents the model dials and the rescue; a guarantee test pins the
+## route to a model the named facade really serves, through the production
+## predicate.
 ## 3.8.0 — THE DELIVERY IS BOUNDED, not just the loop. `scope_check` is a
 ## loop condition: a pass that never reverted its out-of-scope write and then
 ## spent `max_passes` reached the PR tail anyway, and the push carried the
