@@ -222,6 +222,10 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		x.policy.runNative = orNative(orNative(x.natives["tenant"], x.natives["org"]), x.natives["platform"])
 	}
 	wants, routes := wantsFor(previewView)
+	// A mono pin is a credential DEMAND: the launch asks the pool for that
+	// family's slack, so the preview must ask exactly the same wants or it
+	// answers a plan the launch never seals (ADR-164 preview parity).
+	wants = withPinnedWants(wants, spec.Launch.Vars)
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
 	}

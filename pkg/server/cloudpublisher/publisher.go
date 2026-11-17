@@ -1180,7 +1180,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//     (ADR-131 §5 amended). Law 1 lives inside: the pool never
 				//     touches a slot an explicit tier sealed.
 				if poolAttachment != nil && poolAttachment.PoolID != "" {
-					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, poolAttachment, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
+					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, launchVars, poolAttachment, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
 					return nil
 				}
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -1200,7 +1200,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    reading: a gateway key funds the gateway routes alone, so it
 				//    leaves a vendor route the pool may still serve.
 				if poolAttachment == nil && !holdsDefaultLLMCredential(bundle) {
-					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys, res.busy)
+					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, launchVars, bundle.PinnedAPIKeys, res.busy)
 					if released != nil {
 						// Released for its lent key's audience: the acquisition
 						// superseded a previous lease all the same, so the
@@ -3374,6 +3374,58 @@ func allowlistedPairs(pairs []string, allowed map[string]bool) []string {
 // for nothing at all (ADR-131 §5). Read through its empty provider list
 // alone, it would take the full order and the pool would lend every slot to
 // a run that spends none of them.
+// pinnedFamilyWants returns the pool wants a launch's own mono pin names,
+// in the pool's own want order. A pin is a credential DEMAND: the run
+// cannot start without a credential of that family, so the family's slack
+// must be ASKED of the pool. Without this, a bot whose routes spend claude
+// and whose integration pins mono_family=gpt loses the only gpt source as
+// soon as a tier before the platform one grants — the platform tier is
+// skipped (ADR-131), the pool is never asked for a family its routes do not
+// name, and the launch refuses as an unservable review family.
+func pinnedFamilyWants(launchVars map[string]string) []credpool.Credential {
+	fams := reviewtopology.PinnedFamilies(launchVars)
+	if len(fams) == 0 {
+		return nil
+	}
+	wires := make(map[string]bool, len(fams))
+	for _, f := range fams {
+		switch f {
+		case reviewtopology.FamilyClaude:
+			wires[secrets.WireFamilyAnthropic] = true
+		case reviewtopology.FamilyGPT:
+			wires[secrets.WireFamilyOpenAI] = true
+		}
+	}
+	var out []credpool.Credential
+	for _, w := range poolWantOrder {
+		if prov := providerOfWant(w); prov != "" && wires[secrets.WireFamily(prov)] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// withPinnedWants appends the pin's wants AFTER the route wants, dropping
+// duplicates. Appended, never prepended: the pin widens what may be lent,
+// it does not reorder what the routes asked for.
+func withPinnedWants(wants []credpool.Credential, launchVars map[string]string) []credpool.Credential {
+	extra := pinnedFamilyWants(launchVars)
+	if len(extra) == 0 {
+		return wants
+	}
+	have := make(map[credpool.Credential]bool, len(wants))
+	for _, w := range wants {
+		have[w] = true
+	}
+	out := append([]credpool.Credential{}, wants...)
+	for _, w := range extra {
+		if !have[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolution) {
 	res := model.EffectiveProviders(view, poolProviderSet)
 	if res.OnlyEnvFunded() {
@@ -3437,7 +3489,7 @@ func withoutFundedProviders(wants []credpool.Credential, funded func(provider st
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string, busy busyProviders) (granted, released *credpool.Grant) {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, launchVars map[string]string, pinned map[secrets.Provider]string, busy busyProviders) (granted, released *credpool.Grant) {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -3451,6 +3503,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 	// One walk per launch: the wants, the diagnostics and the consulted
 	// line all read the same resolution.
 	wants, res := wantsFor(view)
+	wants = withPinnedWants(wants, launchVars)
 	if len(res.Unknown) > 0 {
 		// A pin nobody knows never narrows the request to nothing: the
 		// walk widened to the full order instead. Name the pin — a typo
@@ -5927,13 +5980,14 @@ func (p *Publisher) closedAtMargin(ctx context.Context, marginPct float64) func(
 // it. Sealed grants append to res.grants; res.grant stays the FIRST
 // sealed one, the whole-bundle semantics' answer (platform skip, budget
 // clamp, poolLease).
-func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
+func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, launchVars map[string]string, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
 	if p.credPool == nil {
 		return
 	}
 	// One resolution per launch, exactly like the legacy tier: the wants,
 	// the diagnostics and the consulted line read the same walk.
 	wantList, resolution := wantsFor(view)
+	wantList = withPinnedWants(wantList, launchVars)
 	// The gateway want enters the vocabulary ONLY through the attachment
 	// (ADR-131 §5 amended) — appended last, metered last, and asked only
 	// where the run may ride a gateway route: the seal gate below answers

@@ -516,6 +516,35 @@ func (i Injection) Summary() string {
 	return strings.Join(parts, " · ")
 }
 
+// PinnedFamilies returns the participating review families a launch's own
+// variables PIN — the operator's mono_family when the run resolves mono —
+// lowercased and deduplicated, in preference order. Unknown names are
+// dropped: a value outside {claude, gpt} is the bot's own business and the
+// launch enum gate judges it.
+//
+// A pin is a credential DEMAND, not a preference: the run cannot start
+// without a credential of that family, so the credential walk must ASK for
+// one. The publisher reads this to widen its wants accordingly — the
+// refusal InjectIfDeclaredFamilies raises is the symptom that nobody asked.
+func PinnedFamilies(vars map[string]string) []string {
+	// mono_family is meaningless outside mono: a stale pin left in a dual
+	// run would demand a credential the run never spends.
+	if mode := strings.ToLower(strings.TrimSpace(vars[VarReviewMode])); mode != ModeMono {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range strings.Split(vars[VarMonoFamily], ",") {
+		f := strings.ToLower(strings.TrimSpace(name))
+		if f != FamilyClaude && f != FamilyGPT || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	return out
+}
+
 // inputOverride reads a string override already present in inputs (from
 // --var / a preset), or "" when absent or not a string.
 func inputOverride(inputs map[string]any, name string) string {
