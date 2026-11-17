@@ -114,12 +114,15 @@ export function useRunOverrides(
       permissionOverride,
       backendOverride,
       ambientContextOverride,
-      // The codemode choice changes what the screen answers (a launch `on`
-      // on a backend that serves none is a route refusal), so it must key
-      // the query — the #3333 class: an override the request carries but
-      // the key does not leaves a stale verdict on screen.
+      // The codemode MODE changes what the screen answers (a launch `on` on
+      // a backend that serves none is a route refusal), so it keys the
+      // query — the #3333 class: an override the request carries but the
+      // key does not leaves a stale verdict on screen. The BOUNDS do not
+      // key it: the preview request carries no bounds, so no answer can
+      // depend on them, and keying them would fire a POST (and a
+      // fail-closed flicker) on every keystroke in a free-text field — the
+      // revi gate caught the asymmetry.
       codemodePayload.codemode ?? "",
-      JSON.stringify(codemodePayload.codemode_bounds ?? null),
       backendNames,
     ],
     queryFn: async () =>
