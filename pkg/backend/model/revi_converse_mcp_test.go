@@ -190,10 +190,14 @@ func converseMCPManager(t *testing.T, wf *ir.Workflow) *mcp.Manager {
 // converseClawToolNames builds the node's claw task the way dispatch does —
 // its resolved MCP set started through the run's manager — and returns the
 // tool definitions the loop would send.
-func converseClawToolNames(t *testing.T, wf *ir.Workflow, node *ir.AgentNode, ws string, manager *mcp.Manager) []string {
+func converseClawToolNames(t *testing.T, wf *ir.Workflow, node ir.Node, ws string, manager *mcp.Manager) []string {
 	t.Helper()
 	reg := tool.NewRegistry()
-	for _, name := range append(slices.Clone(node.Tools), "todo_write") {
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		t.Fatalf("%T is not an LLM node", node)
+	}
+	for _, name := range append(slices.Clone(llm.GetTools()), "todo_write") {
 		if err := reg.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
 			t.Fatal(err)
 		}
@@ -236,8 +240,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":""
 // converseClaudeCodeMCPCatalogs builds the node's claude_code task through
 // the executor and runs it on the REAL claude_code backend against the
 // stand-in CLI, returning per spawn its strictness and the MCP catalog it was
-// handed ("strict <catalog>" or "loose <catalog>").
-func converseClaudeCodeMCPCatalogs(t *testing.T, wf *ir.Workflow, node *ir.AgentNode, ws string, manager *mcp.Manager) []string {
+// handed ("strict <catalog>" assertions live in the callers; the strings are
+// "strict|loose <catalog>").
+func converseClaudeCodeMCPCatalogs(t *testing.T, wf *ir.Workflow, node ir.Node, ws string, manager *mcp.Manager) []string {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())
 	dir := t.TempDir()

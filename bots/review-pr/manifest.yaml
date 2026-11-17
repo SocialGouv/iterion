@@ -1,7 +1,47 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.24
+version: 0.9.25
+## 0.9.25 — the reviewers inherit no ambient MCP and the system prompts are
+## byte-stable across runs, so the cross-run prefix cache survives past the
+## first per-run byte (#3283). The four reviewer slots carry `mcp: inherit:
+## false`: the platform's plugin servers rode every tooled node by doctrine,
+## ~20k tokens of tool schemas per request — $0.19-0.44 a run on the
+## 2026-11-13 sample — for tools no reviewer step ever called. The merge
+## twins opt out too. `review_system` carries no template: the resolved base
+## sha, the workspace, the changed-file count, the workspace-anomaly list,
+## the review tier and the severity floor moved into the user message's
+## REVIEW SCOPE block (the git commands spelled in), on both reviewer lanes;
+## `emit_system` points at the values `emit_user` already carried
+## (threshold, cap, board flag, report path). Two runs of the same node in
+## two checkouts now send the same system bytes and tool schemas — proof on
+## the assembled request, first divergent byte reported
+## (TestReviewPrAssembledRequestIsByteStableAcrossWorkspaces). And the merge
+## step works on claw: `converge` declares the same three file tools as its
+## twin (`read_file`, `write_file`, `glob`, `tool_max_steps: 60`), so the
+## gateway routing cells that pin it to claw dispatch a merge that writes
+## its report and files its board issues — the pre-0.9.25 dispatch ran
+## tool_count 0 and published nothing there (prod F4, 7 of 18 sampled
+## mono-claude runs). A claw node that grants board or runs capabilities
+## over no declared `tools:` list is refused by type at dispatch: the grant
+## would be inert (the appends ride an already-restricted list), and
+## silently inert is the failure this refusal turns loud
+## (TestClawRefusesAnInertCapabilityGrant). The `_EMIT` backend dial may
+## therefore take claw; a pre-0.9.16 mono-GPT `_EMIT` profile pinning claw
+## is now merely redundant, not breaking.
+##
+## RELEASE COUPLING — update the bot WITH the engine; one release carries
+## both. This engine refuses (fail-terminal at the merge node: the refusal
+## is non-retryable and no fallback class matches it) a claw dispatch whose
+## tool surface resolves empty beside a board or runs capability; review-pr
+## <0.9.25 ships exactly that shape on its merge step, and the gateway
+## routing cells pin it to claw — so an integration serving the OLD bot
+## under the new engine flips its mono-claude reviews from the previous
+## SILENT no-op merge (no report, no board issue — prod F4) to a loud,
+## honest failure. This 0.9.25 bot is the other half of the pairing: its
+## merge declares its surface, so its dispatches serve whole, and its
+## schema re-ask — the executor's own tool-less continuation — is exempt
+## from the gate, recovering in place as before.
 ## 0.9.24 — the run table's effort column prints the effort each node that
 ## ran sent its model, and who decided it, instead of the
 ## `ITERION_VIBE_EFFORT_*` dial it was written with. publish_review no longer

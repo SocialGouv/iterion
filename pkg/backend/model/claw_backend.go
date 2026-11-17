@@ -344,6 +344,49 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// A capability grant the node cannot receive here is refused BY TYPE,
+	// not silently dropped (#3283 S9, backend parity: wired or
+	// typed-refused). The board / runs appends ride an already-restricted
+	// NON-EMPTY `tools:` union (buildTask's appends are gated on it), so a
+	// node whose tool surface resolves EMPTY — no `tools:` line, or a
+	// declared-but-empty `tools: []` (a declaration the appends do not
+	// read) — dispatches on claw with the grant inert: no board issue, no
+	// run read — it answers as if the grant were absent, which is exactly
+	// the silent shape review-pr's merge shipped as on its gateway route
+	// (F4: `converge` tool-less on claw, no report, no board issue). The
+	// gate reads the surface the dispatch would serve (ToolDefs and
+	// AllowedTools, both empty), never the nilness of the declaration:
+	// ToolsDeclared is nilness, and the two disagree exactly on `tools: []`
+	// — the shape this arm exists to catch when a node reaches claw through
+	// a route no catalog test names (a team routing cell, a bare-host
+	// fallback). `interaction:` is the one append that fires before the
+	// gate — an interaction node's union is never empty here — so its
+	// grants are served and stay out of this refusal. And the executor's
+	// own schema re-ask stays out of it too: planSchemaReask's claw
+	// continuation REMOVES the surface deliberately (ToolDefs and
+	// AllowedTools nilled, "tools off: the model is asked for the answer it
+	// already has") while keeping the node's capabilities — a task whose
+	// emptiness is the executor's decision, not an author's omission; a
+	// tool-less continuation needs no grant served by design. Without that
+	// exemption every granted node's standard in-place recovery refused
+	// (the refusal is non-retryable and no fallback class matches it). A
+	// non-empty surface (the way review-pr's merge twins declare theirs) is
+	// the remedy, not a route change.
+	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && len(task.ContinueConversation) == 0 && !task.InteractionEnabled &&
+		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
+		grants := "board"
+		if !delegate.HasBoardCapability(task.Capabilities) {
+			grants = "runs read"
+		} else if delegate.HasRunsReadCapability(task.Capabilities) {
+			grants = "board and runs read"
+		}
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: grants + " capabilities on a node whose tool surface resolves empty",
+			Remedy:     "give the node a non-empty tools: list — on claw the appends that serve a capabilities grant ride an already-restricted list, so an empty surface holds the grant inert (the capability-append sites of buildTask)",
+		}
+	}
+
 	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
 	// server's tools whatever the run's sandbox is, so the refusal that
 	// compensates for the drop has to read the same fact: gated on

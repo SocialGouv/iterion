@@ -127,7 +127,7 @@ revi-converse/converse_agent	tools: bash
 review-env/deploy	no `tools:` list declared on claude_code, the full native toolset
 review-pr/converge	capability board.create
 review-pr/converge	capability board.label
-review-pr/converge	no `tools:` list declared on claude_code, the full native toolset
+review-pr/converge	tools: write_file
 review-pr/converge_gpt	capability board.create
 review-pr/converge_gpt	capability board.label
 review-pr/converge_gpt	tools: write_file

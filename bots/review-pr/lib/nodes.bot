@@ -39,6 +39,11 @@ dsl: 2
 ## env fallback), so an explicit pin survives there and the twin below
 ## answers instead.
 agent converge:
+  ## No ambient MCP, like converge_gpt: the merge consumes the reviewers'
+  ## outputs, not repository services, and inheriting a repo's MCP set
+  ## makes claw reject the host board tools below as inactive (#3017).
+  mcp:
+    inherit: false
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
   ## REVIEWER): the merge is near-mechanical — dedupe, threshold, cap and
   ## report. Opus 5.5 at medium effort is the Anthropic default; this
@@ -52,29 +57,28 @@ agent converge:
   ## the Anthropic weekly cap, so a deployment whose Claude window is spent
   ## could not review at all despite having a second family credentialed.
   ##
-  ## BETWEEN CLI BACKENDS ONLY — claude_code, codex, pi, kimi, grok,
-  ## opencode. This node declares no `tools:`, which a CLI backend reads as
-  ## "no restriction" and claw as the node's WHOLE surface, so pointed at
-  ## claw the dial lands the merge with no tool at all: no report under
-  ## `report_path`, no board issue, and the capability grant below inert —
-  ## every append is gated on an already-restricted list
-  ## (model.assembleEffectiveTools). Declaring a list here is not the
-  ## answer either: on a CLI route the list becomes the whole surface too
-  ## and strips the shell this node's own boundary paragraph names
-  ## (TestReviewPrSharedPromptsStateEachRoutesSurface). The claw merge is
-  ## therefore a node of its own — `converge_gpt` declares the list, and
-  ## `mono_family=gpt` selects it.
+  ## Any backend the registry serves — the CLI backends AND claw (#3283
+  ## S9, D7 "tout sur claw"): the node declares its surface below, so a
+  ## claw route (the gateway cells route this very node there) dispatches
+  ## the merge with its three file tools instead of the no-tool dispatch
+  ## that shipped 0.9.24 and earlier — tool_count 0, no report under
+  ## `report_path`, no board issue, the capability grant below inert
+  ## (prod F4: 7 of 18 sampled mono-claude runs merged on claw with
+  ## nothing written). Before the list was declared, claw was the one
+  ## value this dial could not take; the claw merge was then a node of
+  ## its own — `converge_gpt` — picked by `mono_family=gpt`. That twin
+  ## remains the GPT route; this node serves every other family on
+  ## whichever backend its route resolves.
   backend: "${ITERION_VIBE_BACKEND_EMIT:-claude_code}"
   ## Same Anthropic-direct pin as the claude slot, for the same reason
   ## (see reviewer_claude): unpinned, a capped forfait hands this node's
   ## claude id to the z.ai facade in silence. Its own dial, because this
-  ## node's backend is one too: moving the slot to another CLI backend's
+  ## node's backend is one too: moving the slot to another backend's
   ## model needs this hint moved with it — a hint names the route to the
   ## credential walk and the wire-reach check, so a leftover `anthropic`
   ## would describe an Anthropic route this node no longer takes. An
   ## `openai/…` merge is the twin below, not a hint here: the twin pins claw
-  ## for that id (see there), the one route this node's `tools:`-less
-  ## surface cannot take.
+  ## for that id (see there).
   provider: "${ITERION_VIBE_PROVIDER_EMIT:-anthropic}"
   output: emit_output
   ## The merged finding set a later run is handed, kept beside pr_gate's
@@ -85,10 +89,25 @@ agent converge:
   publish: review_findings
   system: emit_system
   user: emit_user
+  ## The node's WHOLE surface on claw, and the narrowed roster on a CLI
+  ## route — the same three the gpt twin declares: `read_file` loads the
+  ## iterion-board skill, `write_file` writes the report under
+  ## `report_path` (it creates parent dirs), `glob` is how claw lists a
+  ## directory. The merge shells out nowhere; declaring the list is what
+  ## lets the same node serve claw (the appends below need an
+  ## already-restricted list, model.assembleEffectiveTools) without
+  ## taking the shell a merge step never uses.
+  tools: [read_file, write_file, glob]
   ## board.read to load the iterion-board skill, board.create +
-  ## board.label to file findings. emit writes the report file via its
-  ## ordinary claude_code tools.
+  ## board.label to file findings. The board tools ride the capability
+  ## append on top, under the `mcp__iterion_board__` names the prompt
+  ## calls.
   capabilities: [board.read, board.create, board.label]
+  ## claw bounds a declared tool loop at 5 steps when the node names no
+  ## number (claw_backend), while the audit tier lets this step file 40
+  ## board issues before it writes the report: at the default the merge
+  ## would stop mid-publication. Same bound as the gpt twin.
+  tool_max_steps: 60
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   ## Converge the two parallel reviewer branches: emit runs once, after
   ## BOTH reviewers complete, and reads their outputs directly.
@@ -123,8 +142,8 @@ agent converge:
 ## picks the reviewer (the glance tiers' shape).
 ##
 ## Everything but the route is SHARED with `converge` by name — the same
-## prompts, output schema, effort dial and capabilities — so the merge
-## contract has exactly one copy
+## prompts, output schema, effort dial, capabilities and tool surface — so
+## the merge contract has exactly one copy
 ## (bots/review_pr_mono_gpt_merge_test.go).
 agent converge_gpt:
   ## Convergence consumes the reviewers' outputs, not repository services.
@@ -156,10 +175,8 @@ agent converge_gpt:
   publish: review_findings_gpt
   system: emit_system
   user: emit_user
-  ## The node's WHOLE surface on claw, where an empty `tools:` list means
-  ## no tools at all — not "no restriction" as it does on claude_code,
-  ## which hands the claude twin its full native toolset. These three carry
-  ## the merge's two side effects: `read_file` loads the iterion-board
+  ## The node's WHOLE surface on claw — the same three its claude twin
+  ## declares (#3283 S9): `read_file` loads the iterion-board
   ## skill, `write_file` writes the report under `report_path` (it creates
   ## parent dirs), `glob` is how claw lists a directory. The board tools
   ## ride the capability append on top, under the `mcp__iterion_board__`
@@ -189,6 +206,13 @@ agent converge_gpt:
   ## slot's three dials instead.
 
 judge reviewer_claude:
+  ## No ambient MCP (#3283 S6): the platform's plugin servers ride every
+  ## tooled node by doctrine, ~20k tokens of schemas per request that none
+  ## of this node's steps ever calls (measured 2026-11-13: $0.19-0.44 a run,
+  ## zero mcp_* calls). The declared `tools:` list below is already the
+  ## whole surface on claw; the opt-out keeps it that way on every route.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "${ITERION_VIBE_BACKEND_CLAUDE:-claude_code}"
   ## The `anthropic` hint is LOAD-BEARING, not decorative: the wire's
@@ -296,6 +320,11 @@ judge reviewer_claude:
       metered: true
 
 judge reviewer_gpt:
+  ## No ambient MCP (#3283 S6), like the claude reviewer: on this node's
+  ## default claw route the ambient splice would hang ~20k tokens of MCP
+  ## schemas beside the four declared tools — none of them ever called.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-6-astra}"
   ## Explicit backend pin: "openai/gpt-6-astra" only resolves via claw.
   ## Without it the auto-resolver routes through claude_code, which
@@ -339,6 +368,11 @@ judge reviewer_gpt:
 ## routing policy re-targets this tier's reasoning effort per forge
 ## integration, with no bot release and no process-environment dial.
 judge reviewer_claude_glance:
+  ## No ambient MCP, like reviewer_claude (#3283 S6): the glance reads
+  ## less than the full tier by design — it inherits no schema block
+  ## either.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
   backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
   ## Same Anthropic-direct pin and dial as reviewer_claude — the glance
@@ -367,6 +401,9 @@ judge reviewer_claude_glance:
       metered: true
 
 judge reviewer_gpt_glance:
+  ## No ambient MCP, like reviewer_gpt (#3283 S6).
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_GPT_GLANCE:-openai/gpt-6-luna}"
   ## Same three dials as reviewer_gpt (see there); the provider one is
   ## shared, since it follows the family, not the tier.

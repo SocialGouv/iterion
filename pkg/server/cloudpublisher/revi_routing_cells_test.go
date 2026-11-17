@@ -467,7 +467,8 @@ func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T)
 // compiler's claw⇄CLI inversion, C176), so such a node keeps its work only if
 // it declares its list: revi-converse's converse_agent, moved off
 // claude_code, could not read the diff and answered a placeholder until it
-// did.
+// did — and review-pr's `converge` merged on claw with no report and an
+// inert board grant until S9 declared its surface (#3283).
 //
 // Declared is not enough, so the check asks for a surface the node can work
 // with on claw: a NON-EMPTY list (`tools: []` is declared and is the same
@@ -482,18 +483,11 @@ func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T)
 // is left to dispatch ("") may land on any backend, claw included — dispatch
 // reads ITERION_DEFAULT_BACKEND, then the host's detection, and settles on
 // claw when neither answers (pkg/backend/model/executor_resolve.go) — so it
-// owes the surface too.
-//
-// One exception, named and required to still hold: review-pr's `converge` is
-// the CLI family's merge, `tools:`-less by design (its node comment), and the
-// block routes it only so the launch walk — which cannot prune on a launch
-// var — reads every site on the gateway. The gateway integrations run
-// `mono_family=gpt`, whose merge is `converge_gpt` (claw, tools declared), so
-// `converge` never dispatches there. The exception's sites are counted apart:
-// the check must read at least one moved site it actually judges.
+// owes the surface too. A node that dodges the judgment anyway is refused
+// by type at the claw backend itself (model's inert-grant refusal) — wired
+// or typed-refused, never silent.
 func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.T) {
 	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
-	exempt := map[string]map[string]bool{"review-pr": {"converge": true, "converge#glm": true}}
 	for _, bot := range reviBots {
 		t.Run(bot, func(t *testing.T) {
 			freezeCatalogBotDials(t, bot)
@@ -503,7 +497,6 @@ func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.
 				defaultBackend[s.ID] = s.Backend
 			}
 			judged := 0
-			seenExempt := map[string]bool{}
 			for _, s := range model.CallSites(reviGatewayView(t, bot, wf, pol), nil) {
 				if s.Backend != "claw" || s.Node == nil || (s.Kind != model.SiteNode && s.Kind != model.SiteFallback) {
 					continue
@@ -514,10 +507,6 @@ func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.
 					continue
 				}
 				if written == "claw" {
-					continue
-				}
-				if exempt[bot][s.ID] {
-					seenExempt[s.ID] = true
 					continue
 				}
 				judged++
@@ -546,14 +535,73 @@ func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.
 				}
 			}
 			if judged == 0 {
-				t.Fatal("no site outside the named exception moved onto claw: the check judged nothing")
-			}
-			for id := range exempt[bot] {
-				if !seenExempt[id] {
-					t.Errorf("exception %q no longer reads a site the block moves onto claw — drop it", id)
-				}
+				t.Fatal("no site moved onto claw: the check judged nothing")
 			}
 		})
+	}
+}
+
+// TestReviShippedBots_TheMonoClaudeWalkRoutesNoSurfacelessNodeToClaw is the
+// walk half of #3283 S9 (D7): under the routing cells AND the launch pin the
+// gateway integrations resolve mono-claude runs with (`mono_family=claude`),
+// the merge that actually runs is `converge` — the node the block routes to
+// claw — and NO node the walk reaches lands on claw without a declared
+// surface. Before S9 this walk exempted `converge` by name, because the
+// cells routed it to claw tool-less and the prod runs merged there with no
+// report (F4); the twin it exempted for (`converge_gpt`, the mono-gpt merge)
+// is pruned by the same pin that picks `converge`.
+func TestReviShippedBots_TheMonoClaudeWalkRoutesNoSurfacelessNodeToClaw(t *testing.T) {
+	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
+	freezeCatalogBotDials(t, "review-pr")
+	wf := compileShippedBot(t, "review-pr")
+
+	// The pin's walk: mono on the claude family. The merge is `converge`,
+	// the reviewer `reviewer_claude`; the gpt twins are unreachable.
+	open := wf.LaunchVarEdgeFilter(map[string]any{"review_mode": "mono", "mono_family": "claude"})
+	reaches := func(id string) bool {
+		return wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id })
+	}
+	if !reaches("converge") {
+		t.Fatal("mono_family=claude does not reach converge — the merge this witness owes is not the one that runs")
+	}
+	if reaches("converge_gpt") {
+		t.Error("mono_family=claude reaches converge_gpt — the pin prunes nothing, so this walk judges a route no run takes")
+	}
+
+	// The cells' backend per node, the way dispatch resolves it.
+	backendOf := map[string]string{}
+	for _, s := range model.CallSites(reviGatewayView(t, "review-pr", wf, pol), nil) {
+		if s.Node != nil && s.Kind == model.SiteNode {
+			backendOf[s.Node.NodeID()] = s.Backend
+		}
+	}
+	judged := 0
+	for id, node := range wf.Nodes {
+		llm, ok := node.(ir.LLMNode)
+		if !ok || !reaches(id) {
+			continue
+		}
+		backend, move := backendOf[id]
+		if !move {
+			t.Errorf("%q is reachable but the cells name no route for it — the walk cannot judge what dispatch would read", id)
+			continue
+		}
+		if backend != "claw" {
+			continue
+		}
+		judged++
+		switch {
+		case !toolcatalog.ToolsDeclared(llm.GetTools()):
+			t.Errorf("%q routes to claw under the cells on the mono-claude walk and declares no tools: list — the exact F4 shape", id)
+		case len(llm.GetTools()) == 0:
+			t.Errorf("%q routes to claw under the cells on the mono-claude walk with an empty tools: list", id)
+		}
+	}
+	if judged < 2 {
+		t.Fatalf("the mono-claude walk judged %d claw-routed node(s), want at least reviewer_claude and converge", judged)
+	}
+	if backendOf["converge"] != "claw" {
+		t.Errorf("converge routes %q under the cells, want claw — the route D7 owes a declared surface for is not the one this walk reads", backendOf["converge"])
 	}
 }
 

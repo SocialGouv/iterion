@@ -57,8 +57,17 @@ diff_precheck -> topology (condition)
   └─ dual        -> fan (fan_out_all) -> both reviewers
 reviewer_* -> merge_reviews (best_effort)
 merge_reviews -> converge_gpt   when mono_family == gpt   (claw + openai/gpt-6-sol)
-merge_reviews -> converge       otherwise                 (claude_code + opus 5.5)
+merge_reviews -> converge       otherwise (claude_code + opus 5.5; a routing
+                                cell may move it to claw — the merge declares
+                                its three file tools, so the route serves whole)
                                 merge + dedupe → board + report
+  Engine pairing: an engine carrying the claw inert-grant refusal (>= the
+  release shipping #3283 S9) fails TERMINAL at a merge whose tool surface
+  resolves empty beside a board/runs capability — review-pr <0.9.25 ships
+  exactly that shape. Run the bot and the engine from the same release: an
+  integration pinned to the old bot under the new engine flips its
+  mono-claude gateway reviews from the old silent no-op merge (no report,
+  no board issue) to a loud, honest failure.
 converge* -> pr_gate   deterministic: was a pr_url given?  (the one node both
                        merge twins feed: it carries the merged payload AND the
                        merge's run telemetry forward)
@@ -381,12 +390,42 @@ run — and it is required anyway, because on `claw` an empty list is no
 tools at all (SocialGouv/iterion#2705: a listless reviewer reviewed
 nothing and greened the gate). The one downstream merge
 step — `converge`, or `converge_gpt` on the GPT family — writes only the
-report file and creates board issues over MCP. `converge_gpt` runs on `claw`,
-where a `tools:` list is the node's WHOLE surface and an empty one is no tools
-at all, so it declares the three the merge needs (`read_file` for the
-iterion-board skill, `write_file` for the report, `glob`); the board
-operations then ride that list as the `mcp__iterion_board__` names the prompt
-calls, and the step is the same step on either route.
+report file and creates board issues over MCP. Both twins declare the same
+three file tools (`read_file` for the iterion-board skill, `write_file` for
+the report, `glob`); `converge_gpt` has carried them since 0.9.16 (it runs
+on `claw`, where a `tools:` list is the node's WHOLE surface and an empty
+one is no tools at all), and `converge` since 0.9.25 (#3283) — its gateway
+routing cells send it to claw too, and before the list was declared that
+dispatch merged with tool_count 0: no report, no board issue, the
+capability grant inert. The board operations ride either list as the
+`mcp__iterion_board__` names the prompts call, and the step is the same
+step on either route. (`iterion-board.md`, which both prompts name as
+pre-reading, is not shipped in this bundle — a workspace may carry it
+under `.claude/skills/`; when it is absent the merge still works, because
+STEP 3 of the merge prompt spells the whole tool contract inline.)
+
+## Cost posture: no ambient MCP, a byte-stable prefix
+
+The four reviewer slots inherit **no** ambient MCP server (`mcp: inherit:
+false`, 0.9.25): the platform's plugin servers ride every tooled node by
+doctrine, which hung roughly 20k tokens of tool schemas beside the four
+declared tools per request — about $0.19-0.44 a run on the sampled runs,
+for tools no reviewer step ever called (2026-11-13 sample, #3283). The
+declared `tools:` list stays the reviewer's whole surface on claw and its
+roster narrowing on claude_code; the merge twins opt out too (the board
+capability's append is engine-side, not ambient).
+
+The system prompts the reviewers and the merge read (`review_system`,
+`emit_system`) carry **no template**: every per-run value — the resolved
+base sha, the workspace, the changed-file count, the anomaly list, the
+tier and the severity floor — rides the user message (a REVIEW SCOPE block
+on both reviewer lanes, the pre-existing block on `emit_user`), so two
+runs of the same node in two checkouts send the same SYSTEM bytes and tool
+schemas and a provider's prefix cache serves the second from the first.
+The proof compares the ASSEMBLED request byte for byte across two
+workspaces (`TestReviewPrAssembledRequestIsByteStableAcrossWorkspaces`,
+`pkg/backend/model`); a guard at the source names any template that
+sneaks back in (`TestReviewPrSystemPromptsCarryNoRunSpecificText`, `bots`).
 
 ## The Anthropic pin, and the z.ai route below it
 
@@ -609,16 +648,21 @@ review.** A deployment that wants it back dials the twin
 `ITERION_VIBE_PROVIDER_EMIT_GPT=anthropic` — all three, or the slot lands on
 a route nobody chose), pins an integration override on the `converge_gpt`
 selector, or pins `--var mono_family=claude`. The `_EMIT` trio keeps dialling
-the claude twin, which the twin's defaults now make redundant: a deployment
-carrying the pre-0.9.16 mono-GPT profile — the `_EMIT` backend dial pointed at
-claw, with an `openai/…` model and an `auto` hint — **must drop that profile**,
-not merely may. `converge` declares no `tools:` list, and on claw a node's
-list is its whole surface, so that profile leaves the claude-family merge with
-no tool at all: no report under `report_path`, no board issue, and its
-`capabilities:` grant inert (`TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends`,
-`bots`). `converge_gpt` was split off to serve exactly that route, and it
-serves it with the list declared. A deployment that pointed the merge
-somewhere ELSE repeats that choice on the `_EMIT_GPT` trio instead.
+the claude twin, which the twin's defaults now make redundant. The
+pre-0.9.16 mono-GPT profile — the `_EMIT` backend dial pointed at claw, with
+an `openai/…` model and an `auto` hint — was **must-drop** while `converge`
+declared no `tools:` list: on claw a node's list is its whole surface, so
+that profile left the claude-family merge with no tool at all (no report
+under `report_path`, no board issue, its `capabilities:` grant inert). Since
+0.9.25 `converge` declares the same three file tools as its twin (#3283), the
+route serves the merge whole (`TestReviewPrTheEmitBackendDialServesEachBackendItNames`,
+`bots`), and a claw-bound `_EMIT` pin is merely redundant rather than
+breaking — an openai/… model on the claude-family merge is still a choice
+nobody documents, so a deployment that pointed the merge somewhere ELSE
+repeats that choice on the `_EMIT_GPT` trio instead. The one shape that
+still refuses loudly is a node that grants board or runs capabilities with
+no declared list: claw serves a grant only through the append on that list,
+so the dispatch refuses by type instead of merging with the grant inert.
 
 Each `ITERION_VIBE_*` dial repoints live through `bot-vars`, without
 re-releasing the bundle; `ITERION_SUPERVISORS` is the machine-wide kill
