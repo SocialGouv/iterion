@@ -6886,6 +6886,9 @@
             },
             "type": "array"
           },
+          "codemode": {
+            "type": "string"
+          },
           "file_path": {
             "type": "string"
           },

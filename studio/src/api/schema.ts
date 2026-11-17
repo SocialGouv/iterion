@@ -9236,6 +9236,7 @@ export interface components {
             ambient_context?: string;
             backend?: string;
             backend_names?: string[];
+            codemode?: string;
             file_path?: string;
             permission?: string;
             source?: string;

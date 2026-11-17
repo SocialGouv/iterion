@@ -320,6 +320,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
+	// Same pre-flight as the launch's other string overrides: a typo would
+	// read as "inherit" in-process while every other surface refuses it.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
+	}
 	// A keyed submission's id was derived and its run judged by
 	// answerSubmission — no run, or a queued cloud run this launch
 	// completes — so only an id a caller chose is looked up here.
@@ -634,7 +639,26 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 		return nil, err
 	}
 	warnings = append(warnings, screenWarnings...)
+	warnings = append(warnings, codemodeLaunchWarnings(spec.Codemode, spec.CodemodeBounds)...)
 	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
+}
+
+// codemodeLaunchWarnings is the launch-time half of the two compile
+// diagnostics the authored surface already carries: C348 (bounds beside an
+// off) and C347 (bounds above the ceiling). The launch rung can produce both
+// shapes, the launch is where the operator is looking, and both warn rather
+// than refuse — philosophy 1 — because the runtime still enforces the truth:
+// an off installs no tool, and Clamp serves the ceiling with an OnClamp
+// report.
+func codemodeLaunchWarnings(codemode string, bounds *ir.CodemodeBounds) []string {
+	var out []string
+	if codemode == "off" && ir.CodemodeBoundsSet(bounds) {
+		out = append(out, "codemode: the launch set bounds beside a run-level `codemode: off` — no program runs, so the bounds are inert (C348 is the compile-time twin)")
+	}
+	if over := ir.CodemodeBoundsAboveCeiling(bounds); len(over) > 0 {
+		out = append(out, fmt.Sprintf("codemode: the launch's bounds exceed the platform ceiling (%s) — the child will run at the ceiling and the clamp report says so (C347 is the compile-time twin)", strings.Join(over, "; ")))
+	}
+	return out
 }
 
 // foldAndScreenLaunch is foldAndScreen for a launch of its own rows — the
@@ -771,6 +795,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
 		AmbientContext:  spec.AmbientContext,
+		Codemode:        spec.Codemode,
+		CodemodeBounds:  spec.CodemodeBounds,
 		Permission:      spec.Permission,
 		LocalSecrets:    s.localSecrets,
 		LocalSealer:     s.localSealer,
@@ -1029,6 +1055,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
+	// The launch's pre-flight, restated: a typo on resume would read as
+	// "inherit" in-process while the CLI refuses it at parse time.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
+	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
 	// otherwise ride RunMessage.Budget through the cloud queue, fail
@@ -1272,6 +1303,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// executor carries it (startInProcess).
 	executorSpec.Ctx = context.WithoutCancel(parent)
 	executorSpec.AmbientContext = spec.AmbientContext
+	executorSpec.Codemode = spec.Codemode
+	executorSpec.CodemodeBounds = spec.CodemodeBounds
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {

@@ -101,6 +101,15 @@ type detachedSpec struct {
 	// AmbientContext forwards the run-level ambient-context override as the
 	// CLI's --ambient-context flag, for the same re-resolution reason.
 	AmbientContext string
+	// Codemode forwards the run-level codemode override as the CLI's
+	// --codemode flag, for the same re-resolution reason: the subprocess
+	// re-resolves the knob from scratch, so anything not passed here is
+	// replaced by the workflow's own value — for `off` that means running a
+	// capability the operator asked away. CodemodeBounds forwards the launch's
+	// bounds raise as the --codemode-* flags; a nil set forwards nothing and
+	// the authored bounds stand.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard forwards the run-level back-edge affordability
 	// override as the CLI's --loop-budget-guard flag, for the same reason
 	// AutoMemory is forwarded: the subprocess re-resolves the knob from
@@ -160,6 +169,7 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AmbientContext != "" {
 			args = append(args, "--ambient-context", spec.AmbientContext)
 		}
+		args = appendCodemodeArgs(args, spec.Codemode, spec.CodemodeBounds)
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
 		}
@@ -181,6 +191,7 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AmbientContext != "" {
 			args = append(args, "--ambient-context", spec.AmbientContext)
 		}
+		args = appendCodemodeArgs(args, spec.Codemode, spec.CodemodeBounds)
 		if spec.LoopBudgetGuard != "" {
 			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
 		}
@@ -247,6 +258,43 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	return cmd, nil
+}
+
+// appendCodemodeArgs forwards the run-level codemode override to a detached
+// subprocess: the mode as --codemode when the launch expressed one, the
+// bounds raise as one flag per field the launch set. The subprocess
+// re-resolves the knob from scratch (its CLI is the only carrier), so
+// anything not passed here is replaced by the workflow's own value — for
+// `off` that would run a capability the operator asked away.
+func appendCodemodeArgs(args []string, codemode string, b *ir.CodemodeBounds) []string {
+	if codemode != "" {
+		args = append(args, "--codemode", codemode)
+	}
+	if b == nil {
+		return args
+	}
+	if b.Wall > 0 {
+		args = append(args, "--codemode-wall", b.Wall.String())
+	}
+	if b.CPU > 0 {
+		args = append(args, "--codemode-cpu", b.CPU.String())
+	}
+	if b.Memory > 0 {
+		args = append(args, "--codemode-memory", strconv.FormatInt(b.Memory, 10))
+	}
+	if b.ScriptBytes > 0 {
+		args = append(args, "--codemode-script-bytes", strconv.FormatInt(b.ScriptBytes, 10))
+	}
+	if b.ResultBytes > 0 {
+		args = append(args, "--codemode-result-bytes", strconv.FormatInt(b.ResultBytes, 10))
+	}
+	if b.ToolCalls > 0 {
+		args = append(args, "--codemode-tool-calls", strconv.FormatInt(b.ToolCalls, 10))
+	}
+	if b.ToolResultBytes > 0 {
+		args = append(args, "--codemode-tool-result-bytes", strconv.FormatInt(b.ToolResultBytes, 10))
+	}
+	return args
 }
 
 func appendDetachedBudgetArgs(args []string, b *ir.BudgetOverrides) []string {
@@ -478,6 +526,8 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		BranchName:         spec.BranchName,
 		AutoMemory:         spec.AutoMemory,
 		AmbientContext:     spec.AmbientContext,
+		Codemode:           spec.Codemode,
+		CodemodeBounds:     spec.CodemodeBounds,
 		LoopBudgetGuard:    spec.LoopBudgetGuard,
 		Supervisors:        spec.Supervisors,
 		Permission:         spec.Permission,
@@ -527,6 +577,8 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		StoreDir:          s.storeDir,
 		AutoMemory:        spec.AutoMemory,
 		AmbientContext:    spec.AmbientContext,
+		Codemode:          spec.Codemode,
+		CodemodeBounds:    spec.CodemodeBounds,
 		LoopBudgetGuard:   spec.LoopBudgetGuard,
 		Supervisors:       spec.Supervisors,
 		Permission:        permission,

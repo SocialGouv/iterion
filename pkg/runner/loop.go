@@ -3570,6 +3570,13 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// Same failure direction for the ambient context: dropping it would hand
 		// the run the workflow's policy instead of the operator's explicit one.
 		AmbientContext: msg.AmbientContext,
+		// The launch-time codemode override (queue v33). Dropping an explicit
+		// off would run the capability the operator asked away — the knob
+		// failing open, the direction the v33 bump exists to reject. The
+		// bounds raise is field by field; a zero field keeps the authored
+		// value and everything passes Clamp at spawn.
+		Codemode:       msg.Codemode,
+		CodemodeBounds: msg.CodemodeBounds,
 		// Keep this as the ExecutorSpec's run-level override: folding it into
 		// wf.Permission would let a node-level `off` beat an operator `deny`.
 		Permission: msg.Permission,

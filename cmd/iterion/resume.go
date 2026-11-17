@@ -18,6 +18,7 @@ var resumeOpts struct {
 
 	autoMemory      string
 	ambientContext  string
+	codemodeFlags   codemodeFlagSet
 	loopBudgetGuard string
 	supervisors     string
 	repoDevbox      string
@@ -73,6 +74,8 @@ var resumeCmd = &cobra.Command{
 
 			AutoMemory:          resumeOpts.autoMemory,
 			AmbientContext:      resumeOpts.ambientContext,
+			Codemode:            resumeOpts.codemodeFlags.codemode,
+			CodemodeBounds:      resumeOpts.codemodeFlags.bounds(),
 			LoopBudgetGuard:     resumeOpts.loopBudgetGuard,
 			Supervisors:         resumeOpts.supervisors,
 			RepoDevbox:          resumeOpts.repoDevbox,
@@ -133,6 +136,7 @@ func init() {
 	_ = f.MarkHidden("background")
 	f.StringVar(&resumeOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md) override on resume: on|off. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY — NOT the original launch, which is not persisted, so re-state it to keep a hermetic run hermetic. See docs/memory-and-knowledge.md.")
 	f.StringVar(&resumeOpts.ambientContext, "ambient-context", "", "ambient context override on resume: none|workspace|operator|all. Empty inherits the workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT — NOT the original launch, which is not persisted, so re-state it to keep the launch's choice")
+	resumeOpts.codemodeFlags.register(f)
 	f.StringVar(&resumeOpts.repoDevbox, "repo-devbox", "", "install the target repository's devbox.json on resume: on|off. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX — NOT the original launch, which is not persisted. See docs/dsl.md.")
 	f.StringVar(&resumeOpts.loopBudgetGuard, "loop-budget-guard", "", "loop back-edge affordability guard on resume: on|off. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD — NOT the original launch, which is not persisted. See docs/dsl.md.")
 	f.StringVar(&resumeOpts.supervisors, "supervisors", "", "spawn DSL-declared supervisors on resume: on|off (not persisted from launch; empty inherits ITERION_SUPERVISORS). See docs/supervisors.md.")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -75,6 +76,15 @@ type ResumeOptions struct {
 	// AmbientContext re-states the run-level ambient-context override on
 	// resume, for the same reason AutoMemory does.
 	AmbientContext string
+	// Codemode re-states the run-level codemode override ("", "on", "off")
+	// on resume, for the same reason AutoMemory does: it is not persisted,
+	// so a resume that says nothing falls back to the authored value —
+	// re-arming a capability the operator killed at launch.
+	// CodemodeBounds re-states the launch's bounds raise for the same
+	// reason: a resume that said nothing would run at the authored bounds
+	// again.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard re-states the run-level loop_budget_guard override on
 	// resume, for the same reason AutoMemory does: it is not persisted, so a
 	// resume that says nothing falls back to the workflow's value.
@@ -169,6 +179,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	if err := ambient.Validate(opts.AmbientContext); err != nil {
 		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
+	}
+	if !ir.ValidCodemode(opts.Codemode) {
+		return UserInputError(fmt.Errorf("--codemode: %q is not a codemode value (on|off, empty inherits the DSL)", opts.Codemode))
 	}
 
 	// Same anchor as run: a run must be resumable from the directory it was
@@ -416,6 +429,8 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			PermissionDeny:  opts.PermissionDeny,
 			AutoMemory:      opts.AutoMemory,
 			AmbientContext:  opts.AmbientContext,
+			Codemode:        opts.Codemode,
+			CodemodeBounds:  opts.CodemodeBounds,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,

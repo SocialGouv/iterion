@@ -21,7 +21,7 @@ func TestTheNodesBoundsBeatTheWorkflowsFieldByField(t *testing.T) {
 	wf := &CodemodeBounds{ToolCalls: 256, Wall: 2 * time.Minute, Memory: 1 << 29}
 	node := &CodemodeBounds{Wall: 5 * time.Minute}
 
-	got := ResolveCodemodeBounds(node, wf)
+	got := ResolveCodemodeBounds(nil, node, wf)
 	if got == nil {
 		t.Fatalf("resolution dropped both rungs")
 	}
@@ -49,8 +49,8 @@ func TestTheNodesBoundsBeatTheWorkflowsFieldByField(t *testing.T) {
 
 func TestNeitherRungDeclaringBoundsResolvesToNothing(t *testing.T) {
 	t.Parallel()
-	if got := ResolveCodemodeBounds(nil, nil); got != nil {
-		t.Errorf("ResolveCodemodeBounds(nil, nil) = %+v, want nil — an empty bound set would travel as a declaration", got)
+	if got := ResolveCodemodeBounds(nil, nil, nil); got != nil {
+		t.Errorf("ResolveCodemodeBounds(nil, nil, nil) = %+v, want nil — an empty bound set would travel as a declaration", got)
 	}
 }
 
@@ -161,7 +161,7 @@ func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
 		// that comes back right cannot have come back right by accident.
 		node.Field(i).SetInt(7)
 		asked := node.Interface().(scripthost.Limits)
-		got := ResolveCodemodeBounds(&asked, nil)
+		got := ResolveCodemodeBounds(nil, &asked, nil)
 		if got == nil {
 			t.Fatalf("%s: resolution dropped a declared bound set entirely", name)
 		}
@@ -179,7 +179,7 @@ func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
 // non-nil node and the (nil, nil) test only covers both-absent.
 func TestAWorkflowRungAloneReachesANodeThatDeclaresNothing(t *testing.T) {
 	t.Parallel()
-	got := ResolveCodemodeBounds(nil, &CodemodeBounds{ToolCalls: 256, Wall: 9 * time.Minute})
+	got := ResolveCodemodeBounds(nil, nil, &CodemodeBounds{ToolCalls: 256, Wall: 9 * time.Minute})
 	if got == nil {
 		t.Fatalf("a node declaring nothing resolved to nil: the workflow's declaration reached nothing")
 	}

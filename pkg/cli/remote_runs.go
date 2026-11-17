@@ -157,6 +157,8 @@ type RemoteRunsLaunchOptions struct {
 	Compress        string
 	AutoMemory      string
 	AmbientContext  string
+	Codemode        string
+	CodemodeBounds  *ir.CodemodeBounds
 	LoopBudgetGuard string
 	Permission      string
 	ReviewMode      string
@@ -215,6 +217,7 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"compress":          opts.Compress,
 		"auto_memory":       opts.AutoMemory,
 		"ambient_context":   opts.AmbientContext,
+		"codemode":          opts.Codemode,
 		"loop_budget_guard": opts.LoopBudgetGuard,
 		"permission":        opts.Permission,
 		"review_mode":       opts.ReviewMode,
@@ -229,6 +232,36 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	} {
 		if v != "" {
 			req[k] = v
+		}
+	}
+	// The bounds raise rides as its own object, only the fields the launch
+	// set — a zero field means "did not choose" and the server must not read
+	// it as one.
+	if b := opts.CodemodeBounds; b != nil {
+		body := map[string]any{}
+		if b.ToolCalls > 0 {
+			body["tool_calls"] = b.ToolCalls
+		}
+		if b.Wall > 0 {
+			body["wall"] = b.Wall.String()
+		}
+		if b.CPU > 0 {
+			body["cpu"] = b.CPU.String()
+		}
+		if b.Memory > 0 {
+			body["memory"] = b.Memory
+		}
+		if b.ScriptBytes > 0 {
+			body["script_bytes"] = b.ScriptBytes
+		}
+		if b.ResultBytes > 0 {
+			body["result_bytes"] = b.ResultBytes
+		}
+		if b.ToolResultBytes > 0 {
+			body["tool_result_bytes"] = b.ToolResultBytes
+		}
+		if len(body) > 0 {
+			req["codemode_bounds"] = body
 		}
 	}
 	if opts.AutoMerge {

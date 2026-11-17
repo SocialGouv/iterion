@@ -252,11 +252,14 @@ type ClawExecutor struct {
 	// node DSL > workflow DSL > ITERION_AMBIENT_CONTEXT > workspace.
 	wfAmbientContext string
 	// Codemode (ADR-165): whether a node is handed the script host's tool.
-	// The precedence is node DSL > workflow DSL > off, and there is
-	// deliberately no environment rung — ADR-132 §1 forbids the environment
-	// as a source for what a node is configured with.
+	// The precedence is run override (CLI --codemode / launch API) > node DSL
+	// > workflow DSL > off, and there is deliberately no environment rung —
+	// ADR-132 §1 forbids the environment as a source for what a node is
+	// configured with.
 	wfCodemode               string
 	wfCodemodeBounds         *ir.CodemodeBounds
+	codemodeOverride         string
+	codemodeBoundsOverride   *ir.CodemodeBounds
 	ambientContextOverride   string
 	ambientContextEnvDefault string
 	// The space, its materialisation directory and the state-root guards are
@@ -794,6 +797,25 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 // "unset, defer to DSL/env". Highest-priority input to ambient.ResolveSourced.
 func WithAmbientContextOverride(policy string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.ambientContextOverride = policy }
+}
+
+// WithCodemodeOverride sets the run-level codemode override (CLI --codemode /
+// launch API): on|off, or "" for "unset, defer to DSL". Highest-priority rung
+// of ir.ResolveCodemode, and it wins in BOTH directions: an operator may keep
+// a declared capability off for this run, and may ask for it on a node whose
+// author stayed silent — with the default bounds, since the author set none.
+func WithCodemodeOverride(mode string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeOverride = mode }
+}
+
+// WithCodemodeBoundsOverride sets the run-level bounds override (CLI
+// --codemode-* flags / launch API). Field by field, the same rule as the
+// authored rungs: a zero field means "nobody chose" and the authored value —
+// or the default, through Limits.Clamp — stands. The values still pass
+// through Limits.Clamp at spawn, so a launch asking above scripthost.Ceiling
+// is served the ceiling and told so by OnClamp.
+func WithCodemodeBoundsOverride(b *ir.CodemodeBounds) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.codemodeBoundsOverride = b }
 }
 
 // WithAutoMemoryStore injects the knowledge store the auto-memory mirror

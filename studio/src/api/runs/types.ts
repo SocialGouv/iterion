@@ -971,6 +971,18 @@ export interface CreateRunRequest {
   // ITERION_AMBIENT_CONTEXT (default workspace, ADR-119).
   ambient_context?: string;
   auto_memory?: string;
+  // codemode override ("on" | "off"; ADR-165). Empty inherits the
+  // workflow/node `codemode:` DSL — deliberately no environment rung
+  // (ADR-132 §1). It wins over the authored declarations in both
+  // directions; a backend that serves no codemode tool refuses at
+  // dispatch, and the cost preview screens it under route_refusals.
+  codemode?: string;
+  // codemode bounds raise, field by field — the HTTP twin of the CLI
+  // --codemode-* flags, in the DSL's orthography: durations as strings
+  // ("60s"), sizes and counts as raw integers. Zero/omitted fields
+  // inherit; every value still passes the platform clamp at spawn, so a
+  // launch can be warned but never bypass a bound by asking.
+  codemode_bounds?: CodemodeBoundsOverride;
   // tool-permission gate mode ("off" | "ask" | "deny"). Empty inherits
   // the workflow/node `permission:` DSL then ITERION_PERMISSION. "ask"
   // pauses for human approval on any tool not allow-listed; "deny" hard-
@@ -1029,6 +1041,19 @@ export interface CreateRunResponse {
 // notes containing `no_llm_nodes` / `no_pricing_data` / `workflow_unparseable`
 // / `workflow_errors` (a program the launch would refuse is not priced)
 // signal that the chip should be hidden rather than blocking the form.
+// The launch's codemode bounds raise (ADR-165): the seven properties the
+// `codemode:` block declares, with the DSL's orthography. A zero/omitted
+// field means the launch did not choose and the authored value stands.
+export interface CodemodeBoundsOverride {
+  tool_calls?: number;
+  wall?: string;
+  cpu?: string;
+  memory?: number;
+  script_bytes?: number;
+  result_bytes?: number;
+  tool_result_bytes?: number;
+}
+
 export interface PreviewCostNode {
   node_id: string;
   kind: "agent" | "judge";

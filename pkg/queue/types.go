@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -276,7 +277,16 @@ import (
 // itself ("budget caps"), so a stale runner silently re-making it is the
 // correctness bug the rule exists for. Hence 31 → 32, and
 // MinSchemaVersion stays 27.
-const SchemaVersion = 32
+// v=33 (2026-11-17): the launch-time codemode OVERRIDE (CM-5e, #3345) —
+// RunMessage.Codemode (on|off) and RunMessage.CodemodeBounds (field by
+// field, zero = the launch did not choose). Breaking by the additive-field
+// rule, and the direction is v21's ambient_context one, not v32's: a stale
+// runner dropping an explicit `off` would run the capability the operator
+// asked AWAY — the knob failing open, the exact direction the additive rule
+// exists to reject. A dropped bounds raise only lands tighter (defaults),
+// but the mode's off direction alone decides the bump. Server-first
+// rollout; MinSchemaVersion stays 27.
+const SchemaVersion = 33
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its
@@ -437,6 +447,17 @@ type RunMessage struct {
 	// AmbientContext is the launch-time ambient-context override (ADR-119).
 	// Empty means the caller expressed nothing and the workflow/env decide.
 	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the launch-time codemode override (ADR-165): on|off, the
+	// wire half of the capability's strongest precedence rung. Empty means
+	// the caller expressed nothing and the authored DSL decides. There is
+	// deliberately no environment half of this knob (ADR-132 §1): the launch
+	// request is the only operator surface above the DSL.
+	// CodemodeBounds is the launch's field-by-field bounds raise; a zero
+	// field means the launch did not choose, and the child still runs under
+	// scripthost.Clamp (ceiling, floor, OnClamp report) — the wire never
+	// carries a bound that bypasses the clamp.
+	Codemode       string             `json:"codemode,omitempty"`
+	CodemodeBounds *scripthost.Limits `json:"codemode_bounds,omitempty"`
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.

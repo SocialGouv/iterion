@@ -56,36 +56,48 @@ var CodemodeValues = []string{"on", "off"}
 type CodemodeBounds = scripthost.Limits
 
 // ResolveCodemodeBounds decides the bounds a node's programs run under, FIELD
-// BY FIELD: the node's value where it set one, else the workflow's, else the
-// zero that Clamp fills from scripthost.DefaultLimits.
+// BY FIELD: the launch request's value where it set one, else the node's, else
+// the workflow's, else the zero that Clamp fills from scripthost.DefaultLimits.
 //
 // Per-field rather than nearest-rung-wins, and that is a choice: the
 // workflow rung is a DEFAULT — its own field doc says so — and a workflow
 // that raises `tool_calls` for a whole bot would otherwise be erased by a
-// node that only wanted a longer `wall`. It is also the behaviour Clamp
-// already has one rung down, so the ladder is one rule applied twice rather
-// than two rules that happen to meet.
+// node that only wanted a longer `wall`. The launch rung behaves the same
+// way: an operator who was refused at a bound raises ONE bound ("ask the
+// operator to raise the bound" names the one), and the rest of whatever the
+// author chose stays. It is also the behaviour Clamp
+// already has two rungs down, so the ladder is one rule applied three times
+// rather than three rules that happen to meet.
 //
 // There is deliberately NO environment rung, for codemode's bounds as for its
 // switch: ADR-132 §1, and a bound an operator flips from a pod spec is a bound
 // no `.bot` author can read.
-func ResolveCodemodeBounds(node, workflow *CodemodeBounds) *CodemodeBounds {
-	if node == nil && workflow == nil {
+func ResolveCodemodeBounds(run, node, workflow *CodemodeBounds) *CodemodeBounds {
+	if run == nil && node == nil && workflow == nil {
 		return nil
 	}
-	pick := func(n, w int64) int64 {
+	pick := func(r, n, w int64) int64 {
+		if r > 0 {
+			return r
+		}
 		if n > 0 {
 			return n
 		}
 		return w
 	}
-	pickDur := func(n, w time.Duration) time.Duration {
+	pickDur := func(r, n, w time.Duration) time.Duration {
+		if r > 0 {
+			return r
+		}
 		if n > 0 {
 			return n
 		}
 		return w
 	}
-	var n, w CodemodeBounds
+	var r, n, w CodemodeBounds
+	if run != nil {
+		r = *run
+	}
 	if node != nil {
 		n = *node
 	}
@@ -93,13 +105,13 @@ func ResolveCodemodeBounds(node, workflow *CodemodeBounds) *CodemodeBounds {
 		w = *workflow
 	}
 	out := CodemodeBounds{
-		Wall:            pickDur(n.Wall, w.Wall),
-		CPU:             pickDur(n.CPU, w.CPU),
-		Memory:          pick(n.Memory, w.Memory),
-		ScriptBytes:     pick(n.ScriptBytes, w.ScriptBytes),
-		ResultBytes:     pick(n.ResultBytes, w.ResultBytes),
-		ToolCalls:       pick(n.ToolCalls, w.ToolCalls),
-		ToolResultBytes: pick(n.ToolResultBytes, w.ToolResultBytes),
+		Wall:            pickDur(r.Wall, n.Wall, w.Wall),
+		CPU:             pickDur(r.CPU, n.CPU, w.CPU),
+		Memory:          pick(r.Memory, n.Memory, w.Memory),
+		ScriptBytes:     pick(r.ScriptBytes, n.ScriptBytes, w.ScriptBytes),
+		ResultBytes:     pick(r.ResultBytes, n.ResultBytes, w.ResultBytes),
+		ToolCalls:       pick(r.ToolCalls, n.ToolCalls, w.ToolCalls),
+		ToolResultBytes: pick(r.ToolResultBytes, n.ToolResultBytes, w.ToolResultBytes),
 	}
 	return &out
 }
@@ -141,13 +153,32 @@ func CodemodeBoundsAboveCeiling(b *CodemodeBounds) []string {
 }
 
 // ValidCodemode reports whether v is a value the compiler accepts. "" is
-// valid and means inherit.
+// valid and means inherit. The launch rung accepts the same vocabulary: the
+// CLI flag and the API field are validated with this, so a typo cannot read
+// as "inherit" downstream of a surface that did not check.
 func ValidCodemode(v string) bool {
 	return normCodemode(v) == "" || slices.Contains(CodemodeValues, normCodemode(v))
 }
 
+// CodemodeBoundsSet reports whether the launch (or an author) set ANY field
+// of b. It is the launch's half of C348: bounds beside a run-level
+// `codemode: off` are inert, and the launch path warns rather than refuses —
+// philosophy 1 — naming the compile-time twin in its message.
+func CodemodeBoundsSet(b *CodemodeBounds) bool {
+	return b != nil && (b.Wall > 0 || b.CPU > 0 || b.Memory > 0 ||
+		b.ScriptBytes > 0 || b.ResultBytes > 0 ||
+		b.ToolCalls > 0 || b.ToolResultBytes > 0)
+}
+
 // The precedence rungs a resolved codemode can come from.
 const (
+	// CodemodeFromRun is the launch request: the operator's explicit choice
+	// for THIS run (`--codemode` on the CLI, the API's codemode field). It is
+	// not an environment rung — ADR-132 §1 forbids the environment as a
+	// source for what a node is configured with, and this travels on the
+	// launch request and the queue message, named and logged, never from a
+	// pod spec.
+	CodemodeFromRun = "launch"
 	// CodemodeFromNode is the node's own `codemode:`.
 	CodemodeFromNode = "node"
 	// CodemodeFromWorkflow is the workflow-level `codemode:`, inherited by a
@@ -168,17 +199,29 @@ type CodemodePolicy struct {
 }
 
 // ResolveCodemode decides a node's codemode from the rungs that may carry it,
-// nearest first: the node's own value, then the workflow's, then the default.
+// nearest first: the launch request's value (the run-level override, "" on
+// every path that has no launch — the compiler passes it, because a compile
+// sees no launch), then the node's own value, then the workflow's, then the
+// default.
 //
 // There is deliberately NO environment rung. ADR-132 §1 forbids the
 // environment as a source for what a node is configured with, and ADR-165
 // repeats it for this attribute: a switch an operator flips from a pod spec
-// is a switch no `.bot` author can read.
+// is a switch no `.bot` author can read. The run-level override is a
+// different thing entirely — an explicit choice on the launch request, named
+// on the wire and in the run's own record.
 //
-// An explicit `off` on the node BEATS a workflow `on`, which is the whole
+// An explicit `off` on a nearer rung BEATS a farther `on`, which is the whole
 // reason the attribute is a string and not a bool: "" is inherit, and a bool
-// cannot tell "off" from "unset".
-func ResolveCodemode(node, workflow string) CodemodePolicy {
+// cannot tell "off" from "unset". The run rung wins in BOTH directions: an
+// operator who launches a bot with `codemode: off` at run level gets a run
+// without the capability even where the author declared it, and one who asks
+// for it on a node whose author stayed silent gets it — with the default
+// bounds, since the author set none.
+func ResolveCodemode(run, node, workflow string) CodemodePolicy {
+	if normCodemode(run) != "" {
+		return CodemodePolicy{On: normCodemode(run) == "on", Source: CodemodeFromRun}
+	}
 	if normCodemode(node) != "" {
 		return CodemodePolicy{On: normCodemode(node) == "on", Source: CodemodeFromNode}
 	}
@@ -188,10 +231,11 @@ func ResolveCodemode(node, workflow string) CodemodePolicy {
 	return CodemodePolicy{On: false, Source: CodemodeFromDefault}
 }
 
-// Declared reports whether the value was written by an author rather than
-// inherited from the default. Refusing a default would make every node of a
-// fleet fail the day a registry cell changes; refusing a declaration is the
-// point.
+// Declared reports whether the value was written by an author or chosen on
+// the launch request, rather than inherited from the default. Refusing a
+// default would make every node of a fleet fail the day a registry cell
+// changes; refusing a declaration is the point — and a launch override is a
+// declaration, made by the operator who is about to pay for the run.
 func (p CodemodePolicy) Declared() bool {
 	return p.Source != "" && p.Source != CodemodeFromDefault
 }
@@ -279,12 +323,19 @@ func CodemodeRemedy(backend string) string {
 // ErrCapabilityUnsupported — and its own contract says the picker "cannot
 // drift from runtime admission".
 //
+// `run` is the launch request's codemode choice, the same rung ResolveCodemode
+// reads nearest: the screen must answer what the DISPATCH will answer, and
+// with a run-level mode override the dispatch grants on the operator's choice
+// too — an explicit `--codemode on` on a node whose author wrote nothing, or
+// an explicit `--codemode off` that keeps the tool away. Empty inherits the
+// authored ladder, the behaviour every caller before the override existed.
+//
 // `ambient_context` is the second member of this class and is NOT screened
 // either: a declared `workspace` on opencode is refused at dispatch and
 // offered by the picker. The shared screen that would ask both questions at
 // once is the right shape; this answers the one this slice introduced rather
 // than changing another capability's launch behaviour in the same change.
-func CodemodeOverrideRefusalReason(backend string, node LLMNode, wf *Workflow) string {
+func CodemodeOverrideRefusalReason(backend, run string, node LLMNode, wf *Workflow) string {
 	if node == nil || wf == nil {
 		return ""
 	}
@@ -295,7 +346,7 @@ func CodemodeOverrideRefusalReason(backend string, node LLMNode, wf *Workflow) s
 	// the dispatch then refuses, and that is the drift this screen exists to
 	// prevent. The compiler keeps its own, gap-tolerant question, for the
 	// published-contract reason stated above.
-	policy := ResolveCodemode(node.GetCodemode(), wf.Codemode)
+	policy := ResolveCodemode(run, node.GetCodemode(), wf.Codemode)
 	if !policy.On || CodemodeServedBy(backend) {
 		return ""
 	}

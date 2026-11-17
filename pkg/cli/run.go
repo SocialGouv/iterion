@@ -111,6 +111,16 @@ type RunOptions struct {
 	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; the default is
 	// workspace.
 	AmbientContext string
+	// Codemode is the run-level codemode override ("", "on", "off"; ADR-165).
+	// "" inherits the workflow/node `codemode:` DSL — there is deliberately
+	// no environment rung (ADR-132 §1). It wins over the authored rungs in
+	// BOTH directions.
+	// CodemodeBounds raises bounds for the run, field by field; a zero field
+	// means this run expressed nothing and the authored value stands. Every
+	// value still passes scripthost.Clamp at spawn, so a launch can warn but
+	// never bypass a bound by asking.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard is the run-level override for the back-edge
 	// affordability guard ("", "on", "off"). "" inherits the workflow's
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
@@ -248,6 +258,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	if err := ambient.Validate(opts.AmbientContext); err != nil {
 		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
+	}
+	if !ir.ValidCodemode(opts.Codemode) {
+		return UserInputError(fmt.Errorf("--codemode: %q is not a codemode value (on|off, empty inherits the DSL)", opts.Codemode))
 	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
@@ -713,6 +726,8 @@ func buildRunExecutor(
 		Compress:       opts.Compress,
 		AutoMemory:     opts.AutoMemory,
 		AmbientContext: opts.AmbientContext,
+		Codemode:       opts.Codemode,
+		CodemodeBounds: opts.CodemodeBounds,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.

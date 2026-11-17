@@ -160,6 +160,20 @@ type launchRunRequest struct {
 	// "workspace" | "operator" | "all", ADR-119). Empty inherits the
 	// workflow/node ambient_context: DSL then ITERION_AMBIENT_CONTEXT.
 	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the run-level codemode override ("on"|"off"; ADR-165).
+	// Empty inherits the workflow/node codemode: DSL — deliberately no
+	// environment rung (ADR-132 §1). It wins over the authored rungs in BOTH
+	// directions; a backend that serves no codemode tool refuses at
+	// dispatch, and the cost preview screens that before the run.
+	Codemode string `json:"codemode,omitempty"`
+	// CodemodeBounds raises codemode bounds for the run, field by field —
+	// the HTTP twin of the CLI --codemode-* flags, in the DSL's orthography:
+	// durations as strings ("60s"), sizes and counts as raw integers. A zero
+	// or absent field means the launch did not choose, and the authored
+	// value stands. Every value still passes scripthost.Clamp at spawn (the
+	// ceiling, the memory floor, the OnClamp report), so a request can be
+	// warned but never bypass a bound by asking.
+	CodemodeBounds *launchCodemodeBounds `json:"codemode_bounds,omitempty"`
 	// LoopBudgetGuard is the run-level override for the loop back-edge
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
@@ -245,6 +259,53 @@ type launchRunRequest struct {
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// launchCodemodeBounds is the launch request's bounds raise (ADR-165), with
+// the codemode: block's own seven properties for names — one spelling, so an
+// API caller reads the same vocabulary the DSL documents. Durations parse
+// with time.ParseDuration ("500ms" rounds up the way RLIMIT_CPU's unit
+// demands); a value the platform cannot read is a 400, never an inherit.
+type launchCodemodeBounds struct {
+	ToolCalls       int64  `json:"tool_calls,omitempty"`
+	Wall            string `json:"wall,omitempty"`
+	CPU             string `json:"cpu,omitempty"`
+	Memory          int64  `json:"memory,omitempty"`
+	ScriptBytes     int64  `json:"script_bytes,omitempty"`
+	ResultBytes     int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+}
+
+// toBounds converts the request shape to the resolver's, parsing the two
+// duration strings. An unparsable duration names the field, the way C349
+// does for the DSL.
+func (b *launchCodemodeBounds) toBounds() (*ir.CodemodeBounds, error) {
+	if b == nil {
+		return nil, nil
+	}
+	out := &ir.CodemodeBounds{
+		ToolCalls:       b.ToolCalls,
+		Memory:          b.Memory,
+		ScriptBytes:     b.ScriptBytes,
+		ResultBytes:     b.ResultBytes,
+		ToolResultBytes: b.ToolResultBytes,
+	}
+	for name, raw := range map[string]*string{"wall": &b.Wall, "cpu": &b.CPU} {
+		v := *raw
+		if v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("codemode_bounds.%s: %q is not a duration (e.g. 30s, 5m)", name, v)
+		}
+		if name == "wall" {
+			out.Wall = d
+		} else {
+			out.CPU = d
+		}
+	}
+	return out, nil
 }
 
 // launchFallback accepts the original single-object request and the ordered
@@ -398,6 +459,22 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
+		return
+	}
+	// The launch's codemode override, validated where the other string
+	// overrides are: a typo is a 400, never a silent inherit downstream of
+	// a surface that did not check. The bounds' duration strings parse here
+	// for the same reason the budget's max_duration does (a bad value must
+	// be a 400, not a run that reads it as nothing).
+	if !ir.ValidCodemode(req.Codemode) {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "codemode: %q is not a codemode value (on|off, empty inherits the DSL)", req.Codemode)
+		span.SetStatus(codes.Error, "invalid codemode")
+		return
+	}
+	codemodeBounds, err := req.CodemodeBounds.toBounds()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid codemode_bounds")
 		return
 	}
 	if req.Source != "" && strings.TrimSpace(req.BotID) != "" {
@@ -882,6 +959,8 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Compress:           req.Compress,
 		AutoMemory:         req.AutoMemory,
 		AmbientContext:     req.AmbientContext,
+		Codemode:           req.Codemode,
+		CodemodeBounds:     codemodeBounds,
 		LoopBudgetGuard:    req.LoopBudgetGuard,
 		Supervisors:        req.Supervisors,
 		Permission:         req.Permission,

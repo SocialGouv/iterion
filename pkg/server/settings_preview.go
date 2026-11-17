@@ -33,6 +33,7 @@ func buildBackendOverrideOptions(
 	runPermission string,
 	runBackend string,
 	runAmbient string,
+	runCodemode string,
 	backendNames []string,
 ) (map[string]map[string]previewBackendOption, map[string]string) {
 	if wf == nil || len(backendNames) == 0 {
@@ -105,7 +106,7 @@ func buildBackendOverrideOptions(
 				// The override wins over the source, so C339 never saw this
 				// route: this screen is the only one between the operator
 				// and a dispatch that refuses.
-				choice.UnavailableReason = ir.CodemodeOverrideRefusalReason(backend, llm, wf)
+				choice.UnavailableReason = ir.CodemodeOverrideRefusalReason(backend, runCodemode, llm, wf)
 			}
 			if choice.UnavailableReason == "" && ambientDeclared {
 				choice.UnavailableReason = ambientOverrideRefusalReason(backend, policy, ambientSource)
@@ -137,7 +138,7 @@ func buildBackendOverrideOptions(
 		// on the run-level answer, because the "inherit" choice is the
 		// node's declaration and cannot be deselected.
 		if currentBackend != "" {
-			if reason := ir.CodemodeOverrideRefusalReason(currentBackend, llm, wf); reason != "" {
+			if reason := ir.CodemodeOverrideRefusalReason(currentBackend, runCodemode, llm, wf); reason != "" {
 				choices[currentBackend] = previewBackendOption{UnavailableReason: reason}
 				routeRefusals[llm.NodeID()] = reason
 			} else if ambientDeclared {
