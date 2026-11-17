@@ -39,6 +39,11 @@ dsl: 2
 ## env fallback), so an explicit pin survives there and the twin below
 ## answers instead.
 agent converge:
+  ## No ambient MCP, like converge_gpt: the merge consumes the reviewers'
+  ## outputs, not repository services, and inheriting a repo's MCP set
+  ## makes claw reject the host board tools below as inactive (#3017).
+  mcp:
+    inherit: false
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
   ## REVIEWER): the merge is near-mechanical — dedupe, threshold, cap and
   ## report. Opus 5.5 at medium effort is the Anthropic default; this
@@ -75,11 +80,6 @@ agent converge:
   ## `openai/…` merge is the twin below, not a hint here: the twin pins claw
   ## for that id (see there).
   provider: "${ITERION_VIBE_PROVIDER_EMIT:-anthropic}"
-  ## No ambient MCP, like converge_gpt: the merge consumes the reviewers'
-  ## outputs, not repository services, and inheriting a repo's MCP set
-  ## makes claw reject the host board tools below as inactive (#3017).
-  mcp:
-    inherit: false
   output: emit_output
   ## The merged finding set a later run is handed, kept beside pr_gate's
   ## own publication (manifest `produces:` names pr_gate, because it is the
@@ -206,6 +206,13 @@ agent converge_gpt:
   ## slot's three dials instead.
 
 judge reviewer_claude:
+  ## No ambient MCP (#3283 S6): the platform's plugin servers ride every
+  ## tooled node by doctrine, ~20k tokens of schemas per request that none
+  ## of this node's steps ever calls (measured 2026-11-13: $0.19-0.44 a run,
+  ## zero mcp_* calls). The declared `tools:` list below is already the
+  ## whole surface on claw; the opt-out keeps it that way on every route.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "${ITERION_VIBE_BACKEND_CLAUDE:-claude_code}"
   ## The `anthropic` hint is LOAD-BEARING, not decorative: the wire's
@@ -226,13 +233,6 @@ judge reviewer_claude:
   ## slot, so an operator can put the slot on z.ai deliberately
   ## (ITERION_VIBE_PROVIDER_CLAUDE=zai) without re-releasing the bot.
   provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
-  ## No ambient MCP (#3283 S6): the platform's plugin servers ride every
-  ## tooled node by doctrine, ~20k tokens of schemas per request that none
-  ## of this node's steps ever calls (measured 2026-11-13: $0.19-0.44 a run,
-  ## zero mcp_* calls). The declared `tools:` list below is already the
-  ## whole surface on claw; the opt-out keeps it that way on every route.
-  mcp:
-    inherit: false
   output: review_output
   system: review_system
   user: review_user_claude
@@ -320,6 +320,11 @@ judge reviewer_claude:
       metered: true
 
 judge reviewer_gpt:
+  ## No ambient MCP (#3283 S6), like the claude reviewer: on this node's
+  ## default claw route the ambient splice would hang ~20k tokens of MCP
+  ## schemas beside the four declared tools — none of them ever called.
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-6-astra}"
   ## Explicit backend pin: "openai/gpt-6-astra" only resolves via claw.
   ## Without it the auto-resolver routes through claude_code, which
@@ -341,11 +346,6 @@ judge reviewer_gpt:
   ## `openai/` prefix is the route.
   backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
   provider: "${ITERION_VIBE_PROVIDER_GPT:-}"
-  ## No ambient MCP (#3283 S6), like the claude reviewer: on this node's
-  ## default claw route the ambient splice would hang ~20k tokens of MCP
-  ## schemas beside the four declared tools — none of them ever called.
-  mcp:
-    inherit: false
   output: review_output
   system: review_system
   user: review_user_gpt
@@ -368,16 +368,16 @@ judge reviewer_gpt:
 ## routing policy re-targets this tier's reasoning effort per forge
 ## integration, with no bot release and no process-environment dial.
 judge reviewer_claude_glance:
-  model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
-  backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
-  ## Same Anthropic-direct pin and dial as reviewer_claude — the glance
-  ## tier must not resolve onto a facade key either.
-  provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
   ## No ambient MCP, like reviewer_claude (#3283 S6): the glance reads
   ## less than the full tier by design — it inherits no schema block
   ## either.
   mcp:
     inherit: false
+  model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
+  backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
+  ## Same Anthropic-direct pin and dial as reviewer_claude — the glance
+  ## tier must not resolve onto a facade key either.
+  provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
   output: review_output
   system: review_system
   user: review_user_claude
@@ -401,14 +401,14 @@ judge reviewer_claude_glance:
       metered: true
 
 judge reviewer_gpt_glance:
+  ## No ambient MCP, like reviewer_gpt (#3283 S6).
+  mcp:
+    inherit: false
   model: "${ITERION_VIBE_MODEL_GPT_GLANCE:-openai/gpt-6-luna}"
   ## Same three dials as reviewer_gpt (see there); the provider one is
   ## shared, since it follows the family, not the tier.
   backend: "${ITERION_VIBE_BACKEND_GPT_GLANCE:-claw}"
   provider: "${ITERION_VIBE_PROVIDER_GPT:-}"
-  ## No ambient MCP, like reviewer_gpt (#3283 S6).
-  mcp:
-    inherit: false
   output: review_output
   system: review_system
   user: review_user_gpt
