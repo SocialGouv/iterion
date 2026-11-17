@@ -437,6 +437,29 @@ kind v31 had to name.
 transiently until the fleet is upgraded; a new runner accepts every message the
 old server still publishes.
 
+## v33: the launch-time codemode override
+
+**What rose.** Two RunMessage fields: `codemode` (on|off, empty = inherit the
+DSL) and `codemode_bounds` (the seven limits, field by field, zero = the
+launch did not choose). They are the wire half of the launch override the CLI
+flags (`--codemode`, `--codemode-tool-calls`, …) and the launch API carry —
+the strongest rung of the same ladders the compiled IR already serves
+(v31/v32). There is deliberately no environment half of this knob (ADR-132
+§1): the launch request is the only operator surface above the DSL. No
+`MinSchemaVersion` move: it stays **27**.
+
+**Why a bump.** The direction is v21's ambient_context one, not v32's: a
+stale runner dropping an explicit `off` would run the capability the operator
+asked AWAY — the knob failing open, the exact direction the additive-field
+rule exists to reject. A dropped bounds raise only lands tighter (the runner's
+own defaults), but the mode's off direction alone decides the bump.
+
+**Order: runner-first,** and its precondition holds by construction: the bump
+leaves `MinSchemaVersion` alone, so nothing below the new runner's minimum can
+still be queued — a new runner accepts every message the old server still
+publishes (those never carry the override), and an old runner never sees a v33
+message.
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 These two paths accompany the **server-first** default. Choose **one** of

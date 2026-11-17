@@ -514,3 +514,46 @@ never fire a flip; a flip, if ever, would be decided on the measured axes
 per workload. An operator reading this record decides per workload; the
 measurement is the base. Total measurement spend across the three runs of
 records: **$1.37 + $10.67 + ~$8**.
+
+## Amendment — 2026-11-17: the launch gets a rung above the DSL (CM-5e)
+
+The bounds an author declares are static per `.bot`; the CM-17 measurement
+recorded the failure shape that makes a LAUNCH-time rung necessary: a run
+stops at *"the script has spent its budget of 64 tool calls … ask the
+operator to raise the bound"* — and the operator had nothing to raise. The
+launch request now carries the override, the strongest rung of both ladders:
+
+- **Mode**: `--codemode on|off` / API `codemode`. It wins over node and
+  workflow DSL in BOTH directions — an operator may keep a declared
+  capability off for one run, and may arm it on a node whose author stayed
+  silent (with the default bounds, since the author set none; a backend that
+  serves no codemode tool refuses at dispatch, and the launch preview screens
+  that under `route_refusals` before the run). An explicit launch choice is a
+  declaration in the `Declared()` sense — the terminal refusal applies to it
+  exactly as to an authored one.
+- **Bounds**: `--codemode-tool-calls` and its six siblings / API
+  `codemode_bounds`, field by field with the ONE rule the authored rungs
+  already follow: a field the launch set wins, a field it left at zero keeps
+  the authored value. `ResolveCodemodeBounds` walks three rungs with the same
+  `pick` closure — "one rule applied three times rather than three rules that
+  happen to meet". The platform ceiling and the 64 MiB memory floor still
+  apply behind it: the launch can WARN above the ceiling (the compile-time
+  twin C347 named in the warning) but never bypass a bound by asking.
+- **No environment rung**, again and deliberately (ADR-132 §1): the launch
+  request and the queue message (schema v33 — the `off` direction fails open
+  on a stale runner, the v21 class) are the only carriers above the DSL.
+- **Persisted and replayed**, the direction `docs/resume.md` names for
+  ADR-based work: the launch stamps its choice on the run doc
+  (`CodemodeOverride` / `CodemodeBoundsOverride`), and every resume that
+  does not re-state it replays that decision — CLI, studio, cloud runner,
+  retry sweeper. The sibling knobs (ambient, auto-memory) carry the
+  recompute-on-purpose caveat because nothing persists them; codemode's
+  launch choice is authoritative run intent for the same reason the
+  permission gate's is, and a resume that said nothing must not re-arm a
+  capability the operator killed at launch. An explicit resume re-state
+  still wins.
+- **Launch warnings**, not refusals, for the two shapes the compiler already
+  warns about (C347 above ceiling, C348 bounds beside an off): the runtime
+  still enforces the truth, so the launch names the compile-time twin in its
+  warning instead of refusing — philosophy 1, a bound with two owners is the
+  defect, not a warning.

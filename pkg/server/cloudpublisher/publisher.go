@@ -56,6 +56,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -416,6 +417,31 @@ func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
 // since, or a pool another team has taken, refuses it. Then the dispatch
 // gate the launch carries: a pool-stamped resume routes only when its pool
 // is registry-active.
+// codemodeOrReplayed returns the resume's re-stated codemode choice, else
+// the launch's persisted one. Empty wins over empty: a run launched without
+// an override stays without one.
+func codemodeOrReplayed(restated string, prior *store.Run) string {
+	if restated != "" {
+		return restated
+	}
+	if prior == nil {
+		return ""
+	}
+	return prior.CodemodeOverride
+}
+
+// codemodeBoundsOrReplayed is codemodeOrReplayed for the bounds raise: the
+// re-stating pointer wins, the doc's persisted pointer fills the silence.
+func codemodeBoundsOrReplayed(restated *scripthost.Limits, prior *store.Run) *scripthost.Limits {
+	if restated != nil {
+		return restated
+	}
+	if prior == nil {
+		return nil
+	}
+	return prior.CodemodeBoundsOverride
+}
+
 func (p *Publisher) resumePoolRefusal(ctx context.Context, prior *store.Run) error {
 	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
 	if err != nil {
@@ -4055,6 +4081,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// resume publisher replays it onto every later queue attempt.
 		PermissionOverride: spec.Permission,
 		PermissionMode:     spec.Permission,
+		// Same doctrine for the codemode launch choice (ADR-165): stamped so
+		// every later resume — the studio's answers, the retry sweeper,
+		// surfaces that cannot re-state an override — replays the launch's
+		// decision instead of falling back to the authored DSL.
+		CodemodeOverride:       spec.Codemode,
+		CodemodeBoundsOverride: spec.CodemodeBounds,
 		// Same display parity a local launch gets from the engine: the
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
@@ -4411,6 +4443,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
 		AmbientContext:  spec.AmbientContext,
+		Codemode:        spec.Codemode,
+		CodemodeBounds:  spec.CodemodeBounds,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      spec.Permission,
@@ -5062,10 +5096,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
 		// across the compile above and the runner-side materialization.
-		BotBundle:       queueBotBundleRef(spec.BotBundle),
-		SandboxImage:    p.effectiveSandboxImage(ctx),
-		AutoMemory:      spec.AutoMemory,
-		AmbientContext:  spec.AmbientContext,
+		BotBundle:      queueBotBundleRef(spec.BotBundle),
+		SandboxImage:   p.effectiveSandboxImage(ctx),
+		AutoMemory:     spec.AutoMemory,
+		AmbientContext: spec.AmbientContext,
+		// The codemode launch choice replays from the run doc when the resume
+		// does not re-state it — the doc is the only carrier a resume surface
+		// that cannot re-state an override (the studio's answers, the retry
+		// sweeper) has. A silence here would re-arm a capability the
+		// operator killed at launch.
+		Codemode:        codemodeOrReplayed(spec.Codemode, prior),
+		CodemodeBounds:  codemodeBoundsOrReplayed(spec.CodemodeBounds, prior),
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
 		Permission:      prior.PermissionOverride,

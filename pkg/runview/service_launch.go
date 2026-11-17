@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
@@ -319,6 +320,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
+	}
+	// Same pre-flight as the launch's other string overrides: a typo would
+	// read as "inherit" in-process while every other surface refuses it.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
 	}
 	// A keyed submission's id was derived and its run judged by
 	// answerSubmission — no run, or a queued cloud run this launch
@@ -634,7 +640,58 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 		return nil, err
 	}
 	warnings = append(warnings, screenWarnings...)
+	warnings = append(warnings, codemodeLaunchWarnings(wf, spec.Codemode, spec.CodemodeBounds)...)
 	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
+}
+
+// codemodeLaunchWarnings is the launch-time half of the two compile
+// diagnostics the authored surface already carries: C348 (bounds beside an
+// off) and C347 (bounds above the ceiling). The launch rung can produce both
+// shapes, the launch is where the operator is looking, and both warn rather
+// than refuse — philosophy 1 — because the runtime still enforces the truth:
+// an off installs no tool, and Clamp serves the ceiling with an OnClamp
+// report.
+// firstNonEmpty is the resume's re-state-over-replay rule for the codemode
+// MODE: what the caller expressed, else what the doc carries.
+func firstNonEmpty(restated, replayed string) string {
+	if restated != "" {
+		return restated
+	}
+	return replayed
+}
+
+// firstNonNullBounds is firstNonEmpty for the bounds raise: the re-stating
+// pointer wins, the doc's persisted pointer fills the silence.
+func firstNonNullBounds(restated, replayed *ir.CodemodeBounds) *ir.CodemodeBounds {
+	if restated != nil {
+		return restated
+	}
+	return replayed
+}
+
+func codemodeLaunchWarnings(wf *ir.Workflow, codemode string, bounds *ir.CodemodeBounds) []string {
+	var out []string
+	// The EFFECTIVE mode decides both warnings, resolved through the same
+	// resolver the dispatch reads so the spellings cannot drift ("OFF",
+	// " off " warn exactly like "off"): the launch's choice where it made
+	// one, else the authored ladder over the whole workflow. Bounds are
+	// inert when no program can ever run — whether the off came from the
+	// launch or from the author — and a ceiling warning about bounds no
+	// child will ever carry is noise, so it stays behind the same gate.
+	effectiveOn := false
+	switch norm := ir.ResolveCodemode(codemode, "", ""); norm.Source {
+	case ir.CodemodeFromRun:
+		effectiveOn = norm.On
+	default:
+		effectiveOn = ir.CodemodeOnSomewhere(wf)
+	}
+	if ir.CodemodeBoundsSet(bounds) && !effectiveOn {
+		out = append(out, "codemode: the launch set bounds but no program runs — the mode is off (launch or authored), so the bounds are inert (C348 is the compile-time twin)")
+	}
+	if over := ir.CodemodeBoundsAboveCeiling(bounds); len(over) > 0 && effectiveOn {
+		out = append(out, fmt.Sprintf("codemode: the launch's bounds exceed the platform ceiling (%s) — where a program runs, it runs at the ceiling and the clamp report says so (C347 is the compile-time twin)", strings.Join(over, "; ")))
+	}
+	return out
 }
 
 // foldAndScreenLaunch is foldAndScreen for a launch of its own rows — the
@@ -771,6 +828,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
 		AmbientContext:  spec.AmbientContext,
+		Codemode:        spec.Codemode,
+		CodemodeBounds:  spec.CodemodeBounds,
 		Permission:      spec.Permission,
 		LocalSecrets:    s.localSecrets,
 		LocalSealer:     s.localSealer,
@@ -891,7 +950,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, codemode: spec.Codemode, codemodeBounds: spec.CodemodeBounds, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx, _ context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1029,6 +1088,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := ambient.Validate(spec.AmbientContext); err != nil {
 		return nil, fmt.Errorf("ambient_context: %w", err)
 	}
+	// The launch's pre-flight, restated: a typo on resume would read as
+	// "inherit" in-process while the CLI refuses it at parse time.
+	if !ir.ValidCodemode(spec.Codemode) {
+		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
+	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
 	// otherwise ride RunMessage.Budget through the cloud queue, fail
@@ -1121,6 +1185,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// source/status change between this point and execution still fails closed.
 	spec.BundleDir = resumeBundleDir(r, spec)
 	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+	if err == nil {
+		// The launch's codemode warnings, restated — judged on the EFFECTIVE
+		// values (the re-state coalesced over the doc's replay, exactly what
+		// the executor will carry): bounds beside an off warn inert,
+		// above-ceiling bounds warn the ceiling, silence otherwise.
+		for _, w := range codemodeLaunchWarnings(wf, firstNonEmpty(spec.Codemode, r.CodemodeOverride), firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)) {
+			s.logger.Warn("runview: resume %s: %s", spec.RunID, w)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1248,7 +1321,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// re-resolves the gate from the workflow — usually `off` — and an
 		// operator's launch-time "deny" quietly stops applying at the
 		// first resume.
-		return s.resumeDetached(parent, spec, r.PermissionOverride)
+		return s.resumeDetached(parent, spec, r.PermissionOverride, r)
 	}
 
 	_, runLogger := s.prepareRunLog(spec.RunID)
@@ -1272,6 +1345,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// executor carries it (startInProcess).
 	executorSpec.Ctx = context.WithoutCancel(parent)
 	executorSpec.AmbientContext = spec.AmbientContext
+	// A re-stating resume wins over the run doc's replay (resumeExecutorSpec
+	// already filled the replayed values); an empty re-state keeps the
+	// replayed launch decision — the fail-open direction the replay exists
+	// to close.
+	if spec.Codemode != "" {
+		executorSpec.Codemode = spec.Codemode
+	}
+	if spec.CodemodeBounds != nil {
+		executorSpec.CodemodeBounds = spec.CodemodeBounds
+	}
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
@@ -1328,6 +1411,17 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
+			// The codemode launch choice replays from the run doc, and a
+			// ResumeSpec that re-states wins — COALESCED HERE, not at the
+			// executor merge below, for a reason tour 2 proved by
+			// execution: the value this struct carries is what the engine
+			// stamps back onto the doc. Carrying the doc's value alone made
+			// a re-state one-shot — live for the resume that asked, gone
+			// from the doc, and the NEXT silent resume replayed the launch's
+			// original decision, re-arming a capability the operator had
+			// killed at that first resume.
+			codemode:       firstNonEmpty(spec.Codemode, r.CodemodeOverride),
+			codemodeBounds: firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride),
 			// The launch's sandbox choices, replayed off the record so
 			// the studio's in-process resume respects `--sandbox none`
 			// the same way the CLI resume now does (#1435).
@@ -1546,6 +1640,12 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
 		spec.LaunchModelOverrides = knownLaunchOverrides(LaunchOverridesOfRun(r))
 		spec.Permission = r.PermissionOverride
+		// The codemode launch choice replays from the run doc — the doc is
+		// the only carrier a resume surface that cannot re-state an
+		// override (the studio's answers, the retry sweeper) has. A
+		// re-stating caller overwrites both below.
+		spec.Codemode = r.CodemodeOverride
+		spec.CodemodeBounds = r.CodemodeBoundsOverride
 		spec.LLMProviders = r.LLMRoutePolicy.ProviderAllowlist()
 	}
 	return spec
@@ -2093,6 +2193,13 @@ type launchExtras struct {
 	// permission is the strongest-precedence run-level gate choice. It is
 	// supplied on launch and replayed from the run document on resume.
 	permission string
+	// codemode is the strongest-precedence run-level codemode choice
+	// (ADR-165), supplied on launch and replayed from the run document on
+	// resume — the run doc stamp (engine_run.go) is what makes the replay
+	// possible for the surfaces that cannot re-state an override (the
+	// studio's answers, the retry sweeper).
+	codemode       string
+	codemodeBounds *scripthost.Limits
 	// sandboxOverride, sandboxDefaultImage, sandboxHostStateOverride are
 	// the launch-time --sandbox / --sandbox-default-image /
 	// --sandbox-host-state choices, persisted on the run at launch
@@ -2174,6 +2281,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.permission != "" {
 		opts = append(opts, runtime.WithPermissionOverride(ex.permission))
+	}
+	if ex.codemode != "" || ex.codemodeBounds != nil {
+		opts = append(opts, runtime.WithCodemodeOverride(ex.codemode, ex.codemodeBounds))
 	}
 	if ex.budgetOverrides != nil {
 		opts = append(opts, runtime.WithBudgetOverrides(ex.budgetOverrides))

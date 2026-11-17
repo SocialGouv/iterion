@@ -111,6 +111,16 @@ type RunOptions struct {
 	// `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; the default is
 	// workspace.
 	AmbientContext string
+	// Codemode is the run-level codemode override ("", "on", "off"; ADR-165).
+	// "" inherits the workflow/node `codemode:` DSL — there is deliberately
+	// no environment rung (ADR-132 §1). It wins over the authored rungs in
+	// BOTH directions.
+	// CodemodeBounds raises bounds for the run, field by field; a zero field
+	// means this run expressed nothing and the authored value stands. Every
+	// value still passes scripthost.Clamp at spawn, so a launch can warn but
+	// never bypass a bound by asking.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
 	// LoopBudgetGuard is the run-level override for the back-edge
 	// affordability guard ("", "on", "off"). "" inherits the workflow's
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
@@ -248,6 +258,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	if err := ambient.Validate(opts.AmbientContext); err != nil {
 		return UserInputError(fmt.Errorf("--ambient-context: %w", err))
+	}
+	if !ir.ValidCodemode(opts.Codemode) {
+		return UserInputError(fmt.Errorf("--codemode: %q is not a codemode value (on|off, empty inherits the DSL)", opts.Codemode))
+	}
+	if name := ir.CodemodeBoundsNegativeField(opts.CodemodeBounds); name != "" {
+		return UserInputError(fmt.Errorf("codemode bound %s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name))
 	}
 
 	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
@@ -713,6 +729,8 @@ func buildRunExecutor(
 		Compress:       opts.Compress,
 		AutoMemory:     opts.AutoMemory,
 		AmbientContext: opts.AmbientContext,
+		Codemode:       opts.Codemode,
+		CodemodeBounds: opts.CodemodeBounds,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -1038,28 +1056,36 @@ func buildEngine(
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault(nil)
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
-	return runtime.New(wf, s, executor,
-		append(base,
-			runtime.WithWorkflowHash(wfHash),
-			runtime.WithFilePath(iterFile),
-			runtime.WithRunName(runName),
-			runtime.WithMergeInto(opts.MergeInto),
-			runtime.WithBranchName(opts.BranchName),
-			runtime.WithMergeStrategy(opts.MergeStrategy),
-			runtime.WithAutoMerge(opts.AutoMerge),
-			runtime.WithSandboxOverride(opts.Sandbox),
-			runtime.WithSandboxDefault(sandboxDefault),
-			runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
-			runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
-			runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
-			runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
-			runtime.WithRepoDevbox(opts.RepoDevbox),
-			runtime.WithBundle(bundleHandle),
-			runtime.WithPreset(opts.Preset),
-			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
-			runtime.WithSource(opts.Source),
-		)...,
+	engineOpts := append(base,
+		runtime.WithWorkflowHash(wfHash),
+		runtime.WithFilePath(iterFile),
+		runtime.WithRunName(runName),
+		runtime.WithMergeInto(opts.MergeInto),
+		runtime.WithBranchName(opts.BranchName),
+		runtime.WithMergeStrategy(opts.MergeStrategy),
+		runtime.WithAutoMerge(opts.AutoMerge),
+		runtime.WithSandboxOverride(opts.Sandbox),
+		runtime.WithSandboxDefault(sandboxDefault),
+		runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
+		runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
+		runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
+		runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
+		runtime.WithRepoDevbox(opts.RepoDevbox),
+		runtime.WithBundle(bundleHandle),
+		runtime.WithPreset(opts.Preset),
+		runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
+		runtime.WithSource(opts.Source),
+		// The launch-time override choices are durable run intent: feeding
+		// them to the ENGINE (not just the executor) is what lets its
+		// run-doc stamp persist the choice, so a later silent resume — a
+		// studio answer, the retry sweeper — replays THIS decision instead
+		// of the authored DSL (revi Rd342b0: without it a local
+		// `iterion run --codemode off` re-armed at the first studio
+		// answer). The permission gate rides beside it — same doctrine,
+		// and the same hole it had on this path.
 	)
+	engineOpts = append(engineOpts, withLaunchEngineOverrides(opts.Permission, opts.Codemode, opts.CodemodeBounds)...)
+	return runtime.New(wf, s, executor, engineOpts...)
 }
 
 // resolveWorkflow loads the workflow either via a recipe, a `.botz`
@@ -1272,6 +1298,20 @@ func runModelOverrideRows(ov model.ModelOverrides) []store.RunModelOverride {
 			Provider: r.Provider,
 			Effort:   r.Effort,
 		})
+	}
+	return out
+}
+
+// withLaunchEngineOverrides carries the run-level override choices to the
+// engine's run-doc stamp. A choice nobody made feeds no option — an absence
+// must stay an absence, never a stamped zero.
+func withLaunchEngineOverrides(permission, codemode string, bounds *ir.CodemodeBounds) []runtime.EngineOption {
+	var out []runtime.EngineOption
+	if permission != "" {
+		out = append(out, runtime.WithPermissionOverride(permission))
+	}
+	if codemode != "" || bounds != nil {
+		out = append(out, runtime.WithCodemodeOverride(codemode, bounds))
 	}
 	return out
 }

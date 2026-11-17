@@ -209,6 +209,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// children of the child's tree.
 	child.ModelOverrides = slices.Clone(parent.ModelOverrides)
 	child.LaunchModelOverrides = slices.Clone(parent.LaunchModelOverrides)
+	// The run-level override choices ride too: the fork child is the
+	// recovery path of the parent run, and an operator who killed codemode
+	// (or pinned the permission gate) at launch expects the child to start
+	// from THAT decision, not from the authored DSL the child's empty doc
+	// would replay (found by tour 2 — the permission half is a pre-existing
+	// hole of the same shape; both fixed here).
+	child.PermissionOverride = parent.PermissionOverride
+	child.CodemodeOverride = parent.CodemodeOverride
+	child.CodemodeBoundsOverride = parent.CodemodeBoundsOverride
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {

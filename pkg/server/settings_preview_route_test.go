@@ -32,7 +32,7 @@ workflow main:
 	// candidates still carry codex, so the OLD half of the screen (per
 	// candidate) already barred codex — what was missing is the route.
 	options, routeRefusals := buildBackendOverrideOptions(
-		wf, "off", "", "", []string{"claw", "codex"},
+		wf, "off", "", "", "", []string{"claw", "codex"},
 	)
 
 	if _, ok := options["a"]; !ok {
@@ -71,7 +71,7 @@ workflow main:
 	// DECLARED on the node: workspace is Refused on opencode (measured, the
 	// verdict table in pkg/backend/ambient).
 	options, routeRefusals := buildBackendOverrideOptions(
-		wf, "off", "", "", []string{"claw", "opencode"},
+		wf, "off", "", "", "", []string{"claw", "opencode"},
 	)
 
 	if options["a"]["opencode"].UnavailableReason == "" {
@@ -107,7 +107,7 @@ workflow main:
   a -> done
 `)
 	options, routeRefusals := buildBackendOverrideOptions(
-		wf, "off", "", "", []string{"claw", "opencode"},
+		wf, "off", "", "", "", []string{"claw", "opencode"},
 	)
 	if len(routeRefusals) != 0 {
 		t.Errorf("route_refusals = %v, want empty: the default is never refused", routeRefusals)
@@ -135,12 +135,56 @@ workflow main:
   a -> done
 `)
 	options, routeRefusals := buildBackendOverrideOptions(
-		wf, "off", "", "", []string{"unmeasured-backend"},
+		wf, "off", "", "", "", []string{"unmeasured-backend"},
 	)
 	if options["a"]["unmeasured-backend"].UnavailableReason != "" {
 		t.Errorf("an Unmeasured backend was barred: %q — the dispatch proceeds with a warning", options["a"]["unmeasured-backend"].UnavailableReason)
 	}
 	if len(routeRefusals) != 0 {
 		t.Errorf("route_refusals = %v, want empty for an Unmeasured backend", routeRefusals)
+	}
+}
+
+// TestTheScreenJudgesTheLaunchsCodemodeChoice (#3345) — the picker answers
+// what the DISPATCH answers, and the dispatch grants on the launch's choice
+// too: an explicit launch `on` on a node whose author stayed silent is
+// refused on a backend that serves no codemode tool (and the route screen
+// names it under route_refusals, because "inherit" cannot be deselected), an
+// explicit launch `off` on a declared node is refused nowhere.
+func TestTheScreenJudgesTheLaunchsCodemodeChoice(t *testing.T) {
+	t.Setenv("ITERION_DEFAULT_BACKEND", "codex") // the env decides the route
+	wf := compileSource(t, `agent silent:
+  model: "anthropic/claude-sonnet-4-6"
+
+agent declared:
+  model: "anthropic/claude-sonnet-4-6"
+  codemode: on
+
+workflow main:
+  entry: silent
+  silent -> declared
+  declared -> done
+`)
+	// Launch on, author silent: the run rung is nearest, so the dispatch
+	// WOULD refuse codex — the screen must say so before the operator pays.
+	_, routeRefusals := buildBackendOverrideOptions(
+		wf, "off", "", "", "on", []string{"claw", "codex"},
+	)
+	if routeRefusals["silent"] == "" {
+		t.Errorf("a launch on on a silent node screened no route refusal on codex — the screen cannot see the run rung")
+	}
+	// The declared node is refused on codex too — that is the AUTHORED
+	// declaration being screened, the behaviour the run rung did not change.
+	if routeRefusals["declared"] == "" {
+		t.Errorf("a declared on screened no route refusal on codex — the authored half of the screen regressed")
+	}
+
+	// Launch off: the operator asked the capability away — nothing is
+	// refused anywhere, not even on the node that declared on.
+	_, routeRefusals = buildBackendOverrideOptions(
+		wf, "off", "", "", "off", []string{"claw", "codex"},
+	)
+	if routeRefusals["silent"] != "" || routeRefusals["declared"] != "" {
+		t.Errorf("a launch off screened refusals %v — the operator's off keeps the tool away and the run on route", routeRefusals)
 	}
 }

@@ -347,8 +347,14 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// but not its second: declared bounds carry an operator's choice (the
 	// additive-field rule's own "budget caps"), and a runner that drops them
 	// silently re-makes it. Hence a bump, and MinSchemaVersion still 27.
-	if SchemaVersion != 32 {
-		t.Errorf("SchemaVersion = %d, want 32 (bump intentionally)", SchemaVersion)
+	// v33 adds the LAUNCH-TIME codemode OVERRIDE (mode + bounds raise). The
+	// direction is v21's ambient_context one, not v32's: a runner that drops
+	// an explicit `off` runs the capability the operator asked AWAY — the
+	// knob failing open, the exact direction the rule exists to reject. A
+	// dropped bounds raise only lands tighter, but the off direction alone
+	// decides the bump. MinSchemaVersion still 27.
+	if SchemaVersion != 33 {
+		t.Errorf("SchemaVersion = %d, want 33 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)

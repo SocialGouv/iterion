@@ -57,6 +57,7 @@ var (
 	remoteLaunchCompress        string
 	remoteLaunchAutoMemory      string
 	remoteLaunchAmbientContext  string
+	remoteLaunchCodemodeFlags   codemodeFlagSet
 	remoteLaunchLoopBudgetGuard string
 	remoteLaunchPermission      string
 	remoteLaunchReviewMode      string
@@ -95,6 +96,9 @@ var remoteRunsLaunchCmd = &cobra.Command{
 				return err
 			}
 		}
+		if name := remoteLaunchCodemodeFlags.negativeField(); name != "" {
+			return fmt.Errorf("%s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name)
+		}
 		opts := cli.RemoteRunsLaunchOptions{
 			BotID:              remoteLaunchBot,
 			Vars:               vars,
@@ -104,6 +108,8 @@ var remoteRunsLaunchCmd = &cobra.Command{
 			Compress:           remoteLaunchCompress,
 			AutoMemory:         remoteLaunchAutoMemory,
 			AmbientContext:     remoteLaunchAmbientContext,
+			Codemode:           remoteLaunchCodemodeFlags.codemode,
+			CodemodeBounds:     remoteLaunchCodemodeFlags.bounds(),
 			LoopBudgetGuard:    remoteLaunchLoopBudgetGuard,
 			Permission:         remoteLaunchPermission,
 			ReviewMode:         remoteLaunchReviewMode,
@@ -591,6 +597,7 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCompress, "compress", "", "Compression override (on|ultra|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAutoMemory, "auto-memory", "", "Auto-memory (MEMORY.md) override (on|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAmbientContext, "ambient-context", "", "Ambient-context override (none|workspace|operator|all, ADR-119)")
+	remoteLaunchCodemodeFlags.register(remoteRunsLaunchCmd.Flags())
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchLoopBudgetGuard, "loop-budget-guard", "", "Loop back-edge affordability guard override (on|off): refuse a loop iteration the budget cannot fund so the run exits through its own tail")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPermission, "permission", "", "Permission gate override (off|ask|deny)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|mono|dual)")

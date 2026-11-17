@@ -193,26 +193,31 @@ workflow w:
 // cannot be added without being judged here.
 func TestOnImpliesDeclared(t *testing.T) {
 	spellings := []string{"", "on", "off", "ON", " on ", "OFF"}
-	sawOn, sawDefault := false, false
-	for _, node := range spellings {
-		for _, workflow := range spellings {
-			p := ResolveCodemode(node, workflow)
-			if p.On && !p.Declared() {
-				t.Errorf("node=%q workflow=%q resolved to %+v: ON from a rung that is not a declaration — the single guard in validateCodemodeBackends and in codemodePolicy is no longer sufficient", node, workflow, p)
-			}
-			if p.On {
-				sawOn = true
-			}
-			if p.Source == CodemodeFromDefault {
-				sawDefault = true
+	sawOn, sawDefault, sawRun := false, false, false
+	for _, run := range spellings {
+		for _, node := range spellings {
+			for _, workflow := range spellings {
+				p := ResolveCodemode(run, node, workflow)
+				if p.On && !p.Declared() {
+					t.Errorf("run=%q node=%q workflow=%q resolved to %+v: ON from a rung that is not a declaration — the single guard in validateCodemodeBackends and in codemodePolicy is no longer sufficient", run, node, workflow, p)
+				}
 				if p.On {
-					t.Errorf("the default rung resolved ON (%+v); the default is off, and the refusal would start firing on nodes nobody wrote", p)
+					sawOn = true
+				}
+				if p.Source == CodemodeFromRun {
+					sawRun = true
+				}
+				if p.Source == CodemodeFromDefault {
+					sawDefault = true
+				}
+				if p.Source == CodemodeFromDefault && p.On {
+					t.Errorf("the default rung resolved ON (%+v); the default is off, and the refusal would start firing on nodes compiled from the default alone", p)
 				}
 			}
 		}
 	}
-	if !sawOn || !sawDefault {
-		t.Fatalf("the walk did not exercise both arms (on=%v default=%v)", sawOn, sawDefault)
+	if !sawOn || !sawDefault || !sawRun {
+		t.Fatalf("the walk did not exercise every arm (on=%v default=%v run=%v)", sawOn, sawDefault, sawRun)
 	}
 }
 
@@ -454,7 +459,7 @@ workflow w:
 		on := wf.Nodes["on_node"].(LLMNode)
 		off := wf.Nodes["off_node"].(LLMNode)
 
-		gotOn := CodemodeOverrideRefusalReason(backend, on, wf)
+		gotOn := CodemodeOverrideRefusalReason(backend, "", on, wf)
 		// The DISPATCH'S question: this screen stands between an operator
 		// and a run, so it must answer what the executor answers. Restating
 		// the compiler's predicate here is what let the first draft offer
@@ -476,7 +481,7 @@ workflow w:
 		}
 		// A node that declared `off` is not refused anywhere: the screen
 		// follows the DECLARED value, not the capability.
-		if got := CodemodeOverrideRefusalReason(backend, off, wf); got != "" {
+		if got := CodemodeOverrideRefusalReason(backend, "", off, wf); got != "" {
 			t.Errorf("backend %q refuses a node that declared codemode: off: %q", backend, got)
 		}
 	}
@@ -491,7 +496,7 @@ workflow w:
 	if CodemodeRefusedBy(outside) || CodemodeServedBy(outside) {
 		t.Fatalf("%q is no longer outside the registry; this arm needs a name that is", outside)
 	}
-	if got := CodemodeOverrideRefusalReason(outside, wf.Nodes["on_node"].(LLMNode), wf); got == "" {
+	if got := CodemodeOverrideRefusalReason(outside, "", wf.Nodes["on_node"].(LLMNode), wf); got == "" {
 		t.Error("the picker offers a backend the registry does not carry; the dispatch refuses it")
 	}
 }

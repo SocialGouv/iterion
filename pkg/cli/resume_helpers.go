@@ -212,6 +212,8 @@ func buildResumeExecutor(
 		RunFallback:       []ir.Fallback{runFallback},
 		AutoMemory:        opts.AutoMemory,
 		AmbientContext:    opts.AmbientContext,
+		Codemode:          opts.Codemode,
+		CodemodeBounds:    opts.CodemodeBounds,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.
 		BotID:          runview.BotIDForRun(r),

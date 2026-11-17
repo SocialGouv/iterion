@@ -30,6 +30,15 @@ type CredentialPreviewRequest struct {
 	// ITERION_PERMISSION, exactly as the launch would. See
 	// docs/permissions.md.
 	Permission string `json:"permission,omitempty"`
+	// Codemode is the run-level codemode override ("on"|"off"; ADR-165) the
+	// caller is about to launch with — the same field the launch request
+	// carries — so the launch warnings (C348/C347's launch-time twins)
+	// answer for THAT launch on the surface that shows them. Empty inherits
+	// the workflow/node codemode: DSL, exactly as the launch would.
+	// CodemodeBounds is the launch's field-by-field raise, in the launch
+	// request's own orthography.
+	Codemode       string                 `json:"codemode,omitempty"`
+	CodemodeBounds *CodemodeBoundsRequest `json:"codemode_bounds,omitempty"`
 	// LLMRouting is the RUN level of the adaptive-routing policy the
 	// caller is about to launch with (ADR-121) — folded as the HEAD
 	// Launcher layer so the preview's whitelist answers the launch the
@@ -305,4 +314,73 @@ func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Work
 	}
 	previewWarnings = append(previewWarnings, foldWarnings...)
 	return wf, spec, previewWarnings, nil
+}
+
+// CodemodeBoundsRequest is the launch request's bounds raise (ADR-165), with
+// the codemode: block's own seven properties for names — one spelling, so an
+// API caller reads the same vocabulary the DSL documents. Durations parse
+// with time.ParseDuration ("500ms" rounds up the way RLIMIT_CPU's unit
+// demands); a value the platform cannot read is a 400, never an inherit.
+type CodemodeBoundsRequest struct {
+	ToolCalls       int64  `json:"tool_calls,omitempty"`
+	Wall            string `json:"wall,omitempty"`
+	CPU             string `json:"cpu,omitempty"`
+	Memory          int64  `json:"memory,omitempty"`
+	ScriptBytes     int64  `json:"script_bytes,omitempty"`
+	ResultBytes     int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+}
+
+// toBounds converts the request shape to the resolver's, parsing the two
+// duration strings. An unparsable duration names the field, the way C349
+// does for the DSL.
+func (b *CodemodeBoundsRequest) ToBounds() (*ir.CodemodeBounds, error) {
+	if b == nil {
+		return nil, nil
+	}
+	// A negative bound is a typo, not a choice: the resolver's pick rule
+	// would silently read it as unset. The integer fields check before the
+	// parse; the durations check on their parsed values, so "-5s" is named
+	// exactly like a raw negative. The launch surface never silently
+	// inverts an input into an inherit.
+	if name := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
+		ToolCalls: b.ToolCalls, Memory: b.Memory,
+		ScriptBytes: b.ScriptBytes, ResultBytes: b.ResultBytes,
+		ToolResultBytes: b.ToolResultBytes,
+	}); name != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: a bound is negative — a bound is a size or a count, not a signal", name)
+	}
+	out := &ir.CodemodeBounds{
+		ToolCalls:       b.ToolCalls,
+		Memory:          b.Memory,
+		ScriptBytes:     b.ScriptBytes,
+		ResultBytes:     b.ResultBytes,
+		ToolResultBytes: b.ToolResultBytes,
+	}
+	// Ordered, never a map: two invalid durations in one request must name
+	// the SAME field on every retry (a 400 that changes its mind between
+	// identical requests reads as a different defect each time — found by
+	// tour 2: 200 identical requests named wall 177 times, cpu 23).
+	for _, pair := range []struct {
+		name string
+		raw  *string
+	}{{"wall", &b.Wall}, {"cpu", &b.CPU}} {
+		name, v := pair.name, *pair.raw
+		if v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("codemode_bounds.%s: %q is not a duration (e.g. 30s, 5m)", name, v)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("codemode_bounds.%s: %q is negative — a bound is a size or a count, not a signal", name, v)
+		}
+		if name == "wall" {
+			out.Wall = d
+		} else {
+			out.CPU = d
+		}
+	}
+	return out, nil
 }
