@@ -344,6 +344,31 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	// A capability grant the node cannot receive here is refused BY TYPE,
+	// not silently dropped (#3283 S9, backend parity: wired or
+	// typed-refused). The board / runs appends ride an already-restricted
+	// `tools:` list (buildTask's appends are gated on a non-empty union), so
+	// a node that DECLARED no surface dispatches on claw with the grant
+	// inert: no board issue, no run read — it answers as if the grant were
+	// absent, which is exactly the silent shape review-pr's merge shipped as
+	// on its gateway route (F4: `converge` tool-less on claw, no report, no
+	// board issue). `interaction:` is the one append that fires before the
+	// gate — an interaction node's union is never empty here — so its grants
+	// are served and stay out of this refusal. Declaring the surface (the
+	// way review-pr's merge twins do) is the remedy, not a route change.
+	if !task.ToolsDeclared && !task.InteractionEnabled &&
+		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
+		grants := "board"
+		if !delegate.HasBoardCapability(task.Capabilities) {
+			grants = "runs read"
+		}
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: grants + " capabilities on a node that declares no tools: list",
+			Remedy:     "declare the node's tools: list — on claw the appends that serve a capabilities grant ride an already-restricted list, so a listless node holds the grant inert (the capability-append sites of buildTask)",
+		}
+	}
+
 	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
 	// server's tools whatever the run's sandbox is, so the refusal that
 	// compensates for the drop has to read the same fact: gated on

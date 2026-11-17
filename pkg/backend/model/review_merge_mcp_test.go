@@ -40,8 +40,18 @@ func TestReviewPrGPTMergeWithRepositoryMCP(t *testing.T) {
 	if err := mcp.PrepareWorkflow(wf, project, project, store.RunTrustDefault); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(ir.NodeActiveMCPServers(wf.Nodes["reviewer_gpt"]), "repo_probe") {
-		t.Fatal("fixture did not activate the repository MCP server for the reviewer")
+	// The fixture is not silent: the repo's .mcp.json names repo_probe and
+	// the WORKFLOW's ambient set holds it. The reviewer itself inherits none
+	// of it since 0.9.25 (`mcp: inherit: false`, #3283 S6 — witnessed in
+	// depth by TestReviewPrReviewersInheritNoAmbientMCPServer), and the
+	// merger under test must keep the same emptiness beside an ACTIVE
+	// ambient set: its board grant resolves from the capabilities, never
+	// from repository servers.
+	if !slices.Contains(wf.ActiveMCPServers, "repo_probe") {
+		t.Fatal("fixture did not activate the repository MCP server on the workflow")
+	}
+	if servers := ir.NodeActiveMCPServers(wf.Nodes["reviewer_gpt"]); len(servers) != 0 {
+		t.Fatalf("reviewer_gpt inherits %v — the S6 opt-out regressed, and this fixture's premise with it", servers)
 	}
 	node := wf.Nodes["converge_gpt"]
 	f, err := extractBackendFields(node)

@@ -609,8 +609,10 @@ func TestReviewPrHandsOffThroughTheNodeBothTwinsFeed(t *testing.T) {
 //     TestReviewPRReviewerSlotsDeclareAClawSurface, which holds the four
 //     reviewer slots to a shell-naming list: on claw that list is the whole
 //     surface, and a listless reviewer reviewed nothing on the pool
-//     (SocialGouv/iterion#2705). `converge` is the deliberate exception the
-//     family selector routes around — the claw merge is `converge_gpt`;
+//     (SocialGouv/iterion#2705). `converge` declares the same three file
+//     tools its twin does (#3283 S9): its gateway cells route it to claw,
+//     where the list is dispatched whole — the shell a merge never used is
+//     narrowed off its CLI route by the same list;
 //
 // — and the class: every node reading either prompt is classified here, so
 // one added to a shared paragraph is decided instead of inheriting a sentence
@@ -633,22 +635,24 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 	wf := reviewPrWorkflow(t)
 	// What the paragraph each node reads claims. `review_system`: every
 	// reviewer slot holds a shell. `emit_system`: the merge step writes its
-	// report and files board issues, and holds a shell on the claude route
-	// alone.
+	// report and files board issues through its three declared file tools,
+	// with no shell on either route.
 	holdsShell := map[string]bool{
 		"reviewer_claude": true, "reviewer_claude_glance": true,
 		"reviewer_gpt": true, "reviewer_gpt_glance": true,
-		"converge": true, "converge_gpt": false,
+		"converge": false, "converge_gpt": false,
 	}
 	// Slots whose backend dial can take claw on some deployment: on claw the
 	// declared list IS the whole surface, so these MUST declare one naming
 	// the shell, and on the CLI default the same list narrows the roster by
 	// design (SocialGouv/iterion#2705 — the claude twins shipped listless
-	// and reviewed nothing on the pool). converge is the deliberate
-	// exception: the claw merge is converge_gpt, a node of its own.
+	// and reviewed nothing on the pool). The merge twins declare the same
+	// three file tools (#3283 S9): the gateway cells route converge itself
+	// to claw, so its list is what the claw dispatch serves.
 	wantsList := map[string]bool{
 		"reviewer_claude": true, "reviewer_claude_glance": true,
 		"reviewer_gpt": true, "reviewer_gpt_glance": true,
+		"converge": true,
 	}
 	shared := map[string]bool{"review_system": true, "emit_system": true}
 	unset := func(string) string { return "" }
@@ -686,9 +690,12 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 			}
 		case len(tools) > 0 && !wantsList[id]:
 			t.Errorf("%s declares %v on a CLI route — its paragraph reads an undeclared list as the full native roster, so the claim and the surface part ways", id, tools)
-		default:
+		case len(tools) == 0:
 			// No list on a CLI backend: the backend's whole roster.
 			shell = true
+		default:
+			// A declared list on a CLI backend: the roster narrows to it,
+			// so the list's own bash verdict stands.
 		}
 		if shell != wantShell {
 			t.Errorf("%s holds a shell = %v, want %v — the UNTRUSTED INPUT BOUNDARY paragraph it reads says the other thing, and that paragraph exists to be true about the route the model is on", id, shell, wantShell)
@@ -696,29 +703,30 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 	}
 }
 
-// TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends holds the claude-family
-// merge step's `backend:` dial to the routes the engine can actually serve it
-// on — the bound the node's own `backend:` note and the README's mono-GPT
-// section state.
+// TestReviewPrTheEmitBackendDialServesEachBackendItNames holds the
+// claude-family merge step's `backend:` dial to the routes the engine can
+// actually serve it on — the bound the node's own `backend:` note and the
+// README's mono-GPT section state.
 //
-// `converge` declares no `tools:`. A CLI backend reads an empty list as "no
-// restriction" and keeps its whole native roster; claw resolves its ToolDefs
-// from that list alone, and every capability append is gated on an
-// already-restricted list (model.assembleEffectiveTools). So the one value
-// this dial cannot take is `claw`: it leaves the merge holding nothing — no
-// report file, no board issue, and its `capabilities:` grant inert. The claw
-// merge is `converge_gpt`, which declares the list; `mono_family=gpt` selects
-// it.
+// `converge` declares its surface (`read_file`, `write_file`, `glob` — the
+// same three its twin does, #3283 S9). A CLI backend reads the list as a
+// narrowed roster; claw resolves its ToolDefs from it alone, and the board
+// capability's append rides it (model.assembleEffectiveTools). So the dial
+// may take claw since 0.9.25 — the gateway cells route this very node there —
+// and the route serves the merge WHOLE: the declared list, `todo_write`, and
+// every board tool the grant owes. Before the list was declared, claw left
+// the merge holding nothing (no report, no board issue, the grant inert) and
+// the claw merge was `converge_gpt` alone.
 //
 // Asked of the engine, per route, never re-derived: the two calls this
 // package's capability-surface class guard makes
 // (EffectiveToolNamesOnRoutes, and delegate.BoardToolsFor — the function the
 // append itself calls), plus delegate.DefaultRegistry, which is what makes a
 // name a CLI backend. The prose stating this is not parsed here; what is
-// pinned is the engine answer it rests on, so a change that makes the claw
-// route serve the grant, or stops a CLI route serving it, reddens and both
-// notes are re-read.
-func TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends(t *testing.T) {
+// pinned is the engine answer it rests on, so a change that stops a route
+// serving the declared surface or the grant reddens and both notes are
+// re-read.
+func TestReviewPrTheEmitBackendDialServesEachBackendItNames(t *testing.T) {
 	const dial = "ITERION_VIBE_BACKEND_EMIT"
 	// The subject: an operator-settable dial whose declared default is a CLI
 	// backend. A literal `backend:` here would put the node out of this
@@ -730,14 +738,13 @@ func TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends(t *testing.T) {
 	}
 
 	// claw is not in the backend registry: it is the model executor's
-	// in-process tool loop, which is why an empty `tools:` list means
-	// "nothing" there and "no restriction" on the names below.
+	// in-process tool loop. The CLI backends the node's note names are, each
+	// certified by the registry rather than asserted: one renamed or dropped
+	// reddens here.
 	reg := delegate.DefaultRegistry(nil)
 	if _, err := reg.Resolve(delegate.BackendClaw); err == nil {
-		t.Errorf("%s resolves in the backend registry — this guard reads it as the one route whose surface is the declared list alone", delegate.BackendClaw)
+		t.Errorf("%s resolves in the backend registry — this guard reads it as the route whose surface is the declared list alone", delegate.BackendClaw)
 	}
-	// The CLI backends the node's note names, each certified by the registry
-	// rather than asserted: one renamed or dropped reddens here.
 	cli := []string{delegate.BackendClaudeCode, delegate.BackendCodex, delegate.BackendPi, delegate.BackendKimi, delegate.BackendGrok, delegate.BackendOpenCode}
 	for _, name := range cli {
 		if _, err := reg.Resolve(name); err != nil {
@@ -768,30 +775,27 @@ func TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends(t *testing.T) {
 		return route, delegate.BoardToolsFor(caps), exec.EffectiveToolNamesOnRoutes(node, false, []string{route})
 	}
 
-	t.Run("pointed at claw the merge holds nothing", func(t *testing.T) {
+	t.Run("pointed at claw the merge holds its declared surface and its grant", func(t *testing.T) {
 		t.Setenv(dial, delegate.BackendClaw)
 		route, board, held := owed(t, "converge")
 		if route != delegate.BackendClaw {
 			t.Fatalf("the dial resolved %s, want %s — this arm measures the route the dial names", route, delegate.BackendClaw)
 		}
-		if len(held) != 0 {
-			t.Errorf("converge holds %v on claw — the note says the dial leaves it with no tool there, and the README tells the pre-0.9.16 profile to drop that pin because of it", held)
-		}
-		for _, want := range board {
-			if slices.Contains(held, want) {
-				t.Errorf("converge holds %s on claw: the capability append fired on an undeclared list, and the note saying the grant is inert there is now false", want)
+		for _, want := range append([]string{"read_file", "write_file", "glob"}, board...) {
+			if !slices.Contains(held, want) {
+				t.Errorf("converge misses %s on claw (%v) — the route the gateway cells send it on no longer serves the merge's own surface or its grant", want, held)
 			}
 		}
 	})
 
-	t.Run("the twin serves that route with its list declared", func(t *testing.T) {
+	t.Run("the twin serves that route with the same list", func(t *testing.T) {
 		route, board, held := owed(t, "converge_gpt")
 		if route != delegate.BackendClaw {
-			t.Fatalf("converge_gpt resolves %s, want %s — it is the claw merge the claude twin's dial defers to", route, delegate.BackendClaw)
+			t.Fatalf("converge_gpt resolves %s, want %s — it is the mono-gpt merge twin", route, delegate.BackendClaw)
 		}
-		for _, want := range board {
+		for _, want := range append([]string{"read_file", "write_file", "glob"}, board...) {
 			if !slices.Contains(held, want) {
-				t.Errorf("converge_gpt misses %s on claw — the route the claude twin's note defers to no longer serves the grant", want)
+				t.Errorf("converge_gpt misses %s on claw — the twin's route no longer serves the grant", want)
 			}
 		}
 	})
@@ -802,10 +806,13 @@ func TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends(t *testing.T) {
 			wf := reviewPrWorkflow(t)
 			node := wf.Nodes["converge"]
 			if route := model.NewProgramExecutor(wf).EffectiveBackendName(node); route != name {
-				t.Errorf("the dial set to %q resolved %q — the note says it moves the merge between the CLI backends", name, route)
+				t.Errorf("the dial set to %q resolved %q — the note says it moves the merge between the backends", name, route)
 			}
-			if tools := node.(ir.LLMNode).GetTools(); len(tools) != 0 {
-				t.Errorf("converge declares %v — an undeclared list is what makes a CLI route unrestricted and the claw route empty, which is the whole bound this guard states", tools)
+			tools := node.(ir.LLMNode).GetTools()
+			for _, want := range []string{"read_file", "write_file", "glob"} {
+				if !slices.Contains(tools, want) {
+					t.Errorf("converge declares %v — without the three file tools the CLI route narrows past the merge's own work", tools)
+				}
 			}
 		})
 	}
