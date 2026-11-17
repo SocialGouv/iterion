@@ -22,11 +22,17 @@ function ScopedCredentialPreview({ teamID }: { teamID: string }) {
   const [source, setSource] = useState("personal");
   const [botID, setBotID] = useState("");
   const [webhookID, setWebhookID] = useState("");
+  const [reviewMode, setReviewMode] = useState("");
   const bots = useQuery({ queryKey: ["credential-preview-bots", teamID], queryFn: listBots });
   const hooks = useQuery({ queryKey: ["credential-preview-webhooks", teamID], queryFn: () => listWebhooks(teamID), enabled: source === "webhook" });
   const input: CredentialPreviewRequest = {
     source: source === "webhook" ? { kind: source, id: webhookID } : { kind: source },
     ...(botID ? { bot_id: botID } : {}),
+    // The run-level review topology the caller is about to launch with: a
+    // mono PIN is a credential demand, and an explicit dual suppresses it, so
+    // a preview without it answers a plan the launch never seals. The webhook
+    // lane fixes its own topology, so the field is only offered for mine.
+    ...(source === "personal" && reviewMode ? { review_mode: reviewMode } : {}),
   };
   const preview = useMutation({ mutationFn: (request: CredentialPreviewRequest) => previewCredentials(teamID, request) });
   // A result describes one source and bot. Editing either immediately hides
@@ -45,7 +51,7 @@ function ScopedCredentialPreview({ teamID }: { teamID: string }) {
     </div>
     <form className="flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); if (ready) preview.mutate(input); }}>
       <label className="min-w-44 text-xs text-fg-muted">Launch source
-        <Select aria-label="Credential preview launch source" value={source} onChange={(event) => { setSource(event.target.value); setBotID(""); }}>
+        <Select aria-label="Credential preview launch source" value={source} onChange={(event) => { setSource(event.target.value); setBotID(""); setReviewMode(""); }}>
           <option value="personal">Launched by me</option>
           <option value="webhook">An existing webhook</option>
         </Select>
@@ -54,6 +60,13 @@ function ScopedCredentialPreview({ teamID }: { teamID: string }) {
         <Select aria-label="Credential preview webhook" value={webhookID} onChange={(event) => { setWebhookID(event.target.value); setBotID(""); }}>
           <option value="">Choose a webhook</option>
           {(hooks.data ?? []).map((hook) => <option key={hook.id} value={hook.id}>{hook.name}{hook.enabled ? "" : " (disabled)"}</option>)}
+        </Select>
+      </label>}
+      {source === "personal" && <label className="min-w-44 text-xs text-fg-muted">Review topology
+        <Select aria-label="Credential preview review topology" value={reviewMode} onChange={(event) => setReviewMode(event.target.value)}>
+          <option value="">The bot's own default</option>
+          <option value="mono">mono</option>
+          <option value="dual">dual</option>
         </Select>
       </label>}
       <label className="min-w-44 text-xs text-fg-muted">Bot

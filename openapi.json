@@ -1183,6 +1183,9 @@
           "permission": {
             "type": "string"
           },
+          "review_mode": {
+            "type": "string"
+          },
           "source": {
             "$ref": "#/components/schemas/CredentialPreviewSource"
           },

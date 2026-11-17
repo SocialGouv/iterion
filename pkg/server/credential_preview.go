@@ -69,6 +69,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	}
 	spec.Launch.Codemode = req.Codemode
 	spec.Launch.CodemodeBounds = codemodeBounds
+	// The review-mode knob rides the same way: a mono pin widens the
+	// credential wants (and an explicit dual suppresses it), so a preview
+	// without it would answer a plan the launch never seals.
+	spec.Launch.ReviewMode = strings.TrimSpace(req.ReviewMode)
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer
@@ -164,6 +168,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		}
 		if len(req.Vars) > 0 {
 			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
+			return
+		}
+		if strings.TrimSpace(req.ReviewMode) != "" {
+			httpError(w, http.StatusBadRequest, "webhook source takes its review topology from the integration's own vars; a caller-supplied review_mode is not part of that launch")
 			return
 		}
 		// A fork-lane config launches untrusted targets only (the gesture),
