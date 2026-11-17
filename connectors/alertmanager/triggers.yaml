@@ -1,0 +1,95 @@
+schema_version: 1
+connector: alertmanager
+
+# The inbound contract of a Prometheus Alertmanager webhook receiver
+# (https://prometheus.io/docs/alerting/latest/configuration/#webhook_config):
+#
+#   * Alertmanager signs nothing. The receiver's own `http_config` presents a
+#     credential, and the operator chooses which one — `authorization`
+#     (bearer) or `basic_auth`. An ingress declares ONE scheme, so this
+#     package declares bearer; setup.md shows the exact receiver stanza.
+#   * The body is an alert GROUP: `status` (`firing` or `resolved`),
+#     `groupKey`, `commonLabels`, `commonAnnotations`, `externalURL`, and
+#     `alerts` — each with `labels`, `annotations`, `startsAt`, `endsAt`,
+#     `generatorURL` and `fingerprint`.
+#   * There is no replay window to enforce: no timestamp is signed and none
+#     travels in the body. The body digest is the whole of the replay
+#     protection — Alertmanager re-sends the SAME group while it stays
+#     firing, which the digest absorbs.
+ingress:
+  body: json
+  credential:
+    scheme: bearer
+    in: header
+    # A bearer credential travels in the Authorization header; naming it
+    # keeps the one reader of `credential.name` honest about where the proof
+    # is.
+    name: Authorization
+    # iterion mints the token and gives it to the operator to paste into the
+    # receiver's http_config.
+    secret: minted
+  # The group's status IS the vendor's event name: `firing` or `resolved`.
+  event: { from: 'payload.status' }
+  # `groupKey` is Alertmanager's own deduplication key for the group — the
+  # stable identity across every re-send of the same notification. It is
+  # metadata here: an unsigned body member, so it never dedups a delivery.
+  delivery_id: { from: 'payload.groupKey' }
+  ack: { status: 200 }
+
+triggers:
+  - id: alertmanager.alert.firing
+    event: firing
+    display_name: Alerts firing
+    description: >-
+      A notification group whose status is `firing`. Alertmanager sends the
+      same group again while its alerts keep firing; `group_key` names that
+      group across every re-send.
+    outputs:
+      - name: subject
+        from: 'if(payload.commonAnnotations.summary, payload.commonAnnotations.summary, payload.groupKey)'
+      - { name: subject_state, from: 'payload.status' }
+      - { name: severity, from: 'payload.commonLabels.severity' }
+      # The stable identity of the group: Alertmanager's own dedup key. It
+      # is what a subscription maps to `thread`, so re-notifications of one
+      # group reach one conversation.
+      - { name: group_key, from: 'payload.groupKey' }
+      - { name: thread, from: 'payload.groupKey' }
+      - { name: external_url, from: 'payload.externalURL' }
+      - { name: receiver, from: 'payload.receiver' }
+      - { name: alert_count, from: 'length(payload.alerts)', type: int }
+      - { name: alerts, from: 'payload.alerts', type: list }
+      # No single alert is "the" alert: `alerts` has no guaranteed order, so
+      # the fingerprints are exposed as a list, never `alerts[0]`.
+      - { name: fingerprints, from: 'map(payload.alerts, a => a.fingerprint)', type: list }
+      - { name: common_labels, from: 'payload.commonLabels', type: map }
+    filters:
+      - id: severity
+        from: 'payload.commonLabels.severity'
+        type: string
+    sample: samples/alerts-firing.json
+
+  - id: alertmanager.alert.resolved
+    event: resolved
+    display_name: Alerts resolved
+    description: >-
+      A notification group whose status is `resolved` — Alertmanager sends it
+      once the group's alerts have all recovered. The `alerts` list carries
+      each alert's `endsAt`.
+    outputs:
+      - name: subject
+        from: 'if(payload.commonAnnotations.summary, payload.commonAnnotations.summary, payload.groupKey)'
+      - { name: subject_state, from: 'payload.status' }
+      - { name: severity, from: 'payload.commonLabels.severity' }
+      - { name: group_key, from: 'payload.groupKey' }
+      - { name: thread, from: 'payload.groupKey' }
+      - { name: external_url, from: 'payload.externalURL' }
+      - { name: receiver, from: 'payload.receiver' }
+      - { name: alert_count, from: 'length(payload.alerts)', type: int }
+      - { name: alerts, from: 'payload.alerts', type: list }
+      - { name: fingerprints, from: 'map(payload.alerts, a => a.fingerprint)', type: list }
+      - { name: common_labels, from: 'payload.commonLabels', type: map }
+    filters:
+      - id: severity
+        from: 'payload.commonLabels.severity'
+        type: string
+    sample: samples/alerts-resolved.json

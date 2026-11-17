@@ -1,6 +1,7 @@
 package connectors_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -32,8 +33,13 @@ type vendorDouble struct {
 	// signingSecret maps the secret iterion holds onto the key the vendor
 	// signs with. Most vendors sign with it directly; a few derive it.
 	sign func(secret string, now time.Time, body []byte) map[string]string
+	// stamp frames the body the way the vendor does before signing it: the
+	// instant a vendor carries IN the body (Linear) and the credential a
+	// vendor carries there (Mattermost). Applied before signing and before
+	// reading, so the signature covers the bytes the lane verifies.
+	stamp func(secret string, now time.Time, body []byte) []byte
 	// request adds what the signature does not carry and the vendor always
-	// sends (Slack's timestamp header, Linear's `webhookTimestamp`).
+	// sends as a header.
 	request func(now time.Time, payload map[string]any) map[string]string
 	// installation is the value the delivery names for the ingress to match.
 	installation string
@@ -104,15 +110,21 @@ func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 							t.Errorf("output %q is absent from the event: %s", o.Name, d.Event)
 						}
 					}
-					// A body the signature does not cover is refused before any
-					// trigger is read.
-					header.Set(vendorSignatureHeader(t, p), "00")
+					// The credential never reaches the event a run sees.
+					if bytes.Contains(d.Event, []byte(witnessSecret)) {
+						t.Errorf("the event carries the credential: %s", d.Event)
+					}
+					// A credential that no longer proves anything is refused
+					// before any trigger is read — forged at the site it
+					// travels on, which is a header for most vendors and a
+					// body field for Mattermost.
+					forgedBody, forgedHeader := forgeCredential(t, p, body, header)
 					if _, err := ingress.Read(ingress.Request{
 						Ingress: p.Ingress, Triggers: p.Triggers, Secret: []byte(witnessSecret),
 						Installation: vendorDoubles[id].installation,
-						Body:         body, Header: header, Now: now,
+						Body:         forgedBody, Header: forgedHeader, Now: now,
 					}); !errors.Is(err, ingress.ErrUnauthenticated) {
-						t.Fatalf("a forged signature answered %v, want ErrUnauthenticated", err)
+						t.Fatalf("a forged credential answered %v, want ErrUnauthenticated", err)
 					}
 				})
 			}
@@ -210,6 +222,9 @@ func signSample(t *testing.T, id string, p *spec.Package, trig spec.Trigger) (bo
 	}
 	now = time.Now().UTC().Truncate(time.Second)
 	d := vendorDoubles[id]
+	if d.stamp != nil {
+		body = d.stamp(witnessSecret, now, body)
+	}
 	for k, v := range d.sign(witnessSecret, now, body) {
 		header.Set(k, v)
 	}
@@ -221,14 +236,36 @@ func signSample(t *testing.T, id string, p *spec.Package, trig spec.Trigger) (bo
 	return body, header, now
 }
 
-// vendorSignatureHeader names the header the package's ingress reads its
-// signature from, so the forgery case tampers with the value the lane looks at.
-func vendorSignatureHeader(t *testing.T, p *spec.Package) string {
+// forgeCredential returns the same delivery with its credential replaced by a
+// value that proves nothing, tampered with WHERE THE CREDENTIAL TRAVELS: a
+// header for an hmac or a bearer, a body field for a token a vendor posts in
+// the body. A forger that only knew headers would leave the body-carried case
+// unwitnessed — the very case where the whole proof is a plain body member.
+func forgeCredential(t *testing.T, p *spec.Package, body []byte, header http.Header) ([]byte, http.Header) {
 	t.Helper()
-	if p.Ingress.Credential.In != "header" || p.Ingress.Credential.Name == "" {
-		t.Fatalf("the package's signature does not travel in a header: %+v", p.Ingress.Credential)
+	c := p.Ingress.Credential
+	if c.Name == "" {
+		t.Fatalf("the credential names no field: %+v", c)
 	}
-	return p.Ingress.Credential.Name
+	switch c.In {
+	case "header", "":
+		forged := header.Clone()
+		forged.Set(c.Name, "00")
+		return body, forged
+	case "body":
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("the delivery body is not an object: %v", err)
+		}
+		m[c.Name] = "00"
+		forged, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("encode the forged body: %v", err)
+		}
+		return forged, header.Clone()
+	}
+	t.Fatalf("no forgery site for credential.in = %q", c.In)
+	return nil, nil
 }
 
 // TestTheSampleFilesAreTheOnesThePackageLoads keeps a shipped sample and the

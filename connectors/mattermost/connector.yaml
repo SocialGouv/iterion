@@ -1,0 +1,42 @@
+schema_version: 1
+id: mattermost
+display_name: Mattermost
+description: >-
+  Mattermost — messages posted to a channel of a self-hosted team, delivered
+  by the instance's outgoing webhook.
+version: 0.1.0
+
+# Hand-authored from Mattermost's outgoing-webhook page
+# (https://docs.mattermost.com/developers/integrate/webhooks/outgoing) and the
+# payload type that page is generated from
+# (server/public/model/outgoing_webhook.go). No operation ships with this
+# package: Mattermost's own API description is CC BY-NC-SA (ADR-098, surveyed
+# 2026-09-10), so nothing derived from it may travel in iterion's catalog —
+# only the inbound half, which is iterion's own work.
+provenance:
+  spec_license: CC-BY-NC-SA-3.0
+  redistributable: false
+  generated_at: "2026-11-17T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # Every deployment is its own origin, so there is no default host to assume.
+  path_prefix: /api/v4
+  operator_supplied: true
+
+auth:
+  - id: token
+    kind: bearer
+    display_name: Access token
+    description: >-
+      A personal access token or a bot account's token issued by the
+      instance. Mattermost's v4 API reads it from the Authorization header as
+      a bearer credential
+      (server/channels/app/authentication.go, ParseAuthTokenFromRequest).
+maturity: experimental
+category: chat
+brand_color: "#0058CC"
+icon: icon.svg
+default_security:
+  - terms:
+      - scheme: token

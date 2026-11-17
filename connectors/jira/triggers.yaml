@@ -1,0 +1,184 @@
+schema_version: 1
+connector: jira
+
+# The inbound contract, as Jira Cloud signs and frames a delivery
+# (https://developer.atlassian.com/cloud/jira/platform/webhooks/).
+ingress:
+  body: json
+  credential:
+    scheme: hmac-sha256
+    in: header
+    name: X-Hub-Signature
+    encoding: hex
+    # Jira sends `method=signature`; for SHA-256 that is `sha256=<hex>`.
+    prefix: "sha256="
+    # The HMAC-SHA256 is computed over the raw request body.
+    signed: "{body}"
+    # The secret is the webhook's own secret: iterion mints it and shows it
+    # once, and the operator pastes it into the webhook's Secret field.
+    secret: minted
+  # Jira signs no timestamp: the payload's `timestamp` is part of the signed
+  # body, and the body digest is what deduplicates retries. The replay window
+  # the ADR's matrix promises for this vendor is therefore the digest alone.
+  #
+  # The event name travels in the BODY, not a header: `jira:issue_created`,
+  # `comment_created`, …
+  event: { from: 'payload.webhookEvent' }
+  # Jira marks every delivery with a per-webhook identifier, stable across
+  # retries. It is metadata only: the signed body's digest is the identity.
+  delivery_id: { header: X-Atlassian-Webhook-Identifier }
+  headers: [X-Atlassian-Webhook-Identifier]
+  # No installation is declared. Jira's payload carries no stable site id
+  # (`baseUrl` does not exist; only absolute REST `self` URLs that embed the
+  # host), and unlike Slack's single shared request URL, a Jira webhook is
+  # configured per site in that site's admin — the ingress URL already names
+  # the only site it serves.
+  ack: { status: 200 }
+
+triggers:
+  - id: jira.issue.created
+    event: "jira:issue_created"
+    display_name: Issue created
+    description: >-
+      An issue was created. The event names itself in `webhookEvent`, the issue
+      and its creator travel in `issue` and `user`, and the project key is
+      `issue.fields.project.key`.
+    outputs:
+      - { name: subject, from: 'payload.issue.fields.summary' }
+      - { name: subject_state, from: 'payload.issue.fields.status.name' }
+      - { name: actor, from: 'payload.user.accountId' }
+      - { name: repo, from: 'payload.issue.fields.project.key' }
+      - { name: thread, from: 'payload.issue.key' }
+      - { name: labels, from: 'payload.issue.fields.labels', type: list }
+      - { name: issue_key, from: 'payload.issue.key' }
+      - { name: issue_id, from: 'payload.issue.id' }
+      - { name: issue_type, from: 'payload.issue.fields.issuetype.name' }
+      - { name: project_key, from: 'payload.issue.fields.project.key' }
+      - { name: project_name, from: 'payload.issue.fields.project.name' }
+      - { name: issue_url, from: 'payload.issue.self' }
+      - { name: created_at, from: 'payload.issue.fields.created' }
+    filters:
+      - { id: project, from: 'payload.issue.fields.project.key', type: string }
+      - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
+      - { id: status, from: 'payload.issue.fields.status.name', type: string }
+    sample: samples/issue-created.json
+
+  - id: jira.issue.updated
+    event: "jira:issue_updated"
+    display_name: Issue updated
+    description: >-
+      An issue changed — a transition, an edit, an assignment. Only this event
+      carries `changelog.items`, one entry per changed field, which
+      `updated_fields` reduces to the field names.
+    outputs:
+      - { name: subject, from: 'payload.issue.fields.summary' }
+      - { name: subject_state, from: 'payload.issue.fields.status.name' }
+      - { name: actor, from: 'payload.user.accountId' }
+      - { name: repo, from: 'payload.issue.fields.project.key' }
+      - { name: thread, from: 'payload.issue.key' }
+      - { name: labels, from: 'payload.issue.fields.labels', type: list }
+      - { name: issue_key, from: 'payload.issue.key' }
+      - { name: issue_type, from: 'payload.issue.fields.issuetype.name' }
+      - { name: project_key, from: 'payload.issue.fields.project.key' }
+      - { name: issue_url, from: 'payload.issue.self' }
+      - { name: updated_at, from: 'payload.issue.fields.updated' }
+      - { name: updated_fields, from: 'map(payload.changelog.items, i => i.field)', type: list }
+    filters:
+      - { id: project, from: 'payload.issue.fields.project.key', type: string }
+      - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
+      - { id: status, from: 'payload.issue.fields.status.name', type: string }
+    sample: samples/issue-updated.json
+
+  - id: jira.comment.created
+    event: comment_created
+    display_name: Comment created
+    description: >-
+      A comment was added to an issue. The comment object carries its author,
+      id and body (Atlassian Document Format on Jira Cloud); the parent issue
+      carries the key and the project.
+    outputs:
+      - { name: subject, from: 'payload.issue.fields.summary' }
+      - { name: subject_state, from: 'payload.issue.fields.status.name' }
+      - { name: actor, from: 'payload.user.accountId' }
+      - { name: repo, from: 'payload.issue.fields.project.key' }
+      - { name: thread, from: 'payload.issue.key' }
+      - { name: labels, from: 'payload.issue.fields.labels', type: list }
+      - { name: issue_key, from: 'payload.issue.key' }
+      - { name: project_key, from: 'payload.issue.fields.project.key' }
+      - { name: comment_id, from: 'payload.comment.id' }
+      - name: comment_body
+        from: 'payload.comment.body'
+        type: map
+        description: >-
+          The comment body in Atlassian Document Format (a map). Jira Server and
+          Data Center send a plain string instead.
+      - { name: comment_url, from: 'payload.comment.self' }
+      - { name: author_account_id, from: 'payload.comment.author.accountId' }
+      - { name: author_display_name, from: 'payload.comment.author.displayName' }
+    filters:
+      - { id: project, from: 'payload.issue.fields.project.key', type: string }
+      - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
+      - { id: status, from: 'payload.issue.fields.status.name', type: string }
+    sample: samples/comment-created.json
+
+  - id: jira.comment.updated
+    event: comment_updated
+    display_name: Comment updated
+    description: >-
+      An existing comment was edited. `actor` is the editor, `author_account_id`
+      the comment's original author, which differ when someone else fixed the
+      text.
+    outputs:
+      - { name: subject, from: 'payload.issue.fields.summary' }
+      - { name: subject_state, from: 'payload.issue.fields.status.name' }
+      - { name: actor, from: 'payload.user.accountId' }
+      - { name: repo, from: 'payload.issue.fields.project.key' }
+      - { name: thread, from: 'payload.issue.key' }
+      - { name: labels, from: 'payload.issue.fields.labels', type: list }
+      - { name: issue_key, from: 'payload.issue.key' }
+      - { name: project_key, from: 'payload.issue.fields.project.key' }
+      - { name: comment_id, from: 'payload.comment.id' }
+      - name: comment_body
+        from: 'payload.comment.body'
+        type: map
+        description: >-
+          The edited body in Atlassian Document Format (a map). Jira Server and
+          Data Center send a plain string instead.
+      - { name: comment_url, from: 'payload.comment.self' }
+      - { name: author_account_id, from: 'payload.comment.author.accountId' }
+      - { name: editor_account_id, from: 'payload.comment.updateAuthor.accountId' }
+    filters:
+      - { id: project, from: 'payload.issue.fields.project.key', type: string }
+      - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
+      - { id: status, from: 'payload.issue.fields.status.name', type: string }
+    sample: samples/comment-updated.json
+
+  - id: jira.comment.deleted
+    event: comment_deleted
+    display_name: Comment deleted
+    description: >-
+      A comment was deleted. The delivery still carries the comment object, so
+      a bot can read the text that was removed and the issue it belonged to.
+    outputs:
+      - { name: subject, from: 'payload.issue.fields.summary' }
+      - { name: subject_state, from: 'payload.issue.fields.status.name' }
+      - { name: actor, from: 'payload.user.accountId' }
+      - { name: repo, from: 'payload.issue.fields.project.key' }
+      - { name: thread, from: 'payload.issue.key' }
+      - { name: labels, from: 'payload.issue.fields.labels', type: list }
+      - { name: issue_key, from: 'payload.issue.key' }
+      - { name: project_key, from: 'payload.issue.fields.project.key' }
+      - { name: comment_id, from: 'payload.comment.id' }
+      - name: comment_body
+        from: 'payload.comment.body'
+        type: map
+        description: >-
+          The deleted body in Atlassian Document Format (a map). Jira Server and
+          Data Center send a plain string instead.
+      - { name: comment_url, from: 'payload.comment.self' }
+      - { name: author_account_id, from: 'payload.comment.author.accountId' }
+    filters:
+      - { id: project, from: 'payload.issue.fields.project.key', type: string }
+      - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
+      - { id: status, from: 'payload.issue.fields.status.name', type: string }
+    sample: samples/comment-deleted.json

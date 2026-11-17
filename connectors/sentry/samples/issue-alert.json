@@ -1,0 +1,42 @@
+{
+  "headers": {
+    "Content-Type": "application/json",
+    "Sentry-Hook-Resource": "issue",
+    "Request-ID": "f2b6b0c4e1a84b7b9a2c3d4e5f607182"
+  },
+  "payload": {
+    "action": "created",
+    "installation": {
+      "uuid": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    },
+    "actor": {
+      "type": "user",
+      "id": "873120",
+      "name": "Jane Doe"
+    },
+    "data": {
+      "issue": {
+        "id": 5566778899,
+        "shortId": "BACKEND-4F",
+        "title": "TypeError: cannot read property 'intake' of undefined",
+        "culprit": "handleDelivery in api/intake/worker.py",
+        "permalink": "https://acme.sentry.io/issues/5566778899/",
+        "level": "error",
+        "status": "unresolved",
+        "firstSeen": "2026-11-17T08:12:04.321000+00:00",
+        "lastSeen": "2026-11-17T09:41:55.004000+00:00",
+        "count": "37",
+        "userCount": 12,
+        "project": {
+          "id": 4509876543,
+          "slug": "backend",
+          "name": "backend"
+        },
+        "metadata": {
+          "title": "TypeError: cannot read property 'intake' of undefined"
+        },
+        "type": "default"
+      }
+    }
+  }
+}

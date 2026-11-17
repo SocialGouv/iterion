@@ -164,11 +164,22 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	if ing["credential_scheme"] != "hmac-sha256" || ing["secret_origin"] != "minted" {
 		t.Fatalf("probe ingress: %v", ing)
 	}
-	// The baked forgejo ships a trigger but no ingress block: the lane
-	// cannot bind it, so listing it would end every plug in the bind's
-	// refusal — it returns when its triggers.yaml declares its ingress.
-	if _, ok := byID["forgejo"]; ok {
-		t.Fatal("a package without an ingress block is listed as pluggable")
+	// The baked forgejo declares both a trigger and the ingress a delivery
+	// is read through, so it is pluggable and listed; the outbound-only
+	// fixture above is not, which is the rule these two cases bracket.
+	shipped := []string{"forgejo", "slack", "jira", "linear", "mattermost", "sentry", "alertmanager"}
+	for _, id := range shipped {
+		e, ok := byID[id]
+		if !ok {
+			t.Fatalf("the shipped source %q is not in the catalog: %v", id, byID)
+		}
+		if e["kind"] != "connector" || e["tier"] != "baked" {
+			t.Fatalf("%s card: %v", id, e)
+		}
+		ing, ok := e["ingress"].(map[string]any)
+		if !ok || ing["credential_scheme"] == "" || ing["secret_origin"] == "" {
+			t.Fatalf("%s ingress summary: %v", id, e["ingress"])
+		}
 	}
 	if _, ok := byID["tool"]; ok {
 		t.Fatal("an outbound-only package is listed as a source")
@@ -179,8 +190,9 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 			t.Fatalf("builtin %s: got %v", b, e)
 		}
 	}
-	if len(byID) != 5 {
-		t.Fatalf("catalog holds %d entries, want 5: %v", len(byID), byID)
+	// probe + the four built-in families + the seven shipped sources.
+	if len(byID) != 12 {
+		t.Fatalf("catalog holds %d entries, want 12: %v", len(byID), byID)
 	}
 }
 
