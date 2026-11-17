@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.6.0](https://github.com/SocialGouv/iterion/compare/v7.5.0...v7.6.0) (2026-11-17)
+
+### Features
+
+* **revi:** converse precomputes the diff scope; the loop reads at a 20-step bound from a byte-stable prompt ([#3283](https://github.com/SocialGouv/iterion/issues/3283)) ([#3344](https://github.com/SocialGouv/iterion/issues/3344)) ([6fe5be8](https://github.com/SocialGouv/iterion/commit/6fe5be84dae7c23045c8c4e2a5b29e77f3d83eb5)), references [#3342](https://github.com/SocialGouv/iterion/issues/3342)
+
+    <details><summary>why</summary>
+
+    S3: converse_system carries zero {{vars.*}} (path/base/tier/threshold moved to the user message, reordered scope -> thread -> question -> path) and the claw ambient header spells AGENTS.md workspace-RELATIVE — every claw node's cross-run cache now survives past the header. Proof on the ASSEMBLED request: two claw tasks for two checkouts, system + FULL tool defs compared byte for byte, first divergent byte reported, on the wire too; bounded in the README (host secret temp paths, sub-dir Ancestor…
+
+    </details>
+
 ## [7.5.0](https://github.com/SocialGouv/iterion/compare/v7.4.0...v7.5.0) (2026-11-16)
 
 ### Features
