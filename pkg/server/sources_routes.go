@@ -33,6 +33,10 @@ type sourceEntry struct {
 	Triggers      []sourceTrigger    `json:"triggers,omitempty"`
 	Connections   int                `json:"connections"`
 	Subscriptions int                `json:"subscriptions"`
+	// Setup is the package's setup.md, shown verbatim at the wizard's
+	// review step — the vendor-side instructions the operator follows
+	// after the binding exists. Empty when the package ships none.
+	Setup string `json:"setup,omitempty"`
 	// Ingress is the package's delivery contract, summarized for the
 	// consent UI: where the credential travels, who mints the secret,
 	// and whether deliveries name an installation. Nil for a package
@@ -164,6 +168,7 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 		for _, a := range pkg.Connector.Auth {
 			e.Auth = append(e.Auth, sourceAuthScheme{ID: a.ID, Kind: string(a.Kind), DisplayName: a.DisplayName})
 		}
+		e.Setup = string(pkg.Setup)
 		if pkg.Ingress != nil {
 			ing := &sourceIngress{
 				CredentialScheme: pkg.Ingress.Credential.Scheme,

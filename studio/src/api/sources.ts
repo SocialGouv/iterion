@@ -54,6 +54,9 @@ export interface Source {
   triggers?: SourceTrigger[];
   connections: number;
   subscriptions: number;
+  // The package's setup.md: what to do at the vendor's side once the
+  // binding exists. Plain text, rendered as text.
+  setup?: string;
 }
 
 export async function listSources(): Promise<Source[]> {

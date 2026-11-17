@@ -50,7 +50,9 @@ link reopens the same step:
    package's trigger and the bot's declared vars.
 
 The vendor side is the last manual step: declare the delivery URL and
-the secret on the vendor's webhook settings. Packages that declare how
+the secret on the vendor's webhook settings. When the package ships a
+`setup.md`, the review step shows it verbatim — the package's own
+instructions for that vendor's settings screens. Packages that declare how
 to provision their hook automate this in a later wave (ADR-168 §6).
 
 ## Icons

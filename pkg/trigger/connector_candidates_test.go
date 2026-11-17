@@ -73,17 +73,20 @@ func TestConnectorCandidatesAreTheirConnectionsOnly(t *testing.T) {
 		// Created in an order that is NOT the id order, so the answer's
 		// order is the store's sort and never the insertion's.
 		born := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-		conn := func(id, connID, trig, poller string) Subscription {
+		conn := func(id, botID, connID, trig, poller string) Subscription {
 			born = born.Add(time.Second)
-			return Subscription{ID: id, TenantID: "t1", BotID: "b", Invocation: bundle.InvocationKindConnector, Enabled: true,
+			return Subscription{ID: id, TenantID: "t1", BotID: botID, Invocation: bundle.InvocationKindConnector, Enabled: true,
 				ConnectionID: connID, TriggerID: trig, Poller: poller, ConnectorKey: "client-chosen", CreatedAt: born}
 		}
+		// s1 and s2 are two BOTS on one connection and trigger — the shape
+		// two candidates share (one bot cannot hold the binding twice:
+		// Store.Create refuses the duplicate).
 		for _, sub := range []Subscription{
-			conn("s2", "conn-a", "slack.message.posted", ""),
-			conn("s1", "conn-a", "slack.message.posted", ""),
-			conn("s3", "conn-b", "slack.message.posted", ""),
-			conn("s4", "conn-a", "slack.message.posted", "poller-1"),
-			conn("s5", "conn-a", "slack.reaction.added", ""),
+			conn("s2", "b1", "conn-a", "slack.message.posted", ""),
+			conn("s1", "b2", "conn-a", "slack.message.posted", ""),
+			conn("s3", "b", "conn-b", "slack.message.posted", ""),
+			conn("s4", "b", "conn-a", "slack.message.posted", "poller-1"),
+			conn("s5", "b", "conn-a", "slack.reaction.added", ""),
 			{ID: "board", TenantID: "t1", BotID: "b", Enabled: true, Match: Matcher{Sources: []Source{SourceBoard}}},
 		} {
 			if err := st.Create(ctx, sub); err != nil {

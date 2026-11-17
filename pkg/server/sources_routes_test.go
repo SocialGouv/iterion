@@ -24,6 +24,7 @@ func sourcesWorld(t *testing.T) (*Server, *trigger.MemorySubscriptionStore) {
 	probe.Connector.Category = spec.CategorySourceControl
 	probe.Connector.BrandColor = "#ff9e1b"
 	files := connectorPackageFiles(t, probe)
+	files["setup.md"] = "# Setup: add the hook.\n"
 	files["triggers.yaml"] = "schema_version: 1\nconnector: probe\n" +
 		"ingress:\n  credential:\n    scheme: hmac-sha256\n    in: header\n    name: X-Probe-Signature\n    secret: minted\n" +
 		"  event:\n    header: X-Probe-Event\n" +
@@ -155,6 +156,9 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	filts := trig["filters"].([]any)
 	if len(filts) != 1 || filts[0].(map[string]any)["id"] != "author" || filts[0].(map[string]any)["type"] != "enum" {
 		t.Fatalf("trigger filters: %v", trig["filters"])
+	}
+	if probe["setup"] != "# Setup: add the hook.\n" {
+		t.Fatalf("probe setup: %v", probe["setup"])
 	}
 	ing := probe["ingress"].(map[string]any)
 	if ing["credential_scheme"] != "hmac-sha256" || ing["secret_origin"] != "minted" {
@@ -313,8 +317,10 @@ func TestSourcesCountsCountLivingRows(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Another bot, so this row is a distinct binding (one bot cannot hold
+	// the same binding twice — Store.Create refuses it).
 	if err := subs.Create(context.Background(), trigger.Subscription{
-		ID: "s-off", TenantID: "t1", BotID: "steward", Enabled: false,
+		ID: "s-off", TenantID: "t1", BotID: "steward-off", Enabled: false,
 		Invocation: "connector", ConnectionID: "conn-probe", TriggerID: "probe.issue.commented",
 	}); err != nil {
 		t.Fatal(err)
@@ -324,4 +330,3 @@ func TestSourcesCountsCountLivingRows(t *testing.T) {
 		t.Fatalf("dead rows counted: %v", byID["probe"])
 	}
 }
-

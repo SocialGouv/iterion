@@ -60,6 +60,12 @@ type Package struct {
 	Connector Connector
 	Ops       []OpsFile
 	Schemas   map[string]Schema
+	// Setup is the package's setup.md: what an operator does at the
+	// vendor's side to make deliveries arrive (which hook to add, where the
+	// secret goes). Plain text, size-capped at load; nil when the package
+	// ships none. The catalog shows it verbatim where the hook is
+	// configured, so it is read here rather than re-read by a route.
+	Setup []byte `json:"-"`
 	// IconSVG is the package's icon: Connector.Icon's file, read, sanitized
 	// and size-capped at load (icon.go). Nil when the package declares no
 	// icon; never a byte of the unsanitized file — the load is the only

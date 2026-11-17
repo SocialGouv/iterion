@@ -71,6 +71,7 @@ const SOURCE: Source = {
   delivery: "push",
   connections: 1,
   subscriptions: 0,
+  setup: "Add the hook at the vendor.",
   triggers: [
     {
       id: "probe.issue.commented",
@@ -194,6 +195,8 @@ describe("PlugWizardView — the enable's terminal state", () => {
     renderWizard();
     await screen.findByText(/Abonnement activé/);
     expect(screen.queryByRole("button", { name: /Activer/ })).toBeNull();
+    // The vendor-side instructions the operator follows next.
+    expect(screen.getByText("Add the hook at the vendor.")).toBeTruthy();
     expect(createTrigger).not.toHaveBeenCalled();
   });
 });

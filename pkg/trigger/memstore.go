@@ -76,6 +76,18 @@ func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) erro
 	s.normalize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// One binding, one row (ErrDuplicateConnectorBinding): the scan and the
+	// insert share this lock, so two concurrent creates cannot both land.
+	if s.ConnectorKey != "" {
+		for _, row := range m.items {
+			if row.ConnectionID == "" || row.TenantID != s.TenantID || row.BotID != s.BotID {
+				continue
+			}
+			if ConnectorKey(row.ConnectionID, row.TriggerID) == s.ConnectorKey {
+				return fmt.Errorf("%w: subscription %q", ErrDuplicateConnectorBinding, row.ID)
+			}
+		}
+	}
 	m.items[s.ID] = storekit.Snapshot(s)
 	return nil
 }

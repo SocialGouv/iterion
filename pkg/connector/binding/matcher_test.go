@@ -60,9 +60,15 @@ func slackIntake(tenant string) intake.Intake {
 // One verdict per candidate of the intake's own connection, in
 // subscription-id order, each the subscription's own judgment.
 func TestTheMatcherJudgesItsConnectionsCandidates(t *testing.T) {
+	// Two BOTS on one connection and one trigger — one bot cannot hold the
+	// same binding twice (Store.Create refuses it); a single subscription
+	// narrows several values by listing them in one filter.
+	c1 := connectorSub("s2", "t1", "conn-a", map[string][]string{"channel": {"C1"}})
+	c1.BotID = "b1"
+	c2 := connectorSub("s1", "t1", "conn-a", map[string][]string{"channel": {"C2"}})
+	c2.BotID = "b2"
 	m := matcherWorld(t, &fakeCatalog{pkg: slackPackage()},
-		connectorSub("s2", "t1", "conn-a", map[string][]string{"channel": {"C1"}}),
-		connectorSub("s1", "t1", "conn-a", map[string][]string{"channel": {"C2"}}),
+		c1, c2,
 		connectorSub("s3", "t1", "conn-b", nil),
 	)
 	vs, err := m.Match(context.Background(), slackIntake("t1"))

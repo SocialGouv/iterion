@@ -666,6 +666,14 @@ function StepReview({
           </p>
         </div>
       )}
+      {source.setup && (
+        <details className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
+          <summary className="cursor-pointer font-medium text-fg-default">
+            Configuration chez le fournisseur ({source.display_name})
+          </summary>
+          <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{source.setup}</pre>
+        </details>
+      )}
       {done ? (
         <InlineBanner tone="success">
           Abonnement activé — cette source lance {botID || "le bot"} à chaque

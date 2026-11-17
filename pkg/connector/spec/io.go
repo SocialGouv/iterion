@@ -278,6 +278,12 @@ func readFS(fsys fs.FS, dir string) (*Package, error) {
 	if err := readResponseContracts(fsys, dir, p); err != nil {
 		return nil, err
 	}
+	// The operator's setup instructions, shipped beside the package (see
+	// Package.Setup): read here so the catalog can show them where the
+	// vendor hook is configured.
+	if err := readSetup(fsys, dir, p); err != nil {
+		return nil, err
+	}
 
 	opsDir := path.Join(dir, OpsDir)
 	entries, err := fs.ReadDir(fsys, opsDir)

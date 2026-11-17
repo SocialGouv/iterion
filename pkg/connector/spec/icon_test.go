@@ -189,3 +189,22 @@ func TestLoadIconCapBoundsExpansiveContent(t *testing.T) {
 		t.Fatalf("icon: ./icon.svg: %v", err)
 	}
 }
+
+// TestLoadSetupIsReadAndCapped: the package's setup.md is read at load
+// (the catalog shows it where the vendor hook is configured), and an
+// oversized one refuses the load rather than riding a card.
+func TestLoadSetupIsReadAndCapped(t *testing.T) {
+	files := iconPackage(`<svg xmlns="http://www.w3.org/2000/svg"/>`, map[string]string{
+		"setup.md": "# Setup\n\nAdd the hook.\n",
+	})
+	p := loadIconPackage(t, files)
+	if string(p.Setup) != "# Setup\n\nAdd the hook.\n" {
+		t.Fatalf("setup = %q", p.Setup)
+	}
+	big := iconPackage(`<svg xmlns="http://www.w3.org/2000/svg"/>`, map[string]string{
+		"setup.md": strings.Repeat("x", spec.SetupMaxBytes+1),
+	})
+	if _, err := spec.LoadFS(big, "."); err == nil || !strings.Contains(err.Error(), spec.SetupFile) {
+		t.Fatalf("oversized setup: err = %v, want a refusal naming %s", err, spec.SetupFile)
+	}
+}

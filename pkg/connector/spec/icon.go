@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -197,4 +198,28 @@ func sanitizeSVG(body []byte, cap int) ([]byte, error) {
 		return nil, fmt.Errorf("sanitized icon is %d bytes, over the %d byte cap (%s)", out.Len(), cap, EnvIconMaxBytes)
 	}
 	return out.Bytes(), nil
+}
+
+// SetupFile is the package's own setup instructions, read at load.
+const SetupFile = "setup.md"
+
+// SetupMaxBytes bounds the setup file a catalog card will carry. A setup
+// guide is a page; a package shipping megabytes of it is a package whose
+// author meant something else.
+const SetupMaxBytes = 32 << 10
+
+// readSetup reads setup.md when the package ships one.
+func readSetup(fsys fs.FS, dir string, p *Package) error {
+	body, err := fs.ReadFile(fsys, path.Join(dir, SetupFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("spec: read %s: %w", SetupFile, err)
+	}
+	if len(body) > SetupMaxBytes {
+		return fmt.Errorf("spec: %s is %d bytes, over the %d byte cap", SetupFile, len(body), SetupMaxBytes)
+	}
+	p.Setup = body
+	return nil
 }
