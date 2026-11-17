@@ -12,7 +12,6 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
-import { SourceLogo } from "@/components/Sources/SourceLogo";
 import { SourceCard } from "./SourceCard";
 import { SourceDetail } from "./SourceDetail";
 import {
@@ -166,7 +165,12 @@ export default function SourcesView() {
           {builtins.map((s) => (
             <Card key={s.id} className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
-                <SourceLogo connectorId={s.id} className="h-8 w-8 rounded-[var(--radius-md)] opacity-80" />
+                <span
+                  aria-hidden
+                  className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-accent-soft text-xs font-semibold text-fg-default"
+                >
+                  {s.display_name.slice(0, 1)}
+                </span>
                 <span className="text-sm font-medium text-fg-default">{s.display_name}</span>
               </div>
               <p className="text-xs text-fg-subtle">{s.description}</p>

@@ -97,6 +97,7 @@ export default function PlugWizardView() {
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState<string | null>(null);
   const [enabledHook, setEnabledHook] = useState<WebhookWithToken | null>(null);
+  const [reusedHookId, setReusedHookId] = useState<string | null>(null);
 
   const trigger = source?.triggers?.find((t) => t.id === triggerID);
 
@@ -141,9 +142,7 @@ export default function PlugWizardView() {
       // exists, else create it (the secret is minted here, shown once).
       const hooks = await listWebhooks(teamID);
       const existing = hooks.find(
-        (h) =>
-          (h as unknown as { connector_connection_id?: string })
-            .connector_connection_id === connectionID,
+        (h) => h.connector_connection_id === connectionID,
       );
       let hook: WebhookWithToken | null = null;
       if (!existing) {
@@ -153,6 +152,11 @@ export default function PlugWizardView() {
           connector_connection_id: connectionID,
         });
         setEnabledHook(hook);
+        setReusedHookId(null);
+      } else {
+        // The operator still declares the URL at the vendor: show it
+        // even when no secret is minted.
+        setReusedHookId(existing.id);
       }
       await createTrigger({
         bot_id: botID,
@@ -164,7 +168,7 @@ export default function PlugWizardView() {
         var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
         enabled: true,
       });
-      setParams({ step: "review", done: "1" });
+      setParams({ step: "review" });
     } catch (e) {
       setEnableError(String(e));
     } finally {
@@ -215,6 +219,13 @@ export default function PlugWizardView() {
           ))}
         </div>
       </div>
+    );
+  }
+  if (sources.isError) {
+    return (
+      <InlineBanner tone="danger">
+        Erreur de chargement de la source : {String(sources.error)}
+      </InlineBanner>
     );
   }
   if (sources.isPending || !source) {
@@ -304,6 +315,7 @@ export default function PlugWizardView() {
             triggerID={triggerID}
             botID={botID}
             hook={enabledHook}
+            reusedHookId={reusedHookId}
             error={enableError}
             enabling={enabling}
             onEnable={enable}
@@ -403,15 +415,19 @@ function StepEvent({
         ))}
       </div>
       {selected?.filters?.map((f) => (
-        <label key={f.id} className="flex flex-col gap-1 text-xs text-fg-default">
+        <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
           Filtre {f.id}
           {f.type === "enum" ? (
             <Select
               value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) =>
-                setFilters({ ...filters, [f.id]: e.target.value ? [e.target.value] : [] })
-              }
+              onChange={(e) => {
+                const next = { ...filters };
+                if (e.target.value) next[f.id] = [e.target.value];
+                else delete next[f.id]; // untouched and emptied mean the same
+                setFilters(next);
+              }}
               aria-label={`Filtre ${f.id}`}
+              defaultValue={f.default?.[0] ?? ""}
             >
               <option value="">— tous —</option>
               {(f.options ?? []).map((o) => (
@@ -422,10 +438,13 @@ function StepEvent({
             </Select>
           ) : (
             <Input
-              value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) =>
-                setFilters({ ...filters, [f.id]: e.target.value ? [e.target.value] : [] })
-              }
+              defaultValue={f.default?.[0] ?? ""}
+              onChange={(e) => {
+                const next = { ...filters };
+                if (e.target.value) next[f.id] = [e.target.value];
+                else delete next[f.id];
+                setFilters(next);
+              }}
               aria-label={`Filtre ${f.id}`}
             />
           )}
@@ -445,6 +464,8 @@ function StepBot({
   onPick: (id: string) => void;
 }) {
   if (bots.isPending) return <Spinner label="Chargement des bots" />;
+  if (bots.isError)
+    return <InlineBanner tone="danger">Erreur : {String(bots.error)}</InlineBanner>;
   const list = bots.data ?? [];
   if (list.length === 0)
     return (
@@ -570,6 +591,7 @@ function StepReview({
   triggerID,
   botID,
   hook,
+  reusedHookId,
   error,
   enabling,
   onEnable,
@@ -579,6 +601,7 @@ function StepReview({
   triggerID: string;
   botID: string;
   hook: WebhookWithToken | null;
+  reusedHookId: string | null;
   error: string | null;
   enabling: boolean;
   onEnable: () => void;
@@ -599,6 +622,16 @@ function StepReview({
           Bot : <code>{botID}</code>
         </li>
       </ul>
+      {reusedHookId && !hook && (
+        <div className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
+          <p className="font-medium text-fg-default">
+            Webhook existant — URL à déclarer chez le fournisseur :
+          </p>
+          <code className="break-all text-fg-subtle">
+            {`${window.location.origin}/api/webhooks/c/${encodeURIComponent(reusedHookId)}`}
+          </code>
+        </div>
+      )}
       {hook && (
         <div className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
           <p className="font-medium text-fg-default">Webhook créé — URL à déclarer chez le fournisseur :</p>

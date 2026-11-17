@@ -28,6 +28,14 @@ export interface WebhookConfig {
   provider: WebhookProvider;
   enabled: boolean;
   token_last4: string;
+  // The connector ingress binding (ADR-168 §3/§6), serialized on every
+  // row: which connection receives, its connector and installation, the
+  // pinned contract and where the secret comes from.
+  connector_connection_id?: string;
+  connector?: string;
+  installation?: string;
+  contract_digest?: string;
+  secret_origin?: string;
   fingerprint?: string;
   bot_ids: string[];
   wildcard_bots?: boolean;

@@ -3,7 +3,7 @@
 // <img> src). Hand-mirrored types, like api/triggers.ts: the response
 // schemas are inline in schema.ts.
 
-import { apiRequest, FeatureUnavailableError } from "./client";
+import { apiRequest, guard404, FeatureUnavailableError } from "./client";
 
 export { FeatureUnavailableError };
 
@@ -57,7 +57,9 @@ export interface Source {
 }
 
 export async function listSources(): Promise<Source[]> {
-  const r = await apiRequest<{ sources?: Source[] }>(BASE, {});
+  const r = await guard404("sources", () =>
+    apiRequest<{ sources?: Source[] }>(BASE, {}),
+  );
   return r.sources ?? [];
 }
 

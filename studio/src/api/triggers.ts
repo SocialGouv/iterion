@@ -243,7 +243,8 @@ export interface TriggerPreviewInput {
   when?: string;
   var_map?: Record<string, string>;
   vars?: Record<string, string>;
-  payload?: string;
+  // An OBJECT (the server decodes into a map) — a JSON string is a 400.
+  payload?: unknown;
   headers?: Record<string, string>;
 }
 
