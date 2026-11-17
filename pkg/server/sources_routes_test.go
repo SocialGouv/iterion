@@ -324,3 +324,4 @@ func TestSourcesCountsCountLivingRows(t *testing.T) {
 		t.Fatalf("dead rows counted: %v", byID["probe"])
 	}
 }
+

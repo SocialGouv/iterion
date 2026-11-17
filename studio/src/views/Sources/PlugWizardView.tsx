@@ -168,7 +168,11 @@ export default function PlugWizardView() {
         var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
         enabled: true,
       });
-      setParams({ step: "review" });
+      // The terminal state lives in the URL: a reload or a shared link
+      // reopens DONE, not a live enable button — re-invoking enable would
+      // mint a duplicate subscription (the server refuses it with 409,
+      // but the wizard must not offer the gesture).
+      setParams({ step: "review", enabled: "1" });
     } catch (e) {
       setEnableError(String(e));
     } finally {
@@ -286,7 +290,20 @@ export default function PlugWizardView() {
             triggerID={triggerID}
             filters={filters}
             setFilters={setFilters}
-            onPick={(id) => setParams({ trigger: id, step: "bot" })}
+            onPick={(id) => {
+              // A narrowing belongs to its trigger: picking another one
+              // leaves the previous draft's keys behind, where they would
+              // dead-end the preview and the save. The new draft starts at
+              // the package's declared defaults.
+              const picked = source.triggers?.find((t) => t.id === id);
+              const seeded: Record<string, string[]> = {};
+              for (const f of picked?.filters ?? []) {
+                if (f.default?.length) seeded[f.id] = f.default;
+              }
+              setFilters(seeded);
+              setVarMap({});
+              setParams({ trigger: id, step: "bot" });
+            }}
           />
         )}
         {step === "bot" && (
@@ -316,6 +333,7 @@ export default function PlugWizardView() {
             botID={botID}
             hook={enabledHook}
             reusedHookId={reusedHookId}
+            done={params.get("enabled") === "1"}
             error={enableError}
             enabling={enabling}
             onEnable={enable}
@@ -427,9 +445,11 @@ function StepEvent({
                 setFilters(next);
               }}
               aria-label={`Filtre ${f.id}`}
-              defaultValue={f.default?.[0] ?? ""}
             >
-              <option value="">— tous —</option>
+              {/* The server refills an absent narrowing with the package's
+                  declared default, so "all" is only offered when the
+                  package declares none — otherwise the label would lie. */}
+              {(f.default?.length ?? 0) === 0 && <option value="">— tous —</option>}
               {(f.options ?? []).map((o) => (
                 <option key={o} value={o}>
                   {o}
@@ -438,7 +458,7 @@ function StepEvent({
             </Select>
           ) : (
             <Input
-              defaultValue={f.default?.[0] ?? ""}
+              value={filters[f.id]?.[0] ?? ""}
               onChange={(e) => {
                 const next = { ...filters };
                 if (e.target.value) next[f.id] = [e.target.value];
@@ -592,6 +612,7 @@ function StepReview({
   botID,
   hook,
   reusedHookId,
+  done,
   error,
   enabling,
   onEnable,
@@ -602,6 +623,7 @@ function StepReview({
   botID: string;
   hook: WebhookWithToken | null;
   reusedHookId: string | null;
+  done: boolean;
   error: string | null;
   enabling: boolean;
   onEnable: () => void;
@@ -644,12 +666,23 @@ function StepReview({
           </p>
         </div>
       )}
-      {error && <InlineBanner tone="danger">Échec de l'activation : {error}</InlineBanner>}
-      <div>
-        <Button onClick={onEnable} disabled={enabling}>
-          {enabling ? "Activation…" : "Activer l'abonnement"}
-        </Button>
-      </div>
+      {done ? (
+        <InlineBanner tone="success">
+          Abonnement activé — cette source lance {botID || "le bot"} à chaque
+          événement correspondant.
+        </InlineBanner>
+      ) : (
+        <>
+          {error && (
+            <InlineBanner tone="danger">Échec de l'activation : {error}</InlineBanner>
+          )}
+          <div>
+            <Button onClick={onEnable} disabled={enabling}>
+              {enabling ? "Activation…" : "Activer l'abonnement"}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

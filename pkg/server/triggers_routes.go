@@ -629,6 +629,25 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub = judged
+	// A connector subscription is one binding: the same bot listening to
+	// the same declared trigger on the same connection twice would fire
+	// the bot twice per delivery. Judge the WHOLE tenant, not the client's
+	// memory of what it already created — every client of this route is
+	// protected, not just the wizard.
+	if sub.Invocation == bundle.InvocationKindConnector {
+		existing, err := s.cfg.TriggerStore.ListByTenant(r.Context(), tenant)
+		if err != nil {
+			dispatcher.WriteErr(w, http.StatusServiceUnavailable, fmt.Errorf("list the tenant's subscriptions: %w", err))
+			return
+		}
+		for _, row := range existing {
+			if row.Invocation == bundle.InvocationKindConnector &&
+				row.BotID == sub.BotID && row.ConnectionID == sub.ConnectionID && row.TriggerID == sub.TriggerID {
+				dispatcher.WriteErr(w, http.StatusConflict, fmt.Errorf("subscription %q already binds bot %q to trigger %s on connection %q", row.ID, row.BotID, row.TriggerID, row.ConnectionID))
+				return
+			}
+		}
+	}
 	// Who may pin before what may be pinned: a create that pins anything is
 	// a team admin's credential decision.
 	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {

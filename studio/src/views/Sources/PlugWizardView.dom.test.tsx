@@ -187,3 +187,13 @@ describe("PlugWizardView — local mode", () => {
     expect(listConnections).not.toHaveBeenCalled();
   });
 });
+
+describe("PlugWizardView — the enable's terminal state", () => {
+  it("reopens DONE from the URL and never re-offers the enable gesture", async () => {
+    search = "?source=probe&step=review&connection=conn-1&trigger=probe.issue.commented&bot=steward&enabled=1";
+    renderWizard();
+    await screen.findByText(/Abonnement activé/);
+    expect(screen.queryByRole("button", { name: /Activer/ })).toBeNull();
+    expect(createTrigger).not.toHaveBeenCalled();
+  });
+});
