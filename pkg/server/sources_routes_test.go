@@ -298,3 +298,29 @@ func TestSourcesOutagesAre503(t *testing.T) {
 		})
 	}
 }
+
+// TestSourcesCountsCountLivingRows: a revoked connection and a disabled
+// subscription are past decisions, not a card's "already connected".
+func TestSourcesCountsCountLivingRows(t *testing.T) {
+	s, subs := sourcesWorld(t)
+	if err := s.connectionStore.Create(context.Background(), connection.Connection{
+		ID: "conn-dead", TenantID: "t1", Connector: "probe", Alias: "revoked",
+		Status:        connection.StatusRevoked,
+		BaseURL:       "https://probe.example",
+		SchemeID:      "token",
+		AuthPlacement: connection.AuthPlacement{Kind: "api_key", In: "header", Name: "Authorization"},
+		Capabilities:  []connection.Capability{connection.CapTrigger},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := subs.Create(context.Background(), trigger.Subscription{
+		ID: "s-off", TenantID: "t1", BotID: "steward", Enabled: false,
+		Invocation: "connector", ConnectionID: "conn-probe", TriggerID: "probe.issue.commented",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	byID := sourcesView(t, s, "viewer1", "t1")
+	if byID["probe"]["connections"] != 1.0 || byID["probe"]["subscriptions"] != 1.0 {
+		t.Fatalf("dead rows counted: %v", byID["probe"])
+	}
+}

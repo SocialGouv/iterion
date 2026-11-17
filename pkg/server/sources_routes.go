@@ -205,7 +205,12 @@ func (s *Server) connectionsByConnector(ctx context.Context, tenant string) (map
 		return nil, err
 	}
 	for _, c := range conns {
-		out[c.Connector]++
+		// The card's "already connected" promise is about LIVE rows: a
+		// revoked or needs-reauth connection is a past decision, not a
+		// usable one.
+		if c.Status.Usable() {
+			out[c.Connector]++
+		}
 	}
 	return out, nil
 }
@@ -223,7 +228,7 @@ func (s *Server) subscriptionsByConnector(ctx context.Context, tenant string) (m
 		return nil, err
 	}
 	for _, sub := range subs {
-		if sub.ConnectionID == "" {
+		if sub.ConnectionID == "" || !sub.Enabled {
 			continue
 		}
 		id, _, _ := strings.Cut(sub.TriggerID, ".")
