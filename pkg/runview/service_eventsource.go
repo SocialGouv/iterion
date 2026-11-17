@@ -1,6 +1,10 @@
 package runview
 
-import "sync"
+import (
+	"context"
+	"fmt"
+	"sync"
+)
 
 // fileSrcHandle tracks a refcounted events.jsonl tailer started on
 // demand for a run that is NOT produced in this process — e.g. a
@@ -11,6 +15,9 @@ import "sync"
 type fileSrcHandle struct {
 	refs int
 	done chan struct{}
+	// releaseAlerts releases the alert registration the first holder took
+	// with this tailer; nil when none was taken (no registry).
+	releaseAlerts func()
 	// buf is the log buffer a run.log tailer feeds (ensureLogSource), the
 	// one its last release drops; nil for an events tailer.
 	buf *RunLogBuffer
@@ -20,22 +27,33 @@ type fileSrcHandle struct {
 // the broker for runID, bridging events.jsonl -> broker so WS
 // subscribers receive LIVE events for runs this process didn't launch
 // in-process. Returns a release func the caller MUST invoke exactly
-// once when its subscription ends; the tailer is stopped when the last
-// holder releases.
+// once when its subscription ends; the tailer is stopped — and the
+// run's alert registration released — when the last holder releases.
+//
+// The first holder also registers the run's alert origin: the capture
+// uses ctx, so on a bound context a capture failure fails the subscribe
+// (alerts disabled honestly for that subscription — never a legacy
+// degradation, R3); the registration's release is paired with the
+// tailer's last release.
 //
 // Only call this for runs whose in-process runtime observer does NOT
 // already publish to the broker — i.e. guard with !s.Active(runID) in
 // local same-store mode. For in-process Launch runs the broker is fed
 // directly (service_launch.go), so a file tailer would double-publish
 // (harmless for the seq-dedup'd WS layer, but wasteful).
-func (s *Service) ensureEventSource(runID string) (release func()) {
+func (s *Service) ensureEventSource(ctx context.Context, runID string) (release func(), err error) {
 	s.fileSrcMu.Lock()
 	if s.fileSrcs == nil {
 		s.fileSrcs = make(map[string]*fileSrcHandle)
 	}
 	h := s.fileSrcs[runID]
 	if h == nil {
-		h = &fileSrcHandle{done: make(chan struct{})}
+		rel, regErr := s.registerRunAlertOrigin(ctx, runID)
+		if regErr != nil {
+			s.fileSrcMu.Unlock()
+			return nil, fmt.Errorf("runview: alert registration of %s: %w", runID, regErr)
+		}
+		h = &fileSrcHandle{done: make(chan struct{}), releaseAlerts: rel}
 		s.fileSrcs[runID] = h
 		startEventSource(s, runID, h.done)
 	}
@@ -55,9 +73,12 @@ func (s *Service) ensureEventSource(runID string) (release func()) {
 			if cur.refs <= 0 {
 				close(cur.done)
 				delete(s.fileSrcs, runID)
+				if cur.releaseAlerts != nil {
+					cur.releaseAlerts()
+				}
 			}
 		})
-	}
+	}, nil
 }
 
 // Active reports whether runID is being produced in-process by this

@@ -52,11 +52,15 @@ const tailDefensivePollInterval = 10 * time.Second
 
 // TailEventsFile tails an events.jsonl at path, invoking emit for every
 // complete event line appended, until done closes (a final drain flushes
-// tail bytes on exit). Malformed lines are logged and skipped. Blocking:
-// callers run it on their own goroutine.
-func TailEventsFile(path string, done <-chan struct{}, emit func(store.Event), logger *iterlog.Logger) {
+// tail bytes on exit). Malformed lines are logged and skipped. onRotate,
+// when non-nil, fires at every offset reset (a truncated or replaced file:
+// a new inode at the path, or a size below the read offset) BEFORE any line
+// of the new file is emitted — the one observable rotation boundary the
+// tailer has. Blocking: callers run it on their own goroutine.
+func TailEventsFile(path string, done <-chan struct{}, emit func(store.Event), logger *iterlog.Logger, onRotate func()) {
+	var lastIno uint64
 	drain := func(offset int64) int64 {
-		return drainNewEvents(path, offset, emit, logger)
+		return drainNewEvents(path, offset, emit, logger, onRotate, &lastIno)
 	}
 	tailFile(path, done, drain, logger)
 }
@@ -183,8 +187,11 @@ func watchFileDrains(ctx context.Context, dir, name string, drain func(context.C
 // drainNewEvents reads any bytes appended past offset, parses them as
 // one event per line, emits each, and returns the new offset. Partial
 // trailing lines (write-in-progress) are left in the file and re-read on
-// the next call when more bytes arrive.
-func drainNewEvents(path string, offset int64, emit func(store.Event), logger *iterlog.Logger) int64 {
+// the next call when more bytes arrive. lastIno tracks the file's identity
+// across calls: a new inode at the path (a replacement) or a size below the
+// read offset (a truncation) is a rotation — the offset resets, onRotate
+// fires before any line of the new file is emitted.
+func drainNewEvents(path string, offset int64, emit func(store.Event), logger *iterlog.Logger, onRotate func(), lastIno *uint64) int64 {
 	f, err := os.Open(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -193,6 +200,26 @@ func drainNewEvents(path string, offset int64, emit func(store.Event), logger *i
 		return offset
 	}
 	defer f.Close()
+
+	rotated := false
+	if st, err := f.Stat(); err == nil {
+		if ino := inodeOf(st); ino != 0 {
+			if *lastIno != 0 && ino != *lastIno {
+				rotated = true
+			}
+			*lastIno = ino
+		}
+		if st.Size() < offset {
+			rotated = true
+		}
+	}
+	if rotated {
+		if onRotate != nil {
+			onRotate()
+		}
+		logger.Warn("runstream: event tail %s: rotated or truncated at offset %d — resetting to start", path, offset)
+		offset = 0
+	}
 
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		// File rotated / truncated. Reset to start and re-read.

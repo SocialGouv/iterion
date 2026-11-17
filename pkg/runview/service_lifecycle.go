@@ -468,7 +468,7 @@ func (s *Service) reattachDetached(runID string, pid int) {
 		watchDetachedExit(s, runID, pid, done, logBuf)
 	}()
 
-	startEventSource(s, runID, done)
+	startObservedEventSource(s, runID, done, store.TeamBlind(context.Background()))
 	startLogSource(s, runID, logBuf, done)
 
 	s.logger.Info("runview: re-attached detached run %s (pid=%d) across server restart", runID, pid)
@@ -493,7 +493,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, lo
 				if pidS := store.AsPIDStore(s.store); pidS != nil {
 					_ = pidS.RemovePIDFile(runID)
 				}
-				s.broker.CloseRun(runID)
+				s.closeRunAndReleaseAlerts(runID)
 				s.dropRunLog(runID, logBuf)
 				s.manager.Deregister(runID)
 				return
@@ -529,6 +529,13 @@ func (s *Service) stopBackground(ctx context.Context, liveEvents bool) {
 	if err := s.observedEvents.stop(ctx); err != nil {
 		s.logger.Warn("observed event feeds: shutdown cleanup not joined: %v", err)
 	}
+	// Detection stops BEFORE the live event streams: their shutdown tail
+	// releases every registration (ReleaseAll), and the plan's §8 order is
+	// streams end → detection off → ReleaseAll. Releasing first would let a
+	// detection still running depart unregistered (M5).
+	if s.alertManager != nil {
+		s.alertManager.Stop()
+	}
 	if liveEvents {
 		s.stopLiveEvents(ctx)
 	}
@@ -537,11 +544,6 @@ func (s *Service) stopBackground(ctx context.Context, liveEvents bool) {
 	// next service built over that store, so stopping the scheduler here never
 	// strands them.
 	s.stopPipelineScheduler()
-	// Started with context.Background() so it outlives per-run contexts —
-	// nothing else reaps it.
-	if s.alertManager != nil {
-		s.alertManager.Stop()
-	}
 }
 
 // Stop cancels every active run and waits for their goroutines to

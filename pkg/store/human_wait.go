@@ -33,6 +33,24 @@ func HasBlockingHumanWait(ctx context.Context, rs RunStore, runID string, now ti
 	if rs == nil || runID == "" {
 		return false
 	}
+	root, err := rs.LoadRun(ctx, runID)
+	if err != nil || root == nil {
+		return false
+	}
+	return HasBlockingHumanWaitWithRoot(ctx, rs, root, runID, now)
+}
+
+// HasBlockingHumanWaitWithRoot is HasBlockingHumanWait with the ROOT's
+// already-validated row pinned into the traversal: the caller read the root
+// under its own guard (a captured registration's binding, a tenant scope),
+// and a replacement landing between that read and the traversal must not
+// decide the answer on the successor's data (M4). Descendant reads stay on
+// the caller's context — tenant-scoped, without the root's run binding, so
+// a child's load is never refused by its parent's identity.
+func HasBlockingHumanWaitWithRoot(ctx context.Context, rs RunStore, root *Run, runID string, now time.Time) bool {
+	if rs == nil || runID == "" {
+		return false
+	}
 	// Breadth-first over SubbotChildren, one store read per run. `seen` is what
 	// guarantees termination on a corrupt map that points back at an ancestor;
 	// the budget only bounds cost.
@@ -43,7 +61,7 @@ func HasBlockingHumanWait(ctx context.Context, rs RunStore, runID string, now ti
 	// itself returns from the engine, and finishRun's pause arm parks the card
 	// and frees the slot. Only a descendant keeps a parent silent while the
 	// parent is still `running`.
-	root := true
+	pendingRoot := true
 
 	for len(frontier) > 0 && budget > 0 {
 		var next []string
@@ -51,10 +69,21 @@ func HasBlockingHumanWait(ctx context.Context, rs RunStore, runID string, now ti
 			if budget <= 0 {
 				break
 			}
-			run, err := rs.LoadRun(ctx, id)
-			budget--
-			if err != nil || run == nil {
-				continue
+			run := root
+			// isRoot is captured BEFORE the flag flips: the pause test
+			// below must know whether THIS row is the root (whose own pause
+			// is not an exemption) or a descendant (whose pause is)
+			// (codex-F6).
+			isRoot := pendingRoot
+			if pendingRoot {
+				pendingRoot = false
+			} else {
+				var err error
+				run, err = rs.LoadRun(ctx, id)
+				budget--
+				if err != nil || run == nil {
+					continue
+				}
 			}
 			// The sync point itself (including a root) may wait silently, but
 			// merely having async questions outstanding is never evidence.
@@ -68,7 +97,7 @@ func HasBlockingHumanWait(ctx context.Context, rs RunStore, runID string, now ti
 			if run.Status.IsTerminal() {
 				continue
 			}
-			if !root {
+			if !isRoot {
 				// IsPaused is the same predicate finishRun's pause arm reads,
 				// so "what parks a card" and "what exempts a parent" cannot
 				// drift apart.
@@ -85,7 +114,7 @@ func HasBlockingHumanWait(ctx context.Context, rs RunStore, runID string, now ti
 			}
 		}
 		frontier = next
-		root = false
+		pendingRoot = false
 	}
 	return false
 }

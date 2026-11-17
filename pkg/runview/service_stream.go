@@ -93,7 +93,17 @@ func (v *svcSource) SubscribeEventsCursor(ctx context.Context, runID string, pos
 	// already feed the broker via the runtime observer.
 	var release func()
 	if !s.Active(runID) {
-		release = s.ensureEventSource(runID)
+		// A capture failure of the alert registration fails the subscribe
+		// (typed): alerts disabled honestly, never a legacy degradation.
+		rel, err := s.ensureEventSource(ctx, runID)
+		if err != nil {
+			// The broker subscription opened above is this call's, and a
+			// refused subscribe must not leave it in the broker's table
+			// until CloseRun — a legacy-path run never gets one (B-F4).
+			brokerSub.Cancel()
+			return nil, err
+		}
+		release = rel
 	}
 
 	sub := runstream.NewEventPipe()
@@ -161,7 +171,18 @@ func (v *svcSource) SubscribeEventsCursor(ctx context.Context, runID string, pos
 				if !ok {
 					return
 				}
-				if ev.Type != store.EventAlert && !position.Contains(ev.Seq) {
+				if ev.Type == store.EventAlert {
+					// Stamped-origin admission (R6): a bound merge without a
+					// registry lane (a wrapper store) admits a stamped alert
+					// only when its origin matches the binding; unstamped
+					// frames — runs nobody registered — ship as they always
+					// did.
+					if binding, bound := store.RunDataBindingFrom(ctx); bound {
+						if stamp, stamped := ev.EventObservation(); stamped && stamp.Header() != binding.Header() {
+							continue
+						}
+					}
+				} else if !position.Contains(ev.Seq) {
 					continue
 				}
 				if !sub.Ship(ctx, []*store.Event{ev}) {

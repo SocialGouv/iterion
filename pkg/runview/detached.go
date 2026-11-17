@@ -408,7 +408,7 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 			paused = r.Status.IsPaused()
 		}
 		if !paused {
-			s.broker.CloseRun(spec.RunID)
+			s.closeRunAndReleaseAlerts(spec.RunID)
 		}
 		s.dropRunLog(spec.RunID, spec.LogBuf)
 		s.manager.Deregister(spec.RunID)
@@ -553,7 +553,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// broker.Subscribe(runID) see events the runner writes to
 	// events.jsonl. It runs until the run terminates (signaled via
 	// the closed Done channel from spawnDetached's watcher).
-	startEventSource(s, runID, res.Done)
+	startObservedEventSource(s, runID, res.Done, parent)
 	startLogSource(s, runID, logBuf, res.Done)
 
 	return res, nil
@@ -618,7 +618,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		return nil, err
 	}
 
-	startEventSource(s, spec.RunID, res.Done)
+	startObservedEventSource(s, spec.RunID, res.Done, parent)
 	startLogSource(s, spec.RunID, logBuf, res.Done)
 
 	return res, nil

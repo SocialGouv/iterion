@@ -1786,6 +1786,20 @@ func (s *Service) spawnRun(
 		s.dropRunLog(runID, runLog)
 		return nil, regErr
 	}
+	// The alert registration joins the lifecycle registration: the run's
+	// observation is captured and adopted BEFORE any engine event exists,
+	// so every alert of this episode carries the birth's truth. releaseAlerts
+	// rolls it back on the abort paths below; the normal termination
+	// releases through closeRunAndReleaseAlerts (the spawnRun defer). A
+	// failure keeps the launch (its event bridging is unaffected) and turns
+	// alerting off for the run — honest degradation, never a by-ID route.
+	releaseAlerts, alertErr := s.registerRunAlertOrigin(ctx, runID)
+	if alertErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("runview: alert registration of %s: %v — alerts stay off for this run", runID, alertErr)
+		}
+		releaseAlerts = func() {}
+	}
 
 	// Birth (if any) completed before the executor was built. startedRun is
 	// supplied only by the exclusive preparation response, never a reload.
@@ -1803,6 +1817,7 @@ func (s *Service) spawnRun(
 			stampErr = s.store.SaveRun(sctx, doc)
 		}
 		if stampErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
 			s.dropRunLog(runID, runLog)
@@ -1828,6 +1843,7 @@ func (s *Service) spawnRun(
 			stampErr = s.store.SaveRun(sctx, doc)
 		}
 		if stampErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
 			s.dropRunLog(runID, runLog)
@@ -1860,6 +1876,7 @@ func (s *Service) spawnRun(
 			}
 		}
 		if saveErr != nil {
+			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
 			s.dropRunLog(runID, runLog)
@@ -1978,11 +1995,18 @@ func (s *Service) spawnRun(
 		// dormant — the resume's goroutine publishes to the same broker
 		// runID, and dropping subscribers here loses the very events that
 		// announce the pause/resume (the human-gate form then lags until a
-		// reload). Terminal outcomes still close the stream.
+		// reload). Terminal outcomes still close the stream — and release
+		// the alert registration with it: the epoch ends with the episode.
 		defer func() {
 			if !paused {
-				s.broker.CloseRun(runID)
+				s.closeRunAndReleaseAlerts(runID)
+				return
 			}
+			// A pause keeps the broker (subscribers must see the resume),
+			// but the PRODUCER's bail ends here: the resume takes a fresh
+			// one, and a bail outliving its producer would orphan the
+			// epoch (H5 / codex-F1).
+			releaseAlerts()
 		}()
 		// Release this root's pipeline-concurrency slot. A no-op for run IDs
 		// that never held a slot (children, resumes, or when the cap is

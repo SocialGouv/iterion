@@ -15,11 +15,15 @@ import (
 // native filesystem store: each one is a retained FileSource subscription of
 // its own — replay, cursor, validation against the run it was opened on, and
 // the terminal final drain — merged with the run ID's legacy broker
-// subscription, which contributes only out-of-band alerts and wake hints.
-// A broker payload other than an alert is never delivered.
+// subscription, which contributes out-of-band alerts, wake hints and the
+// producer's end-of-events barrier, and — for a bound subscription of a
+// registered run — the registration's own alert registry lane, whose frames
+// ship as one event class and dedup the legacy carrier. A broker payload
+// other than an alert is never delivered.
 //
 // The Service owns the FileSource and every merge; the store is borrowed.
-// stop cancels and joins them with ErrSourceClosed.
+// stop cancels and joins them with ErrSourceClosed, then releases every
+// alert registration the service still holds.
 type liveEventStreams struct {
 	svc   *Service
 	files *runstream.FileSource
@@ -62,6 +66,9 @@ func (s *Service) initLiveEventStreams() {
 		files:  runstream.NewFileSource(native, "", s.logger),
 		active: make(map[uint64]*liveEventEntry),
 	}
+	if s.alertRegistry == nil {
+		s.alertRegistry = newAlertRegistry()
+	}
 }
 
 // subscribe opens one client's event stream of runID from position. ctx keeps
@@ -101,8 +108,23 @@ func (l *liveEventStreams) subscribe(ctx context.Context, runID string, position
 	if !s.Active(runID) {
 		// Runs another process produces feed the alert manager only through
 		// this ID-keyed tailer, which also republishes their appends as wakes.
-		m.release = s.ensureEventSource(runID)
+		// A capture failure of the alert registration fails the subscribe
+		// (typed): alerts disabled honestly, never a legacy degradation.
+		rel, err := s.ensureEventSource(c, runID)
+		if err != nil {
+			if cause := closedCause(c); cause != nil {
+				err = cause
+			}
+			m.cleanup()
+			close(entry.done)
+			return nil, err
+		}
+		m.release = rel
 	}
+	// The registry lane: the manager's registration for this run, matched
+	// against the subscription's binding; the Active-before-Register race
+	// waits here (bounded by the subscription's context, F4).
+	m.observed, m.observedObs = s.observedAlertLane(c, runID, true)
 	inner, err := l.files.SubscribeEventsHinted(c, runID, position, runstream.FileStreamHints{Drain: m.dataWake, Terminal: m.termHint, TerminalPoll: terminalPoll})
 	if err != nil {
 		if cause := closedCause(c); cause != nil {
@@ -143,9 +165,51 @@ type liveEventMerge struct {
 	entry              *liveEventEntry
 	inner              runstream.EventSubscription
 	broker             *EventSubscription
+	observed           *EventSubscription
+	observedObs        store.RunObservation
+	retired            []*EventSubscription
 	release            func()
 	dataWake, termHint chan struct{}
 	out                runstream.EventPipe
+}
+
+// fetchAlertLane adopts the run's current registry lane for this merge,
+// parking the previous one in the retired queue (its buffered frames stay
+// readable until finish/cleanup, F14). One-shot: it never stalls the
+// merge's select loop — the Active-before-Register race is waited out at
+// subscribe time only.
+func (m *liveEventMerge) fetchAlertLane() {
+	// A lane still held is still live: adopting a second subscription onto
+	// the same epoch here would double-deliver its frames (C F5). The lazy
+	// adoption happens when the held lane closes (the park sets it nil).
+	if m.observed != nil {
+		return
+	}
+	sub, obs := m.l.svc.observedAlertLane(m.ctx, m.runID, false)
+	if sub != nil {
+		m.observed = sub
+		m.observedObs = obs
+	}
+}
+
+// shipAlerts drains one alert lane's buffered frames (best effort, bounded
+// by what it holds). It never cancels: cleanup cancels the lanes, after the
+// drains. Closed lanes keep buffered frames readable until then.
+func (m *liveEventMerge) shipAlerts(sub *EventSubscription) bool {
+	for n := len(sub.C); n > 0; n-- {
+		ev, ok := <-sub.C
+		if !ok {
+			break
+		}
+		if ev.Type != store.EventAlert {
+			continue
+		}
+		if !m.out.Ship(m.ctx, []*store.Event{ev}) {
+			m.out.Fail(closedCause(m.ctx))
+			return false
+		}
+	}
+	return true
 }
 
 // run merges the retained subscription with the broker lane until the
@@ -188,10 +252,14 @@ func (m *liveEventMerge) run() {
 				// CloseRun: the in-process producer is done with this run ID
 				// (or paused, which never closes it). Check the status now,
 				// then keep an alert lane: a run still running on disk (an
-				// orphaned runner) keeps streaming.
+				// orphaned runner) keeps streaming. The registry lane
+				// re-arms one-shot: a resume that re-adopts the observation
+				// installs a new epoch and the merge picks it up lazily on
+				// its next admitted legacy alert.
 				signal(m.termHint)
 				m.broker = m.l.svc.broker.Subscribe(m.runID)
 				alerts = m.broker.C
+				m.fetchAlertLane()
 				continue
 			}
 			if ev.Type != store.EventAlert {
@@ -200,12 +268,91 @@ func (m *liveEventMerge) run() {
 				continue
 			}
 			// Alerts are out of band: never deduped, never advancing the cursor.
+			// The registry lane carries the registration's own frames; while it
+			// is live, the legacy carrier of the same alert is dropped (F5).
+			// Without a lane, a bound merge admits a stamped frame only when
+			// its origin matches the binding (R6); unstamped frames — runs
+			// nobody registered — ship as they always did.
+			if m.observed != nil {
+				// Only the lane's OWN carrier duplicate is dropped: an
+				// unstamped frame has no registry copy and would otherwise
+				// be lost (B-F2).
+				if _, stamped := ev.EventObservation(); stamped {
+					continue
+				}
+			}
+			if binding, bound := store.RunDataBindingFrom(m.ctx); bound {
+				if stamp, stamped := ev.EventObservation(); stamped && stamp.Header() != binding.Header() {
+					continue
+				}
+			}
+			if !m.out.Ship(m.ctx, []*store.Event{ev}) {
+				m.out.Fail(closedCause(m.ctx))
+				return
+			}
+			// An admitted legacy alert is evidence a registration may now
+			// exist (a resume re-adopted the observation): adopt its epoch
+			// so later alerts dedup against the registry lane.
+			m.fetchAlertLane()
+		case ev, ok := <-m.observedAlerts():
+			if !ok {
+				// The registration's epoch ended: the buffered frames stay
+				// readable — park the lane in the retired queue, deliverable
+				// by finish (F14); no cancel yet. The legacy frames queued
+				// while the lane was live are this lane's own alerts' carrier
+				// duplicates: drain them under the lane's dedup BEFORE the
+				// park opens admission — stamped frames dropped, unstamped
+				// ones and wakes keeping today's route (H3: a frame
+				// published after the release is a fresh dispatch, not a
+				// duplicate).
+				for n := len(alerts); n > 0; n-- {
+					ev2, ok2 := <-alerts
+					if !ok2 {
+						m.broker = m.l.svc.broker.Subscribe(m.runID)
+						alerts = m.broker.C
+						break
+					}
+					if ev2.Type != store.EventAlert {
+						signal(m.dataWake)
+						continue
+					}
+					// Only THIS lane's own copies are carrier duplicates;
+					// a stamped frame of another epoch (a re-adoption
+					// published while this lane was closing) belongs to a
+					// subscription that does not exist yet and must ship
+					// (codex-F3).
+					if stamp2, stamped := ev2.EventObservation(); stamped && m.observed != nil && stamp2 == m.observedObs {
+						continue
+					}
+					if !m.out.Ship(m.ctx, []*store.Event{ev2}) {
+						m.out.Fail(closedCause(m.ctx))
+						m.retired = append(m.retired, m.observed)
+						m.observed = nil
+						return
+					}
+				}
+				m.retired = append(m.retired, m.observed)
+				m.observed = nil
+				continue
+			}
+			// Registry frames are one event class by construction (R2): no
+			// cursor effect, no dedup.
 			if !m.out.Ship(m.ctx, []*store.Event{ev}) {
 				m.out.Fail(closedCause(m.ctx))
 				return
 			}
 		}
 	}
+}
+
+// observedAlerts returns the registry lane's channel, or nil when the merge
+// holds none — a nil channel blocks forever in the select, which is exactly
+// the "no lane" state.
+func (m *liveEventMerge) observedAlerts() <-chan *store.Event {
+	if m.observed == nil {
+		return nil
+	}
+	return m.observed.C
 }
 
 // finish ends the stream once the retained subscription ended. A Service
@@ -239,13 +386,40 @@ func (m *liveEventMerge) finish(errs <-chan error, fatal error) {
 	for n := len(m.broker.C); n > 0; n-- {
 		ev, ok := <-m.broker.C
 		if !ok {
-			return
+			// The lane closed mid-drain: `break`, not `return` — the retired
+			// and live lanes' buffered alerts still drain below (M3).
+			break
 		}
 		if ev.Type != store.EventAlert {
 			continue
 		}
+		// The same admission as the live loop: a registry lane still held
+		// dedups the legacy carrier; a bound merge without one admits a
+		// stamped frame only on a matching origin.
+		if m.observed != nil {
+			if _, stamped := ev.EventObservation(); stamped {
+				continue
+			}
+		}
+		if binding, bound := store.RunDataBindingFrom(m.ctx); bound {
+			if stamp, stamped := ev.EventObservation(); stamped && stamp.Header() != binding.Header() {
+				continue
+			}
+		}
 		if !m.out.Ship(m.ctx, []*store.Event{ev}) {
 			m.out.Fail(closedCause(m.ctx))
+			return
+		}
+	}
+	// The retired lanes first (the epoch that ended mid-stream, F14), then
+	// the live one: buffered alerts drain before their cancels.
+	for _, sub := range m.retired {
+		if !m.shipAlerts(sub) {
+			return
+		}
+	}
+	if m.observed != nil {
+		if !m.shipAlerts(m.observed) {
 			return
 		}
 	}
@@ -259,6 +433,12 @@ func (m *liveEventMerge) cleanup() {
 		_ = m.inner.Close()
 	}
 	m.broker.Cancel()
+	if m.observed != nil {
+		m.observed.Cancel()
+	}
+	for _, sub := range m.retired {
+		sub.Cancel()
+	}
 	if m.release != nil {
 		m.release()
 	}
@@ -355,9 +535,18 @@ func (l *liveEventStreams) awaitRuns(ctx context.Context, runIDs map[string]bool
 }
 
 // stopLiveEvents ends the live event streams; a join deadline is reported,
-// not hidden.
+// not hidden. The alert registrations release here too — after the streams
+// ended, never before (F13): dispatches admitted before Stop keep their
+// captured routes until the lanes close at this release.
 func (s *Service) stopLiveEvents(ctx context.Context) {
 	if err := s.liveEvents.stop(ctx); err != nil {
+		// Streams still open: their merges may still deliver, so their
+		// registrations stay until a later stop or the reap joins them
+		// (codex-F5). Releasing here would strand those merges' lanes.
 		s.logger.Warn("live event streams: shutdown cleanup not joined: %v", err)
+		return
+	}
+	if s.alertManager != nil {
+		s.alertManager.ReleaseAll()
 	}
 }
