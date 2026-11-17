@@ -361,10 +361,18 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// a route no catalog test names (a team routing cell, a bare-host
 	// fallback). `interaction:` is the one append that fires before the
 	// gate — an interaction node's union is never empty here — so its
-	// grants are served and stay out of this refusal. A non-empty surface
-	// (the way review-pr's merge twins declare theirs) is the remedy, not a
-	// route change.
-	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && !task.InteractionEnabled &&
+	// grants are served and stay out of this refusal. And the executor's
+	// own schema re-ask stays out of it too: planSchemaReask's claw
+	// continuation REMOVES the surface deliberately (ToolDefs and
+	// AllowedTools nilled, "tools off: the model is asked for the answer it
+	// already has") while keeping the node's capabilities — a task whose
+	// emptiness is the executor's decision, not an author's omission; a
+	// tool-less continuation needs no grant served by design. Without that
+	// exemption every granted node's standard in-place recovery refused
+	// (the refusal is non-retryable and no fallback class matches it). A
+	// non-empty surface (the way review-pr's merge twins declare theirs) is
+	// the remedy, not a route change.
+	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && len(task.ContinueConversation) == 0 && !task.InteractionEnabled &&
 		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
 		grants := "board"
 		if !delegate.HasBoardCapability(task.Capabilities) {

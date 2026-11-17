@@ -88,6 +88,17 @@ func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 		}
 	})
 
+	t.Run("both grants name both classes", func(t *testing.T) {
+		t.Parallel()
+		typed := refused(t, delegate.Task{
+			NodeID: "both", Model: "test/m", UserPrompt: "x",
+			Capabilities: []string{"board.read", "runs.read"},
+		})
+		if !strings.Contains(typed.Error(), "board and runs read") {
+			t.Errorf("the refusal under-names the grants it refuses: %v", typed)
+		}
+	})
+
 	t.Run("a declared-but-empty list is refused too", func(t *testing.T) {
 		t.Parallel()
 		// `tools: []` IS a declaration (toolcatalog.ToolsDeclared is
@@ -103,6 +114,36 @@ func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 		})
 		if !strings.Contains(typed.Error(), "board") {
 			t.Errorf("the refusal names no capability class: %v", typed)
+		}
+	})
+
+	t.Run("the executor's schema re-ask is served", func(t *testing.T) {
+		t.Parallel()
+		// planSchemaReask's claw continuation nils ToolDefs and AllowedTools
+		// while KEEPING the node's capabilities (executor_reask.go: "tools
+		// off: the model is asked for the answer it already has") — the
+		// standard in-place recovery of every granted node with an output
+		// schema. A tool-less continuation needs no grant served by design,
+		// so the gate's premise (the appends did not fire) does not apply to
+		// a surface the executor deliberately removed; without the
+		// exemption the refusal — non-retryable, unmatched by fallback
+		// classification — converts that recovery into a node failure.
+		served := NewClawBackend(servedRegistry(t, textEvents("because", 100, 20)), EventHooks{}, RetryPolicy{})
+		_, err := served.Execute(context.Background(), delegate.Task{
+			NodeID: "merge", Model: "test/m", UserPrompt: "say why",
+			Capabilities:  []string{"board.read", "board.create", "board.label"},
+			ToolsDeclared: true,
+			ContinueConversation: mustMarshalMessages(t, []api.Message{{
+				Role:    "user",
+				Content: []api.ContentBlock{{Type: "text", Text: "the completed conversation"}},
+			}}),
+		})
+		var typed *delegate.ErrCapabilityUnsupported
+		if errors.As(err, &typed) {
+			t.Fatalf("the schema re-ask of a granted node was refused: %v — the executor removed that surface deliberately", typed)
+		}
+		if err != nil {
+			t.Fatalf("the re-ask arm errored otherwise: %v", err)
 		}
 	})
 
