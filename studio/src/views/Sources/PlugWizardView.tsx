@@ -28,6 +28,7 @@ import {
 } from "@/api/triggers";
 import { createWebhook, listWebhooks, type WebhookWithToken } from "@/api/webhooks";
 import type { ConnectorConnection } from "@/api/connections";
+import { useServerInfoStore } from "@/store/serverInfo";
 import type { BotEntryWithSchema } from "@/api/bots";
 import type { UseQueryResult } from "@tanstack/react-query";
 
@@ -46,6 +47,11 @@ export default function PlugWizardView() {
   const search = useSearch();
   const [, navigate] = useLocation();
   const { activeTeam } = useAuth();
+  // The connections REST family is the cloud gate: a local process has no
+  // auth service and no team for the path to name (`iterion connections`
+  // is the local surface). The account step answers that honestly instead
+  // of spinning on a query that can never fire.
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const teamID = activeTeam?.team_id ?? "";
 
   const params = useMemo(() => new URLSearchParams(search), [search]);
@@ -74,7 +80,7 @@ export default function PlugWizardView() {
   const connections = useQuery({
     queryKey: ["connections", teamID, sourceID],
     queryFn: () => listConnections(teamID, sourceID),
-    enabled: !!teamID && !!sourceID,
+    enabled: cloud && !!teamID && !!sourceID,
   });
   const bots = useQuery({
     queryKey: ["bots"],
@@ -232,13 +238,21 @@ export default function PlugWizardView() {
       </ol>
 
       <div className="mt-4">
-        {step === "account" && (
-          <StepAccount
-            connections={connections}
-            connectionID={connectionID}
-            onPick={(id) => setParams({ connection: id, step: "event" })}
-          />
-        )}
+        {step === "account" &&
+          (cloud ? (
+            <StepAccount
+              connections={connections}
+              connectionID={connectionID}
+              onPick={(id) => setParams({ connection: id, step: "event" })}
+            />
+          ) : (
+            <InlineBanner tone="info">
+              En local, les connexions se créent avec{" "}
+              <code>iterion connections</code> ; le branchement guidé —
+              compte, événement, bot, mapping, activation — est le mode
+              cloud.
+            </InlineBanner>
+          ))}
         {step === "event" && (
           <StepEvent
             source={source}

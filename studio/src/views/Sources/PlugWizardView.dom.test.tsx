@@ -12,6 +12,11 @@ vi.mock("wouter", () => ({
 vi.mock("@/auth/AuthContext", () => ({
   useAuth: () => ({ activeTeam: { team_id: "t1" } }),
 }));
+const useServerInfoStoreMock = vi.fn(() => "cloud");
+vi.mock("@/store/serverInfo", () => ({
+  useServerInfoStore: (sel: (m: { info?: { mode?: string } }) => unknown) =>
+    sel({ info: { mode: useServerInfoStoreMock() as string } }),
+}));
 
 const listSources = vi.fn();
 const listConnections = vi.fn();
@@ -170,5 +175,15 @@ describe("PlugWizardView — the bot page's entry", () => {
       "/sources/plug?bot=steward&source=probe&step=account",
       { replace: true },
     );
+  });
+});
+
+describe("PlugWizardView — local mode", () => {
+  it("answers the account step honestly instead of spinning on a cloud query", async () => {
+    vi.mocked(useServerInfoStoreMock).mockReturnValue("local");
+    search = "?source=probe&step=account";
+    renderWizard();
+    await screen.findByText(/iterion connections/);
+    expect(listConnections).not.toHaveBeenCalled();
   });
 });
