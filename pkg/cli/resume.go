@@ -212,22 +212,24 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	r, err := s.LoadRun(ctx, opts.RunID)
+	if err != nil {
+		return fmt.Errorf("cannot load run: %w", err)
+	}
 
 	// The codemode launch choice replays from the run doc, this attempt's
 	// flags win — coalesced HERE, before anything carries it, so the
 	// executor spec AND the engine's run-doc stamp read the same values.
 	// Without it the CLI local resume dropped the persisted value entirely
 	// and re-armed a launch-time `codemode: off` (revi Ref18b3 / Rbdd808).
+	// The permission gate is the same doctrine, one rung of it older: the
+	// launch persisted it, the resume replays it, a re-state wins. (Both
+	// AFTER the load check — revi Rf4566c: the first draft dereferenced r
+	// before this check and panicked on an unloadable run.)
 	opts.Codemode = pickString(opts.Codemode, r.CodemodeOverride)
 	if opts.CodemodeBounds == nil {
 		opts.CodemodeBounds = r.CodemodeBoundsOverride
 	}
-	// The permission gate is the same doctrine, one rung of it older: the
-	// launch persisted it, the resume replays it, a re-state wins.
 	opts.Permission = pickString(opts.Permission, r.PermissionOverride)
-	if err != nil {
-		return fmt.Errorf("cannot load run: %w", err)
-	}
 
 	// Fall back to the FilePath persisted at launch when --file was omitted.
 	// Inline-launched runs have this pointing at the server's inline-source
