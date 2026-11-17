@@ -26,20 +26,25 @@ import (
 // TestClawRefusesAnInertCapabilityGrant pins the typed refusal behind #3283
 // S9 (backend parity: wired or typed-refused). On claw the appends that
 // serve a capabilities grant (board, runs read) ride an already-restricted
-// `tools:` list, so a node that DECLARED no surface dispatches with the
-// grant inert — it answers as if the grant were absent, which is exactly the
-// silent shape review-pr's merge shipped as on its gateway route (F4:
-// tool-less `converge` on claw, no report, no board issue). Refused by type
-// at the claw backend, one route's failure, so the node's fallbacks can
-// serve it like any other ErrCapabilityUnsupported here. `interaction:` is
-// exempt: its ask_user append fires before the grant gate, so its union is
-// never empty and the board append serves for real.
+// NON-EMPTY `tools:` union, so a node whose tool surface resolves EMPTY —
+// no `tools:` line, or a declared-but-empty `tools: []` — dispatches with
+// the grant inert: it answers as if the grant were absent, which is exactly
+// the silent shape review-pr's merge shipped as on its gateway route (F4:
+// tool-less `converge` on claw, no report, no board issue). The refusal
+// reads the surface the dispatch would serve, never the nilness of the
+// declaration (toolcatalog.ToolsDeclared) — the two disagree exactly on
+// `tools: []`. Refused by type at the claw backend, one route's failure, so
+// the node's fallbacks can serve it like any other ErrCapabilityUnsupported
+// here. `interaction:` is exempt: its ask_user append fires before the
+// grant gate, so its union is never empty and the board append serves for
+// real.
 //
 // Mutations that redden it: drop the inert-grant refusal from
-// ClawBackend.Execute (refused arms run the loop instead); gate it on
-// ToolsDeclared alone (the interaction arm reddens); read AllowedTools
-// instead of ToolsDeclared (an appends-inflated union would hide a listless
-// declaration).
+// ClawBackend.Execute (refused arms run the loop instead); gate it back on
+// the declaration's nilness instead of the empty surface (the
+// declared-but-empty arm reddens — the HIGH of the round-1 review); drop
+// the interaction exemption (that arm reddens); read AllowedTools alone
+// (an appends-inflated union would hide a listless declaration).
 func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
@@ -67,8 +72,8 @@ func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 		if !strings.Contains(typed.Error(), "board") {
 			t.Errorf("the refusal names no capability class: %v", typed)
 		}
-		if !strings.Contains(typed.Remedy, "declare the node's tools: list") {
-			t.Errorf("the remedy does not name the declared surface: %v", typed.Remedy)
+		if !strings.Contains(typed.Remedy, "a non-empty tools: list") {
+			t.Errorf("the remedy does not name the non-empty surface: %v", typed.Remedy)
 		}
 	})
 
@@ -80,6 +85,24 @@ func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 		})
 		if !strings.Contains(typed.Error(), "runs read") {
 			t.Errorf("the refusal does not name the runs-read class: %v", typed)
+		}
+	})
+
+	t.Run("a declared-but-empty list is refused too", func(t *testing.T) {
+		t.Parallel()
+		// `tools: []` IS a declaration (toolcatalog.ToolsDeclared is
+		// nilness), and the capability appends gate on the NON-EMPTY union —
+		// so a declared-empty surface holds the grant exactly as inert as an
+		// undeclared one. The refusal reads the surface the dispatch would
+		// serve, never the declaration: a regressed gate back to nilness
+		// reddens here.
+		typed := refused(t, delegate.Task{
+			NodeID: "merge", Model: "test/m", UserPrompt: "x",
+			Capabilities:  []string{"board.read", "board.create", "board.label"},
+			ToolsDeclared: true,
+		})
+		if !strings.Contains(typed.Error(), "board") {
+			t.Errorf("the refusal names no capability class: %v", typed)
 		}
 	})
 

@@ -694,8 +694,15 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 			// No list on a CLI backend: the backend's whole roster.
 			shell = true
 		default:
-			// A declared list on a CLI backend: the roster narrows to it,
-			// so the list's own bash verdict stands.
+			// A declared list narrows the roster on claude_code alone (the
+			// roster it reads --disallowedTools from); codex reads only a
+			// sandbox mode from the list (its built-in shell runs outside
+			// the per-name callbacks), and pi/kimi/grok/opencode never
+			// receive the list, so there the bound is silently dropped.
+			// The verdict above is this node's DEFAULT route's shell
+			// reading — the boundary paragraph states the other routes'
+			// surfaces in prose, where this class guard's doc admits prose
+			// is deliberately unguarded.
 		}
 		if shell != wantShell {
 			t.Errorf("%s holds a shell = %v, want %v — the UNTRUSTED INPUT BOUNDARY paragraph it reads says the other thing, and that paragraph exists to be true about the route the model is on", id, shell, wantShell)

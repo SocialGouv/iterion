@@ -61,6 +61,13 @@ merge_reviews -> converge       otherwise (claude_code + opus 5.5; a routing
                                 cell may move it to claw — the merge declares
                                 its three file tools, so the route serves whole)
                                 merge + dedupe → board + report
+  Engine pairing: an engine carrying the claw inert-grant refusal (>= the
+  release shipping #3283 S9) fails TERMINAL at a merge whose tool surface
+  resolves empty beside a board/runs capability — review-pr <0.9.25 ships
+  exactly that shape. Run the bot and the engine from the same release: an
+  integration pinned to the old bot under the new engine flips its
+  mono-claude gateway reviews from the old silent no-op merge (no report,
+  no board issue) to a loud, honest failure.
 converge* -> pr_gate   deterministic: was a pr_url given?  (the one node both
                        merge twins feed: it carries the merged payload AND the
                        merge's run telemetry forward)
@@ -392,7 +399,10 @@ routing cells send it to claw too, and before the list was declared that
 dispatch merged with tool_count 0: no report, no board issue, the
 capability grant inert. The board operations ride either list as the
 `mcp__iterion_board__` names the prompts call, and the step is the same
-step on either route.
+step on either route. (`iterion-board.md`, which both prompts name as
+pre-reading, is not shipped in this bundle — a workspace may carry it
+under `.claude/skills/`; when it is absent the merge still works, because
+STEP 3 of the merge prompt spells the whole tool contract inline.)
 
 ## Cost posture: no ambient MCP, a byte-stable prefix
 

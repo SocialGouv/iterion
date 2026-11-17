@@ -347,25 +347,35 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// A capability grant the node cannot receive here is refused BY TYPE,
 	// not silently dropped (#3283 S9, backend parity: wired or
 	// typed-refused). The board / runs appends ride an already-restricted
-	// `tools:` list (buildTask's appends are gated on a non-empty union), so
-	// a node that DECLARED no surface dispatches on claw with the grant
-	// inert: no board issue, no run read — it answers as if the grant were
-	// absent, which is exactly the silent shape review-pr's merge shipped as
-	// on its gateway route (F4: `converge` tool-less on claw, no report, no
-	// board issue). `interaction:` is the one append that fires before the
-	// gate — an interaction node's union is never empty here — so its grants
-	// are served and stay out of this refusal. Declaring the surface (the
-	// way review-pr's merge twins do) is the remedy, not a route change.
-	if !task.ToolsDeclared && !task.InteractionEnabled &&
+	// NON-EMPTY `tools:` union (buildTask's appends are gated on it), so a
+	// node whose tool surface resolves EMPTY — no `tools:` line, or a
+	// declared-but-empty `tools: []` (a declaration the appends do not
+	// read) — dispatches on claw with the grant inert: no board issue, no
+	// run read — it answers as if the grant were absent, which is exactly
+	// the silent shape review-pr's merge shipped as on its gateway route
+	// (F4: `converge` tool-less on claw, no report, no board issue). The
+	// gate reads the surface the dispatch would serve (ToolDefs and
+	// AllowedTools, both empty), never the nilness of the declaration:
+	// ToolsDeclared is nilness, and the two disagree exactly on `tools: []`
+	// — the shape this arm exists to catch when a node reaches claw through
+	// a route no catalog test names (a team routing cell, a bare-host
+	// fallback). `interaction:` is the one append that fires before the
+	// gate — an interaction node's union is never empty here — so its
+	// grants are served and stay out of this refusal. A non-empty surface
+	// (the way review-pr's merge twins declare theirs) is the remedy, not a
+	// route change.
+	if len(task.ToolDefs) == 0 && len(task.AllowedTools) == 0 && !task.InteractionEnabled &&
 		(delegate.HasBoardCapability(task.Capabilities) || delegate.HasRunsReadCapability(task.Capabilities)) {
 		grants := "board"
 		if !delegate.HasBoardCapability(task.Capabilities) {
 			grants = "runs read"
+		} else if delegate.HasRunsReadCapability(task.Capabilities) {
+			grants = "board and runs read"
 		}
 		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
 			NodeID: task.NodeID, Backend: delegate.BackendClaw,
-			Capability: grants + " capabilities on a node that declares no tools: list",
-			Remedy:     "declare the node's tools: list — on claw the appends that serve a capabilities grant ride an already-restricted list, so a listless node holds the grant inert (the capability-append sites of buildTask)",
+			Capability: grants + " capabilities on a node whose tool surface resolves empty",
+			Remedy:     "give the node a non-empty tools: list — on claw the appends that serve a capabilities grant ride an already-restricted list, so an empty surface holds the grant inert (the capability-append sites of buildTask)",
 		}
 	}
 

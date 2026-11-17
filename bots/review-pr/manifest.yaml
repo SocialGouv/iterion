@@ -29,6 +29,16 @@ version: 0.9.25
 ## (TestClawRefusesAnInertCapabilityGrant). The `_EMIT` backend dial may
 ## therefore take claw; a pre-0.9.16 mono-GPT `_EMIT` profile pinning claw
 ## is now merely redundant, not breaking.
+##
+## RELEASE COUPLING — update the bot WITH the engine, one release carries
+## both. This engine refuses (fail-terminal at the merge node, no retry) a
+## claw dispatch whose tool surface resolves empty beside a board or runs
+## capability; review-pr <0.9.25 ships exactly that shape on its merge step,
+## and the gateway routing cells pin it to claw. An integration serving the
+## old bot under the new engine therefore flips its mono-claude reviews from
+## the previous SILENT no-op merge (no report, no board issue — prod F4) to
+## a loud, honest failure; the run recovers by updating the bot, not by
+## retrying.
 ## 0.9.24 — the run table's effort column prints the effort each node that
 ## ran sent its model, and who decided it, instead of the
 ## `ITERION_VIBE_EFFORT_*` dial it was written with. publish_review no longer
