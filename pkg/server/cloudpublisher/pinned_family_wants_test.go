@@ -27,14 +27,18 @@ func TestWithPinnedWants(t *testing.T) {
 	routes := []credpool.Credential{anthropic}
 
 	t.Run("no pin leaves the walk byte-identical", func(t *testing.T) {
+		// DUAL is the only mode that suppresses a pin (mono_family is
+		// deleted at injection there); AUTO demands, like mono.
 		for _, vars := range []map[string]string{
 			nil,
 			{reviewtopology.VarReviewMode: reviewtopology.ModeDual, reviewtopology.VarMonoFamily: "gpt"},
-			{reviewtopology.VarMonoFamily: "gpt"},
 		} {
-			if got := withPinnedWants(routes, vars); !reflect.DeepEqual(got, routes) {
+			if got := withPinnedWants(routes, vars, ""); !reflect.DeepEqual(got, routes) {
 				t.Fatalf("withPinnedWants(%v, %v) = %v, want the route wants untouched", routes, vars, got)
 			}
+		}
+		if got := withPinnedWants(routes, map[string]string{reviewtopology.VarMonoFamily: "gpt"}, reviewtopology.ModeDual); !reflect.DeepEqual(got, routes) {
+			t.Fatalf("an explicit dual field must suppress the pin, got %v", got)
 		}
 	})
 
@@ -42,7 +46,7 @@ func TestWithPinnedWants(t *testing.T) {
 		got := withPinnedWants(routes, map[string]string{
 			reviewtopology.VarReviewMode: reviewtopology.ModeMono,
 			reviewtopology.VarMonoFamily: "gpt",
-		})
+		}, "")
 		want := []credpool.Credential{anthropic, codex, openai}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("withPinnedWants = %v, want %v", got, want)
@@ -53,7 +57,7 @@ func TestWithPinnedWants(t *testing.T) {
 		got := withPinnedWants(routes, map[string]string{
 			reviewtopology.VarReviewMode: reviewtopology.ModeMono,
 			reviewtopology.VarMonoFamily: "claude",
-		})
+		}, "")
 		seen := map[credpool.Credential]int{}
 		for _, w := range got {
 			seen[w]++

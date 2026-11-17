@@ -517,19 +517,23 @@ func (i Injection) Summary() string {
 }
 
 // PinnedFamilies returns the participating review families a launch's own
-// variables PIN — the operator's mono_family when the run resolves mono —
-// lowercased and deduplicated, in preference order. Unknown names are
-// dropped: a value outside {claude, gpt} is the bot's own business and the
-// launch enum gate judges it.
+// variables PIN — the operator's mono_family — lowercased and deduplicated,
+// in preference order. Unknown names are dropped: a value outside
+// {claude, gpt} is the bot's own business and the launch enum gate judges
+// it.
 //
-// A pin is a credential DEMAND, not a preference: the run cannot start
-// without a credential of that family, so the credential walk must ASK for
-// one. The publisher reads this to widen its wants accordingly — the
-// refusal InjectIfDeclaredFamilies raises is the symptom that nobody asked.
-func PinnedFamilies(vars map[string]string) []string {
-	// mono_family is meaningless outside mono: a stale pin left in a dual
-	// run would demand a credential the run never spends.
-	if mode := strings.ToLower(strings.TrimSpace(vars[VarReviewMode])); mode != ModeMono {
+// explicitMode is the launch's dedicated review-mode field, which wins over
+// the var exactly as it does at injection. A pin is a credential DEMAND
+// unless the run is explicitly DUAL — where mono_family is deleted at
+// injection and never spent. Auto is NOT excluded: an auto run resolves to
+// mono, honors the pin, and dies on the same missing credential, so the
+// walk must ask for it there too.
+func PinnedFamilies(vars map[string]string, explicitMode string) []string {
+	mode := strings.ToLower(strings.TrimSpace(explicitMode))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(vars[VarReviewMode]))
+	}
+	if mode == ModeDual {
 		return nil
 	}
 	seen := map[string]bool{}

@@ -225,7 +225,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// A mono pin is a credential DEMAND: the launch asks the pool for that
 	// family's slack, so the preview must ask exactly the same wants or it
 	// answers a plan the launch never seals (ADR-164 preview parity).
-	wants = withPinnedWants(wants, spec.Launch.Vars)
+	wants = withPinnedWants(wants, spec.Launch.Vars, spec.Launch.ReviewMode)
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
 	}
