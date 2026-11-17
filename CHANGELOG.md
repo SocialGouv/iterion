@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.8.0](https://github.com/SocialGouv/iterion/compare/v7.7.0...v7.8.0) (2026-11-17)
+
+### Features
+
+* **sources:** the catalog read model, sanitized logos, and the studio catalog with its plug wizard (L2, [#3272](https://github.com/SocialGouv/iterion/issues/3272)) ([#3348](https://github.com/SocialGouv/iterion/issues/3348)) ([96b8f17](https://github.com/SocialGouv/iterion/commit/96b8f175ff88ce7c6e21c4c09594ab74a93d0ad2))
+
+    <details><summary>why</summary>
+
+    The catalog (#3272) needs something to show: a category for the pills, an accent for the entries that ship no mark, and an icon. All three are connector.yaml fields, judged at load:
+
+    </details>
+
 ## [7.7.0](https://github.com/SocialGouv/iterion/compare/v7.6.0...v7.7.0) (2026-11-17)
 
 ### Features
