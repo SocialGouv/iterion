@@ -120,8 +120,21 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 		// The connector candidate query: three scalar fields (two array
 		// fields cannot share one compound index — ADR-168 §6).
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "enabled", Value: 1}, {Key: "connector_key", Value: 1}}, Options: options.Index().SetName("tenant_enabled_connector_key")},
+		// One binding, one row: the uniqueness the create path promises is
+		// an index, not a read-then-write. Partial so the rows with no
+		// connector key (schedules, board, forge) stay unconstrained.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}, {Key: "connector_key", Value: 1}},
+			Options: options.Index().SetName("tenant_bot_connector_key").SetUnique(true).
+				SetPartialFilterExpression(bson.D{{Key: "connector_key", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
+		// A tenant that already holds duplicate bindings fails the unique
+		// index build. Name the situation rather than the driver's code:
+		// an operator resolves it by deleting the extra rows, and a vague
+		// "index build failed" would send them to the wrong place.
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("trigger: a tenant already holds duplicate connector bindings, so the one-binding-per-bot unique index cannot be built — delete the extra rows (same tenant, bot and connector_key) and restart: %w", err)
+		}
 		return fmt.Errorf("trigger: ensure subscriptions indexes: %w", err)
 	}
 	return nil
@@ -130,6 +143,12 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) error {
 	sub.normalize()
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
+		// The unique partial index (EnsureSchema) is the cross-replica
+		// guard the operator's list-then-create cannot be: two processes
+		// inserting the same binding race here and exactly one lands.
+		if mongo.IsDuplicateKeyError(err) && sub.ConnectorKey != "" {
+			return fmt.Errorf("%w: %v", ErrDuplicateConnectorBinding, err)
+		}
 		return fmt.Errorf("trigger: insert subscription: %w", err)
 	}
 	return nil

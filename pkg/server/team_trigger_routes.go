@@ -58,6 +58,7 @@ func (s *Server) teamTriggerAuth(next http.Handler) http.Handler {
 // under /api/teams/{id}/… (ADR-168 §6): the handlers of /api/v1/…, whose
 // scope is the request's active team, scoped here by the path's.
 func (s *Server) registerTeamTriggerRoutes() {
+	s.mux.Handle("GET /api/teams/{id}/sources", s.requireAuth(http.HandlerFunc(s.handleTeamListSources)))
 	s.mux.Handle("GET /api/teams/{id}/triggers", s.teamTriggerAuth(http.HandlerFunc(s.handleListTriggers)))
 	s.mux.Handle("POST /api/teams/{id}/triggers", s.teamTriggerAuth(http.HandlerFunc(s.handleCreateTrigger)))
 	s.mux.Handle("POST /api/teams/{id}/triggers/preview", s.teamTriggerAuth(http.HandlerFunc(s.handleTriggerPreview)))

@@ -54,13 +54,22 @@ func connectorIdentity(dir string, pkg *spec.Package, ov *overlay.Overlay) (*ide
 	if err != nil {
 		return nil, nil, err
 	}
-	if lock == nil {
-		lock = identity.New(pkg.Connector.ID)
-		if _, err := os.Stat(filepath.Join(dir, spec.ConnectorFile)); err == nil {
-			previous, err := spec.LoadGenerated(dir)
-			if err != nil {
-				return nil, nil, err
-			}
+	// The catalog identity fields are AUTHORED presentation (ADR-168 §2):
+	// the generator never produces them, and a regen that dropped them
+	// would silently demote the entry to a monogram. Whatever the previous
+	// package declared is carried onto the regenerated one — on every
+	// regeneration, lock or no lock (the lock exists from the first gen on,
+	// so gating on it would skip exactly the case that matters).
+	if _, err := os.Stat(filepath.Join(dir, spec.ConnectorFile)); err == nil {
+		previous, err := spec.LoadGenerated(dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		pkg.Connector.Category = previous.Connector.Category
+		pkg.Connector.BrandColor = previous.Connector.BrandColor
+		pkg.Connector.Icon = previous.Connector.Icon
+		if lock == nil {
+			lock = identity.New(pkg.Connector.ID)
 			if err := lock.Reconcile(previous); err != nil {
 				return nil, nil, err
 			}
@@ -72,9 +81,12 @@ func connectorIdentity(dir string, pkg *spec.Package, ov *overlay.Overlay) (*ide
 			if err := lock.ObservePublic(previous); err != nil {
 				return nil, nil, err
 			}
-		} else if !os.IsNotExist(err) {
-			return nil, nil, err
 		}
+	} else if !os.IsNotExist(err) {
+		return nil, nil, err
+	}
+	if lock == nil {
+		lock = identity.New(pkg.Connector.ID)
 	}
 	if err := lock.Reconcile(pkg); err != nil {
 		return nil, nil, err

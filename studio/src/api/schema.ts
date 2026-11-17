@@ -5660,6 +5660,25 @@ export interface paths {
         patch: operations["patchTeamsByIdSecretsBySecretId"];
         trace?: never;
     };
+    "/api/teams/{id}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/sources */
+        get: operations["getTeamsByIdSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/status": {
         parameters: {
             query?: never;
@@ -6113,6 +6132,25 @@ export interface paths {
         put?: never;
         /** POST /api/v1/bots/{name}/triggers/from-invocation */
         post: operations["postV1BotsByNameTriggersFromInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/icon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/connectors/{id}/icon */
+        get: operations["getV1ConnectorsByIdIcon"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6822,6 +6860,23 @@ export interface paths {
         };
         /** GET /api/v1/runs/stats */
         get: operations["getV1RunsStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/sources */
+        get: operations["getV1Sources"];
         put?: never;
         post?: never;
         delete?: never;
@@ -18979,6 +19034,26 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postTeamsByIdStatus: {
         parameters: {
             query?: never;
@@ -19617,6 +19692,26 @@ export interface operations {
             header?: never;
             path: {
                 name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1ConnectorsByIdIcon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -20555,6 +20650,24 @@ export interface operations {
         };
     };
     getV1RunsStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1Sources: {
         parameters: {
             query?: never;
             header?: never;

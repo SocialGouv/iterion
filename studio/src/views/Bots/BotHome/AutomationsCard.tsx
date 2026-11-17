@@ -142,6 +142,7 @@ export default function AutomationsCard({ entry }: { entry: BotEntryWithSchema }
                 cron={crons[i] ?? inv.schedule?.suggested_cron ?? ""}
                 onCronChange={(v) => setCrons((c) => ({ ...c, [i]: v }))}
                 onEnable={() => void onEnable(i, inv)}
+                botName={entry.name}
               />
             ))}
           </ul>
@@ -191,6 +192,7 @@ function SuggestedInvocationRow({
   cron,
   onCronChange,
   onEnable,
+  botName,
 }: {
   inv: Invocation;
   note: string;
@@ -198,6 +200,7 @@ function SuggestedInvocationRow({
   cron: string;
   onCronChange: (v: string) => void;
   onEnable: () => void;
+  botName: string;
 }) {
   if (inv.kind === "schedule") {
     const human = cron.trim() ? humanizeCron(cron.trim()) : null;
@@ -260,14 +263,21 @@ function SuggestedInvocationRow({
     );
   }
   if (inv.kind === "connector") {
-    // A connector trigger listens to one connection: an operator binds it,
-    // nothing here can pick the connection — informational only.
+    // A connector trigger listens to one connection: the catalog is where
+    // an operator picks the source and the wizard wires the binding —
+    // this row routes there with the bot preselected.
     return (
       <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
         <Badge>{invocationKindLabel("connector")}</Badge>
         <span className="min-w-0 flex-1 text-xs text-fg-muted">
           {inv.connector?.trigger ?? "trigger"} — bound to a connection by an operator.
         </span>
+        <Link
+          href={`/sources/plug?bot=${encodeURIComponent(botName)}`}
+          className="shrink-0 text-caption text-accent-text hover:underline"
+        >
+          Brancher une source
+        </Link>
       </li>
     );
   }

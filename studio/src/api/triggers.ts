@@ -220,3 +220,37 @@ export function createTriggerFromInvocation(
 export function setTriggerEnabled(sub: TriggerSubscription, enabled: boolean): Promise<TriggerSubscription> {
   return updateTrigger(sub.id, { ...toSubscriptionInput(sub), enabled });
 }
+
+// TriggerPreview mirrors the server's triggerPreview: what the lane would
+// decide and the bot would receive, for a pasted delivery or the trigger's
+// own sample. Writes and launches nothing.
+export interface TriggerPreviewResult {
+  sample?: boolean;
+  filtered?: string;
+  matched: boolean;
+  reason?: string;
+  refusal?: string;
+  vars?: Record<string, string>;
+  event?: unknown;
+}
+
+// triggerPreviewReq mirrors triggerPreviewReq (pkg/server/triggers_connector.go).
+export interface TriggerPreviewInput {
+  bot_id?: string;
+  connection_id?: string;
+  trigger_id?: string;
+  filters?: Record<string, string[]>;
+  when?: string;
+  var_map?: Record<string, string>;
+  vars?: Record<string, string>;
+  // An OBJECT (the server decodes into a map) — a JSON string is a 400.
+  payload?: unknown;
+  headers?: Record<string, string>;
+}
+
+export async function previewTrigger(input: TriggerPreviewInput): Promise<TriggerPreviewResult> {
+  return apiRequest<TriggerPreviewResult>(`${BASE}/preview`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}

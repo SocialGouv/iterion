@@ -656,6 +656,12 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
+		// A duplicate connector binding is the request's, not the server's:
+		// one bot listening to one trigger on one connection fires once.
+		if errors.Is(err, trigger.ErrDuplicateConnectorBinding) {
+			dispatcher.WriteErr(w, http.StatusConflict, err)
+			return
+		}
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}

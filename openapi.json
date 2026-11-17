@@ -17970,6 +17970,30 @@
         ]
       }
     },
+    "/api/teams/{id}/sources": {
+      "get": {
+        "operationId": "getTeamsByIdSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/sources",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/teams/{id}/status": {
       "parameters": [
         {
@@ -18563,6 +18587,30 @@
           "bots"
         ]
       }
+    },
+    "/api/v1/connectors/{id}/icon": {
+      "get": {
+        "operationId": "getV1ConnectorsByIdIcon",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/connectors/{id}/icon",
+        "tags": [
+          "connectors"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/v1/intakes": {
       "get": {
@@ -19574,6 +19622,20 @@
         "summary": "GET /api/v1/runs/stats",
         "tags": [
           "runs"
+        ]
+      }
+    },
+    "/api/v1/sources": {
+      "get": {
+        "operationId": "getV1Sources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/sources",
+        "tags": [
+          "sources"
         ]
       }
     },

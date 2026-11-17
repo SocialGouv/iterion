@@ -10,6 +10,19 @@ import (
 // ErrSubscriptionNotFound is returned by Get/Update/Delete for an unknown id.
 var ErrSubscriptionNotFound = fmt.Errorf("trigger: subscription not found")
 
+// ErrDuplicateConnectorBinding is returned by Create when the tenant
+// already holds a connector subscription for the same bot listening to the
+// same declared trigger on the same connection. Two such rows fire the bot
+// twice per delivery, so the refusal is the store's: the check and the
+// insert share one critical section (or one unique index in Mongo), which
+// is what a caller's list-then-create cannot promise under concurrency.
+//
+// Nothing legitimate needs the second row: a single subscription narrows
+// SEVERAL values by listing them in one filter (Filters is a map of
+// lists), and a different bot, connection or trigger is a different
+// binding.
+var ErrDuplicateConnectorBinding = errors.New("trigger: a connector subscription already binds this bot to this trigger on this connection")
+
 // ErrSubscriptionConflict is returned by Update when the row moved since the
 // caller's copy was read — its version no longer matches the stored one. The
 // caller re-reads and reapplies; nothing it held was written.

@@ -226,3 +226,22 @@ func TestThePreviewReadsADeliveryAndWritesNothing(t *testing.T) {
 		t.Fatalf("the preview stored %d subscription(s)", len(rows))
 	}
 }
+
+// TestTriggerCreateRefusesADuplicateBinding: one binding, one row — the
+// same bot listening to the same declared trigger on the same connection
+// twice would fire the bot twice per delivery. The refusal is the
+// SERVER's (409 naming the row), so every client of the route is
+// protected, not just the wizard.
+func TestTriggerCreateRefusesADuplicateBinding(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	if rec := w.create(`{` + validConnectorSub + `}`); rec.Code != http.StatusCreated {
+		t.Fatalf("first binding: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := w.create(`{` + validConnectorSub + `}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate binding: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already binds") {
+		t.Fatalf("the refusal should name the row: %s", rec.Body.String())
+	}
+}

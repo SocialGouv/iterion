@@ -253,6 +253,12 @@ func readFS(fsys fs.FS, dir string) (*Package, error) {
 		return nil, fmt.Errorf("spec: parse %s: %w", ConnectorFile, err)
 	}
 	p := &Package{Connector: c, Schemas: map[string]Schema{}}
+	// The icon is read at load, like every field a route serves without
+	// re-reading its file: the catalog's icon route serves p.IconSVG, so
+	// what it holds is what the load judged.
+	if err := loadIcon(fsys, dir, p, os.Getenv); err != nil {
+		return nil, err
+	}
 
 	if sb, err := fs.ReadFile(fsys, path.Join(dir, SchemasFile)); err == nil {
 		if err := checkDocVersion(SchemasFile, sb); err != nil {
@@ -270,6 +276,12 @@ func readFS(fsys fs.FS, dir string) (*Package, error) {
 		return nil, fmt.Errorf("spec: read %s: %w", SchemasFile, err)
 	}
 	if err := readResponseContracts(fsys, dir, p); err != nil {
+		return nil, err
+	}
+	// The operator's setup instructions, shipped beside the package (see
+	// Package.Setup): read here so the catalog can show them where the
+	// vendor hook is configured.
+	if err := readSetup(fsys, dir, p); err != nil {
 		return nil, err
 	}
 

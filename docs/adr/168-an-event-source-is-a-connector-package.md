@@ -198,6 +198,14 @@ An absent path evaluates to nil, and a nil output is absent: the var it maps to 
 
 `GET /api/teams/{id}/sources` (and `/api/v1/sources` locally) answers the packages that declare triggers across the tenant's tiers: presentation fields, maturity and tier, push or poll and what polling promises, the grants a source needs, its setup mode and replay protection, the tenant's connections, ingresses and pollers for it, and the subscriptions on each. Beside them it lists the built-in sources — schedule, board, run outcome, emit — as descriptors the studio routes to their existing dialogs. It stores nothing (philosophy §5).
 
+    As built (L2, #3272): the cards carry the presentation fields, the
+    maturity and tier, the delivery mode, the auth schemes, the declared
+    triggers with their outputs and filters, and the ingress contract
+    summary; a connection and a subscription count per tenant; the
+    built-ins route to their dialogs. Setup mode, the grants a source
+    needs and per-poller rows arrive with the waves that declare them
+    (L3, L4).
+
 ### 11. The Forgejo lane migrates under one authority at a time
 
 The connector-bound Forgejo configs of #2761 are live, and a rolling deploy runs old and new replicas together. Two launchers that each believe they own a delivery would launch twice — the legacy lane keys its idempotency on the delivery record and lets the launch mint its own run id — so the migration never has two authorities:

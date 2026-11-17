@@ -2,13 +2,25 @@ package spec
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
+
+// brandColorRe is the one shape a package's accent may take: a six-digit
+// hex triple. Anything else renders as nothing on the monogram fallback,
+// so it is refused at load rather than served broken.
+var brandColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// ValidBrandColor reports whether s is the one shape a package's accent
+// takes — the check the monogram fallback re-applies before rendering.
+func ValidBrandColor(s string) bool { return brandColorRe.MatchString(s) }
 
 // OpsFile is one ops/<domain>.yaml: a slice of a connector's operations,
 // grouped by the vendor's own tag so a 500-operation API stays readable and
@@ -48,6 +60,21 @@ type Package struct {
 	Connector Connector
 	Ops       []OpsFile
 	Schemas   map[string]Schema
+	// Setup is the package's setup.md: what an operator does at the
+	// vendor's side to make deliveries arrive (which hook to add, where the
+	// secret goes). Plain text, size-capped at load; nil when the package
+	// ships none. The catalog shows it verbatim where the hook is
+	// configured, so it is read here rather than re-read by a route.
+	Setup []byte `json:"-"`
+	// IconSVG is the package's icon: Connector.Icon's file, read, sanitized
+	// and size-capped at load (icon.go). Nil when the package declares no
+	// icon; never a byte of the unsanitized file — the load is the only
+	// path a package icon takes, so a Package built by hand cannot carry
+	// one the load never judged.
+	IconSVG []byte `json:"-"`
+	// IconDigest is the sha256 of IconSVG (16 hex chars): the ETag the
+	// catalog's icon route serves.
+	IconDigest string `json:"-"`
 	// ResponseSchemas are explicit v2 contracts, read only from responses.json.
 	// The older Schemas projection is never used to validate a response.
 	ResponseSchemas map[string]ResponseSchema
@@ -168,6 +195,23 @@ func (p *Package) Validate() error {
 	c := &p.Connector
 	if err := p.ValidateGenerated(); err != nil {
 		return err
+	}
+	// The catalog identity fields: an unknown category is the vendor's or
+	// the operator's newer word and renders raw (ADR-168 §2), a malformed
+	// accent is a broken monogram and is refused, and an icon declared but
+	// not loaded means the Package was built by hand rather than loaded,
+	// so no unsanitized byte travels.
+	if c.BrandColor != "" && !brandColorRe.MatchString(c.BrandColor) {
+		return fmt.Errorf("connector %q: brand_color %q is not \"#rrggbb\"", c.ID, c.BrandColor)
+	}
+	if c.Icon != "" {
+		slash := strings.TrimPrefix(filepath.ToSlash(c.Icon), "./")
+		if slash != strings.TrimPrefix(c.Icon, "./") || !fs.ValidPath(slash) || slash == "." {
+			return fmt.Errorf("connector %q: icon %q is not a slash path within the package", c.ID, c.Icon)
+		}
+		if p.IconSVG == nil || p.IconDigest == "" {
+			return fmt.Errorf("connector %q: icon %q is declared but was not loaded (a Package with an icon comes from Load, not from a composite literal)", c.ID, c.Icon)
+		}
 	}
 	if len(c.Auth) == 0 {
 		return fmt.Errorf("connector %q: declares no auth scheme — the vendor description carries none, so the overlay must supply one (an API nobody can authenticate against is not a connector)", c.ID)
