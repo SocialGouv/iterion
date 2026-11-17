@@ -83,6 +83,13 @@ runs one signal pass inline — the proof the readings are warm.
 - **A slot never draws**: an explicit tier sealed it (law 1), or the
   routing whitelist holds the slot out — the credential preview shows the
   per-slot answer the launch will produce.
+- **A pinned review family refuses at launch**: a mono pin
+  (`mono_family`) is a credential DEMAND, not a routing hint — the launch
+  asks the pool for that family's entries even when no route names them
+  (`reviewtopology.PinnedFamilies`). An attached pool holding none of it
+  still refuses with "no credential serves that family": once a grant
+  exists the platform tier is skipped, not consulted (ADR-131), so the
+  pin either rides the pool or nothing serves it.
 - **A gateway entry refuses**: it needs the verbatim `model` at pledge
   time, and its grant carries the paired URL; a URL-less grant is
   refused and its lease released (the log names it).
