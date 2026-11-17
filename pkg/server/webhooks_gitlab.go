@@ -449,7 +449,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	if gate == nil {
 		gate = s.realWebhookNoteGate
 	}
-	authorized, _, threadContext, reason, aerr := gate(ctx, cfg, p, converseBot)
+	authorized, _, threadContext, reason, rootAnchor, aerr := gate(ctx, cfg, p, converseBot)
 	if aerr != nil {
 		s.failWebhookAuthorization(ctx, w, cfg, gitlabNoteMeta(p), payloadHash, srcIP, "authz check", aerr)
 		return
@@ -479,13 +479,22 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	question := strings.TrimSpace(p.NoteBody)
-	vars := applyWebhookVarLayers(withForgeBaseURL(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, map[string]string{
+	// The thread root's diff position, when the discussion fetch found one;
+	// the arriving note's own position covers the fresh-inline-comment case
+	// (a `/revi <question>` that OPENED a diff thread — its note carries the
+	// position, and it IS the root). The converse bot focuses its diff read
+	// on this hunk instead of walking the whole change.
+	anchor := rootAnchor
+	if !anchor.Set() {
+		anchor = p.ThreadAnchor()
+	}
+	vars := applyWebhookVarLayers(withForgeBaseURL(reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.MRTitle+"\n\n"+p.MRDesc), nil, mergeVarsInto(map[string]string{
 		"conversation_mode": "reply",
 		"discussion_id":     p.DiscussionID,
 		"trigger_note":      p.NoteBody,
 		"replier":           p.AuthorUsername,
 		"converse_question": question,
-	}), cfg), cfg, store.RunTrustDefault)
+	}, anchor.LaunchVars())), cfg), cfg, store.RunTrustDefault)
 	// The discussion transcript the gate fetched — the operator's reply
 	// typically references Revi's earlier review note; the bot grounds its
 	// answer in it.
@@ -603,7 +612,31 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
-		vars = applyWebhookVarLayers(withForgeBaseURL(buildCommandVars(p, route, cmdArgs, nil), cfg), cfg, store.RunTrustDefault)
+		// The thread ROOT's diff position: the anchor a command fired
+		// INSIDE a diff thread (a `/revi <question>` as a reply to Revi's
+		// inline comment) focuses its scope read on. The same best-effort
+		// fetch that grounds the transcript carries it; the arriving
+		// note's own position — present only on the note that opened a
+		// diff thread — covers the rest.
+		anchor := webhooks.ThreadAnchor{}
+		transcript := ""
+		if strings.TrimSpace(cmdArgs) != "" {
+			tc, rootAnchor := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID)
+			if tc != "" {
+				transcript = tc
+			}
+			anchor = rootAnchor
+		}
+		if !anchor.Set() {
+			anchor = p.ThreadAnchor()
+		}
+		// The anchor block merges into the vars BEFORE the webhook's var
+		// layers: cfg.LaunchVars (the operator's explicit pins) apply last
+		// and win, so an EMPTY anchor clobbers nothing and a real one
+		// cannot silently replace a pinned thread_anchor_* — the same
+		// precedence the reply lane and the prforge lane already have
+		// (round-1 B-M1).
+		vars = applyWebhookVarLayers(withForgeBaseURL(mergeVarsInto(buildCommandVars(p, route, cmdArgs, nil), anchor.LaunchVars()), cfg), cfg, store.RunTrustDefault)
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.
@@ -620,6 +653,12 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars["trigger_command"] = cmd
 		vars["trigger_args"] = cmdArgs
 		vars["replier"] = p.AuthorUsername
+		// thread_context is the same best-effort transcript the reply lane
+		// carries (a fetch failure leaves it absent, never a refusal); it
+		// rides after the layers like the reply lane's does.
+		if transcript != "" {
+			vars["thread_context"] = transcript
+		}
 		// re_review marks the posted summary the way review-pr's bare
 		// `/revi` always has: a when_args_present sibling sharing the same
 		// command (revi-converse) is answering a QUESTION, not re-reviewing,
@@ -628,15 +667,6 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		// pair inherits the same convention for free.
 		if route.Disambiguator == "when_args_empty" {
 			vars["re_review"] = "true"
-		}
-		// thread_context is best-effort and gate-fetched: one API call,
-		// worth paying only when the command carries text to ground (a bare
-		// command has nothing to ground). A fetch failure degrades to an
-		// absent var, never a refusal.
-		if strings.TrimSpace(cmdArgs) != "" {
-			if tc := s.gitlabNoteThreadContext(ctx, cfg, p, route.BotID); tc != "" {
-				vars["thread_context"] = tc
-			}
 		}
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
@@ -862,18 +892,20 @@ func (s *Server) gitlabGateClientFor(ctx context.Context, cfg webhooks.Config, b
 // it is only worth attempting for a command that carries text to ground; a
 // bare command has nothing to ground and the caller skips this entirely.
 // A fetch failure degrades to an absent var, never a refusal — grounding is
-// additive, the command already cleared authorization without it.
-func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) string {
+// additive, the command already cleared authorization without it. The
+// thread ROOT's diff position comes back with it (same fetch), the anchor
+// a conversational bot focuses its diff read on.
+func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (string, webhooks.ThreadAnchor) {
 	if p.DiscussionID == "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
 	if refusal != "" {
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
 	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	var botUserID int64
@@ -885,9 +917,9 @@ func (s *Server) gitlabNoteThreadContext(ctx context.Context, cfg webhooks.Confi
 		if s.logger != nil {
 			s.logger.Warn("webhooks: gitlab discussion %s fetch failed (continuing without thread context): %v", p.DiscussionID, derr)
 		}
-		return ""
+		return "", webhooks.ThreadAnchor{}
 	}
-	return gitlab.FormatThreadTranscript(notes, botUserID, maxThreadContextChars)
+	return gitlab.FormatThreadTranscript(notes, botUserID, maxThreadContextChars), gitlab.ThreadRootAnchor(notes)
 }
 
 // realWebhookReviewRequestGate is the production replier gate of the
@@ -1010,16 +1042,16 @@ const maxThreadContextChars = 16000
 // realWebhookCommandGate instead) — replyInThread is therefore always true
 // alongside authorized=true; it is still returned so the caller's intent
 // ("this is a reply, not a command") stays explicit at the call site.
-func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, err error) {
+func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error) {
 	// Resolve the bot's forge token (honouring per-webhook secret overrides):
 	// it authenticates the auth checks AND is the identity the bot posts as.
 	token, terr := s.resolveForgeToken(ctx, cfg, botID)
 	if terr != nil || token == "" {
-		return false, false, "", "no forge token resolved (configure a forge_token binding)", nil
+		return false, false, "", "no forge token resolved (configure a forge_token binding)", webhooks.ThreadAnchor{}, nil
 	}
 	baseURL, refusal := resolveForgeBaseURL(cfg, p.MRURL)
 	if refusal != "" {
-		return false, false, "", refusal, nil
+		return false, false, "", refusal, webhooks.ThreadAnchor{}, nil
 	}
 	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	return s.gitlabNoteGateWithAPI(ctx, cfg, p, api)
@@ -1032,14 +1064,15 @@ func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p
 // confirmed bot identity — without one we can't tell a Revi thread from any
 // other, so an unresolved identity refuses rather than guesses), then
 // allowlist/role authorization. Returns the discussion transcript for the
-// converse bot's grounding.
-func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, api gitlabNoteAPI) (authorized, replyInThread bool, threadContext, reason string, err error) {
+// converse bot's grounding, and the thread ROOT's diff position (the anchor
+// the bot focuses its diff read on) from the same fetch.
+func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, api gitlabNoteAPI) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error) {
 	bot, berr := api.CurrentUser(ctx)
 	if berr == nil && bot.ID == p.AuthorID {
-		return false, false, "", "self note (loop-guard)", nil
+		return false, false, "", "self note (loop-guard)", webhooks.ThreadAnchor{}, nil
 	}
 	if berr != nil {
-		return false, false, "", "bot identity unresolved; cannot classify reply", nil
+		return false, false, "", "bot identity unresolved; cannot classify reply", webhooks.ThreadAnchor{}, nil
 	}
 	var notes []gitlab.DiscussionNote
 	if p.DiscussionID != "" {
@@ -1047,25 +1080,26 @@ func (s *Server) gitlabNoteGateWithAPI(ctx context.Context, cfg webhooks.Config,
 		if err != nil {
 			// Classification needs the thread — fail the request (502) so
 			// the forge retries.
-			return false, false, "", "", err
+			return false, false, "", "", webhooks.ThreadAnchor{}, err
 		}
 	}
 	if !gitlab.NotesHaveAuthor(notes, bot.ID) {
-		return false, false, "", "not a /revi command or a reply in a Revi thread", nil
+		return false, false, "", "not a /revi command or a reply in a Revi thread", webhooks.ThreadAnchor{}, nil
 	}
 	replyInThread = true
 	threadContext = gitlab.FormatThreadTranscript(notes, bot.ID, maxThreadContextChars)
+	anchor = gitlab.ThreadRootAnchor(notes)
 	ok, authReason, aerr := gitlabAuthorizeReplier(ctx, api, gitlab.ReplierAuth{
 		AuthorID: p.AuthorID, AuthorUsername: p.AuthorUsername, ProjectID: p.ProjectID,
 		Allowlist: cfg.AuthorizedRepliers, MinRole: cfg.MinReplierRole,
 	})
 	if aerr != nil {
-		return false, replyInThread, "", "", aerr
+		return false, replyInThread, "", "", webhooks.ThreadAnchor{}, aerr
 	}
 	if !ok {
-		return false, replyInThread, "", "replier not authorized: " + p.AuthorUsername, nil
+		return false, replyInThread, "", "replier not authorized: " + p.AuthorUsername, webhooks.ThreadAnchor{}, nil
 	}
-	return true, replyInThread, threadContext, authReason, nil
+	return true, replyInThread, threadContext, authReason, anchor, nil
 }
 
 // resolveForgeToken resolves the bot's forge_token for the webhook's tenant,

@@ -12,6 +12,7 @@
 package webhooks
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -925,4 +926,87 @@ func (c Config) RetryPolicy() retrypolicy.Policy {
 		MaxWait:     c.RetryMaxWait,
 		Jitter:      c.RetryJitter,
 	}
+}
+
+// ThreadAnchor is the diff position a review thread's root comment anchors
+// to — what a conversational bot needs to focus its diff read on the hunk
+// the thread is about (#3283). The forge spellings are normalized here:
+// Side is "new" (the post-image line the comment renders on) or "old" (a
+// line the change removed — a pre-image line, never a current one); Line
+// is the line number on that side; OldLine is the pre-image line the forge
+// keeps beside the anchor — GitHub's original_line, GitLab's old_line
+// beside a new_line — and is NEVER a current line: the comment may be
+// outdated, the line renamed or deleted since; Commit is the commit the
+// anchor was made on (GitHub's commit_id, GitLab's position.head_sha), the
+// value a consumer compares against the revision it actually reads; and
+// OldPath names the file before a rename when the forge reports one
+// (GitLab's position.old_path; GitHub's payload carries none).
+//
+// Zero value: no anchor — the thread hangs off the conversation (a general
+// note), not off the diff. The six-line shape the forge gave is kept:
+// consumers degrade on what is missing, they do not guess.
+type ThreadAnchor struct {
+	Path    string
+	OldPath string
+	Line    int64
+	OldLine int64
+	Side    string // "new" | "old" | ""
+	Commit  string
+}
+
+// Set reports whether an anchor was carried at all. Only Path decides: a
+// thread that anchors nothing names no file, whatever else arrived.
+func (a ThreadAnchor) Set() bool { return a.Path != "" }
+
+// LaunchVars renders the anchor as the launch vars the conversational bots
+// declare (thread_anchor_*). Always the six keys, empty string where the
+// forge gave nothing (a line number of 0 means absent — real lines start
+// at 1): the lanes set them as one block, so a consumer reads one shape
+// whether the anchor came whole, half or not at all.
+func (a ThreadAnchor) LaunchVars() map[string]string {
+	return map[string]string{
+		"thread_anchor_path":     a.Path,
+		"thread_anchor_old_path": a.OldPath,
+		"thread_anchor_line":     formatAnchorLine(a.Line),
+		"thread_anchor_old_line": formatAnchorLine(a.OldLine),
+		"thread_anchor_side":     a.Side,
+		"thread_anchor_commit":   a.Commit,
+	}
+}
+
+// formatAnchorLine renders a line number, 0 — the absent value — as the
+// empty string.
+func formatAnchorLine(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// GitHubReviewAnchor normalizes a GitHub (or Forgejo/Gitea, the shared wire
+// shape) review comment's anchor fields. side is the wire's "LEFT"/"RIGHT"
+// (the pre-image / post-image side line anchors to); line is the comment's
+// current line on that side — null on an outdated comment, the forge keeps
+// only originalLine then; originalLine is the line the comment was ORIGINALLY
+// written on and never travels as a current line; commit is the comment's
+// commit_id. A side the payload does not name (Forgejo today) leaves the
+// anchor un-sided: the file path alone survives, which is still enough to
+// focus the read on the file's diff.
+func GitHubReviewAnchor(path, side string, line, originalLine int64, commit string) ThreadAnchor {
+	a := ThreadAnchor{Path: path, Line: line, OldLine: originalLine, Commit: commit}
+	switch strings.ToLower(side) {
+	case "right":
+		a.Side = "new"
+	case "left":
+		a.Side = "old"
+	default:
+		// No usable side: the line cannot be read as a current one (its
+		// image is unknown), so it travels only as the pre-image hint it is.
+		a.Side = ""
+		if a.Line != 0 {
+			a.OldLine = a.Line
+			a.Line = 0
+		}
+	}
+	return a
 }

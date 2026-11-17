@@ -12,19 +12,36 @@
 ## the conversation state (see docs/forge-conversations.md "the thread
 ## is the state").
 ##
-## Shape (one LLM step, then two deterministic ones):
+## Shape (one deterministic scope step, one LLM step, then two more):
 ##
-##   converse_agent  (LLM: reads the question + the diff, DRAFTS the
-##                    answer into converse_output.answer — never posts)
-##     -> publish_reply    (deterministic: posts the draft in the thread
-##                          with the forge_token, re-reads it by id)
-##     -> converse_health  (deterministic anti-façade gate)
-##     -> done
+##   converse_scope  (deterministic: computes the diff facts the answer
+##                    grounds in — reviewed/base revisions, base
+##                    freshness, workspace anomalies, changed files,
+##                    stat, and the hunk the thread's anchor names —
+##                    into one precomputed SCOPE block)
+##     -> converse_agent  (LLM: reads the SCOPE block + the question,
+##                         DRAFTS the answer into converse_output.answer
+##                         — never posts)
+##       -> publish_reply    (deterministic: posts the draft in the thread
+##                            with the forge_token, re-reads it by id,
+##                            renders the agent's `unchecked` note)
+##       -> converse_health  (deterministic anti-façade gate)
+##       -> done
 ##
 ## Posting does not depend on how many steps the model spent reading: a
 ## loop that ran out of steps still hands back its draft, and the node
 ## after it posts it (VAO !48, 2026-11-14: a reply that took 61 steps was
 ## drafted and never posted, because the POST was the agent's last step).
+## What the loop could NOT verify — its 20-step bound cutting the reads
+## short, a failed fetch — rides converse_output.unchecked, and
+## publish_reply renders it as a "Lecture partielle" note in the thread:
+## the operator sees the admission, the gates read no claim in it.
+##
+## The system prompt is byte-stable across runs (#3283): no {{vars.*}} in
+## it — the workspace path, the base ref and the per-run facts live in the
+## user message (scope, thread, question, path, in that order) — so the
+## provider's prefix cache serves the next run from this one's prefix.
+## The user message carries the run; the system prompt carries the mission.
 ##
 ## Read-only safety: the agent's tools read; the one forge write is
 ## publish_reply's POST. No board writes, no source mutation. Evaluation
@@ -42,10 +59,10 @@ dsl: 2
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## Branch comparison base — same semantics as review-pr's base_ref.
-  ## The agent diffs `git merge-base base_ref HEAD` to ground its
-  ## answer in the actual change set. Defaults to the common
-  ## integration-branch name; the webhook handler overrides it from
-  ## the PR's target_branch.
+  ## converse_scope refreshes it from the remote (best-effort, said
+  ## through base_is_current) before taking the merge-base, and diffs
+  ## against that. Defaults to the common integration-branch name; the
+  ## webhook handler overrides it from the PR's target_branch.
   base_ref: string = "main"
   ## The pull-request (merge-request on GitLab) URL the conversation
   ## lives on. publish_reply derives the forge, its API base, the
@@ -77,6 +94,39 @@ vars:
   ## The forge username of the operator who asked the question.
   ## Used to address them in the answer ("Re: <replier> — …").
   replier: string = ""
+  ## The THREAD ROOT's diff position (the review comment the thread
+  ## hangs on), normalized by the webhook lanes across forges and set
+  ## as one block — empty keys when no anchor exists (a general note,
+  ## a manual run, a forge that carries no position). The bot grounds
+  ## its answer in the hunk the operator is replying TO, not wherever
+  ## the diff has drifted to since.
+  ##   thread_anchor_path    the file the thread anchors to; empty when
+  ##                         the thread hangs off the conversation
+  ##   thread_anchor_old_path the file before a rename, when the forge
+  ##                         reports one (GitLab's old_path)
+  ##   thread_anchor_side    "new" (the post-image line the comment
+  ##                         renders on) or "old" (a line the change
+  ##                         removed — a pre-image line)
+  ##   thread_anchor_line    the CURRENT line on that side; absent on an
+  ##                         outdated comment (GitHub keeps only the
+  ##                         original line then)
+  ##   thread_anchor_old_line the PRE-IMAGE hint the forge keeps beside
+  ##                         the anchor (GitHub's original_line, GitLab's
+  ##                         paired old_line) — NEVER a current line: the
+  ##                         comment may be outdated, the line renamed or
+  ##                         deleted since. converse_scope never reads it
+  ##                         as one.
+  ##   thread_anchor_commit  the commit the anchor was taken on. converse_scope
+  ##                         isolates the anchored hunk only when it names
+  ##                         the head under review; stale, removed-side or
+  ##                         line-less it shows the file's whole diff and
+  ##                         says so.
+  thread_anchor_path: string = ""
+  thread_anchor_old_path: string = ""
+  thread_anchor_line: string = ""
+  thread_anchor_old_line: string = ""
+  thread_anchor_side: string = ""
+  thread_anchor_commit: string = ""
   ## The forge's web base the webhook is pinned to (its forge_base_url),
   ## stamped by the webhook lanes when the config names one. publish_reply
   ## derives the API base from it instead of pr_url's origin, and refuses a
@@ -154,15 +204,31 @@ prompt converse_system:
 
   ── SCOPE ──
   1. The PR diff against its merge-base IS the surface you reason
-     about. Enumerate changed files first:
-       git -C {{vars.workspace_dir}} diff --name-only $(git -C {{vars.workspace_dir}} merge-base {{vars.base_ref}} HEAD)
-     Read the diff (or the relevant hunks) before answering anything
-     about specific changes:
-       git -C {{vars.workspace_dir}} diff $(git -C {{vars.workspace_dir}} merge-base {{vars.base_ref}} HEAD)
+     about, and this run OPENS with it: the SCOPE section of the user
+     message was computed before your first turn. It names the two
+     revisions compared (the reviewed head and the merge-base), says
+     whether the base is fresh (a failed refresh means the diff may
+     repeat work already merged — say so when your answer leans on
+     it), lists workspace anomalies (TRACKED files with uncommitted
+     edits — a file there is not the clean tree under review: name
+     the anomaly when you answer about it), enumerates the changed
+     files with their stat, and focuses the hunk the thread's anchor
+     points at when it can (a stale, removed-side or line-less anchor
+     shows the file's whole diff and says so). Read THAT before any
+     git call; the shell and the file tools start IN the workspace
+     (the user message names it), so plain `git diff`, `git log` and
+     relative paths reach it — no `git -C`, no absolute paths. Run
+     git only for what the block lacks: surrounding code, another
+     commit, a file the focus cut. A scope marked UNAVAILABLE means
+     the change could not be scoped: list the changed files and read
+     them yourself before answering, and say what you could not
+     read.
      You MAY read surrounding code (callers, conventions) to ground
      a claim; cite it by `file:line` when you do. Read what the
-     question needs, not the whole change: every tool call is a step
-     of a bounded loop.
+     question needs, not the whole change: your loop is bounded at
+     20 steps, and a draft at the bound beats a complete read with
+     no answer — say what you could not check instead (the output
+     has a field for it).
   2. The OPERATOR'S QUESTION is the steering. Answer THAT question.
      Do NOT branch into adjacent advice unless the answer genuinely
      requires it. A concise answer is a sign of mastery, not
@@ -229,17 +295,24 @@ prompt converse_system:
       such as "N/A" beside a reason is not an answer and is not posted).
     - `summary`: one paragraph — the question, the gist of the answer,
       what you read to ground it.
-  When the reads run long, stop reading and emit the best answer the
-  reads so far support, saying in it what you could not check. Do NOT
-  finish with a prose message; the run fails when the structured
-  output is missing.
+    - `unchecked`: what this answer could NOT verify — reads your step
+      bound cut short, a fetch or a file that failed to open, a claim
+      resting on the scope block alone where you would have read the
+      code. Empty when everything behind the answer was checked. The
+      deterministic step after you renders it in the thread as a note;
+      it is an admission the operator reads, never a claim the gates
+      count.
+  When the reads run long — and they will: your loop is bounded at 20
+  steps — stop reading at the best answer the reads so far support and
+  say in `unchecked` what you did not get to. Do NOT finish with a
+  prose message; the run fails when the structured output is missing.
 
 prompt converse_user:
-  Workspace:           {{vars.workspace_dir}}
-  Base ref:            {{vars.base_ref}}
-  PR URL:              {{vars.pr_url}}
-  Discussion thread:   {{vars.discussion_id}}
-  Replier (operator):  {{vars.replier}}
+  ── Scope (precomputed before your turn — read it first) ──
+  {{outputs.converse_scope.block}}
+
+  ── Discussion thread (chronological; your earlier notes labelled) ──
+  {{vars.thread_context}}
 
   ── Operator's question ──
   {{vars.converse_question}}
@@ -247,19 +320,56 @@ prompt converse_user:
   ── Original note body (for context — includes the leading slash-command) ──
   {{vars.trigger_note}}
 
-  ── Discussion thread (chronological; your earlier notes labelled) ──
-  {{vars.thread_context}}
+  Replier (operator):  {{vars.replier}}
+  PR URL:              {{vars.pr_url}}
+  Discussion thread:   {{vars.discussion_id}}
 
-  Read the question, read the relevant slice of the PR diff (and any
-  surrounding code you need to ground a claim), draft a concise
-  grounded answer per your system prompt, and emit `converse_output`
-  with that answer in `answer`. Do not post it: the workflow does.
+  ── Workspace ──
+  {{vars.workspace_dir}}
+  Your working directory: the shell and the file tools start there, so
+  plain `git diff`, `git log` and relative paths reach the repository —
+  no `git -C`, no absolute paths. Base ref (the branch the change is
+  compared against): {{vars.base_ref}}.
+
+  Read the scope block first, then the question, draft a concise grounded
+  answer per your system prompt, and emit `converse_output` with that
+  answer in `answer` and what you could not verify in `unchecked`. Do not
+  post it: the workflow does.
 
 prompt converse_health_system:
   Deterministic anti-façade gate (no LLM). Reads publish_reply's
   output and emits a banner the report surfaces.
 
 ## ─── Schemas ────────────────────────────────────────────────────
+## What converse_scope hands the user prompt: the facts of the change,
+## plus the rendered block the prompt carries verbatim.
+schema converse_scope_output:
+  ## The rendered SCOPE text — capped at 48000 characters with a visible
+  ## marker when the change is bigger than that.
+  block: string
+  ## The revision actually checked out — what the answer's anchors cite.
+  reviewed_sha: string
+  ## The ONE resolved base every consumer diffs against: the merge-base
+  ## with the (refreshed) base ref. The base TRIED, never HEAD, when the
+  ## scope could not be resolved.
+  base_sha: string
+  ## The bounded fetch of base_ref succeeded. False on a failed or
+  ## skipped refresh — the block says the diff may repeat work already
+  ## merged.
+  base_is_current: bool
+  ## TRACKED files with uncommitted edits (porcelain entries), '?' when
+  ## the read failed, empty on a clean tree and in base_ref: HEAD mode.
+  workspace_anomaly: string
+  ## How many files the change touches. -1 is the SENTINEL for "the
+  ## scope is unknown" — never read as "no files changed".
+  changed_files: int
+  ## The 48000-character cap cut the block. True says the block is
+  ## partial: the agent reads the marker, the workflow can read the flag —
+  ## the run knows its scope was capped without trusting any gate to
+  ## infer it (D8-compatible: a fact on the output, not a claim on the
+  ## gates).
+  truncated: bool
+
 ## What the agent hands back: a draft, never a claim about the forge.
 schema converse_output:
   ## answer: the full markdown reply body publish_reply posts — the
@@ -280,10 +390,18 @@ schema converse_output:
   ## summary: one paragraph — the question, the gist of the answer,
   ## what was read to ground it.
   summary: string
+  ## unchecked: what the answer could NOT verify (reads the 20-step bound
+  ## cut short, a failed fetch or read). Empty beside a fully-checked
+  ## answer. publish_reply renders it in the thread as a "Lecture
+  ## partielle" note; converse_health reads nothing of it — an admission
+  ## is not a claim.
+  unchecked: string
 
 schema publish_reply_input:
   answer: string
   skipped_reason: string
+  ## the agent's own unchecked note, rendered in the thread when set.
+  unchecked: string
 
 ## What the forge holds after publish_reply, read back from the forge.
 schema publish_reply_output:
@@ -363,12 +481,17 @@ agent converse_agent:
   ## missing, the read-only thread GET; read_file, glob and grep open
   ## the sources an answer cites.
   tools: [bash, read_file, glob, grep]
-  ## claw caps an unnumbered tool loop at 5 steps, short of a question
-  ## that needs a few source reads. 60 = review-pr's reviewer_claude, the
-  ## claude slot this node mirrors: on claude_code (--max-turns) the bound
-  ## is new here as there. The loop only reads now: running out of steps
-  ## costs the answer some grounding, never its publication.
-  tool_max_steps: 60
+  ## The loop READS: the SCOPE block (converse_scope, the entry node)
+  ## already carries the diff facts, the changed files and the anchored
+  ## hunk, so the loop spends its steps on what the block lacks —
+  ## surrounding code, the sources a claim cites. 20 = the measured
+  ## converse shape (M2a: 13-14 steps on a small thread, 49-61 on a
+  ## question the scope would now answer up front), with slack to 24
+  ## before the bound is re-cut; running out costs grounding, never the
+  ## publication (publish_reply posts the draft), and whatever the bound
+  ## cut short rides `unchecked` into the thread (#3283 D8). On
+  ## claude_code the same number rides --max-turns.
+  tool_max_steps: 20
   reasoning_effort: "${ITERION_VIBE_EFFORT_CONVERSE:-medium}"
   fallbacks:
     glm:
@@ -380,6 +503,271 @@ agent converse_agent:
   ## nothing to ask a human about, and a leftover interactive turn
   ## let the agent finish with prose instead of the structured
   ## output (same lesson as review-pr's publish_review).
+
+## ─── Precomputed scope (the entry node) ────────────────────────
+## The diff facts the answer grounds in, computed BEFORE the model's
+## first turn: the reviewed head, the merge-base, whether the base is
+## fresh (a bounded, best-effort fetch), workspace anomalies, the
+## changed files with their stat, and the hunk the thread's anchor
+## names. The facts REPEAT review-pr's diff_precheck machinery — the
+## bots test suite runs both scripts on the same fixture repos and
+## compares the common ones — so a converse answer reads the same
+## revisions a review would. The model reads this block instead of
+## spending its bounded steps re-deriving it.
+##
+## The anchor: thread_anchor_* carry the thread ROOT's diff position,
+## normalized across forges by the webhook lanes. Resolved here, never
+## guessed:
+##   - fresh (anchor_commit = the reviewed head) and on the new side:
+##     the hunks of that file whose post-image range covers the line.
+##   - a line the change removed (old side), an outdated comment (no
+##     current line — the forge keeps only the original), a stale
+##     anchor (its commit is not the head), or a line outside the
+##     changed hunks: the file's WHOLE diff, and the block says why.
+##     The pre-image hint (thread_anchor_old_line) is never read as a
+##     current line.
+##   - no anchor at all: the whole diff, and the block says that too.
+##
+## Every way of not knowing the scope emits the same sentinel as
+## diff_precheck — changed_files: -1 — because "the branch changed
+## nothing" and "the change could not be scoped" are a whole answer
+## apart; the block says UNAVAILABLE and the system prompt tells the
+## agent what to do then. A failed fetch says base_is_current: false
+## in the block rather than failing: the reads are best-effort by
+## design, the degradation is the fact that travels.
+tool converse_scope:
+  script: |
+    import json
+    import os
+    import re
+    import subprocess
+
+    null, true, false = None, True, False
+    ws = {{vars.workspace_dir}}
+    base_ref_declared = {{vars.base_ref}}
+    anchor_path = {{vars.thread_anchor_path}}
+    anchor_old_path = {{vars.thread_anchor_old_path}}
+    anchor_line = {{vars.thread_anchor_line}}
+    anchor_old_line = {{vars.thread_anchor_old_line}}
+    anchor_side = {{vars.thread_anchor_side}}
+    anchor_commit = {{vars.thread_anchor_commit}}
+
+    CAP = 48000
+
+    def text_of(v):
+        return v.strip() if isinstance(v, str) else ""
+
+    ws = text_of(ws)
+    base = text_of(base_ref_declared)
+    anchor_path = text_of(anchor_path)
+    anchor_old_path = text_of(anchor_old_path)
+    anchor_side = text_of(anchor_side).lower()
+    anchor_commit = text_of(anchor_commit)
+    try:
+        line = int(text_of(anchor_line))
+    except ValueError:
+        line = 0
+    # The pre-image hint is carried, never consumed: an original_line is
+    # the line the comment WAS written on — reading it as a current one
+    # would focus a hunk the change no longer has. The consumers of this
+    # script use line and side only; this variable exists to keep that
+    # rule visible at the one place the value arrives.
+    _preimage_hint_never_a_current_line = text_of(anchor_old_line)
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", *args], capture_output=True, text=True, timeout=120,
+                                  cwd=ws, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(["git", *args], 1, "", "timed out")
+        except OSError as err:
+            return subprocess.CompletedProcess(["git", *args], 1, "", str(err))
+
+    def emit(block, reviewed, based, current, anomaly, n_files, truncated=false):
+        print(json.dumps({"block": block, "reviewed_sha": reviewed, "base_sha": based,
+                          "base_is_current": bool(current), "workspace_anomaly": anomaly,
+                          "changed_files": int(n_files), "truncated": bool(truncated)}))
+        raise SystemExit(0)
+
+    head = git("rev-parse", "HEAD").stdout.strip()
+    if not head:
+        emit("Precomputed scope: UNAVAILABLE — the workspace has no HEAD to review. Read what you can and say what you could not.", "", base, false, "", -1, false)
+
+    # Workspace anomaly — the same read review-pr's diff_precheck makes
+    # (the bots test suite asserts the parity of these facts): a TRACKED
+    # file with an uncommitted edit means the workspace is not the clean
+    # tree under review. Skipped in base_ref: HEAD mode, where
+    # uncommitted work IS the object.
+    anomaly = ""
+    if base != "HEAD":
+        noise = os.environ.get("ITERION_TREE_NOISE", "").split()
+        porcelain = git("status", "--porcelain", "-z", "--untracked-files=no", "--", ":/", *noise)
+        if porcelain.returncode != 0:
+            anomaly = "?"
+        else:
+            entries = []
+            fields = porcelain.stdout.split("\0")
+            i = 0
+            while i < len(fields):
+                entry = fields[i]
+                i += 1
+                if not entry:
+                    continue
+                entries.append(entry)
+                if entry[0] in ("R", "C"):
+                    i += 1
+            anomaly = chr(10).join(entries)
+
+    # The base is refreshed from the remote before the merge-base is
+    # taken; a failure degrades to the local ref and SAYS SO through
+    # base_is_current in the block (never a run failure).
+    base_is_current = false
+    if base != "HEAD" and git("fetch", "--quiet", "origin", base).returncode == 0:
+        fetched = git("rev-parse", "FETCH_HEAD")
+        if fetched.returncode == 0 and fetched.stdout.strip():
+            base = fetched.stdout.strip()
+            base_is_current = true
+
+    def unresolved(base_tried):
+        emit("Precomputed scope: UNAVAILABLE — the change could not be scoped against base ref "
+             + (base_tried or "(unset)") + " (no merge-base, or the diff failed). "
+             "List and read the changed files yourself before answering, and say in unchecked what you could not read.",
+             head, base_tried, false, anomaly, -1, false)
+
+    mb = git("merge-base", base, "HEAD").stdout.strip()
+    if not mb:
+        unresolved(base)
+    files_out = git("diff", "--name-only", mb)
+    if files_out.returncode != 0:
+        unresolved(mb)
+    files = [f for f in files_out.stdout.strip().splitlines() if f.strip()]
+
+    def hunks_covering(diff_text, at):
+        # The hunks of one file's diff whose post-image range covers at.
+        header = []
+        hunks = []
+        cur = None
+        for ln in diff_text.splitlines():
+            if ln.startswith("@@"):
+                m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", ln)
+                if not m:
+                    continue
+                start = int(m.group(1))
+                count = int(m.group(2)) if m.group(2) is not None else 1
+                cur = [start, count, [ln]]
+                hunks.append(cur)
+            elif cur is None:
+                header.append(ln)
+            else:
+                cur[2].append(ln)
+        covering = [h for h in hunks if h[1] > 0 and h[0] <= at <= h[0] + h[1] - 1]
+        if not covering:
+            return ""
+        return chr(10).join(header + [l for h in covering for l in h[2]])
+
+    # Focus: the hunk the thread's anchor names when the anchor is
+    # provably fresh and on the new side; the file's whole diff with the
+    # reason spelled out everywhere else; the whole change with no
+    # anchor.
+    rename_note = ""
+    if anchor_old_path and anchor_old_path != anchor_path:
+        rename_note = " The thread anchors a file renamed from " + anchor_old_path + "; the diff below is the new path."
+    # The anchor path reaches git as a LITERAL pathspec: a filename that
+    # doubles as pathspec magic (":x.go" is a legal repo name) or carries
+    # a wildcard would otherwise isolate nothing and stack false reasons
+    # on the block (round-1 B-M2).
+    literal = ":(literal)" + anchor_path if anchor_path else ""
+    if not anchor_path:
+        # No anchor: the whole change's diff is read whole into memory
+        # before the 48000-character cap trims the BLOCK — the cap bounds
+        # what is passed to the model, not what this step holds. A giant
+        # PR pays that read once per run; the stat above is the cheaper
+        # sibling read (round-1 B-L5, flagged not fixed).
+        focus_text = git("diff", mb).stdout
+        focus_label = "the whole change (no thread anchor: the thread hangs off the conversation, not the diff)"
+    elif anchor_side == "old":
+        focus_text = git("diff", mb, "--", literal).stdout
+        focus_label = ("the whole diff of " + anchor_path
+                       + " (the anchor points at the pre-image (old) side — a line the change removed or an old-image context line; never read as a current one)")
+    elif line <= 0:
+        focus_text = git("diff", mb, "--", literal).stdout
+        if anchor_side == "new":
+            focus_label = ("the whole diff of " + anchor_path
+                           + " (the anchor carries no current line — an outdated comment; its original line is never read as a current one)")
+        else:
+            focus_label = ("the whole diff of " + anchor_path
+                           + " (the anchor names the file but no line on either image — a file- or image-level position)")
+    elif not anchor_commit or anchor_commit != head:
+        focus_text = git("diff", mb, "--", literal).stdout
+        focus_label = ("the whole diff of " + anchor_path
+                       + " (the anchor's commit " + (anchor_commit[:12] or "unknown") + " is not the reviewed head — the comment may be outdated)")
+    else:
+        selected = hunks_covering(git("diff", mb, "--", literal).stdout, line)
+        if selected:
+            focus_text = selected
+            focus_label = ("the hunk(s) of " + anchor_path + " around line " + str(line)
+                           + " (the thread's anchor: its commit is the reviewed head)")
+        else:
+            focus_text = git("diff", mb, "--", literal).stdout
+            focus_label = ("the whole diff of " + anchor_path
+                           + " (the anchor line sits outside the changed hunks — a context line, or the change moved on)")
+    # The focus label tells the truth about its own bytes: git diff reads
+    # the WORK TREE, so when the anchored file carries an uncommitted edit,
+    # the shown hunk is the work tree's — say so right where the label
+    # would otherwise claim the reviewed head's bytes. The anomaly entry
+    # match is exact (porcelain "XY <path>", the path at [3:]), never a
+    # substring of a longer name (round-1 B-M3).
+    anchor_dirty = bool(anomaly) and any(len(entry) > 3 and entry[3:] == anchor_path
+                                         for entry in anomaly.split(chr(10)))
+    if anchor_path and anchor_dirty:
+        focus_label += " The work tree carries uncommitted edits on this file — the hunk shown is the work tree's."
+    if anchor_path and not focus_text.strip():
+        focus_text = git("diff", mb).stdout
+        if anchor_path not in files:
+            focus_label += rename_note + " That file shows no diff against the merge-base any more; the whole change is shown instead."
+        else:
+            focus_label += rename_note + " The file's own diff could not be isolated; the whole change is shown instead."
+    elif rename_note:
+        focus_label += rename_note
+
+    stat = git("diff", "--stat", mb).stdout
+
+    parts = []
+    parts.append("Precomputed scope — computed before your turn; read it before any git call.")
+    parts.append("- reviewed head: " + head)
+    if base == "HEAD":
+        parts.append("- base: HEAD (reviewing the uncommitted work tree; the diff below is the work tree against HEAD)")
+    else:
+        parts.append("- compared against: " + mb + " (merge-base with base ref " + base_ref_declared + ")")
+        if base_is_current:
+            parts.append("- base is current: yes (refreshed from origin)")
+        else:
+            parts.append("- base is current: NO (the refresh failed or did not run — the diff may repeat work already merged into " + base_ref_declared + ")")
+    if base != "HEAD":
+        if anomaly == "?":
+            parts.append("- workspace anomaly: UNKNOWN (git status failed — the tree under review may not be clean)")
+        elif anomaly:
+            shown = anomaly if len(anomaly) <= 2000 else anomaly[:2000] + " [...]"
+            parts.append("- workspace anomaly: TRACKED files with uncommitted edits — not the clean tree under review:")
+            parts.append("  " + shown.replace(chr(10), chr(10) + "  "))
+        else:
+            parts.append("- workspace anomaly: none")
+    # Focus FIRST, before the changed-files list and the stat: the cap
+    # cuts the block from the END, and on a wide PR the list alone can
+    # approach the bound — the anchor hunk the prompt tells the agent to
+    # read first must never be the first thing the cut loses (adversarial
+    # round 1, A-F2).
+    parts.append("- focus: " + focus_label + (chr(10) + focus_text if focus_text.strip() else ""))
+    parts.append("- changed files: " + str(len(files)) + (chr(10) + "  " + chr(10).join("  " + f for f in files) if files else ""))
+    parts.append("- diff stat:" + (chr(10) + stat if stat.strip() else " (none)"))
+    block = chr(10).join(parts)
+    truncated = false
+    if len(block) > CAP:
+        block = block[:CAP] + chr(10) + "[... scope capped at 48000 characters — run git for the rest ...]"
+        truncated = true
+    emit(block, head, mb, base_is_current, anomaly, len(files), truncated)
+  language: py
+  output: converse_scope_output
 
 ## DETERMINISTIC forge publish (no LLM): posts the agent's draft in the
 ## conversation's thread with the mounted forge_token, then re-reads the
@@ -487,6 +875,7 @@ tool publish_reply:
     null, true, false = None, True, False
     answer = {{input.answer}}
     agent_skip = {{input.skipped_reason}}
+    unchecked = {{input.unchecked}}
     pr = {{vars.pr_url}}
     disc = {{vars.discussion_id}}
     forge_base = {{vars.forge_base_url}}
@@ -509,6 +898,7 @@ tool publish_reply:
 
     pr, disc, forge_base = text_of(pr), text_of(disc), text_of(forge_base)
     agent_skip = text_of(agent_skip)
+    unchecked = text_of(unchecked)
     # publish_mode=off: everything up to the first request, then nothing sent.
     # Read as the literal the engine admits ("" or "off"), the way the server
     # reads it.
@@ -634,6 +1024,16 @@ tool publish_reply:
     if agent_skip and (text.lower().strip(" .") in FILLER or not re.search(r"[^\W\d_]{3}", text)):
         text = ""
     drafted = text
+    # D8 (#3283): the agent's own note of what it could NOT verify —
+    # reads its 20-step bound cut short, a failed fetch — rides the reply
+    # as a visible blockquote. An admission the operator reads, not a
+    # claim: converse_health reads nothing of it. Appended BEFORE the
+    # guards below, so the note meets the same credential refusal, the
+    # GitLab quick-action guard, the command defusing and the size cap
+    # the answer itself does. Never rendered beside an empty draft: the
+    # reason speaks for that one.
+    if text and unchecked:
+        text = text + nl + nl + "> Lecture partielle : " + unchecked.replace(nl, nl + "> ")
     preview = text[:200]
     if not text:
         emit(False, forge, skipped=agent_skip or "the agent returned an empty answer and no skipped_reason; nothing was posted",
@@ -1008,23 +1408,27 @@ workflow revi_converse:
   ## nothing of this run's and would push a branch to the repo it reads.
   workspace_checkpoint: off
 
-  entry: converse_agent
+  entry: converse_scope
 
   budget:
-    ## One agent tool loop + two deterministic steps. The loop is bounded
-    ## at converse_agent's tool_max_steps (60), and on the team gateway's
-    ## deepseek one step takes ~10-15 s (up to ~30 s with its tools), so
-    ## the run's duration must outlive the step bound: at 10 minutes a
-    ## question that needed ~50 steps died on its budget before it posted
-    ## (VAO !48, 2026-11-14). A short question still answers in a few
-    ## minutes; the bound is what a long one may take, not what it costs.
+    ## One scope step + one agent tool loop + two deterministic steps. The
+    ## loop is bounded at converse_agent's tool_max_steps (20), and on the
+    ## team gateway's deepseek one step takes ~10-15 s (up to ~30 s with
+    ## its tools), so the run's duration must outlive the step bound: at
+    ## 10 minutes a question that needed ~50 steps died on its budget
+    ## before it posted (VAO !48, 2026-11-14). A short question still
+    ## answers in a few minutes; the bound is what a long one may take,
+    ## not what it costs.
     max_parallel_branches: 1
     max_duration: "30m"
     max_cost_usd: 5
 
+  converse_scope -> converse_agent
+
   converse_agent -> publish_reply with {
     answer: "{{outputs.converse_agent.answer}}",
     skipped_reason: "{{outputs.converse_agent.skipped_reason}}",
+    unchecked: "{{outputs.converse_agent.unchecked}}",
   }
 
   publish_reply -> converse_health with {
