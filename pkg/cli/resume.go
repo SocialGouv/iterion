@@ -212,6 +212,16 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	r, err := s.LoadRun(ctx, opts.RunID)
+
+	// The codemode launch choice replays from the run doc, this attempt's
+	// flags win — coalesced HERE, before anything carries it, so the
+	// executor spec AND the engine's run-doc stamp read the same values.
+	// Without it the CLI local resume dropped the persisted value entirely
+	// and re-armed a launch-time `codemode: off` (revi Ref18b3 / Rbdd808).
+	opts.Codemode = pickString(opts.Codemode, r.CodemodeOverride)
+	if opts.CodemodeBounds == nil {
+		opts.CodemodeBounds = r.CodemodeBoundsOverride
+	}
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
 	}
@@ -341,6 +351,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// executor so the hub also rides the backend-hook seam (the only one
 	// carrying assistant_text / tool events).
 	resumeOpts := []runtime.EngineOption{}
+	// The coalesced codemode choice is durable run intent: feeding the
+	// engine lets its run-doc stamp persist a re-statement, so the NEXT
+	// silent resume replays this operator's choice, not the launch's.
+	if opts.Codemode != "" || opts.CodemodeBounds != nil {
+		resumeOpts = append(resumeOpts, runtime.WithCodemodeOverride(opts.Codemode, opts.CodemodeBounds))
+	}
 	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
 		resumeOpts = append(resumeOpts, runtime.WithBudgetOverrides(raw))
 	}

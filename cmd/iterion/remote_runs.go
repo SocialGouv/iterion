@@ -96,6 +96,9 @@ var remoteRunsLaunchCmd = &cobra.Command{
 				return err
 			}
 		}
+		if name := remoteLaunchCodemodeFlags.negativeField(); name != "" {
+			return fmt.Errorf("%s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name)
+		}
 		opts := cli.RemoteRunsLaunchOptions{
 			BotID:              remoteLaunchBot,
 			Vars:               vars,

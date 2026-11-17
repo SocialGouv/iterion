@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
@@ -62,6 +63,9 @@ var resumeCmd = &cobra.Command{
 	Short: "Resume a paused or failed run",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if name := resumeOpts.codemodeFlags.negativeField(); name != "" {
+			return fmt.Errorf("%s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name)
+		}
 		opts := cli.ResumeOptions{
 			RunID:             resumeOpts.runID,
 			StoreDir:          resumeOpts.storeDir,

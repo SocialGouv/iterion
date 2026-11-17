@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -60,6 +61,9 @@ var runCmd = &cobra.Command{
 	Short: "Execute a workflow",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if name := runOpts.codemodeFlags.negativeField(); name != "" {
+			return fmt.Errorf("%s: a bound is a size or a count, not a signal — pass a positive value or leave it unset to inherit", name)
+		}
 		opts := cli.RunOptions{
 			File:                args[0],
 			Recipe:              runOpts.recipe,
