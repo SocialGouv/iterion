@@ -121,7 +121,7 @@ describe("PlugWizardView", () => {
   it("previews the sample through the lane's own judgment at the mapping step", async () => {
     search = "?source=probe&step=mapping&connection=conn-1&trigger=probe.issue.commented&bot=steward";
     renderWizard();
-    await screen.findByPlaceholderText("prompt");
+    await screen.findByPlaceholderText(/variable recevant prompt/);
     fireEvent.click(screen.getByRole("button", { name: /Prévisualiser/ }));
     await waitFor(() => screen.getByText(/Correspond/));
     expect(previewTrigger).toHaveBeenCalledWith({
@@ -129,7 +129,7 @@ describe("PlugWizardView", () => {
       connection_id: "conn-1",
       trigger_id: "probe.issue.commented",
       filters: {},
-      var_map: {},
+      var_map: undefined,
     });
   });
 

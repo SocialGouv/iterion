@@ -92,6 +92,7 @@ export default function PlugWizardView() {
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [varMap, setVarMap] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<TriggerPreviewResult | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState<string | null>(null);
@@ -99,9 +100,22 @@ export default function PlugWizardView() {
 
   const trigger = source?.triggers?.find((t) => t.id === triggerID);
 
+  // The server's var_map is {bot var: event expression} (binding judges
+  // the key against the bot's declared vars and the value against the
+  // event namespace); the operator types the bot var each output lands
+  // in. An empty input is omitted — the absent mapping already lands an
+  // output on the bot var of the same name.
+  const serverVarMap = () =>
+    Object.fromEntries(
+      Object.entries(varMap)
+        .filter(([, botVar]) => botVar.trim() !== "")
+        .map(([output, botVar]) => [botVar.trim(), `event.${output}`]),
+    );
+
   const runPreview = async () => {
     setPreviewing(true);
     setPreview(null);
+    setPreviewError(null);
     try {
       setPreview(
         await previewTrigger({
@@ -109,9 +123,11 @@ export default function PlugWizardView() {
           connection_id: connectionID,
           trigger_id: triggerID,
           filters,
-          var_map: varMap,
+          var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
         }),
       );
+    } catch (e) {
+      setPreviewError(String(e));
     } finally {
       setPreviewing(false);
     }
@@ -145,7 +161,7 @@ export default function PlugWizardView() {
         connection_id: connectionID,
         trigger_id: triggerID,
         filters,
-        var_map: Object.keys(varMap).length ? varMap : undefined,
+        var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
         enabled: true,
       });
       setParams({ step: "review", done: "1" });
@@ -275,6 +291,7 @@ export default function PlugWizardView() {
             varMap={varMap}
             setVarMap={setVarMap}
             preview={preview}
+            previewError={previewError}
             previewing={previewing}
             runPreview={runPreview}
             onNext={() => setParams({ step: "review" })}
@@ -468,6 +485,7 @@ function StepMapping({
   varMap,
   setVarMap,
   preview,
+  previewError,
   previewing,
   runPreview,
   onNext,
@@ -476,6 +494,7 @@ function StepMapping({
   varMap: Record<string, string>;
   setVarMap: (m: Record<string, string>) => void;
   preview: TriggerPreviewResult | null;
+  previewError: string | null;
   previewing: boolean;
   runPreview: () => void;
   onNext: () => void;
@@ -495,7 +514,7 @@ function StepMapping({
             <span className="text-fg-subtle">→ variable du bot</span>
             <Input
               value={varMap[o.name] ?? ""}
-              placeholder={o.name}
+              placeholder={`variable recevant ${o.name} (vide : même nom)`}
               aria-label={`Variable pour ${o.name}`}
               onChange={(e) => setVarMap({ ...varMap, [o.name]: e.target.value })}
             />
@@ -510,6 +529,11 @@ function StepMapping({
           Continuer
         </Button>
       </div>
+      {previewError && (
+        <div className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs" aria-live="polite">
+          <span className="text-fg-subtle">Échec de la prévisualisation : {previewError}</span>
+        </div>
+      )}
       {preview && (
         <div
           className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs"
