@@ -38,14 +38,20 @@ export interface CodemodePayload {
   codemode_bounds?: CodemodeBoundsOverride;
 }
 
-// positiveNumber parses a form string into a positive finite number.
-// Empty, non-numeric, zero and negative all mean "inherit" — the server
-// treats zero as nobody-chose and refuses a negative, so neither is sent.
+// positiveNumber parses a form string into a positive INTEGER — every bound
+// it feeds is a count or a size, and the floor is applied HERE, before the
+// positivity test: a "0.5" floors to 0, and a payload carrying `tool_calls:
+// 0` would be the exact zero this module promises never to send (the server
+// reads it as nobody-chose while the form claims an override — found by the
+// revi gate). Empty, non-numeric, zero, negative and sub-1 all mean
+// "inherit".
 function positiveNumber(s: string): number | undefined {
   const t = s.trim();
   if (!t) return undefined;
   const n = Number(t);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  if (!Number.isFinite(n)) return undefined;
+  const floored = Math.floor(n);
+  return floored > 0 ? floored : undefined;
 }
 
 // buildCodemodePayload maps the form state to the request fields. Returns an
@@ -61,19 +67,19 @@ export function buildCodemodePayload(
 
   const bounds: CodemodeBoundsOverride = {};
   const toolCalls = positiveNumber(fields.toolCalls);
-  if (toolCalls !== undefined) bounds.tool_calls = Math.floor(toolCalls);
+  if (toolCalls !== undefined) bounds.tool_calls = toolCalls;
   const wall = fields.wall.trim();
   if (wall) bounds.wall = wall;
   const cpu = fields.cpu.trim();
   if (cpu) bounds.cpu = cpu;
   const memory = positiveNumber(fields.memory);
-  if (memory !== undefined) bounds.memory = Math.floor(memory);
+  if (memory !== undefined) bounds.memory = memory;
   const script = positiveNumber(fields.scriptBytes);
-  if (script !== undefined) bounds.script_bytes = Math.floor(script);
+  if (script !== undefined) bounds.script_bytes = script;
   const result = positiveNumber(fields.resultBytes);
-  if (result !== undefined) bounds.result_bytes = Math.floor(result);
+  if (result !== undefined) bounds.result_bytes = result;
   const toolResult = positiveNumber(fields.toolResultBytes);
-  if (toolResult !== undefined) bounds.tool_result_bytes = Math.floor(toolResult);
+  if (toolResult !== undefined) bounds.tool_result_bytes = toolResult;
 
   if (Object.keys(bounds).length > 0) out.codemode_bounds = bounds;
   return out;

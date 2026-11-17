@@ -87,6 +87,26 @@ describe("buildCodemodePayload", () => {
     });
     expect(payload.codemode_bounds?.tool_calls).toBe(12);
   });
+
+  test("a sub-1 fraction floors to zero and is DROPPED — no zero travels", () => {
+    // The revi gate: flooring AFTER the positivity test sent
+    // `tool_calls: 0`, the exact zero this module promises never to send,
+    // while the form claimed to override the bot.
+    expect(
+      buildCodemodePayload("", { ...emptyCodemodeFieldValues, toolCalls: "0.5" }),
+    ).toEqual({});
+    expect(
+      buildCodemodePayload("", {
+        ...emptyCodemodeFieldValues,
+        toolCalls: "0.5",
+        memory: "0.9",
+      }).codemode_bounds,
+    ).toBeUndefined();
+    // …and the form does not claim an override for it either.
+    expect(
+      buildCodemodePayload("on", { ...emptyCodemodeFieldValues, memory: "0.9" }),
+    ).toEqual({ codemode: "on" });
+  });
 });
 
 describe("parseDurationSeconds", () => {
