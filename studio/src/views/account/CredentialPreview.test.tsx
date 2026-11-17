@@ -48,6 +48,22 @@ it("keeps the server order, displays correlation, and does not turn a refusal in
   expect(screen.queryByText(/0% used/)).toBeNull();
 });
 
+it("sends the review topology with a personal preview — a mono pin is a credential demand", async () => {
+  setup();
+  await screen.findByRole("option", { name: "Revi (review-pr)" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Credential preview bot" }), { target: { value: "review-pr" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Credential preview review topology" }), { target: { value: "dual" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview fallback chain" }));
+  await waitFor(() => expect(api.previewCredentials).toHaveBeenCalledWith("team-a", { source: { kind: "personal" }, bot_id: "review-pr", review_mode: "dual" }));
+});
+
+it("offers no review topology on the webhook lane, which fixes its own", async () => {
+  setup();
+  fireEvent.change(screen.getByRole("combobox", { name: "Credential preview launch source" }), { target: { value: "webhook" } });
+  await screen.findByRole("option", { name: "Repository reviews" });
+  expect(screen.queryByRole("combobox", { name: "Credential preview review topology" })).toBeNull();
+});
+
 it("previews the selected webhook without substituting the reader's personal identity", async () => {
   setup();
   fireEvent.change(screen.getByRole("combobox", { name: "Credential preview launch source" }), { target: { value: "webhook" } });

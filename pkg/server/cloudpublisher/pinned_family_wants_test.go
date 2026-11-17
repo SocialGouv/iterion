@@ -89,3 +89,24 @@ func TestWithPinnedWants(t *testing.T) {
 		}
 	})
 }
+
+// TestSpendableWithPinnedWants pins the stamp widening: the credential a pin
+// seals is spent by the run, so its provider must be admitted by the stamp
+// that decides fingerprints and credSlots — otherwise its per-key ceiling
+// goes unreserved and the audit stamp omits a credential the run spends.
+// A fail-open stamp (nil pinned) stays fail-open.
+func TestSpendableWithPinnedWants(t *testing.T) {
+	narrow := spendable{pinned: map[string]bool{string(secrets.ProviderAnthropic): true}}
+	got := narrow.withPinnedWants([]credpool.Credential{
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
+	})
+	if !got.allows(string(secrets.ProviderOpenAI)) {
+		t.Fatal("the pin's codex provider must be admitted by the widened stamp")
+	}
+	if !got.allows(string(secrets.ProviderAnthropic)) {
+		t.Fatal("widening must not drop the routes' own provider")
+	}
+	if open := (spendable{}).withPinnedWants([]credpool.Credential{{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAI)}}); open.pinned != nil {
+		t.Fatal("a fail-open stamp must stay fail-open")
+	}
+}

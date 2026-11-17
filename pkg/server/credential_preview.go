@@ -150,6 +150,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
 			return
 		}
+		if strings.TrimSpace(req.ReviewMode) != "" {
+			httpError(w, http.StatusBadRequest, "webhook source takes its review topology from the integration's own vars; a caller-supplied review_mode is not part of that launch")
+			return
+		}
 		// A fork-lane config launches untrusted targets only (the gesture),
 		// so its preview answers for THAT launch: compiled under the fork's
 		// trust, no var layer and no trusted name (decision 4), stamped on

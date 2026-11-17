@@ -7518,6 +7518,7 @@ export interface components {
             bot_id?: string;
             llm_routing?: components["schemas"]["Policy"];
             permission?: string;
+            review_mode?: string;
             source: components["schemas"]["CredentialPreviewSource"];
             vars?: {
                 [key: string]: string;

@@ -679,6 +679,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	for _, o := range opts {
 		o(&facts)
 	}
+	// One derivation per resolution: the attached walk asks these wants and
+	// the fingerprint stamp must count them.
+	pinnedWants := pinnedFamilyWants(launchVars, facts.reviewMode)
 	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
 	// rather than derived here: the resume path must replay the launch's
 	// answer, not re-derive it from a source that may have moved. Only the
@@ -1201,7 +1204,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//     (ADR-131 §5 amended). Law 1 lives inside: the pool never
 				//     touches a slot an explicit tier sealed.
 				if poolAttachment != nil && poolAttachment.PoolID != "" {
-					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, launchVars, facts.reviewMode, poolAttachment, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
+					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, pinnedWants, poolAttachment, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
 					return nil
 				}
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -1636,7 +1639,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the facade was refused the only credential its model could use.
 	// Unpinned or unresolvable routes keep everything (fail open toward
 	// protection: that run takes whatever the process holds).
-	spend := spendableProviders(view)
+	spend := spendableProviders(view).withPinnedWants(pinnedWants)
 	seen := map[string]bool{}
 	for prov, fp := range apiKeyFPs {
 		if fp != "" && !seen[fp] && spend.spendsKey(bundle, prov) {
@@ -2062,6 +2065,24 @@ func (s spendable) allows(provider string) bool {
 		return true
 	}
 	return s.pinned[provider]
+}
+
+// withPinnedWants widens the stamp by the providers a review-topology pin
+// DEMANDS. The pin asks the pool for a family the routes do not name, so the
+// credential it seals is spent by the run yet invisible to a route-derived
+// stamp: its per-key ceiling would go unreserved and the run's audit stamp
+// would omit a credential it spends. A fail-open stamp (nil pinned) stays as
+// it is — it already admits everything.
+func (s spendable) withPinnedWants(wants []credpool.Credential) spendable {
+	if s.pinned == nil || len(wants) == 0 {
+		return s
+	}
+	for _, w := range wants {
+		if prov := providerOfWant(w); prov != "" {
+			s.pinned[prov] = true
+		}
+	}
+	return s
 }
 
 // spendableProviders reads the run's resolved routes through the same walk
@@ -3449,7 +3470,13 @@ func pinnedFamilyWants(launchVars map[string]string, reviewMode string) []credpo
 // duplicates. Appended, never prepended: the pin widens what may be lent,
 // it does not reorder what the routes asked for.
 func withPinnedWants(wants []credpool.Credential, launchVars map[string]string, reviewMode string) []credpool.Credential {
-	extra := pinnedFamilyWants(launchVars, reviewMode)
+	return appendPinned(wants, pinnedFamilyWants(launchVars, reviewMode))
+}
+
+// appendPinned appends the pin's wants AFTER the given ones, dropping
+// duplicates. Appended, never prepended: the pin widens what may be lent, it
+// does not reorder what the routes asked for.
+func appendPinned(wants, extra []credpool.Credential) []credpool.Credential {
 	if len(extra) == 0 {
 		return wants
 	}
@@ -6006,14 +6033,14 @@ func (p *Publisher) closedAtMargin(ctx context.Context, marginPct float64) func(
 // it. Sealed grants append to res.grants; res.grant stays the FIRST
 // sealed one, the whole-bundle semantics' answer (platform skip, budget
 // clamp, poolLease).
-func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, launchVars map[string]string, reviewMode string, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
+func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinnedWants []credpool.Credential, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
 	if p.credPool == nil {
 		return
 	}
 	// One resolution per launch, exactly like the legacy tier: the wants,
 	// the diagnostics and the consulted line read the same walk.
 	wantList, resolution := wantsFor(view)
-	wantList = withPinnedWants(wantList, launchVars, reviewMode)
+	wantList = appendPinned(wantList, pinnedWants)
 	// The gateway want enters the vocabulary ONLY through the attachment
 	// (ADR-131 §5 amended) — appended last, metered last, and asked only
 	// where the run may ride a gateway route: the seal gate below answers
