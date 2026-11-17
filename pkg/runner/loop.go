@@ -65,6 +65,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -2880,6 +2881,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// same doc ≡ message rule, and a doc the engine rebuilt without it
 		// would read unstamped to every server-side guard.
 		runtime.WithContentBoundary(msg.ContentBoundary),
+		// The launch-time overrides an attempt carries are durable run
+		// intent: feeding them to the engine lets its run-doc stamp persist
+		// a resume re-statement, so the next silent resume (the retry
+		// sweeper, a studio answer) replays THE OPERATOR'S latest choice,
+		// not the launch's original one. Without this the re-state lived
+		// for one attempt (found by tour 2, executed).
+		// The launch-time overrides an attempt carries are durable run
+		// intent: feeding them to the engine lets its run-doc stamp persist
+		// a resume re-statement, so the next silent resume (the retry
+		// sweeper, a studio answer) replays THE OPERATOR'S latest choice,
+		// not the launch's original one. Without this the re-state lived
+		// for one attempt (found by tour 2, executed).
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -2914,6 +2927,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// `iterion run` of the same bot.
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
+	// The launch-time overrides an attempt carries are durable run intent:
+	// feeding them to the engine lets its run-doc stamp persist a resume
+	// re-statement, so the next silent resume (the retry sweeper, a studio
+	// answer) replays THE OPERATOR'S latest choice, not the launch's
+	// original one. Without this the re-state lived for one attempt (found
+	// by tour 2, executed).
+	engineOpts = append(engineOpts, withEngineOverride(msg.Permission, msg.Codemode, msg.CodemodeBounds)...)
 	if msg.ExecutionContext != nil {
 		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
 	}
@@ -3509,6 +3529,21 @@ func (r *Runner) launchOverridesFor(ctx context.Context, msg *queue.RunMessage, 
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
+// withEngineOverride carries the run-level override choices to the engine's
+// run-doc stamp: the permission gate and the codemode choice (mode + bounds
+// raise). A message carrying neither feeds no option — an absence must stay
+// an absence, never a stamped zero.
+func withEngineOverride(permission, codemode string, bounds *scripthost.Limits) []runtime.EngineOption {
+	var opts []runtime.EngineOption
+	if permission != "" {
+		opts = append(opts, runtime.WithPermissionOverride(permission))
+	}
+	if codemode != "" || bounds != nil {
+		opts = append(opts, runtime.WithCodemodeOverride(codemode, bounds))
+	}
+	return opts
+}
+
 func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec

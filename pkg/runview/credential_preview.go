@@ -357,8 +357,15 @@ func (b *CodemodeBoundsRequest) ToBounds() (*ir.CodemodeBounds, error) {
 		ResultBytes:     b.ResultBytes,
 		ToolResultBytes: b.ToolResultBytes,
 	}
-	for name, raw := range map[string]*string{"wall": &b.Wall, "cpu": &b.CPU} {
-		v := *raw
+	// Ordered, never a map: two invalid durations in one request must name
+	// the SAME field on every retry (a 400 that changes its mind between
+	// identical requests reads as a different defect each time — found by
+	// tour 2: 200 identical requests named wall 177 times, cpu 23).
+	for _, pair := range []struct {
+		name string
+		raw  *string
+	}{{"wall", &b.Wall}, {"cpu", &b.CPU}} {
+		name, v := pair.name, *pair.raw
 		if v == "" {
 			continue
 		}

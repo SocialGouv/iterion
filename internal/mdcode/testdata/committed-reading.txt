@@ -530,7 +530,7 @@ fcec3748fceff346d4e242e3ad0dd030f6b617de58643ace62f1106b7c40bcfd cba2f371b420ba4
 cdfbe2b65fa53b1394c469266af7f87827732037f49b33f1f80c0c1b80d6927c 595e61bbe9909421390adb2f8490d9ed0ad0dadf80efca41387342dd331f18f6 ../../docs/adr/162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md
 69bc606d60bd4d231b5354267d47f7e917ff6ba424616c986f8ca89b7d7e0c1a 0b3685746d17be54fe3262fac40c731f173235ca779eb42f577b318c945572d0 ../../docs/adr/163-the-gateway-price-feed-syncs-into-the-database-and-rides-the-ipc.md
 8b6c147552000bfd667dbdfc5645d9886ed52a0ee08c4e9d11e79f626404a33f 9b0ec2510d12d2e5eef1d354977cdf8a6a2d91987e2c342c685d4500db19ab06 ../../docs/adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md
-c26b4d9245d85407f07aa44ecb83578d28591e5a194bfd13d032f7c6ad39ee82 1a44ab93925bf49806d41514bf1c97c03461150fee18df82c225048d979db7af ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
+c283db61ddcbb00a4e1c4d2864dac117ebaf2f097cb0b83113fc58c43c389bb8 04fbc22482d63720b96338b24c7f8c966f47f716a54b09e2c8678a33e139051a ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
 bc0a53c63999934b46c07a87a0119f9a8e181ec4a8567ebb953a391d7c3b036d 2e3d3d68eefdb0dd58da7a2180bc155d1e484c92f5b14c52d780f184ee764536 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
 f48cb3bbd9f3bccf84cf93d59ccf5f1415eaa6fc765221ea7be583c25a293e0c 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
 651769e8aa72ef1f6bb78ebf704408d827d28b6a9891928209a6dc46123b0f79 3e54385bf4097a77c05dea19354a2ecdc599bead4440c880069253e2d2a1bee4 ../../docs/adr/168-an-event-source-is-a-connector-package.md
@@ -806,7 +806,7 @@ d0fd397dcb1dc9af52594f368f5f4aa0ee9ec2475a66c5cf72a29d7134043075 ee46b9505ef8415
 0ffb3b954e9be75b6a23cc55e0d4d8bd214c962ab24d5dcaa14eb66e49baa157 1a82ba69455cb5f3b41e29321ea2c61b31b2e50db5f20ee6722882df3359ccb1 ../../docs/references-bootstrap.md
 360fa00a2846a38fcd5b86fc3c66a09bae7def7807ec8c834bc1304989e14b9b a9291d0cbcbcc360ca9f4ce815acc03c8295d8672b2c3179a3766c942cd1ccc9 ../../docs/repo-map-and-graph.md
 b3a35d4dcecc46a37668767739ed308433fb8f9c8269517096bc2f5e5eb97538 571144fa297cbada0d88e5a050df4343f52af51c616f534dacfcfa08bd2b4c38 ../../docs/repo-scope.md
-fd60cdbf6ab5fe87dd4140270736a9d84abd7db01bfb0286c561b8ad901f313a 4d203ffa83b49f4ebb564ae1b3774c74736bc16668219de3e684727d18c841ac ../../docs/resume.md
+29567da48d2ed9c4bc699d2a4d83d1f3589ed1236985face7a2b799c86ee02c2 127402a298c73bbfca24a339d648175338e5a7b237c594149af27d144362c1e2 ../../docs/resume.md
 eca37d26d1292f01985cd882bc7ec34ea5831d8e93e399bdbf93fb6ee5bd9e59 40c2f300d41983122515beb96c5bf621d48e21466eb47cdfadbdb694429b33e7 ../../docs/revi-billy-loop.md
 23dccab419fda7dbe9ddab35bf3dcbd238d42db4eb9fe44b10a7f9368abdad39 ee873c5e5bb5976734b5c7bae904f7ff87cd5743883aa400716ebf9949893a73 ../../docs/revi-rollout.md
 612cf9b6a60888c92b8222cd28fdf3199d8f864087e5d93549ffa35433db9c41 c5de9e183e20dd225a269d0aa1f39ea6b66d822462715596aa9c4b4384e85214 ../../docs/review-merge-gate.md

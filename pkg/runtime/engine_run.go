@@ -449,7 +449,13 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 	}
 	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.botSourceTier != "" || e.runnerPool != "" || e.contentBoundary != nil || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || len(e.launchModelOverrides) > 0 || e.llmRoutePolicy != nil || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
-		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
+		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 ||
+		// The launch-time override choices are durable run intent on their
+		// own: an engine carrying ONLY an override (a resume re-statement
+		// is exactly that) must still reach this stamp and save, or the
+		// re-state lived for one attempt and the next silent resume
+		// replayed the previous decision (found by tour 2, executed).
+		e.permissionOverride != "" || e.codemodeOverride != "" || e.codemodeBoundsOverride != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}

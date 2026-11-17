@@ -53,3 +53,19 @@ func TestRunMessageCodemodeReachesTheExecutorSpec(t *testing.T) {
 		t.Errorf("a message with no override produced Codemode=%q bounds=%+v — inherit must read absent", empty.Codemode, empty.CodemodeBounds)
 	}
 }
+
+// The pod's engine feed of the launch-time overrides (tour 2): a message
+// carrying no override feeds no option — an absence must stay an absence,
+// never a stamped zero.
+func TestWithEngineOverrideFeedsOnlyWhatTheMessageCarries(t *testing.T) {
+	t.Parallel()
+	if got := withEngineOverride("", "", nil); len(got) != 0 {
+		t.Errorf("a message with no overrides fed %d options, want 0", len(got))
+	}
+	if got := withEngineOverride("deny", "", nil); len(got) != 1 {
+		t.Errorf("a permission-only message fed %d options, want 1", len(got))
+	}
+	if got := withEngineOverride("", "off", &scripthost.Limits{ToolCalls: 4096}); len(got) != 1 {
+		t.Errorf("a codemode-only message fed %d options, want 1", len(got))
+	}
+}

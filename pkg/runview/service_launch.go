@@ -651,6 +651,24 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 // than refuse — philosophy 1 — because the runtime still enforces the truth:
 // an off installs no tool, and Clamp serves the ceiling with an OnClamp
 // report.
+// firstNonEmpty is the resume's re-state-over-replay rule for the codemode
+// MODE: what the caller expressed, else what the doc carries.
+func firstNonEmpty(restated, replayed string) string {
+	if restated != "" {
+		return restated
+	}
+	return replayed
+}
+
+// firstNonNullBounds is firstNonEmpty for the bounds raise: the re-stating
+// pointer wins, the doc's persisted pointer fills the silence.
+func firstNonNullBounds(restated, replayed *ir.CodemodeBounds) *ir.CodemodeBounds {
+	if restated != nil {
+		return restated
+	}
+	return replayed
+}
+
 func codemodeLaunchWarnings(wf *ir.Workflow, codemode string, bounds *ir.CodemodeBounds) []string {
 	var out []string
 	// The EFFECTIVE mode decides both warnings, resolved through the same
@@ -1168,11 +1186,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	spec.BundleDir = resumeBundleDir(r, spec)
 	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
 	if err == nil {
-		// The launch's codemode warnings, restated: a resume re-stating
-		// bounds beside an off (or raising above the ceiling) gets the same
-		// one-line warning the launch got — logged, never refusing, because
-		// the runtime still enforces the truth.
-		for _, w := range codemodeLaunchWarnings(wf, spec.Codemode, spec.CodemodeBounds) {
+		// The launch's codemode warnings, restated — judged on the EFFECTIVE
+		// values (the re-state coalesced over the doc's replay, exactly what
+		// the executor will carry): bounds beside an off warn inert,
+		// above-ceiling bounds warn the ceiling, silence otherwise.
+		for _, w := range codemodeLaunchWarnings(wf, firstNonEmpty(spec.Codemode, r.CodemodeOverride), firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)) {
 			s.logger.Warn("runview: resume %s: %s", spec.RunID, w)
 		}
 	}
@@ -1393,10 +1411,17 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
-			// The codemode launch choice replays from the run doc (the
-			// launch stamped it); a ResumeSpec that re-states wins over it
-			// at the merge below.
-			codemode: r.CodemodeOverride, codemodeBounds: r.CodemodeBoundsOverride,
+			// The codemode launch choice replays from the run doc, and a
+			// ResumeSpec that re-states wins — COALESCED HERE, not at the
+			// executor merge below, for a reason tour 2 proved by
+			// execution: the value this struct carries is what the engine
+			// stamps back onto the doc. Carrying the doc's value alone made
+			// a re-state one-shot — live for the resume that asked, gone
+			// from the doc, and the NEXT silent resume replayed the launch's
+			// original decision, re-arming a capability the operator had
+			// killed at that first resume.
+			codemode:       firstNonEmpty(spec.Codemode, r.CodemodeOverride),
+			codemodeBounds: firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride),
 			// The launch's sandbox choices, replayed off the record so
 			// the studio's in-process resume respects `--sandbox none`
 			// the same way the CLI resume now does (#1435).
