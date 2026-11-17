@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.9.0](https://github.com/SocialGouv/iterion/compare/v7.8.0...v7.9.0) (2026-11-17)
+
+### Features
+
+* **credpool:** a pinned review family is a credential want ([#3356](https://github.com/SocialGouv/iterion/issues/3356)) ([299c4d2](https://github.com/SocialGouv/iterion/commit/299c4d2dea21bc4a9b0e308edc218c545a112bff))
+
+    <details><summary>why</summary>
+
+    An operator's mono_family pin names a family the run cannot start without. Until now the credential walk derived its wants from the routes alone, so a bot whose routes spend claude and whose integration pins mono_family=gpt never asked the pool for a gpt credential. The moment any tier before the platform one granted, the platform skip removed the only gpt source and the launch refused as an unservable review family — measured on SocialGouv/iterion: attaching a forfait pool that holds both…
+
+    </details>
+
 ## [7.8.0](https://github.com/SocialGouv/iterion/compare/v7.7.0...v7.8.0) (2026-11-17)
 
 ### Features
