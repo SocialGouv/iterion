@@ -199,8 +199,8 @@ func (p *Package) Validate() error {
 		return fmt.Errorf("connector %q: brand_color %q is not \"#rrggbb\"", c.ID, c.BrandColor)
 	}
 	if c.Icon != "" {
-		slash := filepath.ToSlash(c.Icon)
-		if slash != c.Icon || !fs.ValidPath(slash) || slash == "." {
+		slash := strings.TrimPrefix(filepath.ToSlash(c.Icon), "./")
+		if slash != strings.TrimPrefix(c.Icon, "./") || !fs.ValidPath(slash) || slash == "." {
 			return fmt.Errorf("connector %q: icon %q is not a slash path within the package", c.ID, c.Icon)
 		}
 		if p.IconSVG == nil || p.IconDigest == "" {

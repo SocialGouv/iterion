@@ -53,8 +53,8 @@ func loadIcon(fsys fs.FS, dir string, p *Package, getenv func(string) string) er
 	if c.Icon == "" {
 		return nil
 	}
-	slash := filepath.ToSlash(c.Icon)
-	if slash != c.Icon || !fs.ValidPath(slash) || slash == "." {
+	slash := strings.TrimPrefix(filepath.ToSlash(c.Icon), "./")
+	if slash != strings.TrimPrefix(c.Icon, "./") || !fs.ValidPath(slash) || slash == "." {
 		return fmt.Errorf("connector %q: icon %q is not a slash path within the package (io/fs takes a relative path with no leading slash and no \"..\")", c.ID, c.Icon)
 	}
 	cap, err := iconMaxBytes(getenv)
@@ -77,8 +77,9 @@ func loadIcon(fsys fs.FS, dir string, p *Package, getenv func(string) string) er
 
 // sanitizeSVG filters an SVG document down to a passive picture: the
 // elements that carry script or stylesheet content (script, foreignObject,
-// style), every event-handler attribute, every reference that leaves the
-// document, comments and processing directives. Style attributes survive —
+// style) or write attributes at render time (the SMIL animation family),
+// every event-handler attribute, every reference that leaves the document,
+// comments and processing directives. Style attributes survive —
 // the CSP the route serves pins style-src to inline styles and 'none' for
 // everything else — while a url() inside one is dropped as the external
 // reference it is.
@@ -108,7 +109,8 @@ func sanitizeSVG(body []byte, cap int) ([]byte, error) {
 				continue
 			}
 			switch strings.ToLower(t.Name.Local) {
-			case "script", "foreignobject", "style":
+			case "script", "foreignobject", "style",
+				"animate", "set", "animatetransform", "animatemotion":
 				skip = strings.ToLower(t.Name.Local)
 				skipDepth = 0
 				continue
@@ -187,8 +189,12 @@ func sanitizeSVG(body []byte, cap int) ([]byte, error) {
 	if err := enc.Flush(); err != nil {
 		return nil, fmt.Errorf("re-encode: %w", err)
 	}
-	// No second cap on the encoded bytes: the filter only ever drops (and
-	// the parser's re-encoding preserves), so the sanitized bytes are never
-	// longer than the input the cap already bounded.
+	// The re-encoding can EXPAND: a self-closing element re-emits with a
+	// close tag and a tab escapes, so the sanitized bytes can exceed the
+	// input the cap bounded. The served bytes are capped too (cap 0 is
+	// the operator's uncapped override and bounds nothing, by choice).
+	if cap > 0 && out.Len() > cap {
+		return nil, fmt.Errorf("sanitized icon is %d bytes, over the %d byte cap (%s)", out.Len(), cap, EnvIconMaxBytes)
+	}
 	return out.Bytes(), nil
 }

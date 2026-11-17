@@ -90,7 +90,7 @@ func TestConnectorIconMonogramFallback(t *testing.T) {
 	if !strings.Contains(body, `fill="#ff9e1b"`) {
 		t.Fatalf("monogram lacks the brand tile:\n%s", body)
 	}
-	if !strings.Contains(body, ">PT</text>") {
+	if !strings.Contains(body, ">PR</text>") {
 		t.Fatalf("monogram lacks the display-name initials:\n%s", body)
 	}
 	if !strings.Contains(body, `fill="#000000"`) {
@@ -148,4 +148,22 @@ func monogramProbePackage() *spec.Package {
 	pkg.Connector.DisplayName = "Probe Two"
 	pkg.Connector.BrandColor = "#ff9e1b"
 	return pkg
+}
+
+// TestMonogramInitialsAreLettersOnly: a hostile or exotic display name
+// contributes letter runes only — punctuation and markup never reach the
+// served XML (a `"`, `&` or `<` in the name used to emit invalid SVG).
+func TestMonogramInitialsAreLettersOnly(t *testing.T) {
+	for _, c := range []struct{ display, id, want string }{
+		{`"Ascend" AI`, "acme", "AS"},
+		{"& x", "acme", "X"}, // the only letter the name holds
+		{"< <Img>", "probe", "IM"},
+		{"Acme & Co", "acme", "AC"},
+		{"--//--", "acme", "AC"}, // no letters at all → the id's
+	} {
+		got := monogramInitials(c.display, c.id)
+		if got != c.want {
+			t.Fatalf("initials(%q, %q) = %q, want %q", c.display, c.id, got, c.want)
+		}
+	}
 }

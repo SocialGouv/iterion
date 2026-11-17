@@ -140,8 +140,13 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 			return nil, err
 		}
 		// A package with no inbound half is an outbound tool, not a
-		// source: it has nothing to plug.
-		if len(pkg.Triggers) == 0 {
+		// source: it has nothing to plug. And a package whose triggers
+		// declare no ingress block has no delivery contract the connector
+		// lane can bind — listing it would end every plug in the bind's
+		// refusal — so only packages the lane can actually receive a
+		// delivery for are listed (a legacy-lane package arrives here
+		// when its triggers.yaml declares its ingress).
+		if len(pkg.Triggers) == 0 || pkg.Ingress == nil {
 			continue
 		}
 		e := sourceEntry{

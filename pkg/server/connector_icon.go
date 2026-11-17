@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
@@ -88,20 +89,23 @@ func monogramSVG(c spec.Connector) []byte {
 // monogramInitials takes the first letter of up to two words of the
 // display name; a nameless package gets its id's first two letters.
 func monogramInitials(displayName, id string) string {
-	words := strings.Fields(strings.ToUpper(displayName))
+	// Letters only: a display name's punctuation and markup characters
+	// are content, not initials, and they go into XML attributes verbatim.
 	var b strings.Builder
-	for _, w := range words {
-		r := []rune(w)
-		if len(r) == 0 {
+	for _, r := range strings.ToUpper(displayName) {
+		if !unicode.IsLetter(r) {
 			continue
 		}
-		b.WriteRune(r[0])
+		b.WriteRune(r)
 		if b.Len() >= 2 {
 			break
 		}
 	}
 	if b.Len() == 0 {
 		for _, r := range strings.ToUpper(id) {
+			if !unicode.IsLetter(r) {
+				continue
+			}
 			b.WriteRune(r)
 			if b.Len() >= 2 {
 				break

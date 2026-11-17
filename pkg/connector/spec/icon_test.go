@@ -156,3 +156,36 @@ func TestLoadIconDefaultCapHolds(t *testing.T) {
 		t.Fatalf("default cap: err = %v, want a refusal naming %s", err, spec.EnvIconMaxBytes)
 	}
 }
+
+// TestLoadIconCapBoundsExpansiveContent: re-encoding can EXPAND — a
+// self-closing element re-emits with a close tag and a tab escapes — so
+// the input cap alone does not bound the served bytes. The sanitized
+// output is capped too, and a fixture chosen to expand is the witness
+// the plain-charData boundary cannot be.
+func TestLoadIconCapBoundsExpansiveContent(t *testing.T) {
+	// The INPUT sits under the cap; the expansion comes from re-encoding
+	// (each self-closing element re-emits with a close tag), which the
+	// input check cannot see.
+	t.Setenv(spec.EnvIconMaxBytes, "65536")
+	body := `<svg xmlns="http://www.w3.org/2000/svg">` +
+		strings.Repeat(`<a/>`, 16372) + `</svg>` // input 65534
+	if _, err := spec.LoadFS(iconPackage(body, nil), "."); err == nil {
+		t.Fatal("expansive content re-encoded over the cap loaded")
+	} else if !strings.Contains(err.Error(), spec.EnvIconMaxBytes) {
+		t.Fatalf("expansive content: err = %v, want a refusal naming %s", err, spec.EnvIconMaxBytes)
+	}
+	// The SMIL animation family is dropped whole: it writes attributes at
+	// render time and an icon has no use for it.
+	smil := `<svg xmlns="http://www.w3.org/2000/svg"><set attributeName="onmouseover" to="alert(1)"/><animate attributeName="href" values="java&#x9;script:alert(1)"/></svg>`
+	p := loadIconPackage(t, iconPackage(smil, nil))
+	if got := string(p.IconSVG); strings.Contains(got, "animate") || strings.Contains(got, "set ") || got != `<svg xmlns="http://www.w3.org/2000/svg"></svg>` {
+		t.Fatalf("SMIL survived the sanitizer:\n%s", got)
+	}
+	// A "./" prefix on the icon path is the same file: accepted.
+	files := iconPackage(`<svg xmlns="http://www.w3.org/2000/svg"/>`, nil)
+	conn := files["connector.yaml"]
+	conn.Data = []byte(strings.ReplaceAll(string(conn.Data), "icon: icon.svg", "icon: ./icon.svg"))
+	if _, err := spec.LoadFS(files, "."); err != nil {
+		t.Fatalf("icon: ./icon.svg: %v", err)
+	}
+}

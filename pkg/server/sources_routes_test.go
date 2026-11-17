@@ -32,10 +32,12 @@ func sourcesWorld(t *testing.T) (*Server, *trigger.MemorySubscriptionStore) {
 		"  description: A comment landed.\n" +
 		"  outputs:\n  - name: prompt\n    from: payload.body\n    description: The comment body.\n" +
 		"  filters:\n  - id: author\n    from: payload.sender\n    type: enum\n    options: [alice, bob]\n    default: [alice]\n"
-	if err := pkgs.Publish(context.Background(), connection.StoredPackage{
-		TenantID: "t1", ConnectorID: "probe", Files: files, CreatedBy: "test",
-	}); err != nil {
-		t.Fatalf("publish probe: %v", err)
+	for _, tenant := range []string{"t1", "t2"} {
+		if err := pkgs.Publish(context.Background(), connection.StoredPackage{
+			TenantID: tenant, ConnectorID: "probe", Files: files, CreatedBy: "test",
+		}); err != nil {
+			t.Fatalf("publish probe/%s: %v", tenant, err)
+		}
 	}
 	// An outbound-only package (connector.yaml alone, no ops, no
 	// triggers): a tool, not a source.
@@ -68,6 +70,16 @@ func sourcesWorld(t *testing.T) (*Server, *trigger.MemorySubscriptionStore) {
 		Capabilities:  []connection.Capability{connection.CapTrigger},
 	}); err != nil {
 		t.Fatalf("create forgejo connection: %v", err)
+	}
+	if err := s.connectionStore.Create(context.Background(), connection.Connection{
+		ID: "conn-probe-t2", TenantID: "t2", Connector: "probe", Alias: "main",
+		Status:        connection.StatusActive,
+		BaseURL:       "https://probe.example",
+		SchemeID:      "token",
+		AuthPlacement: connection.AuthPlacement{Kind: "api_key", In: "header", Name: "Authorization"},
+		Capabilities:  []connection.Capability{connection.CapTrigger},
+	}); err != nil {
+		t.Fatalf("create t2 probe connection: %v", err)
 	}
 	subs := trigger.NewMemorySubscriptionStore()
 	s.cfg.TriggerStore = subs
@@ -148,15 +160,11 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	if ing["credential_scheme"] != "hmac-sha256" || ing["secret_origin"] != "minted" {
 		t.Fatalf("probe ingress: %v", ing)
 	}
-	forgejo, ok := byID["forgejo"]
-	if !ok {
-		t.Fatal("the baked forgejo is not in the catalog")
-	}
-	if forgejo["ingress"] != nil {
-		t.Fatalf("forgejo ships no ingress block, got %v", forgejo["ingress"])
-	}
-	if forgejo["tier"] != "baked" || forgejo["connections"].(float64) != 0 {
-		t.Fatalf("forgejo card: %v", forgejo)
+	// The baked forgejo ships a trigger but no ingress block: the lane
+	// cannot bind it, so listing it would end every plug in the bind's
+	// refusal — it returns when its triggers.yaml declares its ingress.
+	if _, ok := byID["forgejo"]; ok {
+		t.Fatal("a package without an ingress block is listed as pluggable")
 	}
 	if _, ok := byID["tool"]; ok {
 		t.Fatal("an outbound-only package is listed as a source")
@@ -167,33 +175,32 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 			t.Fatalf("builtin %s: got %v", b, e)
 		}
 	}
-	if len(byID) != 6 {
-		t.Fatalf("catalog holds %d entries, want 6: %v", len(byID), byID)
+	if len(byID) != 5 {
+		t.Fatalf("catalog holds %d entries, want 5: %v", len(byID), byID)
 	}
 }
 
 // TestSourcesCountsAreTenantScoped: another tenant's connection and
-// subscription never leak into a card's counts.
+// subscription never leak into a card's counts. Both tenants publish
+// their own probe, so the SAME connector id answers different counts
+// per tenant — the team tier's own rows, never the neighbour's.
 func TestSourcesCountsAreTenantScoped(t *testing.T) {
 	s, _ := sourcesWorld(t)
 	byID := sourcesView(t, s, "admin2", "t2")
-	forgejo, ok := byID["forgejo"]
+	probe, ok := byID["probe"]
 	if !ok {
-		t.Fatal("t2 does not see the baked forgejo")
+		t.Fatal("t2 does not see its own team-tier package")
 	}
-	if forgejo["connections"].(float64) != 1 {
-		t.Fatalf("t2's forgejo connections: %v", forgejo["connections"])
+	if probe["connections"] != 1.0 {
+		t.Fatalf("t2's probe connections: %v", probe["connections"])
 	}
-	if _, ok := byID["probe"]; ok {
-		t.Fatal("t2 sees t1's team-tier package")
+	if probe["subscriptions"] != 0.0 {
+		t.Fatalf("t2's probe subscriptions: %v", probe["subscriptions"])
 	}
-	if byID["forgejo"]["subscriptions"] != 0.0 {
-		t.Fatalf("t2's forgejo subscriptions: %v", byID["forgejo"])
-	}
-	// And t1 does not see t2's forgejo connection.
+	// And t1 does not see t2's probe connection.
 	t1 := sourcesView(t, s, "viewer1", "t1")
-	if t1["forgejo"]["connections"] != 0.0 {
-		t.Fatalf("t1 sees t2's forgejo connection: %v", t1["forgejo"])
+	if t1["probe"]["connections"] != 1.0 || t1["probe"]["subscriptions"] != 1.0 {
+		t.Fatalf("t1's probe counts: %v", t1["probe"])
 	}
 }
 
@@ -218,14 +225,14 @@ func TestTeamSourcesReadsThePathTeam(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	var forgejo map[string]any
+	var probe map[string]any
 	for _, e := range out.Sources {
-		if e["id"] == "forgejo" {
-			forgejo = e
+		if e["id"] == "probe" {
+			probe = e
 		}
 	}
-	if forgejo == nil || forgejo["connections"].(float64) != 1 {
-		t.Fatalf("the path team's counts: %v", forgejo)
+	if probe == nil || probe["connections"] != 1.0 {
+		t.Fatalf("the path team's counts: %v", probe)
 	}
 
 	outsider := httptest.NewRequest("GET", "/api/teams/t2/sources", nil)
