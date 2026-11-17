@@ -46,7 +46,11 @@ func (c *compiler) validateCodemodeBackends(w *Workflow) {
 		// Two guards covering each other look tested and neither is —
 		// TestOnImpliesDeclared pins the invariant that makes this one
 		// sufficient, and reddens the day a rung makes the default on.
-		policy := ResolveCodemode(n.GetCodemode(), w.Codemode)
+		// The launch rung is empty on every compile: a compile sees no
+		// launch, so the compiler judges the AUTHORED declaration and the
+		// picker screens the launch's own choice against the dispatch's
+		// answer (CodemodeOverrideRefusalReason).
+		policy := ResolveCodemode("", n.GetCodemode(), w.Codemode)
 		if !policy.On {
 			continue
 		}

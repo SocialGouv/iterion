@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -1391,6 +1393,16 @@ type Run struct {
 	// separately because it outranks node and workflow declarations and must
 	// be replayed verbatim on every local or cloud resume.
 	PermissionOverride string `json:"permission_override,omitempty" bson:"permission_override,omitempty"`
+	// CodemodeOverride is the operator's launch-time codemode choice
+	// (ADR-165, CM-5e) — the same doctrine as PermissionOverride: the
+	// override is authoritative run intent, stamped at launch and replayed
+	// by every resume that does not re-state it. A resume that said nothing
+	// would otherwise fall back to the authored DSL and RE-ARM a capability
+	// the operator killed at launch. CodemodeBoundsOverride carries the
+	// launch's field-by-field raise; nil, and zero fields inside it, mean
+	// the launch did not choose.
+	CodemodeOverride       string             `json:"codemode_override,omitempty" bson:"codemode_override,omitempty"`
+	CodemodeBoundsOverride *scripthost.Limits `json:"codemode_bounds_override,omitempty" bson:"codemode_bounds_override,omitempty"`
 	// SandboxOverride is the operator's launch-time --sandbox choice
 	// ("none", "auto", explicit driver name). Persisted verbatim so
 	// resume/rewind replay the isolation decision the launch took: a run

@@ -288,6 +288,17 @@ type ExecutorSpec struct {
 	// ambient.ResolveSourced (ADR-119).
 	AmbientContext string
 
+	// Codemode is the run-level codemode override ("", "on", "off"),
+	// highest-priority rung of ir.ResolveCodemode (ADR-165): it wins over
+	// node and workflow DSL in both directions, and there is deliberately no
+	// environment rung. CodemodeBounds is the launch's field-by-field bounds
+	// raise (the seven scripthost.Limits numbers; a zero field means the
+	// launch did not choose). Both travel on the queue message (schema v33) —
+	// a stale runner ignoring an explicit off would run the capability the
+	// operator asked away: the knob failing open.
+	Codemode       string
+	CodemodeBounds *ir.CodemodeBounds
+
 	// UsageGuard enforces the operator's subscription usage cap
 	// (pkg/usagecap) for this run. The cloud runner injects one backed by
 	// the shared Mongo store, so every pod sees what the others learned;
@@ -778,6 +789,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithCompressOverride(spec.Compress),
 		model.WithAutoMemoryOverride(spec.AutoMemory),
 		model.WithAmbientContextOverride(spec.AmbientContext),
+		model.WithCodemodeOverride(spec.Codemode),
+		model.WithCodemodeBoundsOverride(spec.CodemodeBounds),
 		// The auto-memory mirror persists through the SAME store as the
 		// `memory:` block, so a cloud runner's Mongo store is what carries
 		// MEMORY.md past the pod's ephemeral disk. nil keeps the local

@@ -25,12 +25,17 @@ func unitNoteFor(err error) string {
 }
 
 type previewCostRequest struct {
-	FilePath       string   `json:"file_path,omitempty"`
-	Source         string   `json:"source,omitempty"`
-	Permission     string   `json:"permission,omitempty"`
-	Backend        string   `json:"backend,omitempty"`
-	AmbientContext string   `json:"ambient_context,omitempty"`
-	BackendNames   []string `json:"backend_names,omitempty"`
+	FilePath       string `json:"file_path,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Permission     string `json:"permission,omitempty"`
+	Backend        string `json:"backend,omitempty"`
+	AmbientContext string `json:"ambient_context,omitempty"`
+	// Codemode is the launch's codemode override ("on"|"off"; ADR-165), the
+	// rung the capability screen must judge alongside the declaration: an
+	// explicit launch `on` on a backend that serves no codemode tool is
+	// refused at dispatch, and the preview is the screen that says so.
+	Codemode     string   `json:"codemode,omitempty"`
+	BackendNames []string `json:"backend_names,omitempty"`
 }
 
 // CostMin == 0 with CostMax == 0 signals "no pricing data" so the
@@ -250,6 +255,7 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		req.Permission,
 		req.Backend,
 		req.AmbientContext,
+		req.Codemode,
 		req.BackendNames,
 	)
 	resp := previewCostResponse{

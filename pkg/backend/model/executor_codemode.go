@@ -49,12 +49,14 @@ func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.C
 	// ONE guard. `policy.Declared()` stood here too and could never fire:
 	// the only rung answering "not declared" is the default, and the default
 	// is OFF. The compiler's half carries the same single guard and
-	// ir.TestOnImpliesDeclared pins the invariant both rely on.
-	policy := ir.ResolveCodemode(f.codemode, e.wfCodemode)
+	// ir.TestOnImpliesDeclared pins the invariant both rely on. The run rung
+	// is nearest: an operator's launch choice decides before anything the
+	// source wrote, in both directions.
+	policy := ir.ResolveCodemode(e.codemodeOverride, f.codemode, e.wfCodemode)
 	if !policy.On {
 		return policy, nil, nil
 	}
-	bounds := ir.ResolveCodemodeBounds(f.codemodeBounds, e.wfCodemodeBounds)
+	bounds := ir.ResolveCodemodeBounds(e.codemodeBoundsOverride, f.codemodeBounds, e.wfCodemodeBounds)
 	// The POSITIVE question, not the compiler's. Here the backend name is
 	// RESOLVED, and the only loop that installs the tool is the one whose
 	// cell says shipped — so a name the registry does not carry (a custom

@@ -611,6 +611,7 @@ into the "persisted-and-replayed" column (✓). Fixed at #1435 and
 | `--model` / `--backend` / `--effort-for` | ✓ `ModelOverrides` | ✓ | Executor spec re-reads them; CLI can layer explicit overrides. |
 | `--fallback` | ✓ `Fallback` | ✓ | Usage-window auto-retries rely on this. |
 | `--permission*` | ✓ `PermissionOverride`, `PermissionMode` | ✓ | The strongest-precedence gate mode. |
+| `--codemode`, `--codemode-*` | ✓ `CodemodeOverride`, `CodemodeBoundsOverride` | ✓ CLI + studio + cloud runner + sweeper | The strongest-precedence codemode choice and its bounds raise (ADR-165). A resume that says nothing replays the launch's decision — the studio's answers and the retry sweeper cannot re-state an override, so the doc is their only carrier of a launch-time `off`. |
 | `--max-cost-usd` etc. | ✓ `BudgetOverrides` | ✓ | Merged with any explicit resume `--max-*`. |
 | `--recipe` | ✓ (via compile) | (no resume equivalent) | Recipe is applied at launch; the compiled workflow persists. |
 | `--auto-memory` | ✗ (not persisted) | Recomputed on purpose | Resume `--auto-memory` re-states it; env `ITERION_AUTO_MEMORY` decides otherwise. |

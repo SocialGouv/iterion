@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.7.0](https://github.com/SocialGouv/iterion/compare/v7.6.0...v7.7.0) (2026-11-17)
+
+### Features
+
+* **codemode:** the launch gets a rung above the DSL — run-level mode and bounds override ([#3345](https://github.com/SocialGouv/iterion/issues/3345)) ([#3347](https://github.com/SocialGouv/iterion/issues/3347)) ([f5de93f](https://github.com/SocialGouv/iterion/commit/f5de93fb2716a0dac52ef457af69d8a35da90a36)), references [#3301](https://github.com/SocialGouv/iterion/issues/3301)
+
+    <details><summary>why</summary>
+
+    The CM-17 measurement (ADR-165, 11-16 amendment) recorded the failure shape that makes a launch rung necessary: a run stops at "the script has spent its budget of 64 tool calls ... ask the operator to raise the bound" — and the operator had nothing to raise. The authored `codemode:` block (#3301) is static per `.bot`; this change gives the LAUNCH the strongest rung of both ladders, wired end to end on the ambient_context override's own seams (CLI, launch API, queue, resume, detached, remote,…
+
+    </details>
+
 ## [7.6.0](https://github.com/SocialGouv/iterion/compare/v7.5.0...v7.6.0) (2026-11-17)
 
 ### Features

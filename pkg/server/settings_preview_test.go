@@ -136,6 +136,7 @@ workflow main:
 		"",
 		"",
 		"",
+		"",
 		[]string{"claw", "claude_code", "codex"},
 	)
 	if got := choices["gated"]["codex"].UnavailableReason; got == "" {
@@ -149,7 +150,7 @@ workflow main:
 	}
 
 	// Run-level off wins over BOTH the node and workflow declarations.
-	choices, _ = buildBackendOverrideOptions(wf, "off", "", "", []string{"codex"})
+	choices, _ = buildBackendOverrideOptions(wf, "off", "", "", "", []string{"codex"})
 	for _, nodeID := range []string{"gated", "open"} {
 		if got := choices[nodeID]["codex"].UnavailableReason; got != "" {
 			t.Errorf("run permission: off did not win for %s: %s", nodeID, got)
@@ -157,7 +158,7 @@ workflow main:
 	}
 
 	// Conversely, a run-level gate wins over the node's explicit off.
-	choices, _ = buildBackendOverrideOptions(wf, "ask", "", "", []string{"codex"})
+	choices, _ = buildBackendOverrideOptions(wf, "ask", "", "", "", []string{"codex"})
 	for _, nodeID := range []string{"gated", "open"} {
 		if got := choices[nodeID]["codex"].UnavailableReason; got == "" {
 			t.Errorf("run permission: ask did not gate %s", nodeID)
@@ -174,7 +175,7 @@ func TestBuildBackendOverrideOptionsRequiresPauseForAskRules(t *testing.T) {
 		Nodes:      map[string]ir.Node{"work": agent},
 	}
 	wf.PermissionAsk = []string{"Bash(git push:*)"}
-	choices, _ := buildBackendOverrideOptions(wf, "", "", "", []string{"grok"})
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"grok"})
 	if got := choices["work"]["grok"].UnavailableReason; !strings.Contains(got, "cannot pause") {
 		t.Fatalf("grok assessment = %q, want explicit ask-rule refusal", got)
 	}
@@ -198,7 +199,7 @@ workflow main:
   restricted -> ambient
   ambient -> done
 `)
-	choices, _ := buildBackendOverrideOptions(wf, "off", "", "", []string{"claude_code", "codex"})
+	choices, _ := buildBackendOverrideOptions(wf, "off", "", "", "", []string{"claude_code", "codex"})
 
 	restricted := choices["restricted"]["claude_code"].Warning
 	for _, want := range []string{"AskUserQuestion", "SlashCommand", "BashOutput", "KillShell", "ScheduleWakeup"} {
@@ -287,7 +288,7 @@ func TestBuildBackendOverrideOptionsReadsTheNodesOwnAskRules(t *testing.T) {
 		Nodes:      map[string]ir.Node{"work": agent},
 	}
 	// The workflow declares none: only the node's list can produce the refusal.
-	choices, _ := buildBackendOverrideOptions(wf, "", "", "", []string{"grok"})
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"grok"})
 	if got := choices["work"]["grok"].UnavailableReason; !strings.Contains(got, "cannot pause") {
 		t.Fatalf("grok assessment = %q, want a refusal from the NODE's ask rules", got)
 	}
@@ -321,7 +322,7 @@ workflow main:
   plain -> done
 `)
 
-	choices, _ := buildBackendOverrideOptions(wf, "", "", "", []string{"claw", "claude_code", "codex"})
+	choices, _ := buildBackendOverrideOptions(wf, "", "", "", "", []string{"claw", "claude_code", "codex"})
 	if got := choices["composer"]["claw"].UnavailableReason; got != "" {
 		t.Errorf("the backend that serves codemode is refused: %s", got)
 	}

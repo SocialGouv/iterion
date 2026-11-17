@@ -47,11 +47,11 @@ workflow w:
 	// (executor_codemode.go): the mode from the node, the bounds from
 	// whichever rung set each field.
 	n := r.Workflow.Nodes["a"].(*AgentNode)
-	policy := ResolveCodemode(n.GetCodemode(), r.Workflow.Codemode)
+	policy := ResolveCodemode("", n.GetCodemode(), r.Workflow.Codemode)
 	if !policy.On {
 		t.Fatalf("policy = %s, want on: an explicit node value beats the workflow's", policy)
 	}
-	bounds := ResolveCodemodeBounds(n.CodemodeBounds, r.Workflow.CodemodeBounds)
+	bounds := ResolveCodemodeBounds(nil, n.CodemodeBounds, r.Workflow.CodemodeBounds)
 	if bounds == nil {
 		t.Fatalf("the node resolved no bounds, so the workflow's declaration reached nothing")
 	}
@@ -88,7 +88,7 @@ workflow w:
 	n := r.Workflow.Nodes["a"].(*AgentNode)
 	// The node's explicit off beats the workflow's on — which is what makes
 	// its own bounds unreachable, and the diagnostic true.
-	if policy := ResolveCodemode(n.GetCodemode(), r.Workflow.Codemode); policy.On {
+	if policy := ResolveCodemode("", n.GetCodemode(), r.Workflow.Codemode); policy.On {
 		t.Errorf("policy = %s, want off: an explicit node `off` beats a workflow `on`", policy)
 	}
 }

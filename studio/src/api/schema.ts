@@ -7447,6 +7447,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        CodemodeBoundsRequest: {
+            cpu?: string;
+            memory?: number;
+            result_bytes?: number;
+            script_bytes?: number;
+            tool_calls?: number;
+            tool_result_bytes?: number;
+            wall?: string;
+        };
         Comment: {
             author?: string;
             body: string;
@@ -7516,6 +7525,8 @@ export interface components {
         };
         CredentialPreviewRequest: {
             bot_id?: string;
+            codemode?: string;
+            codemode_bounds?: components["schemas"]["CodemodeBoundsRequest"];
             llm_routing?: components["schemas"]["Policy"];
             permission?: string;
             review_mode?: string;
@@ -9237,6 +9248,7 @@ export interface components {
             ambient_context?: string;
             backend?: string;
             backend_names?: string[];
+            codemode?: string;
             file_path?: string;
             permission?: string;
             source?: string;
