@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.11.0](https://github.com/SocialGouv/iterion/compare/v7.10.0...v7.11.0) (2026-11-17)
+
+### Features
+
+* **studio:** the launch form gets the codemode form — mode select and the seven bounds ([#3346](https://github.com/SocialGouv/iterion/issues/3346)) ([#3354](https://github.com/SocialGouv/iterion/issues/3354)) ([70fca57](https://github.com/SocialGouv/iterion/commit/70fca5798875afc2f822c5de4fd4457836b77fb7)), references [#3345](https://github.com/SocialGouv/iterion/issues/3345) [#3333](https://github.com/SocialGouv/iterion/issues/3333)
+
+    <details><summary>why</summary>
+
+    CM-5f, the twin of CM-5e (#3345, merged f5de93fb2). The launch rung exists on the wire and in the CLI; this gives the operator the surface the studio launch dialog owes: a mode select and, behind one disclosure, the seven bounds the run may raise.
+
+    </details>
+
 ## [7.10.0](https://github.com/SocialGouv/iterion/compare/v7.9.0...v7.10.0) (2026-11-17)
 
 ### Features
