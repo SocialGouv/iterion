@@ -53,6 +53,23 @@ func TestWithPinnedWants(t *testing.T) {
 		}
 	})
 
+	t.Run("a claude pin asks only what BACKS claude — never moonshot", func(t *testing.T) {
+		// moonshot rides the anthropic WIRE but backs no review family:
+		// asking for it sealed a donor's key the gate still refused.
+		got := withPinnedWants(nil, map[string]string{
+			reviewtopology.VarReviewMode: reviewtopology.ModeMono,
+			reviewtopology.VarMonoFamily: "claude",
+		}, "")
+		for _, w := range got {
+			if w.Source == credpool.SourceAPIKey && w.Ref == string(secrets.ProviderMoonshot) {
+				t.Fatalf("a claude pin asked for a moonshot key: %v", got)
+			}
+		}
+		if len(got) != 3 {
+			t.Fatalf("a claude pin = %v, want the three claude-backing wants", got)
+		}
+	})
+
 	t.Run("a claude pin never duplicates a want the routes already carry", func(t *testing.T) {
 		got := withPinnedWants(routes, map[string]string{
 			reviewtopology.VarReviewMode: reviewtopology.ModeMono,

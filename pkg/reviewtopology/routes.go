@@ -138,6 +138,22 @@ func (inv FamilyInventory) Families() FamilySet {
 	return fams
 }
 
+// FamilyOfCredential names the review family a credential shape BACKS — the
+// same facts Families() reads below: {claude_code, anthropic, zai} back
+// claude, {codex, openai} back gpt. Anything else backs none. The mapping
+// lives here, not at a caller's wire derivation, because a credential can
+// ride a wire without participating in the review topology: moonshot shares
+// the anthropic WIRE and backs no family, so a pin must never ask for it.
+func FamilyOfCredential(provider string) string {
+	switch provider {
+	case "claude_code", "anthropic", "zai":
+		return FamilyClaude
+	case "codex", "openai":
+		return FamilyGPT
+	}
+	return ""
+}
+
 // InventoryFromReport builds the inventory from a host detection report.
 func InventoryFromReport(rep detect.Report) FamilyInventory {
 	var f routeFacts

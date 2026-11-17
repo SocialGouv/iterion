@@ -40,3 +40,25 @@ func TestPinnedFamilies(t *testing.T) {
 		})
 	}
 }
+
+// TestFamilyOfCredential pins the vocabulary the want widening reads: a
+// credential backs a family only if Families() counts it. Moonshot rides the
+// anthropic WIRE without participating in the review topology, so a pin must
+// never ask for it — asking sealed a donor's key that the gate still refused.
+func TestFamilyOfCredential(t *testing.T) {
+	cases := map[string]string{
+		"claude_code": FamilyClaude,
+		"anthropic":   FamilyClaude,
+		"zai":         FamilyClaude,
+		"codex":       FamilyGPT,
+		"openai":      FamilyGPT,
+		"moonshot":    "",
+		"bedrock":     "",
+		"":            "",
+	}
+	for prov, want := range cases {
+		if got := FamilyOfCredential(prov); got != want {
+			t.Fatalf("FamilyOfCredential(%q) = %q, want %q", prov, got, want)
+		}
+	}
+}

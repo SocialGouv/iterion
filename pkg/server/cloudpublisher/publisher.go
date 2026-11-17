@@ -1221,7 +1221,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    reading: a gateway key funds the gateway routes alone, so it
 				//    leaves a vendor route the pool may still serve.
 				if poolAttachment == nil && !holdsDefaultLLMCredential(bundle) {
-					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, launchVars, facts.reviewMode, bundle.PinnedAPIKeys, res.busy)
+					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys, res.busy)
 					if released != nil {
 						// Released for its lent key's audience: the acquisition
 						// superseded a previous lease all the same, so the
@@ -3395,6 +3395,27 @@ func allowlistedPairs(pairs []string, allowed map[string]bool) []string {
 // for nothing at all (ADR-131 §5). Read through its empty provider list
 // alone, it would take the full order and the pool would lend every slot to
 // a run that spends none of them.
+func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolution) {
+	res := model.EffectiveProviders(view, poolProviderSet)
+	if res.OnlyEnvFunded() {
+		return nil, res
+	}
+	if !res.NarrowSafe || len(res.Providers) == 0 {
+		return poolWantOrder, res
+	}
+	pinned := make(map[string]bool, len(res.Providers))
+	for _, p := range res.Providers {
+		pinned[p] = true
+	}
+	out := make([]credpool.Credential, 0, len(poolWantOrder))
+	for _, w := range poolWantOrder {
+		if prov := providerOfWant(w); prov != "" && pinned[prov] {
+			out = append(out, w)
+		}
+	}
+	return out, res
+}
+
 // pinnedFamilyWants returns the pool wants a launch's own mono pin names,
 // in the pool's own want order. A pin is a credential DEMAND: the run
 // cannot start without a credential of that family, so the family's slack
@@ -3408,18 +3429,16 @@ func pinnedFamilyWants(launchVars map[string]string, reviewMode string) []credpo
 	if len(fams) == 0 {
 		return nil
 	}
-	wires := make(map[string]bool, len(fams))
+	pinned := make(map[string]bool, len(fams))
 	for _, f := range fams {
-		switch f {
-		case reviewtopology.FamilyClaude:
-			wires[secrets.WireFamilyAnthropic] = true
-		case reviewtopology.FamilyGPT:
-			wires[secrets.WireFamilyOpenAI] = true
-		}
+		pinned[f] = true
 	}
 	var out []credpool.Credential
 	for _, w := range poolWantOrder {
-		if prov := providerOfWant(w); prov != "" && wires[secrets.WireFamily(prov)] {
+		// The family vocabulary, never the WIRE: moonshot rides the
+		// anthropic wire and backs no family, so asking for it would seal
+		// a credential the gate still refuses.
+		if prov := providerOfWant(w); pinned[reviewtopology.FamilyOfCredential(prov)] {
 			out = append(out, w)
 		}
 	}
@@ -3445,27 +3464,6 @@ func withPinnedWants(wants []credpool.Credential, launchVars map[string]string, 
 		}
 	}
 	return out
-}
-
-func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolution) {
-	res := model.EffectiveProviders(view, poolProviderSet)
-	if res.OnlyEnvFunded() {
-		return nil, res
-	}
-	if !res.NarrowSafe || len(res.Providers) == 0 {
-		return poolWantOrder, res
-	}
-	pinned := make(map[string]bool, len(res.Providers))
-	for _, p := range res.Providers {
-		pinned[p] = true
-	}
-	out := make([]credpool.Credential, 0, len(poolWantOrder))
-	for _, w := range poolWantOrder {
-		if prov := providerOfWant(w); prov != "" && pinned[prov] {
-			out = append(out, w)
-		}
-	}
-	return out, res
 }
 
 // mayReadWireDefault reports whether some route of the run may spend prov's
@@ -3510,7 +3508,7 @@ func withoutFundedProviders(wants []credpool.Credential, funded func(provider st
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, launchVars map[string]string, reviewMode string, pinned map[secrets.Provider]string, busy busyProviders) (granted, released *credpool.Grant) {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string, busy busyProviders) (granted, released *credpool.Grant) {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -3524,7 +3522,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 	// One walk per launch: the wants, the diagnostics and the consulted
 	// line all read the same resolution.
 	wants, res := wantsFor(view)
-	wants = withPinnedWants(wants, launchVars, reviewMode)
+	// Deliberately NOT widened by a pinned family: this tier is the
+	// MUTUALISED pool, and it grants ONE credential (want-major, the first
+	// that admits). Widening it here is useless when the pool also holds
+	// the routes' family (the route want comes first and the pin stays
+	// unserved), and harmful when it holds only the pinned family: the
+	// grant then skips the platform tier wholesale (ADR-131), orphaning
+	// the family the routes spend. The pinned family is served by the
+	// ATTACHED tier, which fills per slot.
 	if len(res.Unknown) > 0 {
 		// A pin nobody knows never narrows the request to nothing: the
 		// walk widened to the full order instead. Name the pin — a typo

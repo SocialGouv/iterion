@@ -49,6 +49,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// a legal launch and an intended "deny" would bless one the launch
 	// refuses.
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
+	// The review-mode knob rides the same way: a mono pin widens the
+	// credential wants (and an explicit dual suppresses it), so a preview
+	// without it would answer a plan the launch never seals.
+	spec.Launch.ReviewMode = strings.TrimSpace(req.ReviewMode)
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer
