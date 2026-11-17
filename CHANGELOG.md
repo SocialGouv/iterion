@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.10.0](https://github.com/SocialGouv/iterion/compare/v7.9.0...v7.10.0) (2026-11-17)
+
+### Features
+
+* **revi:** review-pr inherits no ambient MCP and reads a byte-stable prompt; converge merges on claw ([#3283](https://github.com/SocialGouv/iterion/issues/3283)) ([#3352](https://github.com/SocialGouv/iterion/issues/3352)) ([6f9ea42](https://github.com/SocialGouv/iterion/commit/6f9ea423ae95ba722ff87ab082d910d3e48b4320))
+
+    <details><summary>why</summary>
+
+    S6: review-pr 0.9.25's four reviewer slots carry mcp: inherit: false — the ambient schemas rode every tooled node, ~20k tokens a request, $0.19-0.44 a run, zero mcp_* calls (2026-11-13 sample). review_system and emit_system carry no template: the resolved base sha, workspace, changed-file count, anomaly list, tier and severity floor moved into the user message (a REVIEW SCOPE block on both reviewer lanes, the git commands spelled in; emit_user already carried the merge's values). Two runs of…
+
+    </details>
+
 ## [7.9.0](https://github.com/SocialGouv/iterion/compare/v7.8.0...v7.9.0) (2026-11-17)
 
 ### Features
