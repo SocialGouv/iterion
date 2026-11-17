@@ -9233,6 +9233,19 @@ export interface components {
             unavailable_reason?: string;
             warning?: string;
         };
+        previewCodemodeBounds: {
+            cpu: string;
+            memory: number;
+            result_bytes: number;
+            script_bytes: number;
+            tool_calls: number;
+            tool_result_bytes: number;
+            wall: string;
+        };
+        previewCodemodeLimits: {
+            ceiling: components["schemas"]["previewCodemodeBounds"];
+            default: components["schemas"]["previewCodemodeBounds"];
+        };
         previewCostNode: {
             cost_max_usd: number;
             cost_min_usd: number;
@@ -9258,6 +9271,7 @@ export interface components {
                     [key: string]: components["schemas"]["previewBackendOption"];
                 };
             };
+            codemode_limits?: components["schemas"]["previewCodemodeLimits"];
             cost_max_usd: number;
             cost_min_usd: number;
             effective?: components["schemas"]["previewEffectiveSettings"];

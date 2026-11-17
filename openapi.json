@@ -6867,6 +6867,56 @@
         },
         "type": "object"
       },
+      "previewCodemodeBounds": {
+        "properties": {
+          "cpu": {
+            "type": "string"
+          },
+          "memory": {
+            "type": "integer"
+          },
+          "result_bytes": {
+            "type": "integer"
+          },
+          "script_bytes": {
+            "type": "integer"
+          },
+          "tool_calls": {
+            "type": "integer"
+          },
+          "tool_result_bytes": {
+            "type": "integer"
+          },
+          "wall": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_calls",
+          "wall",
+          "cpu",
+          "memory",
+          "script_bytes",
+          "result_bytes",
+          "tool_result_bytes"
+        ],
+        "type": "object"
+      },
+      "previewCodemodeLimits": {
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/previewCodemodeBounds"
+          },
+          "default": {
+            "$ref": "#/components/schemas/previewCodemodeBounds"
+          }
+        },
+        "required": [
+          "default",
+          "ceiling"
+        ],
+        "type": "object"
+      },
       "previewCostNode": {
         "properties": {
           "cost_max_usd": {
@@ -6943,6 +6993,9 @@
               "type": "object"
             },
             "type": "object"
+          },
+          "codemode_limits": {
+            "$ref": "#/components/schemas/previewCodemodeLimits"
           },
           "cost_max_usd": {
             "type": "number"

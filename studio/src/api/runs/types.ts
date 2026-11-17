@@ -1065,6 +1065,16 @@ export interface PreviewCostNode {
   cost_max_usd: number;
 }
 
+// What the launch form's codemode fields are built from (CM-5f, ADR-165):
+// the defaults an unset field runs under, and the platform ceiling above
+// which the form warns. Served by the preview from scripthost itself — the
+// package whose clamp enforces them at spawn — so the studio never keeps a
+// second table.
+export interface CodemodeLimits {
+  default: CodemodeBoundsOverride;
+  ceiling: CodemodeBoundsOverride;
+}
+
 export interface PreviewCostResponse {
   tokens_min: number;
   tokens_max: number;
@@ -1086,6 +1096,10 @@ export interface PreviewCostResponse {
   // node row: the "inherit" choice is the node's declaration and cannot be
   // deselected, so saying so is the only screen before the run.
   route_refusals?: Record<string, string>;
+  // The codemode bounds table (default + ceiling) the launch form renders
+  // its placeholders and its over-ceiling warning from. Absent only when a
+  // server older than the field answers.
+  codemode_limits?: CodemodeLimits;
 }
 
 export interface PreviewBackendOption {

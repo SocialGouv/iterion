@@ -8,6 +8,7 @@ import type { VarField } from "@/api/types";
 import { useBackendDetectStore } from "@/store/backendDetect";
 
 import BudgetSection from "./BudgetSection";
+import CodemodeSection from "./CodemodeSection";
 import FallbackSection from "./FallbackSection";
 import ModelOverridesSection, { type LLMNode } from "./ModelOverridesSection";
 import OptionsDisclosure from "./OptionsDisclosure";
@@ -41,7 +42,8 @@ export default function EngineOptionsSection({
   // knobs (+ review topology when declared), per-node model overrides,
   // five budget caps, four worktree fields.
   // …plus the one run-level fallback row.
-  const count = 3 + (showReviewMode ? 1 : 0) + llmNodes.length + 5 + 4 + 1;
+  const count =
+    3 + (showReviewMode ? 1 : 0) + llmNodes.length + 5 + 4 + 1 + 1; // +1: codemode
 
   return (
     <OptionsDisclosure
@@ -90,6 +92,18 @@ export default function EngineOptionsSection({
         cloud={cloud}
         onBackendChange={overrides.setFallbackBackend}
         onModelChange={overrides.setFallbackModel}
+      />
+      <CodemodeSection
+        mode={overrides.codemodeOverride}
+        values={overrides.codemodeFields}
+        show={overrides.showCodemode}
+        limits={overrides.codemodeLimits}
+        routeRefusals={overrides.routeRefusals}
+        onModeChange={overrides.setCodemodeOverride}
+        onToggle={() => overrides.setShowCodemode((v) => !v)}
+        onChange={(patch) =>
+          overrides.setCodemodeFields((prev) => ({ ...prev, ...patch }))
+        }
       />
       <BudgetSection
         show={overrides.showBudget}

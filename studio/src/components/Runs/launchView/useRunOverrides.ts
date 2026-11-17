@@ -16,6 +16,11 @@ import {
   emptyBudgetFieldValues,
   type BudgetFieldValues,
 } from "./budgetPayload";
+import {
+  buildCodemodePayload,
+  emptyCodemodeFieldValues,
+  type CodemodeFieldValues,
+} from "./codemodePayload";
 import { type NodeOverride } from "./ModelOverridesSection";
 
 const BOT_OPTIONS_OPEN_KEY = "iterion.launch.bot-options-open";
@@ -82,6 +87,17 @@ export function useRunOverrides(
   // `ambient_context:` DSL then ITERION_AMBIENT_CONTEXT; default workspace,
   // ADR-119).
   const [ambientContextOverride, setAmbientContextOverride] = useState<string>("");
+  // codemode override for this run ("" inherits the workflow/node
+  // `codemode:` DSL — deliberately no environment rung, ADR-132 §1), plus
+  // the bounds raise behind its disclosure (ADR-165, CM-5f). The built
+  // payload rides the preview query AND createRun, so the screen judging a
+  // backend and the run it launches read the same choice.
+  const [codemodeOverride, setCodemodeOverride] = useState<string>("");
+  const [codemodeFields, setCodemodeFields] = useState<CodemodeFieldValues>(
+    emptyCodemodeFieldValues,
+  );
+  const [showCodemode, setShowCodemode] = useState(false);
+  const codemodePayload = buildCodemodePayload(codemodeOverride, codemodeFields);
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
@@ -98,6 +114,12 @@ export function useRunOverrides(
       permissionOverride,
       backendOverride,
       ambientContextOverride,
+      // The codemode choice changes what the screen answers (a launch `on`
+      // on a backend that serves none is a route refusal), so it must key
+      // the query — the #3333 class: an override the request carries but
+      // the key does not leaves a stale verdict on screen.
+      codemodePayload.codemode ?? "",
+      JSON.stringify(codemodePayload.codemode_bounds ?? null),
       backendNames,
     ],
     queryFn: async () =>
@@ -107,6 +129,7 @@ export function useRunOverrides(
         permission: permissionOverride || undefined,
         backend: backendOverride || undefined,
         ambient_context: ambientContextOverride || undefined,
+        codemode: codemodePayload.codemode,
         backend_names: backendNames,
       }),
     enabled: !!(filePath || currentSource),
@@ -124,6 +147,12 @@ export function useRunOverrides(
   const routeRefusals = effectiveQuery.isError
     ? {}
     : effectiveQuery.data?.route_refusals ?? {};
+  // The codemode bounds table (defaults + ceiling), served by the preview
+  // from scripthost: placeholders and the over-ceiling warning read it, so
+  // the form keeps no second copy of the numbers.
+  const codemodeLimits = effectiveQuery.isError
+    ? undefined
+    : effectiveQuery.data?.codemode_limits;
   // Fail closed in the picker while the server-side capability assessment is
   // loading or unavailable. Runtime admission still repeats the check, but a
   // transient preview failure must not briefly advertise an unsafe choice.
@@ -183,6 +212,14 @@ export function useRunOverrides(
     compressOverride,
     ambientContextOverride,
     autoMemoryOverride,
+    codemodeOverride,
+    setCodemodeOverride,
+    codemodeFields,
+    setCodemodeFields,
+    showCodemode,
+    setShowCodemode,
+    codemodePayload,
+    codemodeLimits,
     setAmbientContextOverride,
     setAutoMemoryOverride,
     setCompressOverride,
