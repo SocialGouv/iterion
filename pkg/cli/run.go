@@ -1056,28 +1056,36 @@ func buildEngine(
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault(nil)
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
-	return runtime.New(wf, s, executor,
-		append(base,
-			runtime.WithWorkflowHash(wfHash),
-			runtime.WithFilePath(iterFile),
-			runtime.WithRunName(runName),
-			runtime.WithMergeInto(opts.MergeInto),
-			runtime.WithBranchName(opts.BranchName),
-			runtime.WithMergeStrategy(opts.MergeStrategy),
-			runtime.WithAutoMerge(opts.AutoMerge),
-			runtime.WithSandboxOverride(opts.Sandbox),
-			runtime.WithSandboxDefault(sandboxDefault),
-			runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
-			runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
-			runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
-			runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
-			runtime.WithRepoDevbox(opts.RepoDevbox),
-			runtime.WithBundle(bundleHandle),
-			runtime.WithPreset(opts.Preset),
-			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
-			runtime.WithSource(opts.Source),
-		)...,
+	engineOpts := append(base,
+		runtime.WithWorkflowHash(wfHash),
+		runtime.WithFilePath(iterFile),
+		runtime.WithRunName(runName),
+		runtime.WithMergeInto(opts.MergeInto),
+		runtime.WithBranchName(opts.BranchName),
+		runtime.WithMergeStrategy(opts.MergeStrategy),
+		runtime.WithAutoMerge(opts.AutoMerge),
+		runtime.WithSandboxOverride(opts.Sandbox),
+		runtime.WithSandboxDefault(sandboxDefault),
+		runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
+		runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
+		runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
+		runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
+		runtime.WithRepoDevbox(opts.RepoDevbox),
+		runtime.WithBundle(bundleHandle),
+		runtime.WithPreset(opts.Preset),
+		runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
+		runtime.WithSource(opts.Source),
+		// The launch-time override choices are durable run intent: feeding
+		// them to the ENGINE (not just the executor) is what lets its
+		// run-doc stamp persist the choice, so a later silent resume — a
+		// studio answer, the retry sweeper — replays THIS decision instead
+		// of the authored DSL (revi Rd342b0: without it a local
+		// `iterion run --codemode off` re-armed at the first studio
+		// answer). The permission gate rides beside it — same doctrine,
+		// and the same hole it had on this path.
 	)
+	engineOpts = append(engineOpts, withLaunchEngineOverrides(opts.Permission, opts.Codemode, opts.CodemodeBounds)...)
+	return runtime.New(wf, s, executor, engineOpts...)
 }
 
 // resolveWorkflow loads the workflow either via a recipe, a `.botz`
@@ -1290,6 +1298,20 @@ func runModelOverrideRows(ov model.ModelOverrides) []store.RunModelOverride {
 			Provider: r.Provider,
 			Effort:   r.Effort,
 		})
+	}
+	return out
+}
+
+// withLaunchEngineOverrides carries the run-level override choices to the
+// engine's run-doc stamp. A choice nobody made feeds no option — an absence
+// must stay an absence, never a stamped zero.
+func withLaunchEngineOverrides(permission, codemode string, bounds *ir.CodemodeBounds) []runtime.EngineOption {
+	var out []runtime.EngineOption
+	if permission != "" {
+		out = append(out, runtime.WithPermissionOverride(permission))
+	}
+	if codemode != "" || bounds != nil {
+		out = append(out, runtime.WithCodemodeOverride(codemode, bounds))
 	}
 	return out
 }

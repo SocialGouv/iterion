@@ -222,6 +222,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if opts.CodemodeBounds == nil {
 		opts.CodemodeBounds = r.CodemodeBoundsOverride
 	}
+	// The permission gate is the same doctrine, one rung of it older: the
+	// launch persisted it, the resume replays it, a re-state wins.
+	opts.Permission = pickString(opts.Permission, r.PermissionOverride)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
 	}
@@ -354,6 +357,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// The coalesced codemode choice is durable run intent: feeding the
 	// engine lets its run-doc stamp persist a re-statement, so the NEXT
 	// silent resume replays this operator's choice, not the launch's.
+	if opts.Permission != "" {
+		resumeOpts = append(resumeOpts, runtime.WithPermissionOverride(opts.Permission))
+	}
 	if opts.Codemode != "" || opts.CodemodeBounds != nil {
 		resumeOpts = append(resumeOpts, runtime.WithCodemodeOverride(opts.Codemode, opts.CodemodeBounds))
 	}
