@@ -79,10 +79,46 @@ export function buildCodemodePayload(
   return out;
 }
 
-// boundsSet reports whether the operator changed any bounds field — what the
-// section uses to open its disclosure and count its set fields.
+// boundsSet reports whether any bounds field holds a value AT ALL — the
+// raw question ("did the operator type something"), which is what the
+// section's disclosure hint uses. It is NOT "something travels": zero, a
+// negative and junk are dropped by buildCodemodePayload, so a caller that
+// wants to say "overriding the bot" asks the payload, not this.
 export function boundsSet(fields: CodemodeFieldValues): boolean {
   return Object.values(fields).some((v) => v.trim() !== "");
+}
+
+// belowMemoryFloor reports whether the operator typed a memory bound the
+// child cannot start at: Clamp RAISES it to the floor at spawn, so the run
+// would not use the number on screen (found by the adversarial round — the
+// one divergence the form could show silently).
+export function belowMemoryFloor(
+  fields: CodemodeFieldValues,
+  limits: CodemodeLimits | undefined,
+): number | undefined {
+  const floor = limits?.memory_floor;
+  if (!floor) return undefined;
+  const n = positiveNumber(fields.memory);
+  if (n === undefined) return undefined;
+  return Math.floor(n) < floor ? floor : undefined;
+}
+
+// unreadableFields names the numeric fields holding a non-empty value the
+// payload cannot carry (non-numeric, zero, negative): the form marks them
+// aria-invalid rather than letting them read as a silent inherit.
+export function unreadableFields(fields: CodemodeFieldValues): string[] {
+  const numeric: Array<[string, string]> = [
+    ["tool_calls", fields.toolCalls],
+    ["memory", fields.memory],
+    ["script_bytes", fields.scriptBytes],
+    ["result_bytes", fields.resultBytes],
+    ["tool_result_bytes", fields.toolResultBytes],
+  ];
+  const out: string[] = [];
+  for (const [name, raw] of numeric) {
+    if (raw.trim() !== "" && positiveNumber(raw) === undefined) out.push(name);
+  }
+  return out;
 }
 
 // parseDurationSeconds reads the Go duration spellings the DSL accepts for
@@ -124,7 +160,9 @@ export function overCeiling(
   const num = (name: string, raw: string, max: number | undefined) => {
     if (max === undefined) return;
     const n = positiveNumber(raw);
-    if (n !== undefined && n > max) over.push(name);
+    // FLOORED, like the payload: a value in (ceiling, ceiling+1) travels as
+    // the ceiling, and a warning there would name a divergence no run has.
+    if (n !== undefined && Math.floor(n) > max) over.push(name);
   };
   const dur = (name: string, raw: string, max: string | undefined) => {
     if (!max) return;

@@ -9245,6 +9245,7 @@ export interface components {
         previewCodemodeLimits: {
             ceiling: components["schemas"]["previewCodemodeBounds"];
             default: components["schemas"]["previewCodemodeBounds"];
+            memory_floor: number;
         };
         previewCostNode: {
             cost_max_usd: number;

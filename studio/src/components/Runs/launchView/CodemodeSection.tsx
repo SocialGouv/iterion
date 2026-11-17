@@ -14,8 +14,10 @@ import { Select } from "@/components/ui/Select";
 import type { CodemodeLimits } from "@/api/runs";
 
 import {
-  boundsSet,
+  belowMemoryFloor,
+  buildCodemodePayload,
   overCeiling,
+  unreadableFields,
   type CodemodeFieldValues,
 } from "./codemodePayload";
 
@@ -88,6 +90,13 @@ export default function CodemodeSection({
   onChange,
 }: CodemodeSectionProps) {
   const over = overCeiling(values, limits);
+  const floored = belowMemoryFloor(values, limits);
+  const unreadable = unreadableFields(values);
+  // "Overriding the bot" is the PAYLOAD's fact, not the form's: a typed 0 or
+  // a negative is dropped, and the title must not claim a raise that will
+  // not travel (adversarial round).
+  const overriding =
+    buildCodemodePayload(mode, values).codemode_bounds !== undefined;
   const refusedNodes = Object.keys(routeRefusals);
   return (
     <div className="mt-6 border-t border-border-default pt-4">
@@ -117,9 +126,13 @@ export default function CodemodeSection({
           </div>
           {refusedNodes.length > 0 && (
             <div className="mt-1 text-caption text-warning">
+              {/* The preview's route refusals cover every DECLARED capability
+                  (codemode and ambient_context today), so the line names the
+                  nodes without attributing the cause — the node's own picker
+                  says which one. */}
               {refusedNodes.length === 1
-                ? `node ${refusedNodes[0]} will be refused at dispatch — see its backend picker`
-                : `${refusedNodes.length} nodes will be refused at dispatch — see their backend pickers`}
+                ? `node ${refusedNodes[0]} will be refused at dispatch by a declared capability — see its backend picker`
+                : `${refusedNodes.length} nodes will be refused at dispatch by a declared capability — see their backend pickers`}
             </div>
           )}
           <div className="mt-2">
@@ -130,9 +143,7 @@ export default function CodemodeSection({
               title="Raise a codemode bound for this run without editing the bot."
             >
               <span>{show ? "▾" : "▸"}</span>
-              <span>
-                Bounds{boundsSet(values) ? " — overriding the bot" : ""}
-              </span>
+              <span>Bounds{overriding ? " — overriding the bot" : ""}</span>
             </button>
           </div>
         </div>
@@ -145,7 +156,9 @@ export default function CodemodeSection({
             <code>--codemode-*</code> flags. Empty = inherits. Durations are Go
             durations (<code>30s</code>, <code>5m</code>); sizes and counts are
             raw integers. Anything above the platform ceiling still runs at the
-            ceiling, and the run log says so.
+            ceiling, and the run log says so. Bounds apply only where the
+            effective mode is <code>on</code> — this select, or the bot&apos;s own{" "}
+            <code>codemode:</code>; otherwise they are inert.
           </div>
           {rows.map((row) => (
             <div
@@ -164,13 +177,27 @@ export default function CodemodeSection({
                   min={row.type === "number" ? 0 : undefined}
                   step={row.step}
                   className="font-mono"
+                  aria-invalid={
+                    unreadable.includes(row.label) || undefined
+                  }
                   placeholder={placeholderOf(limits, row.key)}
                   value={values[row.key]}
                   onChange={(e) => onChange({ [row.key]: e.target.value })}
                 />
+                {unreadable.includes(row.label) && (
+                  <div className="mt-1 text-caption text-danger">
+                    not a positive number — left as inherit, nothing is sent
+                  </div>
+                )}
               </div>
             </div>
           ))}
+          {floored !== undefined && (
+            <div role="status" className="text-caption text-warning">
+              memory is below the {floored}-byte floor a program needs to start
+              — the run still starts, at the floor (the clamp report names it).
+            </div>
+          )}
           {over.length > 0 && (
             <div role="status" className="text-caption text-warning">
               above the platform ceiling: <code>{over.join(", ")}</code> — the

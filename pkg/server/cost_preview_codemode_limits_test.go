@@ -41,4 +41,13 @@ func TestPreviewCostCarriesTheCodemodeLimitsFromScriptHost(t *testing.T) {
 	if got.CodemodeLimits.Ceiling.Wall != (10 * time.Minute).String() {
 		t.Errorf("ceiling wall = %q, want %q — the DSL orthography the form's parse expects", got.CodemodeLimits.Ceiling.Wall, (10 * time.Minute).String())
 	}
+	// The ONE bound with a floor (CM-5f, adversarial round): a value under it
+	// is raised at spawn, so the form must know it before the launch — the
+	// "screen shows 1000 bytes, the run runs at 64 MiB" divergence.
+	if got.CodemodeLimits.MemoryFloor != scripthost.MemoryFloor().Memory {
+		t.Errorf("memory_floor = %d, want scripthost.MemoryFloor() %d", got.CodemodeLimits.MemoryFloor, scripthost.MemoryFloor().Memory)
+	}
+	if got.CodemodeLimits.MemoryFloor >= got.CodemodeLimits.Default.Memory {
+		t.Errorf("memory_floor %d is not below the default %d — a floor that equals the default would make the warning unreachable", got.CodemodeLimits.MemoryFloor, got.CodemodeLimits.Default.Memory)
+	}
 }

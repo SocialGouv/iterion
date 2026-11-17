@@ -6909,11 +6909,15 @@
           },
           "default": {
             "$ref": "#/components/schemas/previewCodemodeBounds"
+          },
+          "memory_floor": {
+            "type": "integer"
           }
         },
         "required": [
           "default",
-          "ceiling"
+          "ceiling",
+          "memory_floor"
         ],
         "type": "object"
       },

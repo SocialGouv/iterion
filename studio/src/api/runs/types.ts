@@ -1073,6 +1073,10 @@ export interface PreviewCostNode {
 export interface CodemodeLimits {
   default: CodemodeBoundsOverride;
   ceiling: CodemodeBoundsOverride;
+  // The one bound with a FLOOR: a child cannot start below it, so a smaller
+  // value is raised at spawn (the clamp report names it). The form says so
+  // before the run rather than showing a number the run will not use.
+  memory_floor: number;
 }
 
 export interface PreviewCostResponse {

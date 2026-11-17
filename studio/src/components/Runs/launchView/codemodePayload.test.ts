@@ -3,10 +3,12 @@ import { describe, expect, test } from "vitest";
 import type { CodemodeLimits } from "@/api/runs";
 
 import {
+  belowMemoryFloor,
   buildCodemodePayload,
   emptyCodemodeFieldValues,
   overCeiling,
   parseDurationSeconds,
+  unreadableFields,
 } from "./codemodePayload";
 
 const limits: CodemodeLimits = {
@@ -28,6 +30,7 @@ const limits: CodemodeLimits = {
     result_bytes: 8388608,
     tool_result_bytes: 1048576,
   },
+  memory_floor: 67108864,
 };
 
 describe("buildCodemodePayload", () => {
@@ -128,6 +131,61 @@ describe("overCeiling", () => {
   test("no limits (an older server) means no verdict, never a guess", () => {
     expect(
       overCeiling({ ...emptyCodemodeFieldValues, toolCalls: "999999" }, undefined),
+    ).toEqual([]);
+  });
+
+  test("a fraction just above the ceiling is NOT flagged — the payload floors it to the ceiling", () => {
+    // Adversarial round: comparing the raw float warned where the run
+    // receives exactly the ceiling — a divergence no run has.
+    expect(
+      overCeiling(
+        { ...emptyCodemodeFieldValues, memory: String(limits.ceiling.memory! + 0.9) },
+        limits,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("belowMemoryFloor", () => {
+  test("names the floor for a memory bound the child cannot start at", () => {
+    expect(
+      belowMemoryFloor({ ...emptyCodemodeFieldValues, memory: "1000" }, limits),
+    ).toBe(67108864);
+  });
+
+  test("a memory bound at or above the floor is silent", () => {
+    expect(
+      belowMemoryFloor({ ...emptyCodemodeFieldValues, memory: "67108864" }, limits),
+    ).toBeUndefined();
+    expect(
+      belowMemoryFloor({ ...emptyCodemodeFieldValues, memory: "268435456" }, limits),
+    ).toBeUndefined();
+  });
+
+  test("an empty or unreadable field is silence — nothing will be sent", () => {
+    expect(belowMemoryFloor(emptyCodemodeFieldValues, limits)).toBeUndefined();
+    expect(
+      belowMemoryFloor({ ...emptyCodemodeFieldValues, memory: "1 Mio" }, limits),
+    ).toBeUndefined();
+  });
+});
+
+describe("unreadableFields", () => {
+  test("names the numeric fields holding a value the payload drops", () => {
+    expect(
+      unreadableFields({
+        ...emptyCodemodeFieldValues,
+        toolCalls: "0",
+        memory: "-5",
+        scriptBytes: "1,000",
+        resultBytes: "2048",
+      }),
+    ).toEqual(["tool_calls", "memory", "script_bytes"]);
+  });
+
+  test("durations are left to the server — they are not numeric fields", () => {
+    expect(
+      unreadableFields({ ...emptyCodemodeFieldValues, wall: "soon", cpu: "5m" }),
     ).toEqual([]);
   });
 });

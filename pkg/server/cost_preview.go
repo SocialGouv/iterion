@@ -95,6 +95,12 @@ type previewCostResponse struct {
 type previewCodemodeLimits struct {
 	Default previewCodemodeBounds `json:"default"`
 	Ceiling previewCodemodeBounds `json:"ceiling"`
+	// MemoryFloor is the one bound with a FLOOR: a child cannot start below
+	// it, so a value under it is raised at spawn (Clamp reports through
+	// OnClamp). Served so the form can say so BEFORE the run — the
+	// "screen shows X, the run runs Y" divergence, found by the adversarial
+	// round.
+	MemoryFloor int64 `json:"memory_floor"`
 }
 
 type previewCodemodeBounds struct {
@@ -300,8 +306,9 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 	resp := previewCostResponse{
 		Effective: buildEffectiveSettings(cr.Workflow),
 		CodemodeLimits: &previewCodemodeLimits{
-			Default: previewCodemodeBoundsOf(scripthost.DefaultLimits()),
-			Ceiling: previewCodemodeBoundsOf(scripthost.Ceiling()),
+			Default:     previewCodemodeBoundsOf(scripthost.DefaultLimits()),
+			Ceiling:     previewCodemodeBoundsOf(scripthost.Ceiling()),
+			MemoryFloor: scripthost.MemoryFloor().Memory,
 		},
 		// The ROUTE screen (#3259): per LLM node, why the backend the run
 		// will actually take — the inherit route — is refused by a DECLARED

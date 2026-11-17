@@ -29,6 +29,7 @@ const limits: CodemodeLimits = {
     result_bytes: 8388608,
     tool_result_bytes: 1048576,
   },
+  memory_floor: 67108864,
 };
 
 function renderSection(over: Partial<Parameters<typeof CodemodeSection>[0]> = {}) {
@@ -91,4 +92,27 @@ test("a refused route is named on the section, not left to the picker alone", ()
     routeRefusals: { summarise: "this node has codemode: on…" },
   });
   expect(screen.getByText(/node summarise will be refused at dispatch/)).toBeTruthy();
+});
+
+test("a memory bound under the floor is NAMED — the run would start above it", () => {
+  renderSection({ values: { ...emptyCodemodeFieldValues, memory: "1000" } });
+  const status = screen.getByRole("status");
+  expect(status.textContent).toContain("below the 67108864-byte floor");
+});
+
+test("a typed 0 does not claim to override the bot — nothing travels", () => {
+  renderSection({ values: { ...emptyCodemodeFieldValues, toolCalls: "0" } });
+  expect(screen.queryByText(/overriding the bot/)).toBeNull();
+});
+
+test("a real bound says it overrides the bot", () => {
+  renderSection({ values: { ...emptyCodemodeFieldValues, toolCalls: "256" } });
+  expect(screen.getByText(/overriding the bot/)).toBeTruthy();
+});
+
+test("a numeric field holding a droppable value is marked invalid and says so", () => {
+  renderSection({ values: { ...emptyCodemodeFieldValues, toolCalls: "1,000" } });
+  const input = screen.getByLabelText(/tool_calls/i) as HTMLInputElement;
+  expect(input.getAttribute("aria-invalid")).toBe("true");
+  expect(screen.getByText(/not a positive number/)).toBeTruthy();
 });
