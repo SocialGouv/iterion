@@ -5,6 +5,7 @@ import type { CodemodeLimits } from "@/api/runs";
 import {
   belowMemoryFloor,
   buildCodemodePayload,
+  droppableDuration,
   emptyCodemodeFieldValues,
   overCeiling,
   parseDurationSeconds,
@@ -166,6 +167,34 @@ describe("overCeiling", () => {
   });
 });
 
+describe("droppableDuration", () => {
+  test("reads a zero duration as droppable and a real one as not", () => {
+    expect(droppableDuration("0s")).toBe(true);
+    expect(droppableDuration("0m")).toBe(true);
+    expect(droppableDuration("30s")).toBe(false);
+    expect(droppableDuration("soon")).toBe(false);
+  });
+
+  test("a duration that parses to zero is dropped — the resolver would read it as unset", () => {
+    // The revi gate: "0s" travelled and silently reverted to the bot.
+    expect(
+      buildCodemodePayload("", { ...emptyCodemodeFieldValues, wall: "0s", cpu: "0m" }),
+    ).toEqual({});
+  });
+
+  test("an unparsable duration still travels — the server names it in a 400", () => {
+    expect(
+      buildCodemodePayload("", { ...emptyCodemodeFieldValues, wall: "soon" }),
+    ).toEqual({ codemode_bounds: { wall: "soon" } });
+  });
+
+  test("a zero duration is marked unreadable so the field says so", () => {
+    expect(
+      unreadableFields({ ...emptyCodemodeFieldValues, wall: "0s", cpu: "2m" }),
+    ).toEqual(["wall"]);
+  });
+});
+
 describe("belowMemoryFloor", () => {
   test("names the floor for a memory bound the child cannot start at", () => {
     expect(
@@ -203,7 +232,7 @@ describe("unreadableFields", () => {
     ).toEqual(["tool_calls", "memory", "script_bytes"]);
   });
 
-  test("durations are left to the server — they are not numeric fields", () => {
+  test("an unparsable duration is left to the server — it is not a numeric field", () => {
     expect(
       unreadableFields({ ...emptyCodemodeFieldValues, wall: "soon", cpu: "5m" }),
     ).toEqual([]);

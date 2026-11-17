@@ -68,10 +68,15 @@ export function buildCodemodePayload(
   const bounds: CodemodeBoundsOverride = {};
   const toolCalls = positiveNumber(fields.toolCalls);
   if (toolCalls !== undefined) bounds.tool_calls = toolCalls;
+  // Durations travel VERBATIM (the server owns the parse and 400s a value it
+  // cannot read, naming the field) — except a value that PARSES TO ZERO:
+  // "0s" reaches the resolver as the unset it looks like, silently reverting
+  // to the bot while the form claims an override. Dropped here, like the
+  // numeric zero (revi gate, same class).
   const wall = fields.wall.trim();
-  if (wall) bounds.wall = wall;
+  if (wall && !droppableDuration(wall)) bounds.wall = wall;
   const cpu = fields.cpu.trim();
-  if (cpu) bounds.cpu = cpu;
+  if (cpu && !droppableDuration(cpu)) bounds.cpu = cpu;
   const memory = positiveNumber(fields.memory);
   if (memory !== undefined) bounds.memory = memory;
   const script = positiveNumber(fields.scriptBytes);
@@ -109,9 +114,19 @@ export function belowMemoryFloor(
   return Math.floor(n) < floor ? floor : undefined;
 }
 
-// unreadableFields names the numeric fields holding a non-empty value the
-// payload cannot carry (non-numeric, zero, negative): the form marks them
-// aria-invalid rather than letting them read as a silent inherit.
+// droppableDuration reports whether a duration field holds a value that
+// parses to ZERO (or less): the resolver reads that as "nobody chose", so
+// sending it would promise an override no run gets. An UNPARSABLE duration
+// is not droppable here — it travels and the server names it in a 400.
+export function droppableDuration(raw: string): boolean {
+  const secs = parseDurationSeconds(raw);
+  return secs !== undefined && secs <= 0;
+}
+
+// unreadableFields names the fields holding a non-empty value the payload
+// cannot carry (non-numeric, zero, negative, a zero duration): the form
+// marks them aria-invalid rather than letting them read as a silent
+// inherit.
 export function unreadableFields(fields: CodemodeFieldValues): string[] {
   const numeric: Array<[string, string]> = [
     ["tool_calls", fields.toolCalls],
@@ -123,6 +138,9 @@ export function unreadableFields(fields: CodemodeFieldValues): string[] {
   const out: string[] = [];
   for (const [name, raw] of numeric) {
     if (raw.trim() !== "" && positiveNumber(raw) === undefined) out.push(name);
+  }
+  for (const [name, raw] of [["wall", fields.wall], ["cpu", fields.cpu]] as const) {
+    if (raw.trim() !== "" && droppableDuration(raw)) out.push(name);
   }
   return out;
 }

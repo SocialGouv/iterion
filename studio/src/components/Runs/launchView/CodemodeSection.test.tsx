@@ -114,5 +114,5 @@ test("a numeric field holding a droppable value is marked invalid and says so", 
   renderSection({ values: { ...emptyCodemodeFieldValues, toolCalls: "1,000" } });
   const input = screen.getByLabelText(/tool_calls/i) as HTMLInputElement;
   expect(input.getAttribute("aria-invalid")).toBe("true");
-  expect(screen.getByText(/not a positive number/)).toBeTruthy();
+  expect(screen.getByText(/not a positive value/)).toBeTruthy();
 });

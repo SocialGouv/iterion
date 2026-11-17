@@ -186,7 +186,7 @@ export default function CodemodeSection({
                 />
                 {unreadable.includes(row.label) && (
                   <div className="mt-1 text-caption text-danger">
-                    not a positive number — left as inherit, nothing is sent
+                    not a positive value — left as inherit, nothing is sent
                   </div>
                 )}
               </div>
