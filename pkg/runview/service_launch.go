@@ -656,7 +656,7 @@ func codemodeLaunchWarnings(codemode string, bounds *ir.CodemodeBounds) []string
 		out = append(out, "codemode: the launch set bounds beside a run-level `codemode: off` — no program runs, so the bounds are inert (C348 is the compile-time twin)")
 	}
 	if over := ir.CodemodeBoundsAboveCeiling(bounds); len(over) > 0 {
-		out = append(out, fmt.Sprintf("codemode: the launch's bounds exceed the platform ceiling (%s) — the child will run at the ceiling and the clamp report says so (C347 is the compile-time twin)", strings.Join(over, "; ")))
+		out = append(out, fmt.Sprintf("codemode: the launch's bounds exceed the platform ceiling (%s) — where a program runs, it runs at the ceiling and the clamp report says so (C347 is the compile-time twin)", strings.Join(over, "; ")))
 	}
 	return out
 }

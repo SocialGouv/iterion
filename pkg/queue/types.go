@@ -284,8 +284,9 @@ import (
 // runner dropping an explicit `off` would run the capability the operator
 // asked AWAY — the knob failing open, the exact direction the additive rule
 // exists to reject. A dropped bounds raise only lands tighter (defaults),
-// but the mode's off direction alone decides the bump. Server-first
-// rollout; MinSchemaVersion stays 27.
+// but the mode's off direction alone decides the bump. Runner-first
+// rollout — its precondition holds by construction, the minimum does not
+// move — and MinSchemaVersion stays 27.
 const SchemaVersion = 33
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
