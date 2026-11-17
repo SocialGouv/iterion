@@ -1,0 +1,52 @@
+schema_version: 1
+id: slack
+display_name: Slack
+description: Slack — messages, mentions and reactions, from the Events API.
+version: 0.1.0
+
+# Authored from Slack's published HTTP API; the two operations below are
+# written by hand from it, not generated (there is no vendor description to
+# generate from that carries these endpoints' security). The mark is drawn for
+# this package — a nominative placeholder, not Slack's logo.
+provenance:
+  spec_url: https://api.slack.com/methods
+  spec_license: MIT
+  redistributable: true
+  generated_at: "2026-11-17T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # Slack is SaaS-only: no operator-supplied host. The path carries no prefix;
+  # every method is addressed as /<method>.
+  default: https://slack.com/api
+
+# Slack reports failure INSIDE a 200 (`{"ok": false, "error": "channel_not_found"}`),
+# so the status alone never decides whether a call worked. Declared once for the
+# whole package: every method answers this shape.
+outcome:
+  success_when: body.ok == true
+  error_code_field: error
+
+auth:
+  - id: bot
+    kind: bearer
+    display_name: Bot token
+    description: >-
+      A bot token (xoxb-…) from your Slack app. The scopes the subscription
+      needs are the ones its bot uses — chat:write for a reply,
+      channels:read for the channel picker.
+  - id: user
+    kind: bearer
+    display_name: User token
+    description: A user token (xoxp-…), for calls that must act as a person.
+
+maturity: experimental
+category: chat
+brand_color: "#4A154B"
+icon: icon.svg
+
+default_security:
+  - terms:
+      - scheme: bot
+  - terms:
+      - scheme: user
