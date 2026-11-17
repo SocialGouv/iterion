@@ -13,19 +13,20 @@ view in [architecture.md](../../architecture.md).
 | [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope and sandboxes. |
 | [events-leases-and-schedules.md](events-leases-and-schedules.md) | Triggers, elections and queues. |
 | [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills and bot sources. |
-| [dsl-backend-execution.md](dsl-backend-execution.md) | The DSL pipeline, backends, runtime, store, server, forge. |
+| [dsl-backend-execution.md](dsl-backend-execution.md) | DSL pipeline, backends, runtime, store, server, forge. |
 | [dsl-and-runtime.md](dsl-and-runtime.md) | Compiled graph, target capabilities, workflow execution. |
 | [dsl-quick-reference.md](dsl-quick-reference.md) | Cross-cutting field syntax. |
-| [dsl-errors-resume.md](dsl-errors-resume.md) | Failures, correction budgets, resume, checkpoints and admission refusals. |
-| [worktree-finalization.md](worktree-finalization.md) | A run's workspace finalization misbehaves; touching `finalizeWorktree`. |
+| [dsl-errors-resume.md](dsl-errors-resume.md) | Failures, correction budgets, resume, checkpoints, refusals. |
+| [worktree-finalization.md](worktree-finalization.md) | Workspace finalization misbehaves. |
 | [automation-surfaces.md](automation-surfaces.md) | Run launch entry points. |
 | [bot-catalog-regeneration.md](bot-catalog-regeneration.md) | Bot catalogue copies and refresh failures. |
-| [run-provenance.md](run-provenance.md) | Attempt snapshots, workflow history, cloud source fallback, metrics and launch audit. |
+| [run-provenance.md](run-provenance.md) | Attempts, history, cloud fallback, metrics, audit. |
 | [run-value-formats.md](run-value-formats.md) | Exact formats and bound writers. |
 | [run-invocation-preparation.md](run-invocation-preparation.md) | Prepared bindings and terminal writes. |
 | [run-birth.md](run-birth.md) | Birth identity, Mongo notes/streams and publication. |
 | [retained-payloads.md](retained-payloads.md) | FS/Mongo grants and cleanup limits. |
 | [run-streams.md](run-streams.md) | Mongo/FS selection, replay, lifetime. |
+| [run-alert-origin.md](run-alert-origin.md) | Registered alerts, legacy carrier. |
 | [run-ws-origin.md](run-ws-origin.md) | Expected birth, origin refusals. |
 | [run-cursors.md](run-cursors.md) | Event cursor boundaries and legacy compatibility. |
 | [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker, Service feeds and snapshot scans. |

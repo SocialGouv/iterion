@@ -98,7 +98,9 @@ of band (never deduped, never moving the cursor) and every other publication
 is only a wake — drain now (a wake during a drain costs one more); a
 `CloseRun` checks the status now and is the producer's end-of-events barrier.
 No other broker payload is delivered. Runs another process produces keep the
-ID-keyed events tailer: it feeds alert detection. A terminal status ends the
+ID-keyed events tailer: it feeds alert detection and registers the run's
+alert origin ([run-alert-origin.md](run-alert-origin.md)). A terminal status
+ends the
 events once a terminal event was read (`run_finished`, `run_failed`,
 `run_cancelled`, `run_interrupted`; `run_resumed` or `run_rewound` reopens),
 even one the cursor had passed; a Terminal hint runs that end check at once,

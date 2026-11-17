@@ -172,9 +172,9 @@ implementations.
 
 Every reservation's parent context binds the run the upgrade loaded, so the
 store reads of each subscribe and resubscribe of a socket admit only that
-run, and on the native filesystem store so do its live events; alerts and
-log buffers delivered after admission stay keyed by run ID
-([run-ws-origin.md](run-ws-origin.md)). A redial carries
+run, and on the native filesystem store its live events and a registered
+run's alert lane; log buffers and unregistered runs' alerts stay keyed by
+ID ([run-alert-origin.md](run-alert-origin.md)). A redial carries
 the expected birth, compared before upgrade.
 
 ## Event cursor boundaries
