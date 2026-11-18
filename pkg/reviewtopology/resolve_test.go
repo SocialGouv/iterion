@@ -142,3 +142,43 @@ func TestInjectReviewModeSpeaksTheWorkflowsOwnEnum(t *testing.T) {
 		})
 	}
 }
+
+// A bundle written before ADR-169 still routes on `mono_family` and defaults
+// it to "claude": on a GPT-only host the old resolver picked gpt for it, and
+// without that pick the bundle takes its claude nodes and dies. The legacy
+// declaration (with its enum) is resolved from the credentials; the new
+// bots' retired declaration (no enum) and an explicit value are left alone.
+func TestInjectAllResolvesALegacyBundlesMonoFamily(t *testing.T) {
+	legacy := func() *ir.Workflow {
+		return &ir.Workflow{Vars: map[string]*ir.Var{
+			VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: []string{"auto", "mono", "dual"}},
+			"mono_family": {Name: "mono_family", Type: ir.VarString, EnumValues: []string{"claude", "gpt"}},
+		}}
+	}
+	retired := &ir.Workflow{Vars: map[string]*ir.Var{
+		VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: []string{"auto", "single", "paired"}},
+		"mono_family": {Name: "mono_family", Type: ir.VarString},
+	}}
+	gptOnly := InventoryFromCredentialNames([]string{"openai"}, nil)
+	both := InventoryFromCredentialNames([]string{"anthropic", "openai"}, nil)
+	for _, tc := range []struct {
+		name   string
+		wf     *ir.Workflow
+		inv    FamilyInventory
+		inputs map[string]any
+		want   any
+	}{
+		{"a legacy bundle on a gpt-only host", legacy(), gptOnly, map[string]any{}, "gpt"},
+		{"a legacy bundle where claude is backed", legacy(), both, map[string]any{}, "claude"},
+		{"a legacy bundle's explicit pin is kept", legacy(), gptOnly, map[string]any{"mono_family": "claude"}, "claude"},
+		{"a legacy bundle on a paired run is left alone", legacy(), gptOnly, map[string]any{VarReviewMode: "dual"}, nil},
+		{"a new bundle's retired var is left alone", retired, gptOnly, map[string]any{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			InjectAll(tc.wf, tc.inputs, tc.inv, "")
+			if got := tc.inputs["mono_family"]; got != tc.want {
+				t.Fatalf("mono_family = %v, want %v (inputs %v)", got, tc.want, tc.inputs)
+			}
+		})
+	}
+}

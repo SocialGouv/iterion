@@ -58,6 +58,11 @@ between the read and the PATCH and is replaced: closing it needs a version the
 server checks, and the repo-bots PATCH takes none (RepoIntegration.Version is
 not exposed, the request has no expected-version field).
 
+An integration with no `mono_family` launch var is AMBIGUOUS (the old engine
+resolved the family from credentials at launch): where the two readings
+migrate its block differently, migrate-ids prints an AMBIGUOUS line, writes
+nothing and exits non-zero unless `--assume-family claude|gpt` answers it.
+
 migrate-ids exists because a cell whose selector names no node decides
 nothing: the launch falls back on the bot's own literals, so the routing AND
 the effort the cell carried go inert without a word. It renames, per bot and
@@ -456,7 +461,20 @@ def carries_retired(routing, launch_vars=None):
 def migrate_one(args, integ):
     """Rename one integration's cells; answer True when it carries the roles."""
     stored = stored_routing(integ["team_id"], integ["id"])
-    lv = integ.get("launch_vars") or {}
+    lv = dict(integ.get("launch_vars") or {})
+    # An unset `mono_family` is NOT evidence of claude: the engine before
+    # ADR-169 resolved it at launch from the credentials, so a GPT-only
+    # tenant ran its gpt nodes with no launch var saying so. Where the two
+    # readings migrate the block differently, the run refuses to guess:
+    # --assume-family is the operator's answer.
+    _, paired = ran_topology(lv)
+    if not paired and not str(lv.get("mono_family", "")).strip():
+        if args.assume_family:
+            lv["mono_family"] = args.assume_family
+        elif migrated_block(stored, dict(lv, mono_family="claude"))[0] != migrated_block(stored, dict(lv, mono_family="gpt"))[0]:
+            print("AMBIGUOUS %s (%s): no mono_family launch var, so the family it ran was resolved from credentials at launch — pass --assume-family claude|gpt"
+                  % (integ["repo"], integ["id"]))
+            return False
     wanted, changes, dropped = migrated_block(stored, lv)
     globs = stranded_globs(stored, lv)
     for sel, old, new in globs:
@@ -706,6 +724,8 @@ def main(argv):
     p.add_argument("--only", action="append")
     p = sub.add_parser("migrate-ids")
     p.add_argument("--dir", required=True)
+    p.add_argument("--assume-family", choices=("claude", "gpt"),
+                   help="the family an integration with no mono_family launch var ran")
     p.add_argument("--only", action="append")
     p.add_argument("--all", action="store_true")
     p.add_argument("--yes", action="store_true")

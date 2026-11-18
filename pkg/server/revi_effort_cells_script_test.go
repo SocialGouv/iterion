@@ -758,7 +758,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, retired)
 
 		b := filepath.Join(dir, "migrate")
-		out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run")
+		out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run", "--assume-family", "claude")
 		if code != 0 || sent != 0 {
 			t.Fatalf("a dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
@@ -777,7 +777,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatal("the dry run wrote")
 		}
 
-		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
 		if code != 0 || sent != 1 || !strings.Contains(out, "migrated group/api ("+i1+")") {
 			t.Fatalf("migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
@@ -811,8 +811,31 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Errorf("the backup does not hold the pre-migration block:\n%s", raw)
 		}
 		// A second run has nothing left to do.
-		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 || sent != 0 || !strings.Contains(out, "no retired selector") {
+		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 || sent != 0 || !strings.Contains(out, "no retired selector") {
 			t.Fatalf("a second migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+
+	// No `mono_family` launch var is no evidence of claude: the old engine
+	// resolved the family from credentials. Where the two readings migrate
+	// the block differently, the run refuses to guess — no PATCH, a non-zero
+	// exit — until --assume-family answers it.
+	t.Run("migrate-ids refuses to guess the family of an integration that pinned none", func(t *testing.T) {
+		reset()
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+		}})
+		b := filepath.Join(dir, "ambiguous-family")
+		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		if code == 0 || sent != 0 || !strings.Contains(out, "AMBIGUOUS") || !strings.Contains(out, "--assume-family") {
+			t.Fatalf("migrate-ids on an integration with no mono_family exited %d after %d PATCH(es), want AMBIGUOUS and nothing written:\n%s", code, sent, out)
+		}
+		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "gpt"); code != 0 {
+			t.Fatalf("migrate-ids --assume-family gpt exited %d:\n%s", code, out)
+		}
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" {
+			t.Errorf("assumed gpt, the reviewer_gpt cell should land on reviewer: %v", e)
 		}
 	})
 
@@ -831,7 +854,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		if code == 0 || sent != 0 || !strings.Contains(out, "GLOB") || !strings.Contains(out, "review-pr/reviewer_*") {
 			t.Fatalf("a dry run over a stranded glob exited %d after %d PATCH(es), want a GLOB line and a non-zero exit:\n%s", code, sent, out)
 		}
-		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
 		if code == 0 || sent != 0 || !strings.Contains(out, "rewrite it by hand") {
 			t.Fatalf("a run over a stranded glob exited %d after %d PATCH(es), want it reported and nothing written:\n%s", code, sent, out)
 		}
@@ -873,7 +896,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 				}
 				in.write("t1", i1, block)
 				b := filepath.Join(dir, "order-"+strings.ReplaceAll(tc.name, " ", "_")+"-"+strings.ReplaceAll(order[0], "/", "_"))
-				if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+				if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 					t.Fatalf("%s, order %v: migrate-ids exited %d:\n%s", tc.name, order, code, out)
 				}
 				got := blockSelectors(in.integ(i1).Routing)
@@ -905,7 +928,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "medium"},
 		}})
 		b := filepath.Join(dir, "mono-gpt")
-		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
 		}
 		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "xhigh" || e["review-pr/reviewer_alternate"] != "medium" {
@@ -925,7 +948,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
 			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
 		}})
-		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
 		}
 		raw, err := os.ReadFile(filepath.Join(b, i1+".pre-migrate-ids.json"))
@@ -936,7 +959,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
 			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
 		}})
-		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code == 0 || sent != 0 || !strings.Contains(out, "DIFFERENT pre-migration backup") {
+		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code == 0 || sent != 0 || !strings.Contains(out, "DIFFERENT pre-migration backup") {
 			t.Fatalf("migrate-ids over a different pre-migration backup exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})

@@ -618,8 +618,12 @@ nothing rewrites them — the bot's guards read `paired` and see `dual`, so
 such a run resumes as a `single` review. Resuming it under the new vocabulary
 means launching a fresh run.
 
-The mapping is per bot **and per the topology the integration ran**, read
-from its own `launch_vars`: the node it ran as its reviewer becomes
+An integration with **no** `mono_family` launch var is ambiguous — the old
+engine resolved its family from the credentials at launch — so where the two
+readings migrate its block differently the command prints `AMBIGUOUS`,
+writes nothing, and waits for `--assume-family claude|gpt`. Otherwise the
+mapping is per bot **and per the topology the integration ran**, read from
+its own `launch_vars`: the node it ran as its reviewer becomes
 `reviewer`, the other becomes `reviewer_alternate`. The old default was
 mono-claude (`mono_family` unset), so on most integrations `reviewer_claude`
 → `reviewer`, `reviewer_claude_glance` → `reviewer_glance` and `reviewer_gpt`
@@ -635,7 +639,10 @@ command prints a `GLOB` line and exits non-zero until the operator rewrites
 it. The block it overwrites is saved as `<id>.pre-migrate-ids.json`, never
 over the effort procedure's backup. And the engine stays compatible the
 other way: an integration still pinned to review-pr ≤ 0.9.25 is handed
-`mono`/`dual` — the spelling its own enum accepts.
+`mono`/`dual` — the spelling its own enum accepts — and, on a single run
+with no pin, the `mono_family` the old resolver would have picked from the
+credentials (claude when backed, else gpt), so a GPT-only tenant's old
+bundle does not fall onto nodes nothing serves.
 
 ## Layout — a bot in several files
 

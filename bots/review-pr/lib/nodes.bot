@@ -1463,6 +1463,10 @@ compute tier_expand:
 
 ## Converges the reviewer branch(es) and fills in whichever role did not
 ## run, so the merging agent sees a stated absence instead of a raw template.
+## A role RAN when its node produced an output — never when the model said
+## which vendor it is: a role re-targeted to another family by a routing
+## cell answers its own `family`, and keying `ran` on the declared word
+## would tell the merge that no reviewer ran, i.e. approve by omission.
 ## The gpt family reads BOTH its full-strength and glance node: topology's
 ## condition router only ever schedules one of the two per run, so the
 ## `if()` fallback chain below picks up whichever one actually executed.
@@ -1478,13 +1482,13 @@ compute merge_reviews:
   await: best_effort
   expr:
     review_scope: "join(unique(concat(outputs.reviewer_alternate.scanned_areas, outputs.reviewer.scanned_areas, outputs.reviewer_glance.scanned_areas)), ' ; ')"
-    claude_ran: "outputs.reviewer_alternate.family == 'claude'"
+    claude_ran: "if(outputs.reviewer_alternate.family, true, false)"
     claude_summary: "if(outputs.reviewer_alternate.summary, outputs.reviewer_alternate.summary, '(this family did not run)')"
     claude_findings: "if(outputs.reviewer_alternate.findings, outputs.reviewer_alternate.findings, '[]')"
     claude_areas: "if(outputs.reviewer_alternate.scanned_areas, outputs.reviewer_alternate.scanned_areas, '')"
     claude_questions: "if(outputs.reviewer_alternate.questions, outputs.reviewer_alternate.questions, '')"
     claude_ticket_conformance: "if(outputs.reviewer_alternate.ticket_conformance, outputs.reviewer_alternate.ticket_conformance, '')"
-    gpt_ran: "outputs.reviewer.family == 'gpt' || outputs.reviewer_glance.family == 'gpt'"
+    gpt_ran: "if(outputs.reviewer.family, true, if(outputs.reviewer_glance.family, true, false))"
     gpt_summary: "if(outputs.reviewer.summary, outputs.reviewer.summary, if(outputs.reviewer_glance.summary, outputs.reviewer_glance.summary, '(this family did not run)'))"
     gpt_findings: "if(outputs.reviewer.findings, outputs.reviewer.findings, if(outputs.reviewer_glance.findings, outputs.reviewer_glance.findings, '[]'))"
     gpt_areas: "if(outputs.reviewer.scanned_areas, outputs.reviewer.scanned_areas, if(outputs.reviewer_glance.scanned_areas, outputs.reviewer_glance.scanned_areas, ''))"

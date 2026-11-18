@@ -326,7 +326,39 @@ func InjectDerivedIfDeclared(wf *ir.Workflow, inputs map[string]any, inv FamilyI
 	var inj Injection
 	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, inv)
 	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, inv)
+	injectLegacyMonoFamily(wf, inputs, inv)
 	return inj
+}
+
+// injectLegacyMonoFamily keeps a bundle written BEFORE ADR-169 working: one
+// that still declares `mono_family [enum: "claude","gpt"]` routes on it, and
+// its own default is "claude" — so on a GPT-only host, where the old
+// resolver picked gpt from the credentials, the bundle would now take its
+// claude nodes and die at the first one. For such a bundle only, an unset
+// `mono_family` on a single run is resolved the way the old resolver did:
+// claude when a credential backs it, else gpt. A bot of the new vocabulary
+// declares `mono_family` WITHOUT an enum (retired, read by nothing) and is
+// left alone; an explicit value is never replaced.
+func injectLegacyMonoFamily(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory) {
+	if inputs == nil || wf == nil {
+		return
+	}
+	v := wf.Vars["mono_family"]
+	if v == nil || !slices.Contains(v.EnumValues, FamilyClaude) || !slices.Contains(v.EnumValues, FamilyGPT) {
+		return
+	}
+	if inputOverride(inputs, "mono_family") != "" {
+		return
+	}
+	if mode, _ := inputs[VarReviewMode].(string); Resolve(mode) != ModeSingle {
+		return
+	}
+	switch fams := inv.Families(); {
+	case fams[FamilyClaude]:
+		inputs["mono_family"] = FamilyClaude
+	case fams[FamilyGPT]:
+		inputs["mono_family"] = FamilyGPT
+	}
 }
 
 // Summary renders the applied injections for a launch log line, or "" when
