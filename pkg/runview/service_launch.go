@@ -2062,6 +2062,9 @@ func (s *Service) spawnRun(
 			// successor now stored at this ID. Preserve the outcome channel,
 			// but emit no completion or trigger for work that never started.
 			s.manager.MarkLeaving(runID)
+			// The producer never started: its epoch is LOST, not a run that
+			// finished (the sibling Abandon classifies the same way).
+			runLog.setLogEnd(logEndLost)
 			if ex.onOutcome != nil {
 				ex.onOutcome(spawnErr)
 			}

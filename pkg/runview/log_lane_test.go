@@ -162,8 +162,10 @@ func TestLogBufferReplacementReleasesItsBail(t *testing.T) {
 	}
 	second, _ := svc.prepareRunLog(ctx, "r")
 
-	if bails, closed, end := epochState(svc.logRegistry, firstTopic); bails != 0 || !closed || end != logEndTerminal {
-		t.Fatalf("replaced epoch: bails %d closed %v end %v, want the released terminal end", bails, closed, end)
+	// A buffer still installed is a producer that never classified its end: the
+	// replacement must publish LOST, not the run as finished (A-F3).
+	if bails, closed, end := epochState(svc.logRegistry, firstTopic); bails != 0 || !closed || end != logEndLost {
+		t.Fatalf("replaced epoch: bails %d closed %v end %v, want the released LOST end", bails, closed, end)
 	}
 	if got := svc.GetLogBuffer("r"); got != second {
 		t.Fatal("the replacement buffer does not serve the run")
@@ -456,8 +458,9 @@ func TestRecordedFailureSurvivesTheProducerBail(t *testing.T) {
 	late.Cancel()
 }
 
-// T-FAIL(d): arbitrage is first-end-wins. A failure recorded after the epoch's
-// end is ignored, and a failure recorded first is not replaced by a later end.
+// T-FAIL(d): arbitrage is first-end-wins. A tee failure recorded after the
+// epoch's end is ignored (the producer already registered), and a failure
+// recorded first is not replaced by a later end.
 func TestALateFailureNeverReplacesAnAppliedEnd(t *testing.T) {
 	svc, native := newLogLaneService(t)
 	ctx := t.Context()
@@ -470,7 +473,7 @@ func TestALateFailureNeverReplacesAnAppliedEnd(t *testing.T) {
 		t.Fatal("no epoch was registered")
 	}
 	svc.dropRunLog("ended", buf)
-	svc.recordLogProducerFailure("ended", fmt.Errorf("runview: run ended log tee: %w", store.ErrRunDataCapability))
+	svc.recordLogTeeFailure("ended", fmt.Errorf("runview: run ended log tee: %w", store.ErrRunDataCapability))
 
 	if got := svc.localLogProducerFailure("ended"); got != nil {
 		t.Fatalf("a late failure replaced an applied end: %v", got)
@@ -492,7 +495,7 @@ func TestALateFailureNeverReplacesAnAppliedEnd(t *testing.T) {
 		t.Fatal("no epoch was registered")
 	}
 	typed := fmt.Errorf("runview: run failed log tee: %w", store.ErrRunDataCapability)
-	svc.recordLogProducerFailure("failed", typed)
+	svc.recordLogTeeFailure("failed", typed)
 	svc.dropRunLog("failed", buf2)
 
 	if got := svc.localLogProducerFailure("failed"); !errors.Is(got, typed) {

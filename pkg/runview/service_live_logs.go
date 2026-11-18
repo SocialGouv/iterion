@@ -146,12 +146,15 @@ func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from
 		settle:       logTerminalSettle, settleEvery: logTerminalSettleEvery, stallWarn: logProducerStallWarn,
 	}
 
-	lane, _, err := s.observedLogLane(c, runID, true)
+	lane, obs, err := s.observedLogLane(c, runID, true)
 	if err != nil {
 		cancelWatch()
 		close(entry.done)
 		l.forgetLog(id)
 		return err
+	}
+	if obs.Header().RunID != "" {
+		m.obs, m.obsKnown = obs, true
 	}
 	if lane != nil {
 		m.adoptLane(lane)
@@ -210,6 +213,13 @@ type liveLogMerge struct {
 	// endedEpoch is the epoch whose end was already applied: the first fin of
 	// a generation is sticky (E1 then E2, or E2 then E1, apply once).
 	endedEpoch uint64
+	// endAt is when that end was applied: the inner still has to close for the
+	// stream to be over, and one that never closes is unblocked past the grace.
+	endAt time.Time
+	// obs is the observation the merge adopted; a producer failure recorded for
+	// another birth is not this stream's end.
+	obs      store.RunObservation
+	obsKnown bool
 
 	watch       <-chan struct{}
 	cancelWatch func()
@@ -308,12 +318,27 @@ func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) (stop bool)
 	return false
 }
 
-// recordEnd notes the source of the stream's end, first application only.
+// recordEnd notes the source of the stream's end, first application only, and
+// the moment it was applied: the inner still owes its final drain, and one that
+// never closes is unblocked past the grace.
 func (m *liveLogMerge) recordEnd(by string) {
 	if m.entry.endBy == "" {
 		m.entry.endBy = by
 	}
+	m.endAt = time.Now()
 	m.applies++
+}
+
+// stillTerminal reads the run's stored status without arming anything: E3 ends
+// a stream only while the run stays terminal.
+func (m *liveLogMerge) stillTerminal() bool {
+	run, err := m.l.svc.store.LoadRun(m.ctx, m.runID)
+	if err != nil {
+		// A read failure is not a reason to end a stream; the status poll
+		// reports it, and the client's context bounds the wait.
+		return false
+	}
+	return run.Status.IsTerminal()
 }
 
 // startSettle arms the E3 window: a terminal status with no lane drains for
@@ -373,6 +398,10 @@ func (m *liveLogMerge) run() {
 				return
 			}
 			if len(chunk.Data) > 0 && !m.out.Ship(m.ctx, chunk) {
+				// A Ship refused because the Service is stopping is that stop's
+				// typed end, never a clean completion the client cannot tell
+				// from a finished run.
+				m.out.Fail(closedCause(m.ctx))
 				return
 			}
 		case err, ok := <-errs:
@@ -414,6 +443,11 @@ func (m *liveLogMerge) run() {
 				return
 			}
 		case <-ticker.C:
+			if !m.endAt.IsZero() && time.Since(m.endAt) >= m.stallWarn {
+				// The end is applied but the inner never closed: unblock its
+				// drain rather than spin on a stream nobody can finish.
+				_ = m.inner.Close()
+			}
 			if m.statusPoll() {
 				return
 			}
@@ -423,6 +457,16 @@ func (m *liveLogMerge) run() {
 				continue
 			}
 			m.stopSettle()
+			// E3 is a promise about a run nobody produces here, not a verdict
+			// frozen when the window opened: a run resumed inside it keeps its
+			// stream, and a lane adopted inside it beats the settle.
+			if !m.stillTerminal() {
+				continue
+			}
+			if sub, _, err := m.l.svc.observedLogLane(m.ctx, m.runID, false); err == nil && sub != nil {
+				m.adoptLane(sub)
+				continue
+			}
 			if m.applyEnd(0, logEndTerminal, logEndBySettle) {
 				return
 			}
@@ -436,10 +480,16 @@ func (m *liveLogMerge) run() {
 // It reports whether the merge must stop now.
 func (m *liveLogMerge) rearm() bool {
 	if m.ctx.Err() != nil {
+		m.failStopped()
 		return true
 	}
-	if err := m.l.svc.localLogProducerFailure(m.runID); err != nil {
+	if fobs, err, ok := m.l.svc.logProducerFailureFor(m.runID); ok {
 		m.recordEnd(logEndByLane)
+		if m.obsKnown && fobs.Header().RunID != "" && fobs.Header() != m.obs.Header() {
+			// Another birth's producer failed: that is not this stream's end.
+			m.out.Fail(fmt.Errorf("runview: log producer of %s replaced under the stream: %w", m.runID, store.ErrRunDataIdentityChanged))
+			return true
+		}
 		m.out.Fail(err)
 		return true
 	}
@@ -482,6 +532,11 @@ func (m *liveLogMerge) rearm() bool {
 func (m *liveLogMerge) statusPoll() bool {
 	if hook := m.l.beforeLogStatusPoll; hook != nil {
 		hook()
+	}
+	if !m.endAt.IsZero() {
+		// The stream's end is applied: the inner owes its final drain, and the
+		// poll must not re-arm a settle that would apply it a second time.
+		return false
 	}
 	if m.lane != nil {
 		if !m.stallWarned && !m.laneSince.IsZero() && time.Since(m.laneSince) >= m.stallWarn {

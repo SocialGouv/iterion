@@ -96,7 +96,9 @@ func (s *Service) registerRunLogOrigin(ctx context.Context, runID string, buf *R
 	// missing capability and the OS cause, so the stream fails as a permanent
 	// error instead of a silent truncation.
 	buf.attachLogLane(lane, func(teeErr error) {
-		s.recordLogProducerFailure(runID, fmt.Errorf("runview: run %s log tee: %w", runID, errors.Join(store.ErrRunDataCapability, teeErr)))
+		// The producer already registered: a tee failure after its epoch ended
+		// is late and ignored, never a second end for the same generation.
+		s.recordLogTeeFailure(runID, fmt.Errorf("runview: run %s log tee: %w", runID, errors.Join(store.ErrRunDataCapability, teeErr)))
 	})
 	return lane
 }
@@ -124,6 +126,14 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 		if obs, _, ok := s.logRegistry.currentFor(runID); ok {
 			if binding.Header() != obs.Header() {
 				return nil, obs, fmt.Errorf("runview: log lane of %s does not belong to the bound birth: %w", runID, store.ErrRunDataIdentityChanged)
+			}
+			// A retained end belongs to the epoch before the one starting now:
+			// when a later failure took that epoch over, adopting its value
+			// would announce a clean end for a run whose producer failed.
+			if s.logRegistry.supersededByFailure(runID) {
+				if _, ferr, ok := s.logRegistry.failureFor(runID); ok {
+					return nil, obs, fmt.Errorf("runview: log lane of %s: the current producer failed: %w", runID, ferr)
+				}
 			}
 			if sub, ok := s.logRegistry.subscribe(obs); ok {
 				if err := s.admitLogLane(sub, binding); err != nil {
@@ -184,6 +194,28 @@ func (s *Service) recordLogProducerFailure(runID string, err error) {
 		s.logger.Warn("runview: run %s log producer stopped: %v", runID, err)
 	}
 	s.logRegistry.recordFailure(runID, err)
+}
+
+// logProducerFailureFor is localLogProducerFailure with the observation the
+// cause belongs to: a reader bound to another birth refuses a known mismatch,
+// because a successor's failed producer is not this stream's end.
+func (s *Service) logProducerFailureFor(runID string) (store.RunObservation, error, bool) {
+	if s == nil || s.logRegistry == nil {
+		return store.RunObservation{}, nil, false
+	}
+	return s.logRegistry.failureFor(runID)
+}
+
+// recordLogTeeFailure is recordLogProducerFailure for a producer that already
+// registered: its failure ends the open epoch, and a late one is dropped.
+func (s *Service) recordLogTeeFailure(runID string, err error) {
+	if s == nil || s.logRegistry == nil || err == nil {
+		return
+	}
+	if s.logger != nil {
+		s.logger.Warn("runview: run %s log tee stopped: %v", runID, err)
+	}
+	s.logRegistry.recordFailureOfOpenEpoch(runID, err)
 }
 
 // localLogProducerFailure returns the retained failure of runID's local log

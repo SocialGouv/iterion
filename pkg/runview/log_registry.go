@@ -120,9 +120,12 @@ type logWaiter struct {
 
 // logFailure is a producer's capture failure and the generation that recorded
 // it: a late failure never replaces an end already settled on that generation.
+// obs is the observation the failure belongs to when it settled an epoch, so a
+// reader bound to another birth refuses it.
 type logFailure struct {
 	err   error
 	epoch uint64
+	obs   store.RunObservation
 }
 
 func newLogRegistry() *logRegistry {
@@ -283,20 +286,17 @@ func (r *logRegistry) notifyLocked(runID string) {
 
 // recordFailure retains a local producer's capture failure. Against a live
 // topic it is the epoch's end (logEndLost with its cause), published at once
-// and kept by the topic after its bail; with no topic yet it is held by the
-// registry until a topic carries it or the observer reads it. A failure
-// recorded after the epoch's end was settled is ignored: the first end of a
-// generation wins.
+// and kept by the topic after its bail. Any other state - no topic yet, or a
+// topic CLOSED and retained from a PREVIOUS generation - holds the failure in
+// the registry: a retained end belongs to the epoch before it, so it must not
+// swallow the failure of the producer starting now.
 func (r *logRegistry) recordFailure(runID string, err error) {
 	if err == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if tp := r.current[runID]; tp != nil {
-		if tp.end != logEndNone {
-			return
-		}
+	if tp := r.current[runID]; tp != nil && tp.end == logEndNone {
 		r.publishEndLocked(tp, logEndLost, err)
 		delete(r.failures, runID)
 	} else {
@@ -306,23 +306,58 @@ func (r *logRegistry) recordFailure(runID string, err error) {
 	r.notifyLocked(runID)
 }
 
-// failure returns the retained producer failure of runID, preferring the
-// current topic's: a topic whose epoch is settled carries its own cause.
-func (r *logRegistry) failure(runID string) (error, bool) {
+// recordFailureOfOpenEpoch is the verdict of a producer that already
+// registered: with its epoch open the failure ends it, and with the epoch
+// already ended the failure is LATE and ignored - the first end of a
+// generation wins. It never opens a generation of its own.
+func (r *logRegistry) recordFailureOfOpenEpoch(runID string, err error) {
+	if err == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if tp := r.current[runID]; tp != nil {
-		// The current epoch owns the generation: its own cause, or none. A
-		// failure recorded before any epoch existed is superseded by it.
-		if tp.fail != nil {
-			return tp.fail, true
-		}
-		return nil, false
+	tp := r.current[runID]
+	if tp == nil || tp.end != logEndNone {
+		return
 	}
-	if f := r.failures[runID]; f != nil {
-		return f.err, true
+	r.publishEndLocked(tp, logEndLost, err)
+	delete(r.failures, runID)
+	r.notifyLocked(runID)
+}
+
+// failure returns the retained producer failure of runID. The newer generation
+// wins: a failure recorded after the current epoch (which is then a retained
+// closed one, or absent) is the live producer's verdict, not the retained
+// epoch's.
+func (r *logRegistry) failure(runID string) (error, bool) {
+	_, err, ok := r.failureFor(runID)
+	return err, ok
+}
+
+// failureFor is failure with the observation the cause belongs to: the topic's
+// when the cause settled an epoch, unknown when it was recorded with no epoch
+// of its own. A reader bound to another birth refuses a known mismatch.
+func (r *logRegistry) failureFor(runID string) (store.RunObservation, error, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tp, f := r.current[runID], r.failures[runID]
+	if f != nil && (tp == nil || f.epoch > tp.epoch) {
+		return f.obs, f.err, true
 	}
-	return nil, false
+	if tp != nil && tp.fail != nil {
+		return tp.obs, tp.fail, true
+	}
+	return store.RunObservation{}, nil, false
+}
+
+// supersededByFailure reports whether the current epoch of runID is a retained
+// closed one that a later failure has taken over: its end is stale, and a
+// reader must see the failure instead.
+func (r *logRegistry) supersededByFailure(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tp, f := r.current[runID], r.failures[runID]
+	return tp != nil && tp.end != logEndNone && f != nil && f.epoch > tp.epoch
 }
 
 // failureEpoch returns the generation a retained failure is attached to: the
@@ -332,14 +367,12 @@ func (r *logRegistry) failure(runID string) (error, bool) {
 func (r *logRegistry) failureEpoch(runID string) (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if tp := r.current[runID]; tp != nil {
-		if tp.fail == nil {
-			return 0, false
-		}
-		return tp.epoch, true
-	}
-	if f := r.failures[runID]; f != nil {
+	tp, f := r.current[runID], r.failures[runID]
+	if f != nil && (tp == nil || f.epoch > tp.epoch) {
 		return f.epoch, true
+	}
+	if tp != nil && tp.fail != nil {
+		return tp.epoch, true
 	}
 	return 0, false
 }

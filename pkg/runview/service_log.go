@@ -239,6 +239,10 @@ func (s *Service) prepareRunLog(ctx context.Context, runID string) (*RunLogBuffe
 	old := s.runLogs[runID]
 	s.runLogsMu.Unlock()
 	if old != nil && old != buf {
+		// A buffer still installed means its producer did not finish on its
+		// own: nothing classified its end, so it is lost, never the default
+		// terminal (setLogEnd is first-wins and keeps a real classification).
+		old.setLogEnd(logEndLost)
 		old.releaseLogLane()
 	}
 
@@ -311,8 +315,10 @@ func (s *Service) prepareRunLogNoFile(ctx context.Context, runID string) *RunLog
 	s.runLogs[runID] = buf
 	s.runLogsMu.Unlock()
 	if old != nil && old != buf {
-		// Same teardown as the file-backed replacement, outside the lock:
-		// the predecessor's bail is returned and its subscribers see EOF.
+		// Same teardown as the file-backed replacement, outside the lock: the
+		// predecessor's bail is returned and its subscribers see EOF. Its end
+		// was never classified, so it is LOST rather than implicitly terminal.
+		old.setLogEnd(logEndLost)
 		old.releaseLogLane()
 		old.Close()
 	}
