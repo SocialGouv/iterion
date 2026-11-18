@@ -74,6 +74,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
 	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("MergeExitExpectedBirth", func(t *testing.T) { testMergeExitExpectedBirth(t, factory(t)) })
+	t.Run("MergeClaimExpectedBirth", func(t *testing.T) { testMergeClaimExpectedBirth(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
@@ -3403,7 +3405,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	notStale := time.Now().Add(-15 * time.Minute)
 
 	// Entry: an unset merge_status is claimable, prior comes back "".
-	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed || prior != "" {
 		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
 	}
@@ -3411,7 +3413,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatal("claim must return its token")
 	}
 	// A held (fresh) claim refuses the second claimant.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
 	}
@@ -3447,7 +3449,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatalf("merged record damaged: %+v", got)
 	}
 	// And "merged" is terminal for the claim too.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerged {
 		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
 	}
@@ -3461,14 +3463,14 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale)
+	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{})
 	if err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
-	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{}); err != nil || claimed {
 		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
 	}
-	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second), store.ExpectedBirth{})
 	if err != nil || !claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
 	}
@@ -3496,7 +3498,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		[]store.MergeStatus{""}); err != nil || !changed {
 		t.Fatalf("seed stampless merging = (%t, %v)", changed, err)
 	}
-	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale)
+	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("stampless merging must be claimable = (%t, %v)", claimed, err)
 	}
@@ -3512,7 +3514,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: st}, []store.MergeStatus{""}); err != nil || !changed {
 			t.Fatalf("seed %s = (%t, %v)", st, changed, err)
 		}
-		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale)
+		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale, store.ExpectedBirth{})
 		if err != nil || !claimed || prior != st {
 			t.Fatalf("claim on %s = (%t, %q, %v), want (true, %s, nil)", st, claimed, prior, err, st)
 		}
@@ -3555,7 +3557,7 @@ func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC(), store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}

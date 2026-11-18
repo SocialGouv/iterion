@@ -20,9 +20,9 @@ func (s *observedMergeCancelStore) LoadRun(ctx context.Context, id string) (*sto
 	s.loads++
 	return s.RunStore.LoadRun(ctx, id)
 }
-func (s *observedMergeCancelStore) ClaimMerge(ctx context.Context, id string, before time.Time) (bool, store.MergeStatus, time.Time, error) {
+func (s *observedMergeCancelStore) ClaimMerge(ctx context.Context, id string, before time.Time, expect store.ExpectedBirth) (bool, store.MergeStatus, time.Time, error) {
 	s.claims++
-	ok, prior, token, err := s.RunStore.ClaimMerge(ctx, id, before)
+	ok, prior, token, err := s.RunStore.ClaimMerge(ctx, id, before, expect)
 	if ok && err == nil {
 		s.acquired++
 		if s.cancel != nil {

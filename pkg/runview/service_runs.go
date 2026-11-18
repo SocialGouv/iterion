@@ -452,11 +452,11 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 }
 
 // SnapshotWithoutReconcileCtx is SnapshotCtx without the out-of-band merge
-// reconciliation, for a request that names the birth it expects: Mongo's
-// conditional merge write carries no birth predicate, so a successor
-// recreated after the reconciliation's load could receive the original's
-// outcome. Such a request only reads; every other snapshot — a run socket's
-// included — reconciles.
+// reconciliation, for a request that names the birth it expects: such a
+// request is an observation and does not write. The reconciliation's merge
+// write expects the birth it loaded, so a successor recreated after that
+// load is refused rather than written; every other snapshot — a run
+// socket's included — reconciles.
 func (s *Service) SnapshotWithoutReconcileCtx(ctx context.Context, runID string) (*RunSnapshot, error) {
 	return BuildSnapshot(ctx, s.store, runID)
 }

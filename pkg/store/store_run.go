@@ -503,13 +503,17 @@ func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
 
 // ClaimMerge is the compare-and-set entry to the merge state machine
 // (see store.RunStore). Guarded by the store mutex, so concurrent
-// claimants in one process serialize here.
-func (s *FilesystemRunStore) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, MergeStatus, time.Time, error) {
+// claimants in one process serialize here; the expected birth is compared
+// under the same lock.
+func (s *FilesystemRunStore) ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect ExpectedBirth) (bool, MergeStatus, time.Time, error) {
 	r, unlock, err := s.lockExistingRunMetadata(ctx, id)
 	if err != nil {
 		return false, "", time.Time{}, err
 	}
 	defer unlock()
+	if err := expect.Verify(id, r.BirthID); err != nil {
+		return false, "", time.Time{}, err
+	}
 	prior := r.MergeStatus
 	if !mergeClaimable(prior, r.MergeClaimedAt, staleBefore) {
 		return false, prior, time.Time{}, nil
@@ -536,13 +540,17 @@ func (s *FilesystemRunStore) ClaimMerge(ctx context.Context, id string, staleBef
 
 // UpdateRunMergeIf is the compare-and-set exit from the merge state
 // machine (see store.RunStore): the write only lands when the current
-// MergeStatus is in expectedFrom.
+// MergeStatus is in expectedFrom and, when upd expects a birth, the run
+// under the lock holds that birth.
 func (s *FilesystemRunStore) UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (bool, error) {
 	r, unlock, err := s.lockExistingRunMetadata(ctx, id)
 	if err != nil {
 		return false, err
 	}
 	defer unlock()
+	if err := upd.ExpectBirth.Verify(id, r.BirthID); err != nil {
+		return false, err
+	}
 	matched := false
 	for _, want := range expectedFrom {
 		if r.MergeStatus == want {

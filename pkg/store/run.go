@@ -2334,6 +2334,34 @@ type RunMergeUpdate struct {
 	// took over. Zero skips the check (exits from non-merging states,
 	// which carry no claim).
 	ExpectClaimedAt time.Time
+	// ExpectBirth anchors the exit to the run its caller loaded: a
+	// successor recreated under the same ID answers
+	// ErrRunDataIdentityChanged instead of receiving the original's
+	// outcome. Zero skips the check.
+	ExpectBirth ExpectedBirth
+}
+
+// ExpectedBirth is the birth a merge compare-and-set expects to find. When
+// Check, the CAS also requires the stored birth to equal ID — "" is the
+// historical empty birth, not "unset"; a different birth answers
+// ErrRunDataIdentityChanged. The zero value skips the check.
+type ExpectedBirth struct {
+	ID    string
+	Check bool
+}
+
+// ExpectBirthOf is the expectation of r's own birth; r must be non-nil.
+func ExpectBirthOf(r *Run) ExpectedBirth {
+	return ExpectedBirth{ID: r.BirthID, Check: true}
+}
+
+// Verify answers ErrRunDataIdentityChanged when e checks and the birth
+// stored under runID differs from the expected one.
+func (e ExpectedBirth) Verify(runID, stored string) error {
+	if !e.Check || stored == e.ID {
+		return nil
+	}
+	return fmt.Errorf("store: run %s holds birth %q, expected %q: %w", runID, stored, e.ID, ErrRunDataIdentityChanged)
 }
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).

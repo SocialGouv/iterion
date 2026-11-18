@@ -1626,8 +1626,9 @@ func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
 // (see store.RunStore), implemented as a conditional FindOneAndUpdate:
 // the flip to "merging" only lands when the persisted status is
 // claimable — unset/pending/failed, or a "merging" whose claim stamp
-// predates staleBefore (the previous claimant crashed mid-merge).
-func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+// predates staleBefore (the previous claimant crashed mid-merge) — and,
+// when expect checks, the document holds the expected birth.
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect store.ExpectedBirth) (bool, store.MergeStatus, time.Time, error) {
 	// Millisecond precision: BSON stores times in ms, and the token
 	// must compare equal after a round-trip.
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1639,7 +1640,7 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 		// it) counts as infinitely stale — it must not wedge the run.
 		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
 	}}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": mergeCAS(bson.A{claimable}, expect)}))
 	// Strictly monotonic vs the stamp being stolen (mirrors the FS
 	// twin): a steal landing in the SAME millisecond would mint an
 	// equal token and the loser's token-scoped exits would pass as the
@@ -1679,6 +1680,10 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 	}
 	if !errors.Is(err, mongo.ErrNoDocuments) {
 		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	// A successor under the same ID is never claimed: say so typed.
+	if err := s.checkMergeMissBirth(ctx, id, expect); err != nil {
+		return false, "", time.Time{}, err
 	}
 	// Not claimable (or missing): read the current status so the caller
 	// can say WHY the claim was refused.
@@ -1723,13 +1728,18 @@ func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMe
 		// stolen must not consume its successor's (see RunMergeUpdate).
 		cas = append(cas, bson.M{"merge_claimed_at": upd.ExpectClaimedAt})
 	}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": cas}))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": mergeCAS(cas, upd.ExpectBirth)}))
 	res, err := s.updateRunMetadata(ctx, id, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
 	}
 	if res.MatchedCount > 0 {
 		return true, nil
+	}
+	// A successor under the same ID never receives this outcome: say so
+	// typed rather than as a lost race.
+	if err := s.checkMergeMissBirth(ctx, id, upd.ExpectBirth); err != nil {
+		return false, err
 	}
 	// Distinguish "state drifted" (a CAS outcome the caller handles)
 	// from "run missing" (an error — a silently absorbed write would

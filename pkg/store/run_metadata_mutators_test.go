@@ -90,7 +90,7 @@ func TestRunMetadataPublicFilesystemMutatorsRefuseFuture(t *testing.T) {
 			return changed(s.UpdateRunOutcome(c, id, RunStatusFailedResumable, "failed", RunOutcomeMeta{}, nil))
 		}},
 		{"claim-merge", "", false, func(c context.Context, id string) error {
-			ok, _, _, e := s.ClaimMerge(c, id, at.Add(-time.Hour))
+			ok, _, _, e := s.ClaimMerge(c, id, at.Add(-time.Hour), ExpectedBirth{})
 			return changed(ok, e)
 		}},
 		{"merge-if", "", false, func(c context.Context, id string) error {

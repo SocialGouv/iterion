@@ -601,8 +601,8 @@ func TestRunOriginGateLiveLogBufferRefusesASuccessor(t *testing.T) {
 
 // T5b: a checked snapshot never writes. A run whose merge is pending and
 // already landed out of band is reconciled by an unchecked snapshot (the
-// control: the writer is reachable), never by a checked one — the Mongo
-// conditional merge write has no birth predicate.
+// control: the writer is reachable), never by a checked one — a request
+// naming its expected birth is an observation and does not write.
 func TestRunOriginGateCheckedSnapshotNeverReconciles(t *testing.T) {
 	fx := newGateFixture(t, true)
 	ctx := t.Context()

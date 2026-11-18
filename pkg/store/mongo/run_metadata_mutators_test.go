@@ -86,7 +86,7 @@ func TestRunMetadataPublicMutatorsRefuseFuture(t *testing.T) {
 			return changed(s.UpdateRunOutcome(c, id, store.RunStatusFailedResumable, "failed", store.RunOutcomeMeta{}, nil))
 		}},
 		{"claim-merge", "", false, func(c context.Context, id string) error {
-			ok, _, _, e := s.ClaimMerge(c, id, at.Add(-time.Hour))
+			ok, _, _, e := s.ClaimMerge(c, id, at.Add(-time.Hour), store.ExpectedBirth{})
 			return changed(ok, e)
 		}},
 		{"merge-if", "", false, func(c context.Context, id string) error {

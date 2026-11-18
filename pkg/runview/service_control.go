@@ -362,7 +362,8 @@ const mergeClaimStaleAfter = 30 * time.Minute
 // mergeUpdateFromRun snapshots r's current merge bookkeeping into a
 // RunMergeUpdate, so a transition writes the fields it changes and
 // carries the rest unchanged (the same shape a full SaveRun of the
-// mutated r would have produced).
+// mutated r would have produced). The update expects r's birth: a
+// successor recreated under the same ID since r was loaded refuses it.
 func mergeUpdateFromRun(r *store.Run) store.RunMergeUpdate {
 	return store.RunMergeUpdate{
 		Status:              r.MergeStatus,
@@ -371,6 +372,7 @@ func mergeUpdateFromRun(r *store.Run) store.RunMergeUpdate {
 		MergeStrategy:       r.MergeStrategy,
 		PendingMergeMessage: r.PendingMergeMessage,
 		PendingMergeInto:    r.PendingMergeInto,
+		ExpectBirth:         store.ExpectBirthOf(r),
 	}
 }
 
@@ -407,8 +409,10 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// "merging", so two replicas (or two operator clicks) cannot both
 	// build a squash for the same run — the loser stops HERE, before
 	// any clone or push. The claim is released on every early exit and
-	// consumed by exactly one conditional persist below.
-	claimed, prior, claimToken, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
+	// consumed by exactly one conditional persist below. It expects the
+	// birth loaded above: a successor recreated under the same ID since
+	// is never claimed, so no exit below can wedge it in "merging".
+	claimed, prior, claimToken, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter), store.ExpectBirthOf(r))
 	if err != nil {
 		return nil, err
 	}

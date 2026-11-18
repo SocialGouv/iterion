@@ -143,7 +143,7 @@ func TestPerformMerge_HeldClaimRejects(t *testing.T) {
 	st, svc, runID := seedMergeableRun(t)
 	ctx := context.Background()
 
-	claimed, prior, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
+	claimed, prior, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter), store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("seed claim: claimed=%v err=%v", claimed, err)
 	}
@@ -167,7 +167,7 @@ func TestPerformMerge_StaleClaimIsStolen(t *testing.T) {
 	st, svc, runID := seedMergeableRun(t)
 	ctx := context.Background()
 
-	if claimed, _, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter)); err != nil || !claimed {
+	if claimed, _, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter), store.ExpectedBirth{}); err != nil || !claimed {
 		t.Fatalf("seed claim: claimed=%v err=%v", claimed, err)
 	}
 	// Age the claim past the staleness bound.
@@ -288,8 +288,8 @@ type cancelAfterMergeClaimStore struct {
 	acquired bool
 }
 
-func (s *cancelAfterMergeClaimStore) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
-	ok, prior, token, err := s.RunStore.ClaimMerge(ctx, id, staleBefore)
+func (s *cancelAfterMergeClaimStore) ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect store.ExpectedBirth) (bool, store.MergeStatus, time.Time, error) {
+	ok, prior, token, err := s.RunStore.ClaimMerge(ctx, id, staleBefore, expect)
 	if ok && err == nil {
 		s.acquired = true
 		s.cancel()
