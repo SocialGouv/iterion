@@ -57,6 +57,10 @@ triggers:
       - { name: url, from: 'payload.data.issue.permalink' }
       - { name: first_seen, from: 'payload.data.issue.firstSeen' }
       - { name: last_seen, from: 'payload.data.issue.lastSeen' }
+      # Sentry's own example sends this one as a STRING beside a numeric
+      # userCount — `"count": "3",` next to `"userCount": 3` — so the default
+      # string type is the vendor's, not a bent sample:
+      # https://docs.sentry.io/organization/integrations/integration-platform/webhooks/issues/
       - { name: event_count, from: 'payload.data.issue.count' }
       - { name: user_count, from: 'payload.data.issue.userCount', type: int }
     filters:

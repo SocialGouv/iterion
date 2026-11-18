@@ -20,9 +20,10 @@ events. Two organizations need two connections.
    alert rule firing, and it needs no rule. The `metric alert` webhook is the
    one that follows a metric alert rule crossing its
    threshold — with no rule, no delivery ever arrives.
-6. **Send a test alert** from an alert rule, or resolve an issue that has one:
-   the delivery is signed with the Client Secret and the first one binds the
-   organization (its installation uuid) to the connection.
+6. **Send one delivery**: resolve an issue for the `issue` webhook, or trip a
+   metric alert rule for the `metric alert` one. It is signed with the Client
+   Secret — that secret, not an installation id, is what proves the sender
+   here (see `triggers.yaml`).
 
 The integration's API token is separate from its Client Secret: the secret
 proves the deliveries Sentry sends you, the token is what iterion sends to
