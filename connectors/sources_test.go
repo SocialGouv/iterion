@@ -88,7 +88,9 @@ func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 			}
 			witnessed := 0
 			for _, trig := range p.Triggers {
-				if trig.Sample == "" {
+				// A polled trigger is no delivery's: its poller's witness is
+				// polled_test.go.
+				if trig.Sample == "" || trig.Polled() {
 					continue
 				}
 				witnessed++
@@ -248,7 +250,15 @@ func TestEveryShippedSourceIsWitnessed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load %q: %v", id, err)
 		}
-		if len(p.Triggers) == 0 {
+		// A package whose triggers are all polled has no delivery to sign:
+		// TestEveryPolledTriggerIsWitnessed closes its table.
+		webhook := 0
+		for _, trig := range p.Triggers {
+			if !trig.Polled() {
+				webhook++
+			}
+		}
+		if webhook == 0 {
 			continue
 		}
 		d, ok := vendorDoubles[id]
@@ -259,7 +269,7 @@ func TestEveryShippedSourceIsWitnessed(t *testing.T) {
 		// A trigger with no recorded delivery is a routing rule, its outputs
 		// and its rule against the vendor's shape that nothing ever proves.
 		for _, trig := range p.Triggers {
-			if trig.Sample == "" {
+			if trig.Sample == "" && !trig.Polled() {
 				t.Errorf("%q: trigger %q ships no sample, so nothing proves what it reads", id, trig.ID)
 			}
 		}
