@@ -248,35 +248,34 @@ func (s *Service) eventTerminalCatchUp(ctx context.Context, runID string, positi
 	}
 }
 
-// SubscribeLogs delivers log bytes from fromOffset. Local resolution
-// order (mirrors the historical handleSubscribeLogs cascade, now behind
-// the seam): the in-process live buffer; an on-demand run.log tailer for
-// an active run this process didn't launch; a one-shot replay of the
-// persisted run.log for a terminal run (stream closes right after — a
-// missing file just closes immediately).
+// SubscribeLogs delivers log bytes from fromOffset.
+//
+// An UNBOUND subscription keeps the legacy carrier (arbitration C): the
+// in-process live buffer; an on-demand run.log tailer for an active run this
+// process didn't launch; a one-shot replay of the persisted run.log for a
+// terminal run (stream closes right after — a missing file just closes
+// immediately).
 //
 // A context bound to an original run (store.BindRunObservation) is admitted
-// first: the run is loaded under it before any buffer or tailer is looked
-// up, because those are keyed by run ID alone. A permanent refusal — the
-// run replaced, deleted or missing, or its metadata not decoding — is
-// returned instead of a subscription.
-// A transient load error (the same classification as the event path) does
-// not refuse a legitimate subscription: the subscription is returned and its
-// producer retries the admission, publishing each failure as a warning, and
-// reads nothing before the run is admitted. Admission is a check at
-// subscribe time: bytes a buffer delivers afterwards are not re-checked.
+// first: the run is loaded under it, and a permanent refusal — the run
+// replaced, deleted or missing, or its metadata not decoding — is returned
+// instead of a subscription. A transient load error (the same classification
+// as the event path) does not refuse a legitimate subscription: the
+// subscription is returned and its producer retries the admission, publishing
+// each failure as a warning, and reads nothing before the run is admitted.
+// Both the synchronous and the retried admission then continue in
+// serveBoundLogs — the ONE producer of a bound subscription, which reads the
+// run's bytes from the store's retained selection and never from the ring.
 func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (runstream.LogSubscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s := v.s
 
-	var admitted *store.Run
 	if _, bound := store.RunDataBindingFrom(ctx); bound {
-		run, err := s.store.LoadRun(ctx, runID)
+		run, err := s.loadLogAdmission(ctx, runID)
 		switch {
 		case err == nil:
-			admitted = run
 		case runstream.IsPermanentError(err) || ctx.Err() != nil:
 			return nil, err
 		default:
@@ -287,17 +286,52 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 					sub.Finish(nil)
 					return
 				}
-				plan := s.planLogs(ctx, runID, run)
-				s.produceLogs(ctx, runID, fromOffset, plan, sub)
+				s.serveBoundLogs(ctx, runID, fromOffset, run, sub)
 			}()
 			return sub, nil
 		}
+		sub := runstream.NewLogPipe()
+		go s.serveBoundLogs(ctx, runID, fromOffset, run, sub)
+		return sub, nil
 	}
 
-	plan := s.planLogs(ctx, runID, admitted)
+	plan := s.planLogs(ctx, runID, nil)
 	sub := runstream.NewLogPipe()
 	go s.produceLogs(ctx, runID, fromOffset, plan, sub)
 	return sub, nil
+}
+
+// loadLogAdmission is the bound log admission's one store read. The test hook
+// (nil in production) fails it once so a witness can drive the retry against
+// the native store's EXACT seam — never a wrapper, which stays legacy.
+func (s *Service) loadLogAdmission(ctx context.Context, runID string) (*store.Run, error) {
+	if s.logAdmissionHook != nil {
+		if err := s.logAdmissionHook(ctx, runID); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.LoadRun(ctx, runID)
+}
+
+// serveBoundLogs is the ONE producer of an admitted bound log subscription:
+// the synchronous admission and the retried one both continue here, so no
+// bound stream ever reads the legacy ring or stands up a tailer. It always
+// closes out.
+func (s *Service) serveBoundLogs(ctx context.Context, runID string, from int64, run *store.Run, out runstream.LogPipe) {
+	if s.liveEvents != nil {
+		// The native lane path: the bytes are the store's, the wakes the
+		// producer's lane. subscribeLogs owns out once its merge started;
+		// a refusal before that leaves the pipe to this caller.
+		if err := s.liveEvents.subscribeLogs(ctx, runID, from, out); err != nil {
+			out.Fail(err)
+			out.Finish(nil)
+		}
+		return
+	}
+	// A store without the native live seams — a wrapper of the native store,
+	// a cloud store wired without a bound source — keeps the legacy carrier.
+	plan := s.planLogs(ctx, runID, run)
+	s.produceLogs(ctx, runID, from, plan, out)
 }
 
 // logAdmissionRetryMax caps the delay between two admission attempts of a
@@ -326,7 +360,7 @@ func (s *Service) retryLogAdmission(ctx context.Context, runID string, sub runst
 			delay = logAdmissionRetryMax
 		}
 		var run *store.Run
-		run, err = s.store.LoadRun(ctx, runID)
+		run, err = s.loadLogAdmission(ctx, runID)
 		switch {
 		case err == nil:
 			return run, true

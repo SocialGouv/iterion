@@ -291,14 +291,12 @@ func (f *FileSource) subscribeLogs(ctx context.Context, id string, from int64, h
 				if hints.Final == nil {
 					return
 				}
-				// The producer declares the end: hold until it does.
-				select {
-				case <-c.Done():
-					return
-				case <-hints.Final:
-				}
-				finalDrain()
-				return
+				// Final promises a future end, not a finished file: a run that
+				// has not written its first byte yet is normal. Watch the
+				// selection — the creation of the file and every wake drain it
+				// — and let Final end the stream through the round's own final
+				// drain (an absent file then ends it cleanly, once).
+				break
 			}
 			if e != nil {
 				retry, final := retryAfterOrFinal(c, hints.Final, fileRetryLabel, e, delay, pipe.Warn)

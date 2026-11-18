@@ -121,3 +121,33 @@ func TestFinalHintIgnoresATerminalStatusUntilTheProducerEnds(t *testing.T) {
 	}
 	expectLogEnd(t, sub, 3*time.Second, "after Final")
 }
+
+// Final mode WATCHES a log file that did not exist when the preflight looked:
+// a run that has not written its first byte yet still delivers it live, well
+// before the producer's end — Final promises a future end, not a finished
+// file.
+func TestFinalModeStreamsALogCreatedAfterSubscribe(t *testing.T) {
+	src, st, _ := newFileSourceFixture(t)
+	defer src.Close()
+	ctx, r := fsRetainedBirth(t, st, 1, 0)
+	final := make(chan struct{})
+	sub, e := src.SubscribeLogsHinted(ctx, r.ID, 0, FileStreamHints{Final: final})
+	if e != nil {
+		t.Fatalf("SubscribeLogsHinted: %v", e)
+	}
+	defer sub.Close()
+	expectLogOpen(t, sub, 150*time.Millisecond, "nothing written yet")
+	if e := st.AppendRunLog(ctx, r.ID, 0, []byte("FIRST")); e != nil {
+		t.Fatal(e)
+	}
+	select {
+	case c, ok := <-sub.Chunks():
+		if !ok || string(c.Data) != "FIRST" {
+			t.Fatalf("chunk = %q open=%v, want FIRST before Final", c.Data, ok)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the bytes written after the subscription never arrived before Final")
+	}
+	close(final)
+	expectLogEnd(t, sub, 3*time.Second, "after Final")
+}

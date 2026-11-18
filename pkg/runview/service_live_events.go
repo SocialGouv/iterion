@@ -32,11 +32,31 @@ type liveEventStreams struct {
 	closed bool
 	next   uint64
 	active map[uint64]*liveEventEntry
+	// logActive holds the bound log merges: same registration discipline as
+	// the event entries, joined by stop before the FileSource closes.
+	logActive map[uint64]*liveLogEntry
+	// logEnds is the instrumented assertion of §3.1: the end source each log
+	// merge applied and how many times it applied it, keyed by run ID.
+	logEnds map[string]logEndRecord
 
 	// beforeFinish, when set (tests), runs on the merge goroutine once the
 	// retained subscription has ended, before the merge decides how its own
 	// stream ends.
 	beforeFinish func(ctx context.Context)
+
+	// Test seams of the bound log merge. They run on the merge (or subscribe)
+	// goroutine and are nil in production.
+	//
+	// beforeLogStatusPoll runs before each terminal status read (E3).
+	beforeLogStatusPoll func()
+	// beforeLogObserved runs after the watch is installed and before the
+	// initial observation: a test lands a registration and its close in that
+	// window (the observation, or the pending watch token, must still see it).
+	beforeLogObserved func()
+	// afterLogObserved runs once the initial observation returned and before
+	// the merge starts: a test parks there to register and close a short epoch
+	// before the merge ever looks again.
+	afterLogObserved func()
 }
 
 // liveEventEntry is one registered merge: the run it streams, its
@@ -62,9 +82,11 @@ func (s *Service) initLiveEventStreams() {
 		return
 	}
 	s.liveEvents = &liveEventStreams{
-		svc:    s,
-		files:  runstream.NewFileSource(native, "", s.logger),
-		active: make(map[uint64]*liveEventEntry),
+		svc:       s,
+		files:     runstream.NewFileSource(native, "", s.logger),
+		active:    make(map[uint64]*liveEventEntry),
+		logActive: make(map[uint64]*liveLogEntry),
+		logEnds:   make(map[string]logEndRecord),
 	}
 	if s.alertRegistry == nil {
 		s.alertRegistry = newAlertRegistry()
@@ -471,22 +493,38 @@ func (l *liveEventStreams) stop(ctx context.Context) error {
 	for _, e := range l.active {
 		entries = append(entries, e)
 	}
+	logs := make([]*liveLogEntry, 0, len(l.logActive))
+	for _, e := range l.logActive {
+		logs = append(logs, e)
+	}
 	l.mu.Unlock()
 	for _, e := range entries {
 		e.cancel(runstream.ErrSourceClosed)
 	}
+	// A bound log merge is joined like an event stream: the run's bytes come
+	// from the same FileSource, which only closes once every reader did.
+	for _, e := range logs {
+		e.cancel(runstream.ErrSourceClosed)
+	}
+	dones := make([]<-chan struct{}, 0, len(entries)+len(logs))
 	for _, e := range entries {
+		dones = append(dones, e.done)
+	}
+	for _, e := range logs {
+		dones = append(dones, e.done)
+	}
+	for _, done := range dones {
 		select {
-		case <-e.done:
+		case <-done:
 			continue
 		default:
 		}
 		select {
-		case <-e.done:
+		case <-done:
 		case <-ctx.Done():
 			// Prefer a completed join if cancellation raced the deadline.
 			select {
-			case <-e.done:
+			case <-done:
 				continue
 			default:
 				return fmt.Errorf("runview: live event streams not joined: %w", ctx.Err())

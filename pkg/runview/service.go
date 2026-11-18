@@ -949,6 +949,11 @@ type Service struct {
 	// logSeamMu serializes THIS service's log registration seam, as
 	// alertSeamMu does for alerts, and for the same reason.
 	logSeamMu sync.Mutex
+	// logAdmissionHook, when set (tests), runs before the bound log
+	// admission's store read so a witness can drive the retry against the
+	// native store without wrapping it (a wrapper stays legacy, arbitration
+	// C). Nil in production.
+	logAdmissionHook func(ctx context.Context, runID string) error
 
 	// recoveryDispatch is built once on construction so each Launch /
 	// Resume reuses the same dispatcher rather than allocating a new

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -334,5 +335,92 @@ func TestRunsWSEvents_CrossStore(t *testing.T) {
 	env := readEnvelopeWithin(t, c, 12*time.Second, wsTypeTerminated)
 	if env.Type != wsTypeTerminated {
 		t.Fatalf("Type = %q, want terminated after terminal flip", env.Type)
+	}
+}
+
+// newNativeStreamServer serves the NATIVE filesystem store WITHOUT an
+// injected stream source: every subscription goes through the Service's own
+// source, and with it the retained bound log path (lanes) — the production
+// wiring. Shutdown drains and joins the live streams.
+func newNativeStreamServer(t *testing.T) (*Server, *httptest.Server) {
+	t.Helper()
+	workDir := t.TempDir()
+	storeDir := filepath.Join(workDir, ".iterion")
+	srv := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                storeDir,
+		SkipProjectRegistration: true,
+	}, iterlog.New(iterlog.LevelError, os.Stderr))
+	if srv.runs == nil {
+		t.Fatal("expected the run console service to be wired")
+	}
+	hs := httptest.NewServer(srv.mux)
+	t.Cleanup(func() {
+		hs.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv, hs
+}
+
+// TW1 = TP1 over the wire: a successor recreated under the run's ID never
+// leaks a byte into the bound log stream. The socket gets log_stream_failed
+// (identity refusal) and closes scope_lost.
+func TestRunsWSLogs_BoundStreamRefusesSuccessorBytes(t *testing.T) {
+	srv, hs := newNativeStreamServer(t)
+	ctx := t.Context()
+	native, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWS(t, seedWSOriginRun(ctx, native, "r", "A", store.LegacyValueFormat, store.RunStatusRunning, 0))
+	writeRunLog(t, srv.cfg.StoreDir, "r", "A-one\n")
+
+	c := dialRunWS(t, hs, "r")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l1"})
+	if env := readEnvelope(t, c, wsTypeAck); env.AckID != "l1" {
+		t.Fatalf("ack = %q, want l1", env.AckID)
+	}
+	if got := collectLogText(t, c, "", "A-one\n", 5*time.Second); got != "A-one\n" {
+		t.Fatalf("initial drain = %q, want A's bytes", got)
+	}
+
+	// A successor takes the ID, then writes a secret at the same path.
+	mustWS(t, replaceWSOriginRun(context.Background(), native, "r", "B", store.LegacyValueFormat, store.RunStatusRunning, 0))
+	successorLog := writeRunLog(t, srv.cfg.StoreDir, "r", "B-secret-tail\n")
+	appendRunLog(t, successorLog, "B-more\n")
+
+	expectOriginLostClose(t, c, "log_stream_failed")
+}
+
+// TW2 = TP2 over the wire: an externally produced run never ends on its own,
+// so the terminal flip must close the bound stream with log_terminated (the
+// 5s poll + settle, well inside the 12s budget).
+func TestRunsWSLogs_TerminalFlipEndsTheBoundStream(t *testing.T) {
+	srv, hs := newNativeStreamServer(t)
+	ctx := t.Context()
+	native, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWS(t, seedWSOriginRun(ctx, native, "r", "A", store.LegacyValueFormat, store.RunStatusRunning, 0))
+	logPath := writeRunLog(t, srv.cfg.StoreDir, "r", "hello ")
+
+	c := dialRunWS(t, hs, "r")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l1"})
+	_ = readEnvelope(t, c, wsTypeAck)
+	if got := collectLogText(t, c, "", "hello ", 5*time.Second); got != "hello " {
+		t.Fatalf("initial drain = %q", got)
+	}
+	appendRunLog(t, logPath, "world")
+	if got := collectLogText(t, c, "hello ", "hello world", 5*time.Second); got != "hello world" {
+		t.Fatalf("live append = %q", got)
+	}
+
+	mustWS(t, native.UpdateRunStatus(ctx, "r", store.RunStatusFinished, ""))
+	env := readEnvelopeWithin(t, c, 12*time.Second, wsTypeLogTerminated)
+	if env.Type != wsTypeLogTerminated {
+		t.Fatalf("Type = %q, want log_terminated after the terminal flip", env.Type)
 	}
 }

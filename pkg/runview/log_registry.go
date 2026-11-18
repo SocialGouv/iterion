@@ -98,7 +98,11 @@ type LogWakeSubscription struct {
 	Durable bool
 	Closed  bool
 	obs     store.RunObservation
-	cancel  func()
+	// epoch is the generation this subscription observes: the merge arbitrates
+	// its first fin with it, so E1 then E2 (or E2 then E1) of one epoch apply
+	// exactly once.
+	epoch  uint64
+	cancel func()
 }
 
 // Cancel unregisters the subscription. Idempotent.
@@ -177,12 +181,12 @@ func (r *logRegistry) subscribe(obs store.RunObservation) (*LogWakeSubscription,
 		ch := make(chan LogWake, 1)
 		ch <- LogWake{End: end}
 		close(ch)
-		return &LogWakeSubscription{C: ch, Durable: tp.durable, Closed: true, obs: obs, cancel: func() {}}, true
+		return &LogWakeSubscription{C: ch, Durable: tp.durable, Closed: true, obs: obs, epoch: tp.epoch, cancel: func() {}}, true
 	}
 	sub := &logWakeSub{ch: make(chan LogWake, 1)}
 	tp.subs = append(tp.subs, sub)
 	cancel := func() { r.cancelSub(tp, sub) }
-	return &LogWakeSubscription{C: sub.ch, Durable: tp.durable, obs: obs, cancel: cancel}, true
+	return &LogWakeSubscription{C: sub.ch, Durable: tp.durable, obs: obs, epoch: tp.epoch, cancel: cancel}, true
 }
 
 // cancelSub unregisters one wake subscriber. Subscribers already closed by an

@@ -133,7 +133,12 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 				return sub, obs, nil
 			}
 		}
-		if !wait || ctx.Err() != nil || !time.Now().Before(deadline) {
+		// The bounded wait covers the launch-before-registration race, which
+		// only exists for a run this process is driving: a finished or
+		// external run has no producer here to register, and the merge's
+		// watch adopts one that lands later anyway (same rule as the alert
+		// lane, alert_origin.go:86).
+		if !wait || !s.Active(runID) || ctx.Err() != nil || !time.Now().Before(deadline) {
 			return nil, store.RunObservation{}, nil
 		}
 		w := s.logRegistry.waitSlot(runID)
