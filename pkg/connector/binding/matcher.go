@@ -133,9 +133,23 @@ func (m *Matcher) Trigger(in intake.Intake) (spec.Trigger, string, error) {
 		return spec.Trigger{}, fmt.Sprintf("connector %q does not load: %v", connector, err), nil
 	}
 	for _, t := range pkg.Triggers {
-		if t.ID == in.TriggerID {
-			return t, "", nil
+		if t.ID != in.TriggerID {
+			continue
 		}
+		// An event is the trigger's only if it came the way the trigger is
+		// fed: a polled trigger reads its poller's intakes, a webhook one its
+		// ingress's. A package that turned a trigger from one to the other
+		// leaves intakes — stored, dead-lettered, replayed — that belong to
+		// neither, and a subscription saved before the change that was never
+		// judged again.
+		if polled := in.PollerID != ""; t.Polled() != polled {
+			came, wants := "an ingress", "a poller"
+			if polled {
+				came, wants = "a poller", "an ingress"
+			}
+			return spec.Trigger{}, fmt.Sprintf("trigger %s is now fed by %s, and this event came from %s", t.ID, wants, came), nil
+		}
+		return t, "", nil
 	}
 	return spec.Trigger{}, fmt.Sprintf("the %s package no longer declares trigger %s", connector, in.TriggerID), nil
 }

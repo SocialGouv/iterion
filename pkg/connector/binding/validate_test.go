@@ -96,3 +96,18 @@ func TestEveryRefusalNamesItsField(t *testing.T) {
 		t.Errorf("a constant and a same-named output were refused: %v", err)
 	}
 }
+
+// A polled trigger is fed by its poller alone. Until the poller store ships,
+// a subscription to one is refused at save, naming why — never accepted to
+// sit silent. The same subscription to the webhook twin of the trigger passes,
+// so the refusal is the delivery's, not the subscription's.
+func TestASubscriptionToAPolledTriggerIsRefusedUntilPollersShip(t *testing.T) {
+	polled := validateTrigger
+	polled.Delivery = spec.DeliveryPoll
+	if _, err := ValidateSubscription(validSub(), polled, validateBot); err == nil || !strings.Contains(err.Error(), "is polled") {
+		t.Fatalf("a subscription to a polled trigger = %v, want a refusal naming the polling", err)
+	}
+	if _, err := ValidateSubscription(validSub(), validateTrigger, validateBot); err != nil {
+		t.Fatalf("the same subscription to the webhook trigger must pass: %v", err)
+	}
+}

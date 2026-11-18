@@ -23,8 +23,8 @@ type BotVar struct {
 // matcher and the launch would otherwise discover one event at a time:
 //
 //   - the mode is one a connector run honours (direct), and no field of
-//     another kind is set (args_var, cron), nor a poller before polling
-//     ships (L2);
+//     another kind is set (args_var, cron), nor a poller — nor a polled
+//     trigger at all — before polling ships (L4-2);
 //   - every chosen filter is declared, an enum's values are its options, a
 //     bool's are true/false; a declared default fills a filter left unset;
 //   - `when` and every var_map expression read the event namespace only;
@@ -49,7 +49,11 @@ func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []Bot
 	case sub.Cron != "":
 		return sub, fmt.Errorf("cron does not apply to a connector subscription")
 	case sub.Poller != "":
-		return sub, fmt.Errorf("poller %q: a polled trigger ships with polling (L2, #3274)", sub.Poller)
+		return sub, fmt.Errorf("poller %q: this deployment runs no pollers yet, so a subscription cannot listen to one", sub.Poller)
+	case trig.Polled():
+		// A polled trigger is fed by its poller alone, and no poller runs
+		// yet: a subscription saved now would be accepted and never fire.
+		return sub, fmt.Errorf("trigger %s is polled, and this deployment runs no pollers yet: a subscription to it would never fire", trig.ID)
 	}
 	switch sub.NoLiveRun {
 	case "", "launch", "drop":

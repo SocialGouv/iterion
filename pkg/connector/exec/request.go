@@ -58,7 +58,11 @@ func (e *Executor) buildRequest(ctx context.Context, pkg *spec.Package, op spec.
 		req.Header.Set("Content-Type", contentType)
 	}
 	accept := op.HTTP.Accept
-	if accept == "" {
+	switch {
+	case accept != "":
+	case op.HTTP.ResponseFormat == spec.ResponseFeed:
+		accept = feedAccept
+	default:
 		accept = "application/json"
 	}
 	req.Header.Set("Accept", accept)

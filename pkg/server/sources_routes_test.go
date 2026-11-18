@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -380,5 +381,66 @@ func TestSourcesCountsCountLivingRows(t *testing.T) {
 	byID := sourcesView(t, s, "viewer1", "t1")
 	if byID["probe"]["connections"] != 1.0 || byID["probe"]["subscriptions"] != 1.0 {
 		t.Fatalf("dead rows counted: %v", byID["probe"])
+	}
+}
+
+// renamedProbe is the team probe package under another connector id, its
+// operation ids moved with it — a package is its own namespace.
+func renamedProbe(t *testing.T, id string) *spec.Package {
+	t.Helper()
+	p := teamProbePackage("https://" + id + ".example")
+	p.Connector.ID = id
+	for i := range p.Ops {
+		p.Ops[i].Connector = id
+		for j := range p.Ops[i].Operations {
+			op := &p.Ops[i].Operations[j]
+			op.ID = id + strings.TrimPrefix(op.ID, "probe")
+		}
+	}
+	return p
+}
+
+// polledProbeTrigger is a polled trigger over the probe's own list operation.
+func polledProbeTrigger(id string) string {
+	return "- id: " + id + ".issue.listed\n  delivery: poll\n" +
+		"  poll:\n    operation: " + id + ".issue.list\n    items: response.issues\n    item_id: item.id\n" +
+		"    interval: { default: 5m, min: 1m }\n"
+}
+
+// TestSourcesListOnlyWhatAnOperatorCanPlug: a polled trigger has no poller to
+// feed it before L4-2, and a subscription to one is refused at save — so the
+// catalog offers it nowhere. A card keeps its webhook triggers and drops the
+// polled one; a package whose only triggers are polled has no card at all.
+func TestSourcesListOnlyWhatAnOperatorCanPlug(t *testing.T) {
+	s, _ := sourcesWorld(t)
+	ingress := "ingress:\n  credential:\n    scheme: hmac-sha256\n    in: header\n    name: X-Probe-Signature\n    secret: minted\n" +
+		"  event:\n    header: X-Probe-Event\n"
+
+	mixed := renamedProbe(t, "mixed")
+	files := connectorPackageFiles(t, mixed)
+	files["triggers.yaml"] = "schema_version: 1\nconnector: mixed\n" + ingress + "triggers:\n" +
+		"- id: mixed.issue.commented\n  event: issue_comment\n" + polledProbeTrigger("mixed")
+	pollOnly := renamedProbe(t, "pollonly")
+	pollFiles := connectorPackageFiles(t, pollOnly)
+	pollFiles["triggers.yaml"] = "schema_version: 1\nconnector: pollonly\n" + ingress + "triggers:\n" + polledProbeTrigger("pollonly")
+	for id, f := range map[string]map[string]string{"mixed": files, "pollonly": pollFiles} {
+		if err := s.connectorPackages.Publish(context.Background(), connection.StoredPackage{
+			TenantID: "t1", ConnectorID: id, Files: f, CreatedBy: "test",
+		}); err != nil {
+			t.Fatalf("publish %s: %v", id, err)
+		}
+	}
+
+	byID := sourcesView(t, s, "viewer1", "t1")
+	card, ok := byID["mixed"]
+	if !ok {
+		t.Fatalf("a package with a pluggable webhook trigger has no card: %v", byID)
+	}
+	trigs := card["triggers"].([]any)
+	if len(trigs) != 1 || trigs[0].(map[string]any)["id"] != "mixed.issue.commented" {
+		t.Fatalf("mixed triggers = %v, want the webhook one only — the polled one cannot be plugged yet", card["triggers"])
+	}
+	if _, ok := byID["pollonly"]; ok {
+		t.Fatal("a package whose only triggers are polled is listed — every plug would end in the bind's refusal")
 	}
 }

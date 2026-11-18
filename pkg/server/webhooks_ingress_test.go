@@ -1439,3 +1439,20 @@ func TestIngress_AConfigStoreOutageIsNotAnUnknownID(t *testing.T) {
 		t.Fatalf("webhookAuth: code=%d ran=%v, want 503 and no handler", code, ran)
 	}
 }
+
+// A package whose only triggers are polled has nothing a delivery can reach:
+// binding an ingress to it would accept, ack and drop every delivery. The bind
+// refuses it, naming why; the same package with a webhook trigger binds.
+func TestIngress_APackageWhoseTriggersAreAllPolledBindsNoIngress(t *testing.T) {
+	polled := ingForgePackage()
+	polled.Triggers = []spec.Trigger{{ID: "forge.issue.listed", Delivery: spec.DeliveryPoll}}
+	f := newIngressFixture(t, polled)
+	w := httptest.NewRecorder()
+	f.s.handleCreateWebhook(w, whReq(superAdminCtx(), "POST", "/api/teams/t1/webhooks",
+		`{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "polled trigger is fed by its poller") {
+		t.Fatalf("an ingress on a polled-only package: code=%d body=%s, want 400 naming why", w.Code, w.Body.String())
+	}
+	g := newIngressFixture(t, ingForgePackage())
+	g.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
+}

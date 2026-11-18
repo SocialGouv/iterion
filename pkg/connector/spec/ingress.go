@@ -420,9 +420,9 @@ func locate(in *Ingress, l IngressLocator, payload map[string]any, headers http.
 func validateTriggerExtraction(p *Package, t Trigger) error {
 	id := p.Connector.ID
 	declares := len(t.Outputs) > 0 || len(t.Filters) > 0 || t.Ignore != "" || t.Sample != ""
-	if declares && p.Ingress == nil {
-		// Prevents: declarations nothing reads — the ingress lane is their
-		// only reader.
+	if declares && p.Ingress == nil && !t.Polled() {
+		// Prevents: declarations nothing reads — the ingress lane is a
+		// webhook trigger's only reader (a polled trigger's is its poller).
 		return fmt.Errorf("connector %q: trigger %q declares outputs, filters, an ignore or a sample, but the package declares no ingress: block to read deliveries with", id, t.ID)
 	}
 	names := map[string]bool{}
@@ -446,7 +446,7 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 		if want, ok := reservedOutputs[o.Name]; ok && typ != want {
 			return fmt.Errorf("connector %q: trigger %q: output %q is reserved as a %s", id, t.ID, o.Name, want)
 		}
-		if err := checkExpr(fmt.Sprintf("trigger %s output %s", t.ID, o.Name), o.From, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s output %s", t.ID, o.Name), o.From, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
@@ -477,19 +477,36 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 				return fmt.Errorf("connector %q: trigger %q: filter %q selector %q is not an operation of this package", id, t.ID, f.ID, f.Selector)
 			}
 		}
-		if err := checkExpr(fmt.Sprintf("trigger %s filter %s", t.ID, f.ID), f.From, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s filter %s", t.ID, f.ID), f.From, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
 	if t.Ignore != "" {
-		if err := checkExpr(fmt.Sprintf("trigger %s ignore", t.ID), t.Ignore, NamespacePayload, NamespaceHeaders); err != nil {
+		if err := checkExpr(fmt.Sprintf("trigger %s ignore", t.ID), t.Ignore, eventNamespaces(t)...); err != nil {
 			return fmt.Errorf("connector %q: %w", id, err)
 		}
 	}
 	if t.Sample != "" {
+		if t.SampleBody == nil {
+			return fmt.Errorf("connector %q: trigger %q: sample %q was not loaded", id, t.ID, t.Sample)
+		}
+		if t.Polled() {
+			return checkPollSample(p, t)
+		}
 		return checkSample(p, t)
 	}
 	return nil
+}
+
+// eventNamespaces are the namespaces a trigger's outputs, filters and loop
+// guard may read: a delivery's payload and listed headers, or — for a polled
+// trigger, whose event is one item of a response — the payload alone, since
+// an item carries no headers.
+func eventNamespaces(t Trigger) []string {
+	if t.Polled() {
+		return []string{NamespacePayload}
+	}
+	return []string{NamespacePayload, NamespaceHeaders}
 }
 
 func outputType(o TriggerOutput) string {
@@ -527,14 +544,20 @@ func checkSample(p *Package, t Trigger) error {
 	if event != t.Event {
 		return fmt.Errorf("connector %q: trigger %q: the sample's event is %q, not the trigger's %q", id, t.ID, event, t.Event)
 	}
-	ctx := NewDeliveryContext(s.Payload, headers, listed)
+	return checkExtraction(id, t, NewDeliveryContext(s.Payload, headers, listed))
+}
+
+// checkExtraction evaluates a trigger's loop guard, outputs and filters over
+// one recorded event: the guard must keep it, and each output must read its
+// declared type. A webhook sample and each item of a polled sample share it.
+func checkExtraction(id string, t Trigger, ctx *expr.Context) error {
 	if t.Ignore != "" {
 		v, err := evalExpr(t.Ignore, ctx)
 		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: ignore fails on the sample: %w", id, t.ID, err)
 		}
 		if v == true {
-			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show a delivery the trigger keeps", id, t.ID)
+			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show an event the trigger keeps", id, t.ID)
 		}
 	}
 	for _, o := range t.Outputs {

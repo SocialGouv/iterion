@@ -998,12 +998,7 @@ func authorPaged(op spec.Operation, p *spec.Pagination, params map[string]any) b
 // a caller writes, since an overlay may have renamed it. Falls back to the
 // wire name, which is the key whenever nothing was renamed.
 func keyForWireName(op spec.Operation, wire string) string {
-	for _, p := range op.Params {
-		if p.Name == wire {
-			return p.Key
-		}
-	}
-	return wire
+	return spec.ParamKeyForWire(op, wire)
 }
 
 // pageItems extracts a page's collection: the named field, or the body itself
@@ -1101,6 +1096,27 @@ func asError(err error, out **Error) bool {
 		*out = e
 	}
 	return ok
+}
+
+// decodeAnswer decodes a body the way its operation declares: a feed
+// operation's SUCCESSFUL answer through decodeFeed, under the charset its
+// Content-Type names; anything else — an error body included, which feeds
+// serve as HTML or JSON and which a feed decode would only spend memory on —
+// as JSON, whose failure on a non-2xx is not read.
+func decodeAnswer(op spec.Operation, resp *http.Response, body []byte) (any, error) {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		len(strings.TrimSpace(string(body))) > 0 {
+		return decodeFeed(body, resp.Header.Get("Content-Type"))
+	}
+	return decodeJSON(body)
+}
+
+// answerFormat names what an operation's body was expected to be.
+func answerFormat(op spec.Operation) string {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed {
+		return "an RSS 2.0 or Atom 1.0 feed"
+	}
+	return "JSON"
 }
 
 // decodeJSON decodes a body, tolerating an empty one.

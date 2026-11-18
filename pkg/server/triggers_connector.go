@@ -110,6 +110,12 @@ func (s *Server) resolveConnectorBinding(ctx context.Context, tenant string, sub
 	if trig == nil {
 		return fail(http.StatusBadRequest, fmt.Errorf("the %s package declares no trigger %s", conn.Connector, sub.TriggerID))
 	}
+	if !trig.Polled() && pkg.Ingress == nil {
+		// Prevents: a subscription nothing can ever feed — a webhook trigger
+		// reaches iterion through the package's ingress, and this one has
+		// none (the catalogue does not offer it either).
+		return fail(http.StatusBadRequest, fmt.Errorf("the %s package declares no ingress, so no delivery can reach trigger %s", conn.Connector, sub.TriggerID))
+	}
 	entry, found, err := s.effectiveFindByNameForTeam(ctx, tenant, sub.BotID)
 	switch {
 	case err != nil:

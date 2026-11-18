@@ -60,6 +60,10 @@ var operatorInfraPrefixes = []string{
 	// intake): server-side bounds on what an inbound delivery may cost and
 	// how long it is kept — the operator's, never a bot's.
 	"ITERION_CONNECTOR_INTAKE_", "ITERION_CONNECTOR_PAIR_",
+	// The feed decoder's bounds (pkg/connector/exec/feed.go): how many items
+	// and how deep a vendor's answer may decode — an amplification guard a
+	// bot that lifted it would aim at the server's own memory.
+	"ITERION_CONNECTOR_FEED_",
 	// Processes and fleet rather than runs: the runner, the board
 	// dispatcher and its MCP capabilities, the studio's alerts, the instance
 	// registry, lifecycle and logs.
