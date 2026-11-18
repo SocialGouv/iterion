@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.14.0](https://github.com/SocialGouv/iterion/compare/v7.13.1...v7.14.0) (2026-11-18)
+
+### Features
+
+* **bench,scripthost:** the posture bench runs where the deployment runs, and the parent bounds what RLIMIT_DATA does not ([#3299](https://github.com/SocialGouv/iterion/issues/3299)) ([#3363](https://github.com/SocialGouv/iterion/issues/3363)) ([ae7adb4](https://github.com/SocialGouv/iterion/commit/ae7adb4c3dd37bb006ff289bc6d67a7b813d0b69))
+
+    <details><summary>why</summary>
+
+    The kind arm proves the SCRIPT, not the deployment's runtime: a default seccomp profile is a property of a containerd BUILD, and the production node ships its own. Re-running that arm there is impossible as written — it hands the bench binary to the node through `extraMounts` and the pod reads it from a `hostPath`, and a production node accepts neither.
+
+    </details>
+
 ## [7.13.1](https://github.com/SocialGouv/iterion/compare/v7.13.0...v7.13.1) (2026-11-18)
 
 ### Bug Fixes
