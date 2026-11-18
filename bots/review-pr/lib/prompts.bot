@@ -561,7 +561,7 @@ prompt emit_user:
   Open questions: {{outputs.merge_reviews.gpt_questions}}
   Ticket conformance: {{outputs.merge_reviews.gpt_ticket_conformance}}
 
-  A family with `ran: false` was not part of this review (mono topology) —
+  A family with `ran: false` was not part of this review (single topology) —
   merge only what the family that DID run reported, and never invent the
   other side's agreement: `reviewers` is "both" only when both ran and both
   flagged it.

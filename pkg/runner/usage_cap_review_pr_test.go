@@ -87,92 +87,87 @@ func decidedVarsForLaunch(wf *ir.Workflow, vars map[string]any) map[string]any {
 	return model.RouteViewForDispatch(wf, model.ModelOverrides{}, nil, vars).DecidedVars()
 }
 
-// #2467, read on the REAL review-pr bot: a mono-GPT review
-// (`mono_family=gpt`, `review_mode=mono`, `review_tier=guard`) while the
-// Anthropic window is spent, with NO dial set at all.
+// Read on the REAL review-pr bot: a `single` review while the Anthropic
+// window is spent, with NO dial set at all.
 //
-// `mono_family=gpt` is the family of the WHOLE review: the launch-vars prune
-// takes both claude reviewers AND the claude merge step off this run's
-// topology — each gpt guard holds, and that pre-empts the unconditional
-// claude fallback beside it — while `converge_gpt` merges on claw. The
-// `pacer` supervisor watches the claude reviewer alone, so it is on no route
-// this run takes either (a coordinator evaluates only while a watched node is
-// active), and `pacer_gpt` resolves off the Anthropic wire. Nothing the run
-// can reach spends the capped subscription, so it starts under either cap
-// mode with no deployment profile.
+// The roles are what make this hold (ADR-169): `single` takes `reviewer` —
+// claw + an `openai/…` model — and the merge step `converge` on the same
+// claw route, while `reviewer_alternate` (the claude slot) is reached only
+// by the `paired` fan-out. The `pacer` supervisor watches
+// `reviewer_alternate` alone, so it is on no route this run takes either (a
+// coordinator evaluates only while a watched node is active), and
+// `pacer_gpt` resolves off the Anthropic wire. Nothing the run can reach
+// spends the capped subscription, so it starts under either cap mode with no
+// deployment profile.
 //
-// A GPT review runs where a GPT credential funds it: the pod's OpenAI key
-// here, staged because the package's TestMain isolates the host's providers
-// and the spawn keeps a supervisor only where a credential funds it
+// A review runs where its credential funds it: the pod's OpenAI key here,
+// staged because the package's TestMain isolates the host's providers and the
+// spawn keeps a supervisor only where a credential funds it
 // (runview.FundedSupervisorSpecs).
-func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
+func TestUsageCapPreflight_SingleReviewOnTheReviewPrBot(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	blankReviewPrDials(t)
 	t.Setenv("OPENAI_API_KEY", "sk-openai-pod")
 	wf := compileCatalogBot(t, "review-pr")
-	mono := map[string]any{"mono_family": "gpt", "review_mode": "mono", "review_tier": "guard"}
+	single := map[string]any{"review_mode": "single", "review_tier": "guard"}
 	ctx := forfaitBesidePinnedKeys(t)
 	resets := time.Now().UTC().Add(30 * time.Hour)
 	hard := cappedWire(t, usagecap.WindowSevenDay, 0.92, resets) // the test policy reads the week HARD
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, resets) // and the five-hour window SOFT
 
-	open := wf.LaunchVarEdgeFilter(mono)
-	for _, id := range []string{"reviewer_claude", "reviewer_claude_glance", "converge"} {
+	open := wf.LaunchVarEdgeFilter(single)
+	for _, id := range []string{"reviewer_alternate", "reviewer_glance"} {
 		if reaches(wf, open, id) {
-			t.Errorf("%s is on a mono-gpt run's topology — the gpt guard holds, and it pre-empts the claude fallback", id)
+			t.Errorf("%s is on a single run's topology — only the paired fan-out reaches the alternate, and this tier routes past the glance reviewer", id)
 		}
 	}
-	for _, id := range []string{"reviewer_gpt", "converge_gpt"} {
+	for _, id := range []string{"reviewer", "converge"} {
 		if !reaches(wf, open, id) {
-			t.Errorf("%s is off a mono-gpt run's topology — the prune may only drop what the launch excluded", id)
+			t.Errorf("%s is off a single run's topology — the prune may only drop what the launch excluded", id)
 		}
 	}
 
-	// The supervisor walk: the claude `pacer` watches nodes this launch
-	// excluded, so it is not a route the run takes; `pacer_gpt` is, and the
-	// cap does not meter it.
-	sups := preflightSupervisors(ctx, wf, &queue.RunMessage{RunID: "run-sups", Vars: mono}, decidedVarsForLaunch(wf, mono), open, iterlog.Nop())
+	// The supervisor walk: the `pacer` watches the node this launch excluded,
+	// so it is not a route the run takes; `pacer_gpt` is, and the cap does
+	// not meter it.
+	sups := preflightSupervisors(ctx, wf, &queue.RunMessage{RunID: "run-sups", Vars: single}, decidedVarsForLaunch(wf, single), open, iterlog.Nop())
 	if len(sups) != 1 || sups[0].id != supervisorRouteIDPrefix+"pacer_gpt" {
-		t.Fatalf("the supervisor walk of a mono-gpt review is %v, want only supervisor:pacer_gpt — the claude pacer watches no node this run reaches", sups)
+		t.Fatalf("the supervisor walk of a single review is %v, want only supervisor:pacer_gpt — the claude pacer watches no node this run reaches", sups)
 	}
 	if _, metered := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-sups"}).supervisorKey(ctx, sups[0].spec, sups[0].hint); metered {
 		t.Errorf("pacer_gpt resolves to %q, which the cap meters — the gpt pacer must leave the Anthropic wire", sups[0].spec)
 	}
 
-	// The whole point of the ticket: no env, no integration override, both
-	// cap modes.
+	// The whole point: no env, no integration override, both cap modes.
 	for mode, caps := range map[string]usagecap.Store{"hard": hard, "soft": soft} {
-		if err := preflightWithVars(t, caps, ctx, wf, mono); err != nil {
-			t.Errorf("a mono-gpt review parked under the %s cap with no dial set: %v — mono_family=gpt means no Anthropic wire, merge and pacer included", mode, err)
+		if err := preflightWithVars(t, caps, ctx, wf, single); err != nil {
+			t.Errorf("a single review parked under the %s cap with no dial set: %v — single means no Anthropic wire, merge and pacer included", mode, err)
 		}
 	}
 
-	t.Run("the claude family still merges on the wire", func(t *testing.T) {
-		claude := map[string]any{"mono_family": "claude", "review_mode": "mono", "review_tier": "guard"}
-		openClaude := wf.LaunchVarEdgeFilter(claude)
-		if !reaches(wf, openClaude, "converge") {
-			t.Error("converge is off a mono-claude run's topology — it is still the merge step of every other family")
+	t.Run("a paired review rides the wire and parks on it", func(t *testing.T) {
+		paired := map[string]any{"review_mode": "paired", "review_tier": "guard"}
+		openPaired := wf.LaunchVarEdgeFilter(paired)
+		if !reaches(wf, openPaired, "reviewer_alternate") || !reaches(wf, openPaired, "reviewer") {
+			t.Fatal("a paired review does not reach both reviewers — the fan-out is what paired spends on")
 		}
-		if reaches(wf, openClaude, "converge_gpt") {
-			t.Error("converge_gpt is on a mono-claude run's topology — the gpt merge step is behind the gpt guard")
-		}
-		// Unchanged from before this ticket: the claude reviewer, the claude
-		// merge step and the claude pacer all ride the capped wire, and a
-		// soft cap stops nothing in flight.
-		if err := preflightWithVars(t, soft, ctx, wf, claude); err == nil {
-			t.Error("a mono-claude review started on a soft-capped wire — its reviewer, merge step and pacer all spend it")
+		// The alternate reviewer, the merge step's own route and the claude
+		// pacer are on this run's topology; a soft cap stops nothing in
+		// flight, so the pre-flight parks it.
+		if err := preflightWithVars(t, soft, ctx, wf, paired); err == nil {
+			t.Error("a paired review started on a soft-capped wire — its alternate reviewer and pacer both spend it")
 		}
 	})
 
-	t.Run("an operator dial still wins on the gpt merge step", func(t *testing.T) {
-		// The twin's own three dials, moved together onto the capped wire:
-		// an explicit choice is honoured, never silently replaced, and the
-		// pre-flight reads it.
+	t.Run("an operator dial still wins on the merge step", func(t *testing.T) {
+		// The merge step's own three dials, moved together onto the capped
+		// wire: an explicit choice is honoured, never silently replaced, and
+		// the pre-flight reads it.
 		t.Setenv("ITERION_VIBE_BACKEND_EMIT_GPT", "claude_code")
 		t.Setenv("ITERION_VIBE_MODEL_EMIT_GPT", "claude-opus-5-5")
 		t.Setenv("ITERION_VIBE_PROVIDER_EMIT_GPT", "anthropic")
-		if err := preflightWithVars(t, soft, ctx, wf, mono); err == nil {
-			t.Error("a mono-gpt review whose merge dials were pointed BACK at the wire started under a soft cap — the dials must still decide the route")
+		if err := preflightWithVars(t, soft, ctx, wf, single); err == nil {
+			t.Error("a single review whose merge dials were pointed AT the wire started under a soft cap — the dials must still decide the route")
 		}
 	})
 }
@@ -206,10 +201,12 @@ func TestReviewPrTheTwoPacersEvaluationBound(t *testing.T) {
 		vars  map[string]any
 		armed int
 	}{
-		{"a mono-gpt launch arms the gpt pacer alone", map[string]any{"mono_family": "gpt", "review_mode": "mono", "review_tier": "guard"}, 1},
-		{"a mono-claude launch arms the claude pacer alone", map[string]any{"mono_family": "claude", "review_mode": "mono", "review_tier": "guard"}, 1},
-		{"the audit tier arms both", map[string]any{"mono_family": "gpt", "review_tier": "audit"}, 2},
-		{"an explicit dual arms both", map[string]any{"mono_family": "gpt", "review_mode": "dual"}, 2},
+		{"a single launch arms the reviewer pacer alone", map[string]any{"review_mode": "single", "review_tier": "guard"}, 1},
+		// The glance tier routes to `reviewer_glance`, which neither pacer
+		// watches: a glance review arms none (unchanged by the role rename).
+		{"a single glance launch arms no pacer", map[string]any{"review_mode": "single", "review_tier": "glance"}, 0},
+		{"the audit tier arms both", map[string]any{"review_mode": "single", "review_tier": "audit"}, 2},
+		{"a paired launch arms both", map[string]any{"review_mode": "paired"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			open := wf.LaunchVarEdgeFilter(tc.vars)

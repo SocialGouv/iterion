@@ -1,6 +1,11 @@
 # ADR-052 — Mono/dual review topology for bi-model review-loop bots
 
-Status: **accepted → implemented** (2026-07-01). Pilot
+Status: **accepted → implemented** (2026-07-01), **amended by
+[ADR-169](169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)
+(2026-11-18)**: the modes are renamed `single | paired`, the `mono_family`
+var is retired (a role's family is a routing choice, not a launch var), and
+the bots that declare the topology today are `review-pr` and `evolve` —
+the campaign bots this record piloted on no longer carry the vars. Pilot
 (branch-improve-loop) + rollout to whole-improve-loop, feature-dev,
 docs-refresh, secured-renovacy; resolution wired on the CLI, studio/API,
 and dispatcher launch surfaces. Live `iterion bench asymptote` +

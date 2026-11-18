@@ -554,6 +554,13 @@ func TestReviewPR_ConvergeDegradesOnAFork(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("ITERION_HOME", t.TempDir())
 			t.Setenv("ANTHROPIC_API_KEY", "bench-key")
+			// The bench stands in for the claude_code CLI: its converge row
+			// must run on that CLI, so the merge step's three dials are
+			// pointed at the claude slot (ADR-169 made claw + an `openai/…`
+			// model its default, which would dial OpenAI for real here).
+			t.Setenv("ITERION_VIBE_BACKEND_EMIT_GPT", "claude_code")
+			t.Setenv("ITERION_VIBE_MODEL_EMIT_GPT", "claude-opus-5-5")
+			t.Setenv("ITERION_VIBE_PROVIDER_EMIT_GPT", "anthropic")
 			ws := t.TempDir()
 			storeDir := t.TempDir()
 			st, err := store.New(t.TempDir())

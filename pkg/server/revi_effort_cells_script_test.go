@@ -247,6 +247,10 @@ func cloneBlock(t *testing.T, p *llmroute.Policy) llmroute.Policy {
 	return out
 }
 
+// extraCellSelector names a cell nobody ships: the script must preserve the
+// cells it did not write, whatever they point at.
+const extraCellSelector = "review-pr/reviewer#glm"
+
 func withExtraCell(t *testing.T, p *llmroute.Policy, sel string) llmroute.Policy {
 	out := cloneBlock(t, p)
 	out.Overrides = append(out.Overrides, llmroute.Override{Selector: sel, Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"})
@@ -378,7 +382,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 	// claim it.
 	elsewhere := cloneBlock(t, &prod)
 	for i, o := range elsewhere.Overrides {
-		if o.Selector == "review-pr/reviewer_claude" {
+		if o.Selector == "review-pr/reviewer_alternate" {
 			elsewhere.Overrides[i].Backend = "claude_code"
 			elsewhere.Overrides[i].Provider = "anthropic"
 			elsewhere.Overrides[i].Model = "claude-opus-5-5"
@@ -444,9 +448,9 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		reset()
 		b := filepath.Join(dir, "moved")
 		in.run("backup", "--dir", b)
-		in.write("t2", i2, withExtraCell(t, &prod, "review-pr/reviewer_gpt#glm"))
+		in.write("t2", i2, withExtraCell(t, &prod, "review-pr/reviewer#glm"))
 		out, code, sent := in.run("apply", "--dir", b, "--only", i2, "--yes")
-		if code == 0 || sent != 0 || !hasCell(in.integ(i2).Routing, "review-pr/reviewer_gpt#glm") {
+		if code == 0 || sent != 0 || !hasCell(in.integ(i2).Routing, "review-pr/reviewer#glm") {
 			t.Fatalf("apply on a moved block exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
@@ -459,7 +463,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		base := in.gets["t2"]
 		in.beforeG["t2"] = func(n int) {
 			if n == base+2 { // the integration's own read, after discovery's
-				in.write("t2", i2, withExtraCell(t, &prod, "review-pr/converge_gpt#glm"))
+				in.write("t2", i2, withExtraCell(t, &prod, extraCellSelector))
 			}
 		}
 		in.mu.Unlock()
@@ -467,7 +471,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.mu.Lock()
 		delete(in.beforeG, "t2")
 		in.mu.Unlock()
-		if code == 0 || sent != 0 || !hasCell(in.integ(i2).Routing, "review-pr/converge_gpt#glm") {
+		if code == 0 || sent != 0 || !hasCell(in.integ(i2).Routing, extraCellSelector) {
 			t.Fatalf("apply after a concurrent write exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
@@ -497,7 +501,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, prod)
 		in.run("apply", "--dir", b, "--only", i1, "--yes")
 		in.mu.Lock()
-		in.rewrite[i1] = func(p llmroute.Policy) llmroute.Policy { return withExtraCell(t, &p, "review-pr/reviewer_gpt#glm") }
+		in.rewrite[i1] = func(p llmroute.Policy) llmroute.Policy { return withExtraCell(t, &p, "review-pr/reviewer#glm") }
 		in.mu.Unlock()
 		out, code, _ = in.run("restore", "--dir", b, "--only", i1, "--yes")
 		in.mu.Lock()
@@ -552,17 +556,17 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		b := filepath.Join(dir, "restore")
 		in.run("backup", "--dir", b)
 		in.run("apply", "--dir", b, "--only", i1, "--yes")
-		later := withExtraCell(t, in.integ(i1).Routing, "review-pr/reviewer_gpt#glm")
+		later := withExtraCell(t, in.integ(i1).Routing, "review-pr/reviewer#glm")
 		in.write("t1", i1, later)
-		in.write("t2", i2, withExtraCell(t, &prod, "review-pr/converge_gpt#glm"))
+		in.write("t2", i2, withExtraCell(t, &prod, extraCellSelector))
 		out, code, sent := in.run("restore", "--dir", b, "--all", "--yes")
 		if code != 0 || sent != 1 {
 			t.Fatalf("restore --all exited %d after %d PATCH(es), want one (the applied integration):\n%s", code, sent, out)
 		}
-		if e := blockEfforts(in.integ(i1).Routing); len(e) != 0 || !hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt#glm") {
-			t.Errorf("after restore i1 carries efforts %v, later cell kept=%v", e, hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt#glm"))
+		if e := blockEfforts(in.integ(i1).Routing); len(e) != 0 || !hasCell(in.integ(i1).Routing, "review-pr/reviewer#glm") {
+			t.Errorf("after restore i1 carries efforts %v, later cell kept=%v", e, hasCell(in.integ(i1).Routing, "review-pr/reviewer#glm"))
 		}
-		if !hasCell(in.integ(i2).Routing, "review-pr/converge_gpt#glm") {
+		if !hasCell(in.integ(i2).Routing, extraCellSelector) {
 			t.Errorf("restore rewrote i2, which apply never touched, dropping its later cell")
 		}
 		in.run("apply", "--dir", b, "--only", i2, "--yes") // refused: moved since the backup
@@ -570,19 +574,19 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.run("apply", "--dir", b, "--only", i2, "--yes")
 		changed := cloneBlock(t, in.integ(i2).Routing)
 		for i := range changed.Overrides {
-			if changed.Overrides[i].Selector == "review-pr/reviewer_claude" {
+			if changed.Overrides[i].Selector == "review-pr/reviewer_alternate" {
 				changed.Overrides[i].Effort = "xhigh"
 			}
 		}
 		in.write("t2", i2, changed)
 		out, code, sent = in.run("restore", "--dir", b, "--only", i2, "--yes")
-		if code == 0 || sent != 0 || blockEfforts(in.integ(i2).Routing)["review-pr/reviewer_claude"] != "xhigh" {
+		if code == 0 || sent != 0 || blockEfforts(in.integ(i2).Routing)["review-pr/reviewer_alternate"] != "xhigh" {
 			t.Fatalf("restore over an effort someone changed exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
 	t.Run("an effort carried before the backup comes back on restore", func(t *testing.T) {
 		reset()
-		seeded := withCell(t, &prod, "review-pr/reviewer_claude", func(o *llmroute.Override) { o.Effort = "medium" })
+		seeded := withCell(t, &prod, "review-pr/reviewer_alternate", func(o *llmroute.Override) { o.Effort = "medium" })
 		in.write("t1", i1, seeded)
 		b := filepath.Join(dir, "seeded")
 		if out, code, _ := in.run("backup", "--dir", b); code != 0 {
@@ -592,8 +596,8 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatalf("apply exited %d, efforts %v:\n%s", code, blockEfforts(in.integ(i1).Routing), out)
 		}
 		out, code, sent := in.run("restore", "--dir", b, "--only", i1, "--yes")
-		if got := blockEfforts(in.integ(i1).Routing); code != 0 || sent != 1 || !sameEfforts(got, map[string]string{"review-pr/reviewer_claude": "medium"}) {
-			t.Fatalf("restore exited %d after %d PATCH(es), efforts %v, want reviewer_claude back to medium:\n%s", code, sent, got, out)
+		if got := blockEfforts(in.integ(i1).Routing); code != 0 || sent != 1 || !sameEfforts(got, map[string]string{"review-pr/reviewer_alternate": "medium"}) {
+			t.Fatalf("restore exited %d after %d PATCH(es), efforts %v, want reviewer_alternate back to medium:\n%s", code, sent, got, out)
 		}
 	})
 
@@ -614,7 +618,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		if again, _ := os.ReadFile(path); string(again) != string(first) {
 			t.Fatalf("the second backup rewrote %s:\n%s\nwas\n%s", path, again, first)
 		}
-		in.write("t1", i1, withExtraCell(t, in.integ(i1).Routing, "review-pr/reviewer_gpt#glm"))
+		in.write("t1", i1, withExtraCell(t, in.integ(i1).Routing, "review-pr/reviewer#glm"))
 		out, code, _ = in.run("backup", "--dir", b)
 		if again, _ := os.ReadFile(path); code == 0 || !strings.Contains(out, "DIFFERENT backup") || string(again) != string(first) {
 			t.Fatalf("a backup over a block that moved exited %d, file kept=%v:\n%s", code, string(again) == string(first), out)
@@ -638,10 +642,10 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		b := filepath.Join(dir, "update")
 		in.run("backup", "--dir", b)
 		in.run("apply", "--dir", b, "--only", i1, "--yes")
-		updated := updatedFixture(t, "review-pr/reviewer_claude", "medium")
+		updated := updatedFixture(t, "review-pr/reviewer_alternate", "medium")
 		out, code, sent := in.runWith(updated, "apply", "--dir", b, "--only", i1, "--yes")
-		if code != 0 || sent != 1 || blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"] != "medium" {
-			t.Fatalf("the updated fixture's apply exited %d after %d PATCH(es), reviewer_claude %q:\n%s", code, sent, blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"], out)
+		if code != 0 || sent != 1 || blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_alternate"] != "medium" {
+			t.Fatalf("the updated fixture's apply exited %d after %d PATCH(es), reviewer_alternate %q:\n%s", code, sent, blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_alternate"], out)
 		}
 		out, code, _ = in.runWith(updated, "restore", "--dir", b, "--only", i1, "--yes")
 		if e := blockEfforts(in.integ(i1).Routing); code != 0 || len(e) != 0 {
@@ -670,7 +674,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		base := in.gets["t2"]
 		in.beforeG["t2"] = func(n int) {
 			if n == base+2 { // the integration's own read, after discovery's
-				in.write("t2", i2, withCell(t, &prod, "review-pr/reviewer_claude", reRouted))
+				in.write("t2", i2, withCell(t, &prod, "review-pr/reviewer_alternate", reRouted))
 			}
 		}
 		in.mu.Unlock()
@@ -678,7 +682,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.mu.Lock()
 		delete(in.beforeG, "t2")
 		in.mu.Unlock()
-		if code == 0 || sent != 0 || !strings.Contains(out, "no longer a target: partial: no gateway cell for review-pr/reviewer_claude") {
+		if code == 0 || sent != 0 || !strings.Contains(out, "no longer a target: partial: no gateway cell for review-pr/reviewer_alternate") {
 			t.Fatalf("apply on a block re-routed after the listing exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
@@ -688,10 +692,10 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		b := filepath.Join(dir, "rerouted")
 		in.run("backup", "--dir", b)
 		in.run("apply", "--dir", b, "--only", i1, "--yes")
-		in.write("t1", i1, withCell(t, in.integ(i1).Routing, "review-pr/reviewer_claude", reRouted))
+		in.write("t1", i1, withCell(t, in.integ(i1).Routing, "review-pr/reviewer_alternate", reRouted))
 		out, code, sent := in.run("restore", "--dir", b, "--only", i1, "--yes")
-		if code == 0 || sent != 0 || !strings.Contains(out, "review-pr/reviewer_claude carries the fixture's effort 'high' but is not routed to the gateway") ||
-			blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_claude"] != "high" {
+		if code == 0 || sent != 0 || !strings.Contains(out, "review-pr/reviewer_alternate carries the fixture's effort 'high' but is not routed to the gateway") ||
+			blockEfforts(in.integ(i1).Routing)["review-pr/reviewer_alternate"] != "high" {
 			t.Fatalf("restore over a re-routed cell exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 		if out, code, _ := in.run("verify", "--only", i1); code != 1 || !strings.Contains(out, "RE-ROUTED   group/api ("+i1+")") {

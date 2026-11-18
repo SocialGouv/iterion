@@ -905,15 +905,12 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		}
 	}
 
-	// Resolve the credential-derived topology vars (review_mode +
-	// mono_family, plan_review, llm_families; no-op unless the workflow
-	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
-	// launches auto-detect providers too. The spec override (studio toggle)
-	// wins over a --var review_mode; both win over auto.
-	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
-		s.dropRunLog(runID)
-		return nil, fmt.Errorf("refusing to launch: %w", err)
-	} else if inj.Summary() != "" {
+	// Resolve the credential-derived topology vars (review_mode,
+	// plan_review, llm_families; no-op unless the workflow declares the
+	// matching var). Mirrors the CLI so studio/API/dispatcher launches
+	// resolve the same way. The spec override (studio toggle) wins over a
+	// --var review_mode; both win over auto.
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
 		runLogger.Info("%s", inj.Summary())
 	}
 
@@ -1269,20 +1266,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		closed := make(chan struct{})
 		close(closed)
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
-	}
-
-	// The review family this run froze at launch, judged against THIS host's
-	// credentials — the same reading its launch took (InjectAll above, from
-	// detect.Detect), applied at the one other moment that can still refuse.
-	// Read-only: the run's inputs stay the launch's, byte for byte.
-	//
-	// Below the cloud branch on purpose. A queued run's credentials are the
-	// ones its bundle sealed, not this server's environment, so SubmitResume
-	// judges its own there; certifying a cloud resume against a host
-	// detection report would certify the wrong set entirely. And above every
-	// local write below, so a refused resume persists nothing.
-	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.InventoryFromReport(detect.Detect(parent))); err != nil {
-		return nil, fmt.Errorf("refusing to resume: %w", err)
 	}
 
 	// Local paths (detached subprocess, in-process): a raised cap is

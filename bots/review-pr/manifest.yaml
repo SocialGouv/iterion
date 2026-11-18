@@ -546,11 +546,12 @@ produces:
     # declared cost of the fallback and the digest says so ("threshold, cap
     # and cross-confirmation were not applied"); an un-merged set beats no
     # set at all. The de-dup is by anchor and keeps the FIRST copy, so
-    # `converge` leading is what gives a finding both families raised its
+    # `converge` leading is what gives a finding both reviewers raised its
     # merged form — its bumped severity and its cross-confirmed flag —
-    # rather than a reviewer's raw one. Both twins are listed because
-    # `mono_family` decides which of them merged.
-    fallback_nodes: [converge, converge_gpt, merge_reviews]
+    # rather than a reviewer's raw one. `merge_reviews` follows: when the
+    # merge step itself is what failed, the collector's per-role set is the
+    # un-merged truth worth handing off.
+    fallback_nodes: [converge, merge_reviews]
     # Carries reviewed_sha, so a consumer is told when the branch moved under
     # the findings instead of acting on stale line anchors.
     anchor_node: diff_precheck

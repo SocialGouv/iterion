@@ -761,9 +761,9 @@ already sit at the top of the chain. A bot that escalates effort per branch is
 therefore flattened by a run-wide `*` override — which is what asking for one
 means. See [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
-This composes with the mono/dual `--review-mode` topology (ADR-052): the
-review mode chooses *which family* runs (one or two), the override chooses
-*which model/backend* each running node uses. A run launched through the studio / HTTP
+This composes with the `--review-mode` topology (ADR-052, amended by
+ADR-169): the review mode chooses *how many* reviewers run (one or two), the
+override chooses *which model/backend* each running node uses. A run launched through the studio / HTTP
 API re-applies its launch-time model/backend rules on resume (they are read
 back off the run document) — on every launch surface, `iterion run` included,
 so the flags do not have to be repeated on `iterion resume`. `--compress` remains
@@ -1767,18 +1767,13 @@ on the forge integration (or the team's policy):
 
 ```json
 {"overrides": [
-  {"selector": "review-pr/converge",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/converge_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_alternate",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_alternate_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/converge#glm",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_alternate#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_alternate_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/supervisor:pacer",     "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "revi-converse/converse_agent",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge",              "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_glance",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer",       "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer_gpt",   "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
 ]}
 ```

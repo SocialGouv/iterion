@@ -988,10 +988,9 @@ export interface CreateRunRequest {
   // pauses for human approval on any tool not allow-listed; "deny" hard-
   // blocks it. See docs/permissions.md.
   permission?: string;
-  // Run-level mono/dual review-topology override ("auto" | "mono" |
-  // "dual") for bots that declare a `review_mode` var. Omitted/"auto"
-  // resolves from the providers detected at launch. See
-  // pkg/reviewtopology.
+  // Run-level review-topology override ("auto" | "single" | "paired") for
+  // bots that declare a `review_mode` var. Omitted/"auto" resolves to the
+  // single reviewer. See pkg/reviewtopology and ADR-169.
   review_mode?: string;
   // Run-level budget-cap overrides — the HTTP twin of the CLI --max-*
   // flags. Non-zero fields win over the workflow's `budget:` block;

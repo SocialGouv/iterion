@@ -19,9 +19,9 @@ import (
 //
 // Four properties, each of which has a way of being lost silently:
 //
-//   - BOTH nodes of the claude slot carry the route. topology picks exactly
-//     one of full-strength / glance per run, so a route on one of them covers
-//     half the runs and looks correct in every test that only reads the other.
+//   - the node carrying the route is the claude slot's (`reviewer_alternate`;
+//     the primary reviewer and the merge step run on claw, where a provider
+//     hint is read nowhere).
 //   - the route carries NO `backend:`. This is the one that already went
 //     wrong once. `provider:` is a hint, and providerFallbackEligible admits
 //     exactly one backend — claude_code. Pin the element to claw (the
@@ -44,10 +44,9 @@ import (
 //     through whatever the filter says (elementAccepts), which is what hides
 //     the omission from a casual test.
 func TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait(t *testing.T) {
-	// converge rides EVERY path: with no second server a capped forfait
-	// costs the whole review even when the reviewer was rescued, and unpinned
-	// its claude id goes to the z.ai facade.
-	assertAnthropicPinnedWithGlmRoute(t, "review-pr", "reviewer_alternate", "reviewer_alternate_glance", "converge")
+	// The alternate reviewer is the claude slot now; the merge step it used
+	// to share a route with runs on claw (no provider hint to pin).
+	assertAnthropicPinnedWithGlmRoute(t, "review-pr", "reviewer_alternate")
 }
 
 // Revi's conversational sibling answers `/revi <question>` on the same claude

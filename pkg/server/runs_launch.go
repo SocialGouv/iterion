@@ -186,7 +186,7 @@ type launchRunRequest struct {
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
 	Permission string `json:"permission,omitempty"`
-	// ReviewMode is the run-level mono/dual review-topology override
+	// ReviewMode is the run-level review-topology override (auto|single|paired)
 	// ("auto"|"mono"|"dual") for bi-model review-loop bots. Empty/"auto"
 	// resolves from detected providers at launch. See pkg/reviewtopology.
 	ReviewMode string `json:"review_mode,omitempty"`

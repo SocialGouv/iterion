@@ -63,16 +63,20 @@ fed back with "do NOT re-raise without new evidence";
 `loop.<name>.previous_output` for monotonic verdicts; bounded
 `max_iterations` as the backstop, not the design goal.
 
-**Mono/dual review topology (ADR-052) — MONO IS THE DEFAULT.**
+**Review topology (ADR-052, amended by ADR-169) — SINGLE IS THE DEFAULT.**
 [pkg/reviewtopology](../../../pkg/reviewtopology/resolve.go) resolves
-`review_mode` (`auto|mono|dual`) + `mono_family` at LAUNCH and injects
-them on every surface (CLI `iterion run --review-mode`, studio/API,
-dispatcher bot_arg) — but ONLY into bots that declare a `review_mode`
-var (`InjectIfDeclared`). **`auto` resolves to `mono`**, even when both
-families are available: dual costs a full reviewer pass per family on
-EVERY run, and with the merge gate wired every push re-reviews, so
-cross-family confirmation is a deliberate spend (`--var review_mode=dual`)
-rather than something a host opts into by having two providers configured.
+`review_mode` (`auto|single|paired`) at LAUNCH and injects it on every
+surface (CLI `iterion run --review-mode`, studio/API, dispatcher bot_arg) —
+but ONLY into bots that declare a `review_mode` var
+(`InjectReviewModeIfDeclared`). **`auto` resolves to `single`**, on every
+host: `paired` costs a full second reviewer pass on EVERY run, and with the
+merge gate wired every push re-reviews, so cross-family confirmation is a
+deliberate spend (`--var review_mode=paired`) rather than something a host
+opts into by having two credentials configured. The nodes name ROLES
+(`reviewer`, `reviewer_alternate`, `converge`); which backend and model
+serves each is the bot's literal plus the `llmroute` cells over it, never a
+launch var — the retired `mono`/`dual` spellings are still read as
+`single`/`paired` while integrations migrate.
 The catalog bots that still run family reviewers — `review-pr` (Revi) and
 `evolve` — declare the vars and gate their fan-out behind a `condition`
 router (never `round_robin`, and never `when` guards on a `fan_out_all`

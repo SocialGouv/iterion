@@ -84,8 +84,7 @@ func TestSubmitLaunchInjectsTopologyFromSealedBundle(t *testing.T) {
 
 	for name, want := range map[string]string{
 		"plan_review":  "on",
-		"review_mode":  "mono",
-		"mono_family":  "claude",
+		"review_mode":  "single",
 		"llm_families": "claude,gpt",
 	} {
 		if got := r.Inputs[name]; got != want {
@@ -110,7 +109,7 @@ func TestSubmitLaunchLeavesTopologyUntouchedWithoutCredentials(t *testing.T) {
 	wf := topologyWorkflow("review_mode", "plan_review")
 	r, msg := launchTopologyRun(t, p, wf, "run-env")
 
-	for _, name := range []string{"review_mode", "plan_review", "mono_family"} {
+	for _, name := range []string{"review_mode", "plan_review"} {
 		if _, ok := r.Inputs[name]; ok {
 			t.Errorf("run doc Inputs[%s] injected despite an empty bundle: %+v", name, r.Inputs)
 		}
@@ -120,28 +119,25 @@ func TestSubmitLaunchLeavesTopologyUntouchedWithoutCredentials(t *testing.T) {
 	}
 }
 
-// The same skip, read from the OPERATOR's side: a pin the launch spelled
+// The same skip, read from the OPERATOR's side: a value the launch spelled
 // survives it. An empty bundle rides the runner's env fallback, so the
 // publisher judges no topology — and because nothing re-judges the vars on
 // the pod (the runner hands engine.Run the message's own Vars), an explicit
-// `review_mode=dual --var mono_family=gpt` reaches the engine WITH its pin.
-// On review-pr that map merges on `converge_gpt`
-// (bots.TestReviewPrTheMergeGuardFollowsTheLaunchPinNotTheTopology holds the
-// graph half), which is why the bot's README, its manifest, lib/nodes.bot and
-// the coverage matrix name this lane as the exception to "a dual launch loses
-// the pin" instead of stating that drop as an absolute.
+// `review_mode=dual` reaches the engine verbatim. The engine's own resolver
+// reads it as `paired` at the node, so the retired spelling is safe on this
+// lane too (reviewtopology.retiredModes).
 //
-// The lane arm of the claim, not a second copy of the guard above: the arm is
-// that `len(creds.families.Families()) > 0` decides whether reviewtopology
-// runs at all.
-func TestSubmitLaunchKeepsAnExplicitPinWhenTheBundleResolvedNothing(t *testing.T) {
+// The lane arm of the claim, not a second copy of the injection above: the
+// arm is that `len(creds.families.Families()) > 0` decides whether
+// reviewtopology runs at all.
+func TestSubmitLaunchKeepsAnExplicitModeWhenTheBundleResolvedNothing(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
 	p := &Publisher{store: st, logger: testLogger()}
-	wf := topologyWorkflow("review_mode", "mono_family")
-	launched := map[string]string{"review_mode": "dual", "mono_family": "gpt"}
+	wf := topologyWorkflow("review_mode")
+	launched := map[string]string{"review_mode": "paired"}
 	r, msg := launchTopologyRunWithVars(t, p, wf, "run-env-pin", launched)
 
 	for name, want := range launched {

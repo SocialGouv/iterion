@@ -50,10 +50,10 @@ func TestReviewPrGPTMergeWithRepositoryMCP(t *testing.T) {
 	if !slices.Contains(wf.ActiveMCPServers, "repo_probe") {
 		t.Fatal("fixture did not activate the repository MCP server on the workflow")
 	}
-	if servers := ir.NodeActiveMCPServers(wf.Nodes["reviewer_gpt"]); len(servers) != 0 {
-		t.Fatalf("reviewer_gpt inherits %v — the S6 opt-out regressed, and this fixture's premise with it", servers)
+	if servers := ir.NodeActiveMCPServers(wf.Nodes["reviewer"]); len(servers) != 0 {
+		t.Fatalf("reviewer inherits %v — the S6 opt-out regressed, and this fixture's premise with it", servers)
 	}
-	node := wf.Nodes["converge_gpt"]
+	node := wf.Nodes["converge"]
 	f, err := extractBackendFields(node)
 	if err != nil {
 		t.Fatal(err)

@@ -307,7 +307,7 @@ func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
 // The list cannot rot in any of the three directions.
 func TestEveryCatalogueLLMNodeIsOutOfTheClassOnlyWhereNamed(t *testing.T) {
 	bounded := map[string]string{
-		"evolve/review_gpt": "backend claw with `tools: []`: on claw the list IS the node's ToolDefs, so an empty one resolves to zero tools",
+		"evolve/reviewer": "backend claw with `tools: []`: on claw the list IS the node's ToolDefs, so an empty one resolves to zero tools",
 		// The examples, all five on claw, where the declaration IS the bound.
 		// The runtime's own appends resolve outside the IR and none of them
 		// is read here, so an example that turns `auto_memory:` on — which

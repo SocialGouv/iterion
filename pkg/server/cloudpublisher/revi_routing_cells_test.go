@@ -39,7 +39,10 @@ import (
 
 // updateReviWalkGolden regenerates testdata/revi_walk_default.golden.json.
 // Only ever run on a tree whose readers are the reference: the golden is the
-// statement "a default launch reads what origin/main read".
+// statement "a cell-less launch reads what this tree's default walk says",
+// so any move of the default routes — the ADR-169 role rename moved the
+// primary reviewer and the merge onto claw — is reviewed as a diff instead
+// of passing unnoticed.
 var updateReviWalkGolden = flag.Bool("update-revi-walk-golden", false, "rewrite the Revi default-walk golden")
 
 // reviBots are the two shipped Revi bundles.
@@ -191,7 +194,7 @@ func TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead(t *testing.T) {
 		t.Fatalf("read golden: %v", err)
 	}
 	if string(want) != string(raw) {
-		t.Fatalf("the default launch of the shipped Revi bots no longer reads what origin/main read — a cell-less run must not move.\n--- want (%s)\n%s\n--- got\n%s", golden, want, raw)
+		t.Fatalf("the default launch of the shipped Revi bots no longer reads what the golden records — a route change must be a reviewed diff (-update-revi-walk-golden).\n--- want (%s)\n%s\n--- got\n%s", golden, want, raw)
 	}
 	// The golden is a statement about real routes, not an empty file.
 	if w := got["review-pr"].Walk; !slices.Contains(w.Providers, "anthropic") || !slices.Contains(w.Providers, "zai") {
@@ -256,14 +259,14 @@ const reviGatewayModelID = "openai_compatible/scaleway/deepseek-v4.1-flash"
 // reviPrimarySites are each bot's primary LLM sites — the node routes the
 // strict team_gateway refusal reads (DecidedPrimary).
 var reviPrimarySites = map[string][]string{
-	"review-pr":     {"converge", "converge_gpt", "reviewer_claude", "reviewer_claude_glance", "reviewer_gpt", "reviewer_gpt_glance"},
+	"review-pr":     {"converge", "reviewer", "reviewer_alternate", "reviewer_glance"},
 	"revi-converse": {"converse_agent"},
 }
 
 // reviRescueAndSupervisorSites are each bot's other LLM sites: the GLM
 // rescues and the pacers.
 var reviRescueAndSupervisorSites = map[string][]string{
-	"review-pr":     {"converge#glm", "reviewer_claude#glm", "reviewer_claude_glance#glm", "supervisor:pacer", "supervisor:pacer_gpt"},
+	"review-pr":     {"reviewer_alternate#glm", "supervisor:pacer", "supervisor:pacer_gpt"},
 	"revi-converse": {"converse_agent#glm"},
 }
 
@@ -541,31 +544,28 @@ func TestReviShippedBots_EveryNodeTheCellsMoveToClawDeclaresItsTools(t *testing.
 	}
 }
 
-// TestReviShippedBots_TheMonoClaudeWalkRoutesNoSurfacelessNodeToClaw is the
-// walk half of #3283 S9 (D7): under the routing cells AND the launch pin the
-// gateway integrations resolve mono-claude runs with (`mono_family=claude`),
-// the merge that actually runs is `converge` — the node the block routes to
-// claw — and NO node the walk reaches lands on claw without a declared
-// surface. Before S9 this walk exempted `converge` by name, because the
-// cells routed it to claw tool-less and the prod runs merged there with no
-// report (F4); the twin it exempted for (`converge_gpt`, the mono-gpt merge)
-// is pruned by the same pin that picks `converge`.
-func TestReviShippedBots_TheMonoClaudeWalkRoutesNoSurfacelessNodeToClaw(t *testing.T) {
+// TestReviShippedBots_TheGatewaysWalkRoutesNoSurfacelessNodeToClaw is the
+// walk half of #3283 S9 (D7): under the routing cells, a `single` launch
+// reaches `reviewer` and `converge` — both routed to claw by the block — and
+// NO node the walk reaches lands on claw without a declared surface. Before
+// S9 this walk exempted `converge` by name, because the cells routed it to
+// claw tool-less and the prod runs merged there with no report (F4).
+func TestReviShippedBots_TheGatewaysWalkRoutesNoSurfacelessNodeToClaw(t *testing.T) {
 	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
 	freezeCatalogBotDials(t, "review-pr")
 	wf := compileShippedBot(t, "review-pr")
 
-	// The pin's walk: mono on the claude family. The merge is `converge`,
-	// the reviewer `reviewer_claude`; the gpt twins are unreachable.
-	open := wf.LaunchVarEdgeFilter(map[string]any{"review_mode": "mono", "mono_family": "claude"})
+	// The single walk: `reviewer` and `converge`; the alternate reviewer is
+	// only on a paired run's topology.
+	open := wf.LaunchVarEdgeFilter(map[string]any{"review_mode": "single"})
 	reaches := func(id string) bool {
 		return wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id })
 	}
 	if !reaches("converge") {
-		t.Fatal("mono_family=claude does not reach converge — the merge this witness owes is not the one that runs")
+		t.Fatal("a single launch does not reach converge — the merge this witness owes is not the one that runs")
 	}
-	if reaches("converge_gpt") {
-		t.Error("mono_family=claude reaches converge_gpt — the pin prunes nothing, so this walk judges a route no run takes")
+	if reaches("reviewer_alternate") {
+		t.Error("a single launch reaches reviewer_alternate — only the paired fan-out does, so this walk judges a route no run takes")
 	}
 
 	// The cells' backend per node, the way dispatch resolves it.
@@ -592,13 +592,13 @@ func TestReviShippedBots_TheMonoClaudeWalkRoutesNoSurfacelessNodeToClaw(t *testi
 		judged++
 		switch {
 		case !toolcatalog.ToolsDeclared(llm.GetTools()):
-			t.Errorf("%q routes to claw under the cells on the mono-claude walk and declares no tools: list — the exact F4 shape", id)
+			t.Errorf("%q routes to claw under the cells on the single walk and declares no tools: list — the exact F4 shape", id)
 		case len(llm.GetTools()) == 0:
-			t.Errorf("%q routes to claw under the cells on the mono-claude walk with an empty tools: list", id)
+			t.Errorf("%q routes to claw under the cells on the single walk with an empty tools: list", id)
 		}
 	}
 	if judged < 2 {
-		t.Fatalf("the mono-claude walk judged %d claw-routed node(s), want at least reviewer_claude and converge", judged)
+		t.Fatalf("the single walk judged %d claw-routed node(s), want at least reviewer and converge", judged)
 	}
 	if backendOf["converge"] != "claw" {
 		t.Errorf("converge routes %q under the cells, want claw — the route D7 owes a declared surface for is not the one this walk reads", backendOf["converge"])

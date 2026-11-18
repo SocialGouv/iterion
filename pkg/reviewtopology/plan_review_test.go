@@ -1,21 +1,18 @@
 package reviewtopology
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 )
 
-// fams builds an inventory whose named families are backed AND servable —
-// the tests sharing it predate the route publication (#1221) and judge the
-// family level; the route-level states get their own tests (routes_test.go).
+// fams builds an inventory whose named families are backed.
 func fams(names ...string) FamilyInventory {
 	var f routeFacts
 	for _, n := range names {
 		switch n {
 		case FamilyClaude:
-			f.claudeCodeCLI, f.claudeForfait = true, true
+			f.claudeForfait = true
 		case FamilyGPT:
 			f.openaiCred = true
 		}
@@ -122,28 +119,6 @@ func TestInjectPlanReviewIfDeclared(t *testing.T) {
 	}
 }
 
-// A dual resolution has no mono family; writing mono_family="" violates
-// the [enum: "claude","gpt"] review-pr/evolve declare and kills the run
-// at Engine.Run's validateVarConstraints gate before its first node (proven
-// live: `iterion run bots/review-pr/main.bot --var review_mode=dual`).
-// Absent = the bot's own default, which is what dual must leave behind.
-func TestInjectDualDoesNotWriteEmptyMonoFamily(t *testing.T) {
-	inputs := map[string]any{}
-	mode, family, injected, _ := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "dual")
-	if !injected || mode != ModeDual || family != "" {
-		t.Fatalf("unexpected resolution: mode=%q family=%q injected=%v", mode, family, injected)
-	}
-	if v, present := inputs[VarMonoFamily]; present && v == "" {
-		t.Fatalf("mono_family written as %q — violates the declared enum; must be left absent", v)
-	}
-	// Same hole via mono on a credential-less host: preferredFamily is "".
-	inputs = map[string]any{}
-	InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(), "mono")
-	if v, present := inputs[VarMonoFamily]; present && v == "" {
-		t.Fatalf("mono with no family wrote mono_family=%q — must fail on the missing credential, not the enum gate", v)
-	}
-}
-
 // ITERION_PLAN_REVIEW is the deployment-wide brake for lanes with no
 // per-run surface (webhook/cron on a platform-credentialed cloud): it
 // wins over auto, loses to an explicit --var — and it must FAIL SAFE:
@@ -174,47 +149,6 @@ func TestInjectPlanReviewEnvDefault(t *testing.T) {
 	}
 }
 
-// An operator's explicit --var mono_family wins over the resolver's
-// preference when it names an available family; one no credential serves
-// REFUSES the launch, naming the pinned and the available families — the
-// silent substitution it replaces sent a repo's review gate dark while
-// every run died at its first review node (2026-09-22, #1221).
-func TestInjectMonoFamilyOverrideHonored(t *testing.T) {
-	inputs := map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
-	_, family, _, err := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
-	if err != nil || family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
-		t.Fatalf("explicit mono_family=gpt not honored: family=%q err=%v inputs=%+v", family, err, inputs)
-	}
-	// Pinned onto a family no credential serves: the launch refuses, and
-	// says which families the launch could serve.
-	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
-	_, _, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude), "")
-	if err == nil {
-		t.Fatal("a pin on a family no credential serves must refuse the launch")
-	}
-	if !strings.Contains(err.Error(), `"gpt"`) || !strings.Contains(err.Error(), "claude") {
-		t.Fatalf("the refusal must name the pinned and available families: %v", err)
-	}
-	if _, present := inputs[VarMonoFamily]; !present || inputs[VarMonoFamily] != "gpt" {
-		t.Fatalf("the refusal must leave the inputs untouched: %+v", inputs)
-	}
-	// And on a credential-less launch entirely, the pin still refuses.
-	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
-	_, _, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(), "")
-	if err == nil {
-		t.Fatal("the pin refuses even with no participating family at all")
-	}
-	// An available pin spelled otherwise is honored at the CANONICAL
-	// spelling: the family keys, the declaring bots' var enums and the
-	// router edges' comparisons are all lowercase, and a verbatim "GPT"
-	// would pass here to die at the launch enum gate, after the run exists.
-	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "GPT"}
-	_, family, _, err = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
-	if err != nil || family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
-		t.Fatalf(`a "GPT" pin on an available family must honor "gpt": family=%q inputs=%+v err=%v`, family, inputs, err)
-	}
-}
-
 func TestInjectLLMFamiliesIfDeclared(t *testing.T) {
 	inputs := map[string]any{}
 	if _, injected := InjectLLMFamiliesIfDeclared(wfWithVars(), inputs, fams(FamilyGPT)); injected {
@@ -225,19 +159,5 @@ func TestInjectLLMFamiliesIfDeclared(t *testing.T) {
 	list, injected := InjectLLMFamiliesIfDeclared(wfWithVars(VarLLMFamilies), inputs, fams(FamilyGPT, FamilyClaude))
 	if !injected || list != "claude,gpt" || inputs[VarLLMFamilies] != "claude,gpt" {
 		t.Fatalf("family list wrong: %q %+v", list, inputs)
-	}
-}
-
-func TestInjectAllSummary(t *testing.T) {
-	wf := wfWithVars(VarReviewMode, VarPlanReview, VarLLMFamilies)
-	inputs := map[string]any{}
-	inj, _ := InjectAll(wf, inputs, fams(FamilyClaude, FamilyGPT), "")
-	want := "review topology: mono (family claude) · plan review: on · llm families: claude,gpt"
-	if got := inj.Summary(); got != want {
-		t.Fatalf("Summary = %q, want %q", got, want)
-	}
-	// A workflow declaring none of the vars logs nothing.
-	if s := (Injection{}).Summary(); s != "" {
-		t.Fatalf("empty injection Summary = %q", s)
 	}
 }

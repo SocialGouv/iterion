@@ -292,11 +292,9 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			// filled-slot gate (law 1), same margin predicate constructor
 			// (law 4's parity).
 			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
-				// A mono pin is a credential DEMAND, and only the ATTACHED
-				// tier serves it (the legacy mono-grant tier is deliberately
-				// not widened): the preview asks exactly the wants the
-				// launch's attached walk will ask (ADR-164 parity).
-				attachedWants := append(append([]credpool.Credential{}, withPinnedWants(wants, spec.Launch.Vars, spec.Launch.ReviewMode)...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
+				// The preview asks exactly the wants the launch's attached
+				// walk will ask (ADR-164 parity).
+				attachedWants := append(append([]credpool.Credential{}, wants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
 				// Law 1's gate, exactly as the live walk: a slot tiers 1–4
 				// sealed (or the whitelist holds out) is not asked of the
 				// pool — a candidate the launch would never draw must not
