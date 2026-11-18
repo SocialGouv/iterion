@@ -166,7 +166,7 @@ const PRIMITIVE_LEDGER: LedgerRow[] = [
   { path: "/src/views/Triggers/NewTriggerDialog.tsx", sites: 8, why: WHY.BARE },
   { path: "/src/views/Triggers/ScheduleDialogs.tsx", sites: 5, why: WHY.BARE },
   { path: "/src/views/account/ApiKeys.tsx", sites: 4, why: WHY.BARE },
-  { path: "/src/views/account/SharedQuota.tsx", sites: 7, why: WHY.BARE },
+  { path: "/src/views/account/SharedQuota.tsx", sites: 6, why: WHY.BARE },
   { path: "/src/views/configEditorShell/ShareFields.tsx", sites: 1, why: WHY.BARE },
   { path: "/src/views/integrations/wizard/connect/CreateGitHubAppCard.tsx", sites: 1, why: WHY.BARE },
   { path: "/src/views/integrations/wizard/connect/PatFallback.tsx", sites: 1, why: WHY.BARE },

@@ -672,9 +672,10 @@ pool — full model in [credential-pool.md](credential-pool.md).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/me/pool` | member | Your pledges and what they have served |
-| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
-| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
+| `GET` | `/api/me/pool` | member | Your pledges and what they have served. Each entry carries its `id` (and `key_id` for an api_key pledge) |
+| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list). The body's `key_id` completes an api_key pledge's identity |
+| `DELETE` | `/api/me/pool/entries/{pledge}` | member | Withdraw one pledge by its own id — the only address that names one of two keys of one provider. A pledge of somebody else answers 404 |
+| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw, kept one release as a shim for the id route. Exact for an `oauth` pair; an api_key pair takes `?key_id=`, and without it a single match is withdrawn while several answer 400 |
 | `GET` | `/api/me/pool/history` | member | The runs your quota served |
 | `GET` | `/api/teams/{id}/pool` | team member | The pool's policy. The donor roster rides along only for an org admin/owner (`canManageOrg`) — who lends, and how much they have given, is the contributors' own business |
 | `PUT` | `/api/teams/{id}/pool` | org admin | Set the audience policy deciding who may draw. The pool document is keyed by ORG, so a team admin/owner who is not also an org admin/owner is refused `403` |

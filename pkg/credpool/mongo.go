@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -25,7 +27,9 @@ const (
 	ColAttachments = "pool_attachments"
 )
 
-// EnsureSchema creates every index this package needs, idempotently.
+// EnsureSchema creates every index this package needs and migrates the
+// stores' shapes, idempotently. Both are mandatory at boot: a backfill error
+// aborts it rather than leaving half the pledges addressable under one id.
 func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	specs := []struct {
 		col   string
@@ -79,6 +83,224 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	for _, s := range specs {
 		if _, err := db.Collection(s.col).Indexes().CreateMany(ctx, s.model); err != nil && !mongoutil.IsIndexConflict(err) {
 			return fmt.Errorf("credpool: ensure %s indexes: %w", s.col, err)
+		}
+	}
+	if err := backfillAPIKeyPledgeIDs(ctx, db); err != nil {
+		return fmt.Errorf("credpool: backfill api_key pledge identity: %w", err)
+	}
+	return nil
+}
+
+// backfillAPIKeyPledgeIDs rewrites every api_key pledge stored under the
+// inherited three-segment id onto the key-carrying one, together with the
+// references that point at it. Without it, a write misses the old document
+// and inserts a SECOND pledge for the same key: the broker could lease the
+// same key twice — each with its own concurrency slot and its own ceiling —
+// and the lender's ledger would stop seeing its own spend, so the money cap
+// would stop biting.
+//
+// The order is load-bearing. References move FIRST and the pledge document
+// LAST: a crash then never leaves a pledge addressable under the new id whose
+// leases and ledger still speak the old one (the opposite order would). A
+// second pass over a migrated store matches nothing, so every boot repeats it
+// safely.
+//
+// The walk reads pledge documents as bson.M and never decodes them into a
+// Pledge: the migration rewrites the id, and a typed round trip would drop
+// the columns a newer binary wrote.
+func backfillAPIKeyPledgeIDs(ctx context.Context, db *mongo.Database) error {
+	pledges := db.Collection(colPledges)
+	leases := db.Collection(colLeases)
+	ledger := db.Collection(colLedger)
+
+	// 1. Every api_key pledge whose id does not carry its key.
+	cur, err := pledges.Find(ctx, bson.M{
+		"source": string(SourceAPIKey),
+		"key_id": bson.M{"$exists": true, "$ne": ""},
+	})
+	if err != nil {
+		return fmt.Errorf("list api_key pledges: %w", err)
+	}
+	var pending []struct{ old, want string }
+	for cur.Next(ctx) {
+		var row struct {
+			ID     string `bson:"_id"`
+			UserID string `bson:"user_id"`
+			Ref    string `bson:"ref"`
+			KeyID  string `bson:"key_id"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			_ = cur.Close(ctx)
+			return fmt.Errorf("decode api_key pledge: %w", err)
+		}
+		want := APIKeyPledgeID(row.UserID, row.Ref, row.KeyID)
+		if want == row.ID {
+			continue
+		}
+		pending = append(pending, struct{ old, want string }{old: row.ID, want: want})
+	}
+	if err := cur.Err(); err != nil {
+		_ = cur.Close(ctx)
+		return fmt.Errorf("list api_key pledges: %w", err)
+	}
+	if err := cur.Close(ctx); err != nil {
+		return fmt.Errorf("list api_key pledges: %w", err)
+	}
+
+	for _, m := range pending {
+		// 2. Leases, closed ones included: they are the lender's history and
+		// the source of HeldPledge.
+		if _, err := leases.UpdateMany(ctx,
+			bson.M{"pledge_id": m.old},
+			bson.M{"$set": bson.M{"pledge_id": m.want}},
+		); err != nil {
+			return fmt.Errorf("rehome the leases of %s: %w", m.old, err)
+		}
+		// 3. Ledger rows: their ids are <pledge>|<d|w>|<period>. The anchor
+		// `[dw]` is what makes the walk safe — the new id HAS the old one as
+		// prefix, so an unanchored suffix match would sweep the canonical
+		// pledge's own rows into a bogus `…|d|d|…` id.
+		if err := moveLedgerRows(ctx, ledger, m.old, m.want); err != nil {
+			return err
+		}
+		// 4. The pledge document last: insert the new _id, then drop the old
+		// one. Mongo rejects an update that rewrites _id, and insert-then-
+		// delete is the shape that leaves nothing behind.
+		var doc bson.M
+		if err := pledges.FindOne(ctx, bson.M{"_id": m.old}).Decode(&doc); err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				continue // a concurrent pass moved it; its references are moved
+			}
+			return fmt.Errorf("read pledge %s: %w", m.old, err)
+		}
+		doc["_id"] = m.want
+		if _, err := pledges.InsertOne(ctx, doc); err != nil && !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("insert pledge %s: %w", m.want, err)
+		}
+		if _, err := pledges.DeleteOne(ctx, bson.M{"_id": m.old}); err != nil {
+			return fmt.Errorf("delete pledge %s: %w", m.old, err)
+		}
+	}
+
+	// 5. Self-repair: references an OLD replica wrote under the inherited id
+	// after this pass ran (a rolling deploy), and the aftermath of a crash
+	// between 3 and 4. Every canonical pledge replays the moves under the id
+	// it inherited; nothing matches on a converged store.
+	return repairInheritedReferences(ctx, pledges, leases, ledger)
+}
+
+// moveLedgerRows re-homes every (pledge, period) ledger bucket from oldID to
+// wantID. A bucket that already exists at the destination is KEPT as-is and
+// the old one dropped: summing the two would charge the lender twice for
+// spend a retry moved again.
+func moveLedgerRows(ctx context.Context, ledger *mongo.Collection, oldID, wantID string) error {
+	cur, err := ledger.Find(ctx, bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(oldID) + `\|[dw]\|`}})
+	if err != nil {
+		return fmt.Errorf("list ledger rows of %s: %w", oldID, err)
+	}
+	var rows []bson.M
+	if err := cur.All(ctx, &rows); err != nil {
+		_ = cur.Close(ctx)
+		return fmt.Errorf("decode ledger rows of %s: %w", oldID, err)
+	}
+	if err := cur.Close(ctx); err != nil {
+		return fmt.Errorf("list ledger rows of %s: %w", oldID, err)
+	}
+	for _, row := range rows {
+		id, _ := row["_id"].(string)
+		row["_id"] = wantID + strings.TrimPrefix(id, oldID)
+		if _, err := ledger.InsertOne(ctx, row); err != nil && !mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("move ledger row %s: %w", id, err)
+		}
+		if _, err := ledger.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+			return fmt.Errorf("delete ledger row %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// repairInheritedReferences replays the lease and ledger moves under the
+// three-segment id each canonical api_key pledge inherited.
+//
+// Two guards keep it from handing a reference to the wrong key:
+//
+//   - while a pledge DOCUMENT still sits at the inherited id, the references
+//     there are that document's; the next boot's first pass migrates them
+//     with it.
+//   - a lease says which key it lent (its own credential stamp), so it goes
+//     to the pledge naming that key. Ledger rows name no key at all: with
+//     several keys of one lender they cannot be attributed, so they stay put
+//     — a coin flip between two donors' ceilings is worse than a row nothing
+//     reads.
+func repairInheritedReferences(ctx context.Context, pledges, leases, ledger *mongo.Collection) error {
+	cur, err := pledges.Find(ctx, bson.M{
+		"source": string(SourceAPIKey),
+		"key_id": bson.M{"$exists": true, "$ne": ""},
+	})
+	if err != nil {
+		return fmt.Errorf("list canonical api_key pledges: %w", err)
+	}
+	type canonical struct{ userID, ref, keyID, id string }
+	var all []canonical
+	for cur.Next(ctx) {
+		var raw struct {
+			ID     string `bson:"_id"`
+			UserID string `bson:"user_id"`
+			Ref    string `bson:"ref"`
+			KeyID  string `bson:"key_id"`
+		}
+		if err := cur.Decode(&raw); err != nil {
+			_ = cur.Close(ctx)
+			return fmt.Errorf("decode api_key pledge: %w", err)
+		}
+		if raw.ID != APIKeyPledgeID(raw.UserID, raw.Ref, raw.KeyID) {
+			continue // a legacy row is the first pass's business, not this one's
+		}
+		all = append(all, canonical{userID: raw.UserID, ref: raw.Ref, keyID: raw.KeyID, id: raw.ID})
+	}
+	if err := cur.Err(); err != nil {
+		_ = cur.Close(ctx)
+		return fmt.Errorf("list canonical api_key pledges: %w", err)
+	}
+	if err := cur.Close(ctx); err != nil {
+		return fmt.Errorf("list canonical api_key pledges: %w", err)
+	}
+	for _, c := range all {
+		inherited := PledgeID(c.userID, SourceAPIKey, c.ref, "")
+		if inherited == c.id {
+			continue
+		}
+		// A live legacy document owns the inherited references.
+		n, err := pledges.CountDocuments(ctx, bson.M{"_id": inherited})
+		if err != nil {
+			return fmt.Errorf("count the pledge at %s: %w", inherited, err)
+		}
+		if n > 0 {
+			continue
+		}
+		siblings := 0
+		for _, other := range all {
+			if other.userID == c.userID && other.ref == c.ref {
+				siblings++
+			}
+		}
+		leaseFilter := bson.M{"pledge_id": inherited, "key_id": c.keyID}
+		if siblings == 1 {
+			// One key for this (lender, source, ref): the un-stamped strays
+			// can only be its own.
+			leaseFilter = bson.M{"pledge_id": inherited, "$or": bson.A{
+				bson.M{"key_id": c.keyID},
+				bson.M{"key_id": bson.M{"$exists": false}},
+				bson.M{"key_id": ""},
+			}}
+		}
+		if _, err := leases.UpdateMany(ctx, leaseFilter, bson.M{"$set": bson.M{"pledge_id": c.id}}); err != nil {
+			return fmt.Errorf("repair the leases of %s: %w", inherited, err)
+		}
+		if siblings == 1 {
+			if err := moveLedgerRows(ctx, ledger, inherited, c.id); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -209,7 +431,7 @@ func (s *MongoPledgeStore) ListByUser(ctx context.Context, userID string) ([]Ple
 
 func (s *MongoPledgeStore) Upsert(ctx context.Context, p Pledge) error {
 	if p.ID == "" {
-		p.ID = PledgeID(p.UserID, p.Source, p.Ref)
+		p.ID = PledgeID(p.UserID, p.Source, p.Ref, p.KeyID)
 	}
 	now := time.Now().UTC()
 	p.UpdatedAt = now

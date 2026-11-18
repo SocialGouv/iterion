@@ -37,6 +37,21 @@ is the decision; this page is the operator and debugging map.
 - **Studio**: the org and team "Key pool" tab — the attachment editor and
   the entries' derived status.
 
+## What identifies an entry
+
+An entry is a `Pledge`, identified by the credential it lends: an `oauth`
+entry by `(lender, source, ref)` — `ref` being the kind, the one connection
+the OAuth store keeps per kind — and an `api_key` entry by
+`(lender, source, ref, key_id)` (`lender|api_key|ref|key_id`). That id is
+the `cred_pledges._id` and the address every entry route takes
+(`/api/pools/{id}/entries/{pledge}`).
+
+The key in the identity is what lets one lender push **two keys of the same
+provider** — two Anthropic keys, say — as two entries: the pair
+`(source, ref)` names both, while `key_id` and the entry id name one. The
+entries list shows each row's key_id so the two read apart, and an entry is
+reset by its own id, never by a provider the other key also answers to.
+
 ## Authoring an attached pool (the onboarding recipe)
 
 ```

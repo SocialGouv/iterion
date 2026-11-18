@@ -48,6 +48,11 @@ export type PledgeStatus =
 export type CredentialSource = "oauth" | "api_key";
 
 export interface PledgeView {
+  /**
+   * Opaque address of THIS contribution. Two keys of one provider are two
+   * pledges that (source, ref) cannot tell apart — withdraw one by its id.
+   */
+  id: string;
   source: CredentialSource;
   /** OAuth kind ("claude_code") for a subscription, provider for a key. */
   ref: string;
@@ -114,10 +119,9 @@ export async function savePledge(
   });
 }
 
-export async function withdrawPledge(source: CredentialSource, ref: string): Promise<void> {
-  await send(`/me/pool/${encodeURIComponent(source)}/${encodeURIComponent(ref)}`, {
-    method: "DELETE",
-  });
+/** Withdraw exactly the pledge named by its id. */
+export async function withdrawPledge(id: string): Promise<void> {
+  await send(`/me/pool/entries/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function listMyPoolHistory(): Promise<PledgeLease[]> {
@@ -137,6 +141,10 @@ export interface PoolAudience {
 }
 
 export interface PoolDonor {
+  /** The entry's own id — the row key, since (user, source, ref) collides for two keys of one lender. */
+  id: string;
+  /** Which of the lender's keys this entry lends (api_key only). */
+  key_id?: string;
   user_id: string;
   source: CredentialSource;
   ref: string;

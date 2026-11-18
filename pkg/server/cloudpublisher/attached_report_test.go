@@ -34,7 +34,7 @@ func newRVAFixture(t *testing.T, gatewayURL string) *rvaFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-att",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-att",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Priority: 0,
 		Limits: credpool.Limits{MaxUSDPerDay: 50},
@@ -59,7 +59,7 @@ func newRVAFixture(t *testing.T, gatewayURL string) *rvaFixture {
 		t.Fatal(err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible)), PoolID: "pool-att",
+		ID: credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible), "key-gw"), PoolID: "pool-att",
 		UserID:     "gw-lender",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible), KeyID: "key-gw"},
 		Enabled:    true, Health: credpool.HealthOK,
@@ -116,7 +116,7 @@ func TestAttachedReport_F2_publisher_releasedGatewaySwallowsTheForfaitReport(t *
 		t.Fatalf("report: %v", err)
 	}
 	f.dump(t, "run-f2", "after the run's final report")
-	forfait := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+	forfait := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 	open := openLeases(t, f.attachedFixture, "run-f2")
 	t.Logf("open leases after the final report = %d (want 0); forfait donor charged $%.2f (want 2)", len(open), f.spent(t, forfait))
 	if len(open) != 0 || f.spent(t, forfait) != 2 {
@@ -157,8 +157,8 @@ func TestAttachedReport_F1_publisher_lateReportClosesTheResumesLeases(t *testing
 		t.Fatalf("A2 report: %v", err)
 	}
 	f.dump(t, "run-f1", "after A2's report")
-	forfait := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
-	gw := credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible))
+	forfait := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
+	gw := credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible), "key-gw")
 	t.Logf("A2's open leases while it still runs = %d (want 2); ledgers forfait=$%.2f (want 5) gateway=$%.2f (want 8)",
 		openWhileA2Runs, f.spent(t, forfait), f.spent(t, gw))
 	if openWhileA2Runs != 2 || f.spent(t, forfait) != 5 || f.spent(t, gw) != 8 {

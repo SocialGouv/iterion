@@ -186,7 +186,7 @@ func TestAdminEraseUser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.pledges.Upsert(ctx, credpool.Pledge{ID: credpool.PledgeID(userID, credpool.SourceOAuth, "claude_code"), PoolID: "pool-1", UserID: userID, Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true}); err != nil {
+	if err := f.pledges.Upsert(ctx, credpool.Pledge{ID: credpool.PledgeID(userID, credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1", UserID: userID, Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range []secrets.ApiKey{

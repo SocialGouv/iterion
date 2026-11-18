@@ -26,8 +26,8 @@ func TestPoolReview2_aRanButReleasedAttemptsReportStampsThePreviousAttemptsLease
 			h := newHarness(t)
 			h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100})
 			h.donorKey(t, "bob", "anthropic", Limits{MaxUSDPerDay: 100}, func(p *Pledge) { p.Priority = 5 })
-			pa := PledgeID("alice", SourceAPIKey, "anthropic")
-			pb := PledgeID("bob", SourceAPIKey, "anthropic")
+			pa := keyPledgeID("alice", "anthropic")
+			pb := keyPledgeID("bob", "anthropic")
 			fpA := secrets.FingerprintSHA256("sk-real-alice")
 			fpB := secrets.FingerprintSHA256("sk-real-bob")
 			day := h.now

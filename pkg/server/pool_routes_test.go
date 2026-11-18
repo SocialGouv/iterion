@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -45,19 +46,22 @@ func poolRoutesServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore) {
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
-	// The lender's own anthropic key, seeded so entry-put verification
-	// passes and the re-homing test has a stored row to point at.
-	own := secrets.ApiKey{
-		ID: "key-jo-anthropic", TenantID: "team1", ScopeTeamID: "team1", ScopeUserID: "jo",
-		Provider: secrets.ProviderAnthropic, Name: "jo's anthropic",
-	}
-	sealed, serr := secrets.SealAPIKey(sealer, own.ID, []byte("sk-jo-anthropic-0"))
-	if serr != nil {
-		t.Fatalf("seal jo's key: %v", serr)
-	}
-	own.SealedSecret = sealed
-	if err := poolRoutesAPIKeys.Create(context.Background(), own); err != nil {
-		t.Fatalf("seed jo's key: %v", err)
+	// The lender's own anthropic keys, seeded so entry-put verification
+	// passes, the re-homing test has a stored row to point at, and the
+	// same-lender coexistence case has a SECOND key of the same provider.
+	for i, keyID := range []string{"key-jo-anthropic", "key-jo-anthropic-2"} {
+		own := secrets.ApiKey{
+			ID: keyID, TenantID: "team1", ScopeTeamID: "team1", ScopeUserID: "jo",
+			Provider: secrets.ProviderAnthropic, Name: "jo's anthropic",
+		}
+		sealed, serr := secrets.SealAPIKey(sealer, own.ID, []byte(fmt.Sprintf("sk-jo-anthropic-%d", i)))
+		if serr != nil {
+			t.Fatalf("seal %s: %v", keyID, serr)
+		}
+		own.SealedSecret = sealed
+		if err := poolRoutesAPIKeys.Create(context.Background(), own); err != nil {
+			t.Fatalf("seed %s: %v", keyID, err)
+		}
 	}
 	s.credPool = credpool.NewBroker(credpool.BrokerConfig{
 		Pools:   pools,
@@ -382,6 +386,29 @@ func TestPoolEntryRoutes_rehomingRefused(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), first.ID) {
 		t.Errorf("409 body = %s, want it naming the holding pool", w.Body.String())
+	}
+
+	// A SECOND key of the same lender is a different entry, not a re-homing:
+	// it must land in the same pool beside the first. (With the inherited
+	// three-segment id both keys collapse onto one row, and this leg reads
+	// the 409 that belongs to a genuine move.)
+	secondKey := `{"source":"api_key","ref":"anthropic","key_id":"key-jo-anthropic-2"}`
+	w = httptest.NewRecorder()
+	runPoolRouteEntryPut(s, w, ctx, first.ID, secondKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second key of the same lender = %d (%s), want 200 — it is a new entry, not a re-homing", w.Code, w.Body.String())
+	}
+	entries, err := s.credPoolPledges.ListByPool(context.Background(), first.ID)
+	if err != nil {
+		t.Fatalf("list entries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries of the pool = %d, want 2 — the second key overwrote the first", len(entries))
+	}
+	for _, e := range entries {
+		if e.KeyID != "key-jo-anthropic" && e.KeyID != "key-jo-anthropic-2" {
+			t.Errorf("stored entry lends key %q, want one of jo's two keys", e.KeyID)
+		}
 	}
 }
 

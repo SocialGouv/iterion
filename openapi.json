@@ -10884,6 +10884,30 @@
         ]
       }
     },
+    "/api/me/pool/entries/{pledge}": {
+      "delete": {
+        "operationId": "deleteMePoolEntriesByPledge",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/pool/entries/{pledge}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pledge",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/me/pool/history": {
       "get": {
         "operationId": "getMePoolHistory",

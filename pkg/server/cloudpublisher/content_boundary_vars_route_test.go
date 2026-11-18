@@ -98,7 +98,7 @@ func TestContentBoundary_TheFallbackDoorReadsAVarsTemplatedGatewayNodeByItsRoute
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "openai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "openai", keyID), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "openai", KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: true,
 	}); err != nil {
