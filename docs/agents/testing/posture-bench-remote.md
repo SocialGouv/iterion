@@ -51,9 +51,22 @@ caller reading "non-zero" as "the bound bit" accepts a broken run as proof:
 | 1 | a red verdict |
 | 2 | nothing was tested (setup, admission, RBAC) |
 
-The bench's own `4` ("this pod is not the posture asked about"), `6` (a leg
-could not run here) and `7` (the pod never checked its posture) all map to **2
-— nothing was tested**, never to a green and never to a red about the cluster.
+The bench's own `2` (it refused its arguments), `4` ("this pod is not the
+posture asked about"), `6` (a leg could not run here) and `7` (the pod never
+checked its posture) all map to **2 — nothing was tested**, never to a green and
+never to a red about the cluster. So does every step the script does not handle
+by name: one `ERR` trap, as in the sibling arms, because under `set -e` a naked
+failure exits with the failing command's own status — and that was 1.
+
+**A namespace-scoped credential** — the usual production one — runs the bench
+but cannot `get nodes`, so it ends on **2** naming the refusal: this arm exists
+to report the node's runtime, and a credential that cannot read it gets no
+verdict. It cannot `get` its own Namespace object either; that read answers
+*Forbidden*, which the script tells apart from *NotFound* and goes past.
+
+`EXPECT_GROUPS=27,100,1000` (numeric ids — a name is refused before any cluster
+is touched) declares the image's supplementary groups through the task, and
+`KEEP=1` keeps the pods **and** a namespace the run created.
 
 ## Measured on production (2026-11-18)
 
@@ -97,6 +110,9 @@ Against a `kind` cluster driven purely through `kubectl`:
 | measured pod switched to `Unconfined` (mutation) | the bench refuses its own posture, exit 4 → *nothing was tested* |
 | **readback** switched to `Unconfined` beside a confined bench (mutation) | the `Seccomp: 2` assertion reddens, exit 1 |
 | a base image whose `iterion` predates `__script-host` | exit 1, two named failures — a green it cannot fake |
+| a namespace-scoped credential that may read its namespace but not nodes | bench 7/7, then **exit 2** naming the RBAC refusal — the previous version exited **1, silently**, after the bench had held |
+| the same credential without even the namespace read | goes past the *Forbidden* read, same exit 2 — the previous version stopped on "does not exist" for a namespace that existed |
+| `--pull-policy Never` with the image absent from the node | exit 2 in 6 s naming `ErrImageNeverPull` — the previous version waited out the whole window |
 
 ## What it does not earn, printed in every run
 

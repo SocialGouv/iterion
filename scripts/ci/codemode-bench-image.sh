@@ -27,6 +27,12 @@ set -Eeuo pipefail
 say() { printf 'codemode-bench-image: %s\n' "$*" >&2; }
 die() { say "$*"; exit 2; }
 
+# ONE guard for every step not handled by name, as in the bench arms: a naked
+# failure under `set -e` exits with the failing command's own status, and
+# every failure of this script means the same thing — no image was produced.
+# shellcheck disable=SC2154 # rc is assigned inside the trap string itself
+trap 'rc=$?; [ "$BASHPID" -eq "$$" ] || exit "$rc"; say "no image was produced: a step failed at line $LINENO (exit $rc)"; exit 2' ERR
+
 usage() {
 	cat >&2 <<'USAGE'
 usage: codemode-bench-image.sh --from <image@sha256:…> (--push <repo:tag> | --load-kind <cluster>) [options]

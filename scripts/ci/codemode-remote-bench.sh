@@ -34,6 +34,17 @@ set -Eeuo pipefail
 say() { printf 'codemode-remote-bench: %s\n' "$*" >&2; }
 die() { say "$*"; exit 2; }
 
+# ONE guard for every step this script does not handle by name, as in the
+# sibling arms: under `set -e` a naked failure exits with the failing command's
+# status — 1, the code this contract reserves for a red verdict — and silently.
+# Measured: `--uid` given without a value died on `shift 2` with exit 1 and no
+# message. Anything that reaches here unhandled means nothing was tested.
+#
+# The trap speaks for the MAIN shell only. errtrace hands it to every command
+# substitution, where a polled read that fails is handled by its caller — and
+# must not print "nothing was tested" while the script carries on.
+trap 'rc=$?; [ "$BASHPID" -eq "$$" ] || exit "$rc"; say "nothing was tested: a step failed at line $LINENO (exit $rc)"; exit 2' ERR
+
 usage() {
 	cat >&2 <<'USAGE'
 usage: codemode-remote-bench.sh --bench-image <ref> --kubeconfig <path> --namespace <ns> [options]
@@ -70,16 +81,22 @@ BENCH_IMAGE="" KUBECONFIG_PATH="" CONTEXT="" NS="" CREATE_NS="" UID_WANT=1000 EX
 PULL_POLICY=IfNotPresent KEEP="" MAX_WAIT=600
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--bench-image) BENCH_IMAGE=${2:-}; shift 2 ;;
-	--kubeconfig) KUBECONFIG_PATH=${2:-}; shift 2 ;;
-	--context) CONTEXT=${2:-}; shift 2 ;;
-	--namespace) NS=${2:-}; shift 2 ;;
+	--bench-image | --kubeconfig | --context | --namespace | --uid | --expect-groups | --pull-policy | --max-wait)
+		[ $# -ge 2 ] || die "$1 needs a value"
+		case "$1" in
+		--bench-image) BENCH_IMAGE=$2 ;;
+		--kubeconfig) KUBECONFIG_PATH=$2 ;;
+		--context) CONTEXT=$2 ;;
+		--namespace) NS=$2 ;;
+		--uid) UID_WANT=$2 ;;
+		--expect-groups) EXPECT_GROUPS=$2 ;;
+		--pull-policy) PULL_POLICY=$2 ;;
+		--max-wait) MAX_WAIT=$2 ;;
+		esac
+		shift 2
+		;;
 	--create-namespace) CREATE_NS=1; shift ;;
-	--uid) UID_WANT=${2:-}; shift 2 ;;
-	--expect-groups) EXPECT_GROUPS=${2:-}; shift 2 ;;
-	--pull-policy) PULL_POLICY=${2:-}; shift 2 ;;
 	--keep) KEEP=1; shift ;;
-	--max-wait) MAX_WAIT=${2:-}; shift 2 ;;
 	*) usage ;;
 	esac
 done
@@ -90,6 +107,14 @@ done
 case "$UID_WANT" in '' | *[!0-9]*) die "--uid must be a number, got '$UID_WANT'" ;; esac
 case "$MAX_WAIT" in '' | *[!0-9]*) die "--max-wait must be a number, got '$MAX_WAIT'" ;; esac
 case "$PULL_POLICY" in IfNotPresent | Never) ;; *) die "--pull-policy must be IfNotPresent or Never, got '$PULL_POLICY'" ;; esac
+# Group IDS, not names: the bench pod parses them, and a name it refused there
+# came back as the pod's own usage exit — a caller error that used to be read
+# as a red verdict about the cluster. The docs introduce the groups by name
+# (`sudo`, `users`), so a name is the natural mistake: refuse it here.
+case "$EXPECT_GROUPS" in
+'') ;;
+*[!0-9,]* | ,* | *, | *,,*) die "--expect-groups takes comma-separated numeric group ids (e.g. 27,100,1000), got '$EXPECT_GROUPS'" ;;
+esac
 case "$BENCH_IMAGE" in
 *@sha256:*) ;;
 *)
@@ -141,7 +166,14 @@ cleanup() {
 		done
 	fi
 	if [ -n "$CREATED_NS" ]; then
-		kube_raw delete namespace "$CREATED_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+		# Deleting the namespace deletes every pod in it, so under --keep the
+		# namespace stays: removing it would destroy the evidence --keep
+		# promises, in the very lane (--create-namespace) the docs lead with.
+		if [ -n "$KEEP" ]; then
+			say "kept namespace '$CREATED_NS' and its pods; remove them with: kubectl delete namespace $CREATED_NS"
+		else
+			kube_raw delete namespace "$CREATED_NS" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+		fi
 	fi
 }
 trap cleanup EXIT
@@ -159,8 +191,21 @@ if [ -n "$CREATE_NS" ]; then
 		|| die "the namespace '$NS' could not be labelled: $EVIDENCE/ns-label.log"
 	say "created namespace '$NS' (enforce=privileged, deleted on exit)"
 else
-	kube_raw get namespace "$NS" > /dev/null 2>&1 \
-		|| die "namespace '$NS' does not exist and --create-namespace was not given"
+	# "Does not exist" and "may not be read" are different answers. A
+	# namespace-scoped credential — the usual production one — cannot get the
+	# Namespace object at all, and reading that refusal as absence stopped such
+	# a credential here with a false message. Only NotFound means absent; a
+	# Forbidden read goes on, and the first apply names the namespace if it
+	# really is missing.
+	if ! kube_raw get namespace "$NS" > /dev/null 2> "$EVIDENCE/ns-get.err"; then
+		if grep -q '(NotFound)' "$EVIDENCE/ns-get.err"; then
+			die "namespace '$NS' does not exist and --create-namespace was not given"
+		elif grep -q '(Forbidden)' "$EVIDENCE/ns-get.err"; then
+			say "this credential may not read namespace '$NS' itself; going on — the pods' admission will say if it is missing"
+		else
+			die "namespace '$NS' could not be read: $(tail -1 "$EVIDENCE/ns-get.err")"
+		fi
+	fi
 fi
 
 # --- the pods ----------------------------------------------------------------
@@ -250,14 +295,20 @@ pending=0
 while [ "$SECONDS" -lt "$deadline" ]; do
 	pending=0
 	for p in $ADMITTED; do
-		case "$(kube get pod "$p" -o jsonpath='{.status.phase}' 2>/dev/null)" in
+		phase=$(kube get pod "$p" -o jsonpath='{.status.phase}' 2>/dev/null) || phase=""
+		case "$phase" in
 		Succeeded | Failed) continue ;;
 		esac
 		# A container the runtime cannot CREATE never reaches a terminal phase
 		# under restartPolicy: Never, so waiting for one burns the whole window.
-		case "$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)" in
-		CreateContainerError | CreateContainerConfigError | InvalidImageName | ImagePullBackOff | ErrImagePull)
-			say "FAIL $p cannot start: $(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null)"
+		# ErrImageNeverPull is the --pull-policy Never lane's own signature —
+		# the image is not on the node — and without it that lane burned the
+		# whole window to end on "did not terminate".
+		waiting=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null) || waiting=""
+		case "$waiting" in
+		CreateContainerError | CreateContainerConfigError | InvalidImageName | ImagePullBackOff | ErrImagePull | ErrImageNeverPull)
+			why=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null) || why="(unreadable)"
+			say "nothing was tested: $p cannot start ($waiting): $why"
 			exit 2
 			;;
 		esac
@@ -270,7 +321,9 @@ done
 
 for p in $ADMITTED; do
 	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 || say "no logs from $p"
-	printf '%s\n' "$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null)" > "$EVIDENCE/$p.exit"
+	code=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') \
+		|| die "the exit code of $p could not be read, so nothing can be judged"
+	printf '%s\n' "$code" > "$EVIDENCE/$p.exit"
 done
 exit_of() { cat "$EVIDENCE/$1.exit"; }
 
@@ -286,13 +339,23 @@ echo "--- the bench, RuntimeDefault"; cat "$EVIDENCE/$PREFIX-bench.log"
 # read off some other node would attribute the verdict to a build that never ran
 # it. Every pod must land on a node reporting the same runtime — otherwise the
 # twin and the measured pod are not the same filter, and the comparison is void.
-NODE_OF=$(kube get pod "$PREFIX-bench" -o jsonpath='{.spec.nodeName}')
-RUNTIME=$(kube_raw get node "$NODE_OF" -o jsonpath='{.status.nodeInfo.containerRuntimeVersion}' 2>/dev/null)
-[ -n "$RUNTIME" ] || { say "the runtime version of node '$NODE_OF' could not be read, so this arm cannot report what it measured"; exit 2; }
+# Every read here is guarded by name. A namespace-scoped credential — the usual
+# production one — cannot `get nodes`, and an unguarded read ended the script
+# with kubectl's own status 1: a red verdict about a cluster nobody judged.
+node_runtime() { # node -> its runtime, or exit 2 naming why it is unknown
+	local v
+	v=$(kube_raw get node "$1" -o jsonpath='{.status.nodeInfo.containerRuntimeVersion}' 2> "$EVIDENCE/node-$1.err") \
+		|| die "the runtime of node '$1' could not be read ($(tail -1 "$EVIDENCE/node-$1.err")): this credential may not read nodes, and this arm exists to report that runtime"
+	[ -n "$v" ] || die "node '$1' reports no containerRuntimeVersion, so this arm cannot report what it measured"
+	printf '%s' "$v"
+}
+NODE_OF=$(kube get pod "$PREFIX-bench" -o jsonpath='{.spec.nodeName}') \
+	|| die "the node of the measured pod could not be read, so its runtime cannot be attributed"
+RUNTIME=$(node_runtime "$NODE_OF") || exit 2
 say "the pod ran on $NODE_OF: $RUNTIME"
 for p in $ADMITTED; do
-	n=$(kube get pod "$p" -o jsonpath='{.spec.nodeName}')
-	r=$(kube_raw get node "$n" -o jsonpath='{.status.nodeInfo.containerRuntimeVersion}' 2>/dev/null)
+	n=$(kube get pod "$p" -o jsonpath='{.spec.nodeName}') || die "the node of $p could not be read"
+	r=$(node_runtime "$n") || exit 2
 	if [ "$r" != "$RUNTIME" ]; then
 		say "FAIL $p ran on $n reporting '$r' while the measured pod ran on $NODE_OF reporting '$RUNTIME': two runtimes, so the comparison attributes nothing"
 		exit 1
@@ -303,7 +366,9 @@ done
 rc=0
 grep -q '^Seccomp:[[:space:]]*2' "$EVIDENCE/$PREFIX-posture.log" \
 	|| { say "FAIL the RuntimeDefault arm carried NO seccomp filter, so it measured an unconfined container"; rc=1; }
-grep -q "^uid=$UID_WANT" "$EVIDENCE/$PREFIX-posture.log" \
+# The trailing space is the anchor: the line is `uid=N gid=G`, and without it
+# --uid 1000 accepted a readback running as 10001.
+grep -q "^uid=$UID_WANT " "$EVIDENCE/$PREFIX-posture.log" \
 	|| { say "FAIL the arm did not run as uid $UID_WANT, so it is not the runner's posture"; rc=1; }
 grep -q '^NoNewPrivs:[[:space:]]*1' "$EVIDENCE/$PREFIX-posture.log" \
 	|| { say "FAIL the measured arm lost no_new_privs, so it does not match the chart's securityContext"; rc=1; }
@@ -317,6 +382,7 @@ fi
 
 case "$(exit_of "$PREFIX-bench")" in
 0) ;;
+2) say "nothing was tested: the bench pod refused its own arguments — a usage error says nothing about this cluster"; exit 2 ;;
 4) say "nothing was tested: the bench pod is not the posture asked about"; exit 2 ;;
 6) say "a leg could not run in this pod, so the deployment was not judged"; exit 2 ;;
 7) say "the bench pod ran without checking its posture, so it says nothing about this cluster"; exit 2 ;;

@@ -171,7 +171,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 
 	// Two things the RLIMIT bound cannot reach, both started before the child
 	// can allocate: the kernel's preference for killing THIS process when a
-	// cgroup is exhausted, and a parent-side probe of its resident set, since a
+	// cgroup is exhausted, and a parent-side probe of its charged memory, since a
 	// MAP_SHARED or memfd mapping is not charged to RLIMIT_DATA.
 	oomAdjErr := markOOMVictim(cmd.Process.Pid)
 	probeStop := make(chan struct{})
@@ -246,7 +246,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	})
 }
 
-// rssSampleInterval is how often the parent reads the child's resident set.
+// rssSampleInterval is how often the parent reads the child's charged memory.
 // The poll costs one open/read of a small /proc file, so the trade is between
 // that and how far a payload can run past the bound between two samples: the
 // overshoot is at most the child's own allocation rate times this interval.
@@ -324,11 +324,11 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// bound".
 	if e.probe.killed {
 		return Refuse(RefusalMemory,
-			"the script host's resident set grew by %d bytes past its %d-byte memory bound "+
-				"(measured from a %d-byte baseline when the child started) and the parent killed it. "+
-				"A mapping that RLIMIT_DATA does not charge (MAP_SHARED, memfd) grows the resident set "+
-				"without meeting the kernel bound, so the parent samples the GROWTH every %s; the "+
-				"overshoot is at most one sample of the child's own allocator. %s",
+			"the script host's anonymous and shared memory grew by %d bytes, past its %d-byte memory "+
+				"bound (measured from a %d-byte baseline when the child started), and the parent killed it. "+
+				"A mapping that RLIMIT_DATA does not charge (MAP_SHARED, memfd) grows that memory without "+
+				"meeting the kernel bound, so the parent samples the GROWTH every %s; the overshoot is at "+
+				"most one sample of the child's own allocator. %s",
 			e.probe.peak, e.limits.Memory, e.probe.base, rssSampleInterval, evidence), nil
 	}
 
