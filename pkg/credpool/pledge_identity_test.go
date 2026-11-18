@@ -195,10 +195,21 @@ func (h *harness) donorKeyNamed(t *testing.T, userID, provider, keyID string, li
 // (no OAuth-side migration), while an api_key pledge is identified by the
 // key it lends.
 func TestPledgeID_oauthIDsAreUnchanged(t *testing.T) {
-	if got, want := PledgeID("jo", SourceOAuth, "claude_code"), "jo|oauth|claude_code"; got != want {
+	if got, want := PledgeID("jo", SourceOAuth, "claude_code", ""), "jo|oauth|claude_code"; got != want {
 		t.Errorf("oauth pledge id = %q, want %q — every oauth pledge would need a migration", got, want)
 	}
-	if got, want := PledgeID("jo", SourceAPIKey, "anthropic"), "jo|api_key|anthropic|key-1"; got != want {
+	if got, want := OAuthPledgeID("jo", "claude_code"), "jo|oauth|claude_code"; got != want {
+		t.Errorf("OAuthPledgeID = %q, want %q", got, want)
+	}
+	// A stray key id on an oauth pledge names nothing: the identity stays
+	// three segments.
+	if got, want := PledgeID("jo", SourceOAuth, "claude_code", "key-1"), "jo|oauth|claude_code"; got != want {
+		t.Errorf("oauth pledge id carrying a key = %q, want %q", got, want)
+	}
+	if got, want := PledgeID("jo", SourceAPIKey, "anthropic", "key-1"), "jo|api_key|anthropic|key-1"; got != want {
 		t.Errorf("api_key pledge id = %q, want %q — two keys of one lender collide", got, want)
+	}
+	if got, want := APIKeyPledgeID("jo", "anthropic", "key-1"), "jo|api_key|anthropic|key-1"; got != want {
+		t.Errorf("APIKeyPledgeID = %q, want %q", got, want)
 	}
 }

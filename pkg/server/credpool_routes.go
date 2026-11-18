@@ -201,7 +201,7 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pledgeID := credpool.PledgeID(id.UserID, cred.Source, cred.Ref)
+	pledgeID := credpool.PledgeID(id.UserID, cred.Source, cred.Ref, cred.KeyID)
 	p, err := s.credPoolPledges.Get(r.Context(), pledgeID)
 	if err != nil && !errors.Is(err, credpool.ErrNotFound) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
@@ -359,7 +359,11 @@ func (s *Server) handleDeleteMyPledge(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	src := credpool.CredentialSource(r.PathValue("source"))
 	ref := r.PathValue("ref")
-	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(id.UserID, src, ref)); err != nil {
+	// The (source, ref) pair IS an oauth pledge's identity. An api_key
+	// pledge is identified by the key it lends as well, so that one is
+	// addressed by its id — this route reaches a legacy row still stored
+	// under the inherited three-segment id.
+	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(id.UserID, src, ref, "")); err != nil {
 		if errors.Is(err, credpool.ErrNotFound) {
 			w.WriteHeader(http.StatusNoContent)
 			return

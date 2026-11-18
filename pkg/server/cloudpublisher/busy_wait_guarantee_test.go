@@ -70,9 +70,9 @@ type guaranteeProvider struct {
 
 var guaranteeProviders = []guaranteeProvider{
 	{name: "anthropic", node: "review", model: "anthropic/claude-opus-5",
-		pledge: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), want: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}},
+		pledge: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), want: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}},
 	{name: "openai", node: "verdict", model: "openai/gpt-6",
-		pledge: credpool.PledgeID("donor2", credpool.SourceAPIKey, string(secrets.ProviderOpenAI)), want: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAI)}},
+		pledge: credpool.PledgeID("donor2", credpool.SourceAPIKey, string(secrets.ProviderOpenAI), "key-oa"), want: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAI)}},
 }
 
 // waitWorld is one row's world: a pool holding a Claude forfait (anthropic)

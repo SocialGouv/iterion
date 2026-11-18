@@ -102,7 +102,7 @@ func TestToPoolView_hidesTheRosterFromNonManagers(t *testing.T) {
 	ctx := context.Background()
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("alice", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("alice", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "alice", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)

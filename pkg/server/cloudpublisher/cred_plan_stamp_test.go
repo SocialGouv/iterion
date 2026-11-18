@@ -120,7 +120,7 @@ func TestCredPlanStamp_aResumeStampsThePlanOfItsOwnDonor(t *testing.T) {
 	}
 	// The landscape flips: B withdraws — the resume must switch to A.
 	if err := f.pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor-b",
+		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai", ""), PoolID: "pool-1", UserID: "donor-b",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"},
 		Enabled:    false, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: true,
 	}); err != nil {
@@ -211,7 +211,7 @@ func TestCredPlanStamp_anEnvDialRunServedSideBySideBooksTheAttemptOnce(t *testin
 	if err := f.apiKeys.Create(ctx, k); err != nil {
 		t.Fatalf("seed lent openai key: %v", err)
 	}
-	if err := f.pledges.Upsert(ctx, credpool.Pledge{ID: credpool.PledgeID("lender-oa", credpool.SourceAPIKey, string(secrets.ProviderOpenAI)), PoolID: "pool-att", UserID: "lender-oa",
+	if err := f.pledges.Upsert(ctx, credpool.Pledge{ID: credpool.PledgeID("lender-oa", credpool.SourceAPIKey, string(secrets.ProviderOpenAI), "key-oa"), PoolID: "pool-att", UserID: "lender-oa",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAI), KeyID: "key-oa"},
 		Enabled:    true, Health: credpool.HealthOK, Priority: 3}); err != nil {
 		t.Fatalf("pledge: %v", err)
