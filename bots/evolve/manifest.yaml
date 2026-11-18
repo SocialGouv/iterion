@@ -3,10 +3,11 @@ display_name: Evoly
 icon: 🧬
 version: 0.2.0
 ## 0.2.0 — the reviewer nodes name ROLES, not vendors (ADR-169): `reviewer`
-## (claw + an `openai/…` model, the one every round runs) and
-## `reviewer_alternate` (the claude slot, a `paired` run only).
-## `review_mode` is `auto | single | paired` and `mono_family` is gone: the
-## retired `mono`/`dual` spellings are still read as `single`/`paired`.
+## (claude_code + a claude model, with tools — the one every round runs) and
+## `reviewer_alternate` (claw + an `openai/…` model with no tools, a
+## `paired` run only). `review_mode` is `auto | single | paired`;
+## `mono_family` is retired (declared, read by nothing), and the retired
+## `mono`/`dual` spellings are still read as `single`/`paired`.
 ##
 ## 0.1.5 — a refine turn shows the steering the operator just typed:
 ## investigate renders `{{input.scope_notes}}`, which the refine edge maps

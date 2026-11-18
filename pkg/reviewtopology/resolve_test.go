@@ -1,9 +1,11 @@
 package reviewtopology
 
 import (
+	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The review topology names ROLES, not vendors (ADR-169): the resolver
@@ -181,4 +183,43 @@ func TestInjectAllResolvesALegacyBundlesMonoFamily(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A third-party reviewer-loop bot that declares `review_mode` WITHOUT an enum
+// and compares it to 'mono'/'dual' reads that vocabulary, not the roles:
+// writing `single` would read as neither and flip its topology. The shipped
+// fixture e2e/testdata/review_topology_mini.bot has exactly that shape.
+func TestInjectReviewModeKeepsAnUnconstrainedBotsOwnVocabulary(t *testing.T) {
+	pr, err := parser.Parse("review_topology_mini.bot", mustRead(t, "../../e2e/testdata/review_topology_mini.bot"))
+	if err != nil || pr == nil || pr.File == nil {
+		t.Fatalf("the mini fixture does not parse: %v", err)
+	}
+	cr := ir.Compile(pr.File)
+	if cr.Workflow == nil {
+		t.Fatalf("the mini fixture does not compile: %+v", cr.Diagnostics)
+	}
+	// The fixture compares only to 'mono': a single review must read as
+	// 'mono' there, and a paired one as anything else (its alternation).
+	for override, single := range map[string]bool{"": true, "mono": true, "single": true, "dual": false, "paired": false} {
+		inputs := map[string]any{}
+		InjectReviewModeIfDeclared(cr.Workflow, inputs, override)
+		if got := inputs[VarReviewMode]; (got == "mono") != single {
+			t.Errorf("override %q: the mini fixture got review_mode=%v — its own guard reads 'mono' as the single topology, so a single review owes 'mono' and a paired one anything else", override, got)
+		}
+	}
+	// A bot with no enum that reads none of the retired literals gets the role.
+	inputs := map[string]any{}
+	InjectReviewModeIfDeclared(wfWithVars(VarReviewMode), inputs, "dual")
+	if got := inputs[VarReviewMode]; got != ModePaired {
+		t.Errorf("an unconstrained bot reading no retired literal got %v, want %q", got, ModePaired)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

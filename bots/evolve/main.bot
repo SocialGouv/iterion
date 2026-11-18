@@ -841,7 +841,7 @@ agent load_nexie_handoff:
   tool_max_steps: 15
   reasoning_effort: "${ITERION_EVOLVE_EFFORT:-low}"
 
-## The alternate reviewer (ADR-169: roles, not vendors). claude_code uses
+## The reviewer (ADR-169: roles, not vendors). claude_code uses
 ## Claude Code OAuth (forfait, no API key). It judges the vision passed in
 ## its input; no memory block (claude_code ignores memory anyway) — it reads
 ## the workspace to verify evidence. It runs on every round, and a paired

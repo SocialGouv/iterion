@@ -208,15 +208,55 @@ func InjectReviewModeIfDeclared(wf *ir.Workflow, inputs map[string]any, flagOver
 // role. The mode REPORTED is always the role.
 func spellingFor(wf *ir.Workflow, mode string) string {
 	v := wf.Vars[VarReviewMode]
-	if v == nil || v.EnumValues == nil || slices.Contains(v.EnumValues, mode) {
+	if v == nil || (v.EnumValues != nil && slices.Contains(v.EnumValues, mode)) {
 		return mode
 	}
 	for retired, role := range retiredModes {
-		if role == mode && slices.Contains(v.EnumValues, retired) {
+		if role != mode {
+			continue
+		}
+		// An enum names the vocabulary; with none, the bot's own guards do:
+		// a third-party reviewer-loop bot that declares `review_mode`
+		// unconstrained and compares it to 'mono'/'dual' would read `single`
+		// as neither, flip its topology and spend on both families.
+		if v.EnumValues != nil && slices.Contains(v.EnumValues, retired) {
+			return retired
+		}
+		if v.EnumValues == nil && readsSpelling(wf, retired) {
 			return retired
 		}
 	}
 	return mode
+}
+
+// readsSpelling reports whether any edge guard or compute expression of the
+// workflow compares against the quoted literal — the vocabulary a bot with
+// an unconstrained review_mode actually reads.
+func readsSpelling(wf *ir.Workflow, literal string) bool {
+	quoted := []string{"'" + literal + "'", `"` + literal + `"`}
+	hit := func(src string) bool {
+		for _, q := range quoted {
+			if strings.Contains(src, q) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range wf.Edges {
+		if e != nil && hit(e.ExpressionSrc) {
+			return true
+		}
+	}
+	for _, n := range wf.Nodes {
+		if c, ok := n.(*ir.ComputeNode); ok {
+			for _, ce := range c.Exprs {
+				if ce != nil && hit(ce.Raw) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // PlanReviewEnv is the machine/deployment-wide default for the
