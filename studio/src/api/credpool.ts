@@ -141,6 +141,10 @@ export interface PoolAudience {
 }
 
 export interface PoolDonor {
+  /** The entry's own id — the row key, since (user, source, ref) collides for two keys of one lender. */
+  id: string;
+  /** Which of the lender's keys this entry lends (api_key only). */
+  key_id?: string;
   user_id: string;
   source: CredentialSource;
   ref: string;

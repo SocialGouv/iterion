@@ -204,6 +204,49 @@ func TestDeleteMyPledge_shimNamesTheKey(t *testing.T) {
 	}
 }
 
+// Two keys of one lender are two rows of the operator roster. The roster's
+// row key used to be (user, source, ref), which names ONE row for both — so
+// the second key's row was written over the first and the operator saw one
+// donation where there are two.
+// Mutants: (1) ID dropped from the donorView literal → every row's id is
+// empty and the distinctness assertion reds; (2) KeyID dropped → the two
+// rows read identically and the pairing assertion reds.
+func TestToPoolView_twoKeysOfSameLenderAreDistinguishable(t *testing.T) {
+	ctx := context.Background()
+	pledges := credpool.NewMemoryPledgeStore()
+	seeded := twoKeyPledges(t, pledges, "jo", "pool-1", "anthropic", "key-forfait-1", "key-forfait-2")
+	s := &Server{
+		credPoolPledges: pledges,
+		credPoolLedger:  credpool.NewMemoryLedger(),
+		logger:          iterlog.New(iterlog.LevelError, nil),
+	}
+	r := httptest.NewRequest("GET", "/api/teams/team-1/pool", nil)
+	r = r.WithContext(auth.WithIdentity(ctx, auth.Identity{UserID: "jo"}))
+	v := s.toPoolView(r, credpool.Pool{ID: "pool-1", OrgID: "org-1", Enabled: true}, true)
+
+	if len(v.Donors) != 2 {
+		t.Fatalf("roster rows = %d, want 2 — one row per key", len(v.Donors))
+	}
+	rowOf := map[string]string{}
+	for _, d := range v.Donors {
+		if d.ID == "" {
+			t.Fatalf("donor row %+v has no id — (user, source, ref) cannot key this roster", d)
+		}
+		if d.KeyID == "" {
+			t.Fatalf("donor row %+v names no key — the operator cannot tell which key it is", d)
+		}
+		rowOf[d.ID] = d.KeyID
+	}
+	if len(rowOf) != 2 {
+		t.Fatalf("roster ids collided: %v — two rows share one id", rowOf)
+	}
+	for _, p := range seeded {
+		if got, ok := rowOf[p.ID]; !ok || got != p.KeyID {
+			t.Errorf("entry %s (key %s) reads as %q in the roster, present=%v", p.ID, p.KeyID, got, ok)
+		}
+	}
+}
+
 // The donor roster is the contributors' business, not every org member's.
 func TestToPoolView_hidesTheRosterFromNonManagers(t *testing.T) {
 	ctx := context.Background()

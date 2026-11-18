@@ -118,6 +118,13 @@ type poolView struct {
 }
 
 type donorView struct {
+	// ID is the entry's own id: (user, source, ref) collides the moment one
+	// lender lends two keys of one provider, and the roster must show two
+	// rows rather than one row written twice.
+	ID string `json:"id"`
+	// KeyID names WHICH of the lender's keys this row stands for, so the two
+	// rows read apart without decoding the opaque id.
+	KeyID         string  `json:"key_id,omitempty"`
 	UserID        string  `json:"user_id"`
 	Source        string  `json:"source"`
 	Ref           string  `json:"ref"`
@@ -763,6 +770,8 @@ func (s *Server) toPoolView(r *http.Request, pool credpool.Pool, withDonors bool
 		_, status := p.Available(now, "")
 		u := usage[p.ID]
 		v.Donors = append(v.Donors, donorView{
+			ID:            p.ID,
+			KeyID:         p.KeyID,
 			UserID:        p.UserID,
 			Source:        string(p.Source),
 			Ref:           p.Ref,
