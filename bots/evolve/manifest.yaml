@@ -106,4 +106,4 @@ launch:
 requires:
   ## See review-pr's floor: below the release carrying ADR-169 the engine
   ## resolver writes mono/dual into a bot whose enum accepts neither.
-  iterion: ">= next"
+  iterion: ">= 7.15.0"

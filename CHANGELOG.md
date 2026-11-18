@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.15.0](https://github.com/SocialGouv/iterion/compare/v7.14.0...v7.15.0) (2026-11-18)
+
+### Features
+
+* **review:** the catalogue names roles, not vendors ([#3251](https://github.com/SocialGouv/iterion/issues/3251)) ([#3366](https://github.com/SocialGouv/iterion/issues/3366)) ([8fbe675](https://github.com/SocialGouv/iterion/commit/8fbe675a3b23bd0d39d48e25d418c5cd0363aaea)), references [converge#glm](https://github.com/converge/issues/glm) [#2699](https://github.com/SocialGouv/iterion/issues/2699)
+
+    <details><summary>why</summary>
+
+    Mechanical rename of review-pr's reviewer nodes and their telemetry fields: reviewer_claude -> reviewer_alternate, reviewer_gpt -> reviewer (and the glance variants). The mono_family guards, the converge twins and the review_mode enum are untouched - they are the next slice.
+
+    </details>
+
 ## [7.14.0](https://github.com/SocialGouv/iterion/compare/v7.13.1...v7.14.0) (2026-11-18)
 
 ### Features
