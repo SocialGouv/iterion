@@ -1,7 +1,19 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.25
+version: 0.10.0
+## 0.10.0 — the nodes name ROLES, not vendors (ADR-169): `review_mode` is
+## `auto | single | paired` (the retired `mono`/`dual` spellings are still
+## read as `single`/`paired`), `mono_family` is gone, and the reviewer slots
+## are `reviewer` (claw + an `openai/…` model, the PRIMARY one),
+## `reviewer_alternate` (the claude slot, a `paired` run only) and
+## `reviewer_glance`. The merge is ONE step, `converge`, on claw: the
+## `converge_gpt` twin and the `mono_family` guard that picked it are gone,
+## and `merge_reviews` already folds whichever reviewers fired, so a single
+## review and a paired one reach the same merge. A routing cell that names a
+## node by its retired id decides nothing — migrate the integration's block
+## with `scripts/ops/revi-effort-cells.py migrate-ids` (see the README).
+##
 ## 0.9.25 — the reviewers inherit no ambient MCP and the system prompts are
 ## byte-stable across runs, so the cross-run prefix cache survives past the
 ## first per-run byte (#3283). The four reviewer slots carry `mcp: inherit:
