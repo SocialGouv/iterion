@@ -18,11 +18,11 @@ import (
 // candidate for them, pinned or not ("Other users' user-scoped keys never
 // apply", keyRank == 99), and the launch seals the team's default instead.
 // Nothing downstream can report it: onWithheld answers for the bot and
-// repository audiences, which an invisible key never reaches. The reachable
-// path is the studio's own pin dialog — GET /api/teams/{id}/api-keys returns
-// "all team-wide keys + their own user-scoped keys" to an admin, and the
-// dialog groups by provider only — so the pin an admin picks for their own
-// key was accepted at write and dropped at launch, silently.
+// repository audiences, which an invisible key never reaches. So the pin is
+// refused where it is written: GET /api/teams/{id}/api-keys lists the team's
+// keys only, which keeps a personal key out of the studio's pin dialog, and a
+// pin on a user-scoped key that reaches the routes from any other client is
+// refused at the write instead of dropped at launch.
 
 func seedVendorKey(t *testing.T, keys secrets.ApiKeyStore, tenant, user, name string, isDefault bool) secrets.ApiKey {
 	t.Helper()
