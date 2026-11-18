@@ -213,9 +213,10 @@ erDiagram
         string connection_id FK "connections._id"
         string ingress_id "or poller_id - exactly one"
         string trigger_id "the package trigger the event was read as"
-        string dedup_key "digest of the authenticated material"
+        string dedup_key "digest of the authenticated material, or a polled item's id and version"
+        int64 sequence "a poller's own numbering - polled intakes only"
         bytes event "the sanitized event, as JSON"
-        string state "pending|claimed|matched|dead"
+        string state "pending|claimed|matched|dead|primed"
         int64 generation
         datetime not_before
         datetime expires_at
@@ -240,6 +241,28 @@ erDiagram
         string _id PK "idem-<uuid v5 of tenant and submission key>"
         string tenant_id FK "team id"
     }
+    connector_pollers {
+        string _id PK "pl-<digest of tenant, connection, trigger, query values>"
+        string tenant_id FK "team id"
+        string connection_id FK "connections._id"
+        string trigger_id "the polled trigger it reads"
+        int64 generation "the fence: one per tick that took it"
+        object checkpoint "timestamp or opaque token a complete scan reached"
+        bool primed "its first complete scan recorded what was there"
+        int64 sequence "the last number handed to an intake"
+        datetime next_tick_at
+    }
+    connector_poller_seen {
+        string _id PK "sn-<digest of poller, item id, item version>"
+        string tenant_id FK "team id - the poller's"
+        string poller_id FK "connector_pollers._id"
+        string item_id
+        string item_version
+        datetime last_observed_at "pruned past the seen retention"
+    }
+    connector_pollers ||--o{ connector_poller_seen : "poller_id - what it already accepted"
+    connector_pollers ||--o{ connector_intakes : "poller_id - each item it accepts, numbered"
+    trigger_subscriptions }o--o| connector_pollers : "poller - derived from the query; poller_since is the activation sequence"
     connector_intakes ||--o{ connector_pairs : "intake_id - one pair per candidate subscription"
     connector_pairs }o--|| trigger_subscriptions : "subscription_id"
     connector_pairs |o..o| runs : "run_id - the run id is derived from the submission key, never stored first"
@@ -249,6 +272,8 @@ erDiagram
 - **A claim is a generation, not a token.** Each claim increments `generation`, and every later write matches it with the row's id and state: a worker whose claim expired writes nothing and is told so. A claim past `not_before` is claimable by any worker, and that reclaim spends an attempt.
 - **The run is found by its key.** A pair launches as an idempotent submission keyed by (pair, `epoch`); the run id is derived from that key and the tenant, so a crash anywhere between the run's persistence and the pair's mark is answered by the run the key already names. A spent submission (`LAUNCH_FAILED`) and the replay of a launch-refused pair advance the epoch; a dead pair replays under its own key.
 - **Claims follow arrival.** A fresh row is due from its arrival (`not_before`), and pending rows and expired claims are taken in one `not_before` order, so a retry or a crashed worker's claim is never passed over by rows that came after it.
+- **A poller fences what `leases` elects.** Each tick takes the poller's next `generation` by compare-and-swap, and the sequence numbers it reserves and the checkpoint it moves name that generation: a holder that overran its lease writes nothing its successor did not. Two overlapping holders can both accept an item; the intake's derived `_id` makes that one row.
+- **Eligibility is iterion's sequence.** A polled intake is owed to the subscriptions whose `poller_since` is below its `sequence`; a poller's first scan writes `primed` intakes, matched to nothing, which only a subscription's `backfill` pairs.
 
 ## Collections
 
@@ -270,6 +295,8 @@ erDiagram
 | `runs` | `pkg/store/mongo` | `store.Run` | `tenant_id` — a team; absent on a local or resident-surface run | none unique, none TTL | file `runs/<id>/run.json` |
 | `connector_intakes` | `pkg/connector/intake` | `Intake` | `tenant_id` — a team | the derived `_id` is the dedup identity; TTL `intake_expiry` on `expires_at`, no delay | one JSON journal for both, `intake.FileStore`, for a local server (memory in tests) |
 | `connector_pairs` | `pkg/connector/intake` | `Pair` | `tenant_id` — a team | the derived `_id` is one per (intake, subscription); TTL `pair_expiry` on `expires_at`, no delay | the intakes' journal |
+| `connector_pollers` | `pkg/connector/poller` | `Poller` | `tenant_id` — a team (`local` on a local server) | the derived `_id` is the poller's identity; none TTL | one JSON journal for both, `poller.FileStore` (`connector/pollers.json`), for a local server (memory in tests) |
+| `connector_poller_seen` | `pkg/connector/poller` | `seenRow` | `tenant_id` — the poller's team | the derived `_id` is one per (poller, item id, item version); pruned by the poller past `ITERION_CONNECTOR_POLL_SEEN_RETENTION`, no TTL index | the pollers' journal |
 | `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a **team** on the `schedule.*` rows drawn here, an org on `auditOrg` rows, empty or either on `scope: platform` rows ([identity](data-model-identity.md)) | TTL `audit_ttl`, 400 days | none (cloud-only); the tick records go to the local JSONL |
 
 The three board collections share one filesystem twin, the native tracker's `<store-dir>/dispatcher/` directory (`board.json`, `issues/<id>.json`, `events.jsonl`): the same `native.Issue` and `native.Event` values, stored on both sides — under their json tags on disk, the lowercased Go field names in Mongo.

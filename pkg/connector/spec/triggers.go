@@ -102,17 +102,31 @@ func WebhookTrigger(triggers []Trigger, event string) (*Trigger, bool) {
 	return nil, false
 }
 
-// DeliverableTriggers are the triggers a delivery can reach: the webhook
-// triggers of a package that declares its ingress. A polled trigger is fed
-// by its poller and never by a delivery. The catalogue offers these and the
-// ingress bind requires one, so the two cannot disagree on what is pluggable.
-func (p *Package) DeliverableTriggers() []Trigger {
+// IngressTriggers are the triggers a delivery can reach: the webhook
+// triggers of a package that declares the ingress they arrive through. An
+// ingress bind requires one — an ingress no trigger reads accepts what
+// nothing can route.
+func (p *Package) IngressTriggers() []Trigger {
 	if p.Ingress == nil {
 		return nil
 	}
 	var out []Trigger
 	for _, t := range p.Triggers {
 		if !t.Polled() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// DeliverableTriggers are the triggers an operator can plug a subscription
+// into: the ones a delivery reaches (IngressTriggers) and every polled one,
+// which its poller feeds. A webhook trigger of a package with no ingress is
+// neither: nothing can reach it.
+func (p *Package) DeliverableTriggers() []Trigger {
+	out := p.IngressTriggers()
+	for _, t := range p.Triggers {
+		if t.Polled() {
 			out = append(out, t)
 		}
 	}

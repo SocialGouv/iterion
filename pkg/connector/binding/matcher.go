@@ -62,6 +62,7 @@ func (m *Matcher) Match(ctx context.Context, in intake.Intake) ([]intake.Verdict
 	if err != nil {
 		return nil, fmt.Errorf("binding: list the candidates of intake %s: %w", in.ID, err)
 	}
+	cands = Eligible(cands, in)
 	if len(cands) == 0 {
 		return nil, nil
 	}
@@ -152,4 +153,23 @@ func (m *Matcher) Trigger(in intake.Intake) (spec.Trigger, string, error) {
 		return t, "", nil
 	}
 	return spec.Trigger{}, fmt.Sprintf("the %s package no longer declares trigger %s", connector, in.TriggerID), nil
+}
+
+// Eligible keeps the candidates an intake is owed to. A polled intake is
+// owed to the subscriptions activated before its poller accepted it — whose
+// PollerSince is below its sequence — whatever the vendor's own timestamp
+// says (ADR-168 §7): a subscription created after an item was accepted never
+// receives it, and one created before receives an item that became visible
+// late. An ingress intake is owed to every candidate.
+func Eligible(cands []trigger.Subscription, in intake.Intake) []trigger.Subscription {
+	if in.PollerID == "" {
+		return cands
+	}
+	out := cands[:0:0]
+	for _, sub := range cands {
+		if sub.PollerSince < in.Sequence {
+			out = append(out, sub)
+		}
+	}
+	return out
 }

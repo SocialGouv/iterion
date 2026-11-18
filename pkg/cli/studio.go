@@ -19,6 +19,7 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -385,6 +386,8 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 				// The local scope's durable intake, beside its connections: the
 				// connector worker drains it like the cloud's (ADR-168 §8).
 				cfg.ConnectorIntakes = intake.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "intakes.json"))
+				// And its pollers' state, beside it (ADR-168 §7).
+				cfg.ConnectorPollers = poller.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "pollers.json"))
 			}
 		}
 	}

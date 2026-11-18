@@ -80,6 +80,15 @@ func delivery(tenant, ingress, dedup string, at time.Time) Intake {
 	}
 }
 
+// polledItem is an item a poller accepted at a sequence.
+func polledItem(tenant, poller, item string, seq int64, at time.Time) Intake {
+	return Intake{
+		TenantID: tenant, ConnectionID: "conn-" + tenant, PollerID: poller, TriggerID: "issue.changed",
+		DedupKey: item, Sequence: seq, Event: []byte(`{"outputs":{},"payload":{"key":"` + item + `"}}`),
+		ReceivedAt: at,
+	}
+}
+
 func mustAccept(t *testing.T, s Store, in Intake) Intake {
 	t.Helper()
 	got, created, err := s.Accept(context.Background(), in)
@@ -142,7 +151,7 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		a := mustAccept(t, s, delivery("t1", "ing-1", "same", t0))
 		b := mustAccept(t, s, delivery("t2", "ing-1", "same", t0))
 		polled := delivery("t1", "", "same", t0)
-		polled.PollerID = "ing-1"
+		polled.PollerID, polled.Sequence = "ing-1", 1
 		c := mustAccept(t, s, polled)
 		if a.ID == b.ID || a.ID == c.ID || b.ID == c.ID {
 			t.Fatalf("ids %s %s %s collide across tenants or sources", a.ID, b.ID, c.ID)
@@ -159,6 +168,14 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 			"no dedup key":   func(in *Intake) { in.DedupKey = "" },
 			"no instant":     func(in *Intake) { in.ReceivedAt = time.Time{} },
 			"event not JSON": func(in *Intake) { in.Event = []byte("{") },
+			"a polled intake without its sequence": func(in *Intake) {
+				in.IngressID, in.PollerID = "", "pl-1"
+			},
+			"an ingress intake with a sequence": func(in *Intake) { in.Sequence = 3 },
+			"an ingress intake primed":          func(in *Intake) { in.State = IntakePrimed },
+			"an intake accepted already matched": func(in *Intake) {
+				in.IngressID, in.PollerID, in.Sequence, in.State = "", "pl-1", 1, IntakeMatched
+			},
 		} {
 			t.Run(name, func(t *testing.T) {
 				s := newStore(t)
@@ -352,6 +369,64 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 		if n, err := s.CountBacklog(ctx, "t3"); err != nil || n != 0 {
 			t.Fatalf("an empty tenant's backlog = (%d, %v), want 0", n, err)
+		}
+	})
+
+	t.Run("a primed intake is durable and terminal: never claimed, never backlog", func(t *testing.T) {
+		s := newStore(t)
+		primed := polledItem("t1", "pl-1", "item-a", 1, t0)
+		primed.State = IntakePrimed
+		got := mustAccept(t, s, primed)
+		if got.State != IntakePrimed || got.Sequence != 1 {
+			t.Fatalf("primed row = state %q sequence %d, want primed at 1", got.State, got.Sequence)
+		}
+		fresh := mustAccept(t, s, polledItem("t1", "pl-1", "item-b", 2, t0))
+		if fresh.State != IntakePending {
+			t.Fatalf("a later item = %q, want pending", fresh.State)
+		}
+		claimed, err := s.ClaimIntakes(ctx, "w", t0.Add(time.Hour), ttl, 10)
+		if err != nil || !reflect.DeepEqual(intakeIDs(claimed), []string{fresh.ID}) {
+			t.Fatalf("claim = (%v, %v), want the pending item only", intakeIDs(claimed), err)
+		}
+		if n, err := s.CountBacklog(ctx, "t1"); err != nil || n != 1 {
+			t.Fatalf("backlog = (%d, %v), want 1: a primed row owes nothing", n, err)
+		}
+		// A primed item re-observed meets its row as it stands.
+		again := polledItem("t1", "pl-1", "item-a", 9, t0.Add(time.Minute))
+		if row, created, err := s.Accept(ctx, again); err != nil || created || row.State != IntakePrimed || row.Sequence != 1 {
+			t.Fatalf("re-accept = (%+v, %v, %v), want the primed row at sequence 1", row, created, err)
+		}
+	})
+
+	t.Run("a poller's intakes list by sequence, highest first, bounded by sequence and count", func(t *testing.T) {
+		// Accepted out of sequence order, in both orders: the list is the
+		// store's sequence order, never its arrival order.
+		for name, order := range map[string][]int64{"ascending": {1, 2, 3, 4}, "shuffled": {3, 1, 4, 2}} {
+			t.Run(name, func(t *testing.T) {
+				s := newStore(t)
+				rows := map[int64]Intake{}
+				for _, seq := range order {
+					rows[seq] = mustAccept(t, s, polledItem("t1", "pl-1", fmt.Sprintf("item-%d", seq), seq, t0))
+				}
+				mustAccept(t, s, polledItem("t1", "pl-2", "item-1", 1, t0))
+				mustAccept(t, s, polledItem("t2", "pl-1", "item-1", 1, t0))
+				mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+
+				got, err := s.ListPollerIntakes(ctx, "t1", "pl-1", 3, 0)
+				want := []string{rows[3].ID, rows[2].ID, rows[1].ID}
+				if err != nil || !reflect.DeepEqual(intakeIDs(got), want) {
+					t.Fatalf("list ≤ 3 = (%v, %v), want %v", intakeIDs(got), err, want)
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t1", "pl-1", 4, 2); !reflect.DeepEqual(intakeIDs(got), []string{rows[4].ID, rows[3].ID}) {
+					t.Fatalf("bounded list = %v, want the two highest", intakeIDs(got))
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t1", "pl-1", 0, 0); len(got) != 0 {
+					t.Fatalf("list ≤ 0 = %v, want nothing", intakeIDs(got))
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t3", "pl-1", 9, 0); len(got) != 0 {
+					t.Fatalf("another tenant lists %v", intakeIDs(got))
+				}
+			})
 		}
 	})
 

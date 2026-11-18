@@ -114,6 +114,28 @@ func (m *MemoryStore) ListIntakes(_ context.Context, tenantID, state string, lim
 	return out, nil
 }
 
+func (m *MemoryStore) ListPollerIntakes(_ context.Context, tenantID, pollerID string, maxSeq int64, limit int) ([]Intake, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	var out []Intake
+	for _, in := range m.intakes {
+		if in.TenantID == tenantID && in.PollerID == pollerID && in.PollerID != "" && in.Sequence <= maxSeq {
+			out = append(out, copyIntake(*in))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sequence != out[j].Sequence {
+			return out[i].Sequence > out[j].Sequence
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) ClaimIntakes(_ context.Context, owner string, now time.Time, ttl time.Duration, limit int) ([]Intake, error) {
 	if err := checkClaim(owner, ttl, limit); err != nil {
 		return nil, err

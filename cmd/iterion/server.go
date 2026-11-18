@@ -35,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -899,6 +900,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookCounter:              stores.webhooks.Counter,
 		WebhookDeferred:             stores.webhooks.Deferred,
 		ConnectorIntakes:            intake.NewMongoStore(st.DB()),
+		ConnectorPollers:            poller.NewMongoStore(st.DB()),
 		ConnectorIntakeRetention:    intakeRetention,
 		ConnectorIntakeBacklogMax:   intakeBacklogMax,
 		ConfigShares:                stores.configShares,
@@ -1135,6 +1137,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
 		{"connector_intake", func(c context.Context) error { return intake.EnsureSchema(c, st.DB()) }},
+		{"connector_poller", func(c context.Context) error { return poller.EnsureSchema(c, st.DB()) }},
 		{"assistant_run_watches", func(c context.Context) error { return runwatch.NewMongoStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},

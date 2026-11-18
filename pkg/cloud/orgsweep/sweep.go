@@ -108,6 +108,9 @@ var teamScopedCollections = []string{
 	// connector intake (pkg/connector/intake) — a delivery's durable row and
 	// the pairs it owes the team's subscriptions
 	"connector_intakes", "connector_pairs",
+	// connector pollers (pkg/connector/poller) — a team's poller records
+	// and the seen set each keeps, every row under the poller's tenant
+	"connector_pollers", "connector_poller_seen",
 	// control-plane audit (pkg/audit) — written under BOTH scopes: a
 	// team-scoped row carries tenant_id == the team id (auditTenant: the
 	// member.added with the member's email, team.status_changed, …), an

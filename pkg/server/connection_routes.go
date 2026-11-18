@@ -103,9 +103,13 @@ type connectionCreateReq struct {
 	SchemeID     string   `json:"scheme_id,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
-	// Token is the credential. Write-only: it is sealed before the store sees
-	// it and never read back by any route.
-	Token string `json:"token"`
+	// Token is the credential of a token-shaped scheme (api_key, bearer,
+	// oauth2); Username and Password are HTTP basic's; a scheme of kind none
+	// takes none of them. Write-only: sealed before the store sees them and
+	// never read back by any route.
+	Token    string `json:"token,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // connectionPatchReq is the body of PATCH /api/teams/{id}/connections/{conn_id}.
@@ -123,8 +127,64 @@ type connectionPatchReq struct {
 	Status       *string `json:"status,omitempty"`
 	StatusReason *string `json:"status_reason,omitempty"`
 	// Token rotates the credential IN PLACE: a fresh value, sealed onto the
-	// same record. Omitted keeps the stored one (keptCredential).
-	Token *string `json:"token,omitempty"`
+	// same record. Omitted keeps the stored one (keptCredential). A basic
+	// connection rotates Username and Password together instead.
+	Token    *string `json:"token,omitempty"`
+	Username *string `json:"username,omitempty"`
+	Password *string `json:"password,omitempty"`
+}
+
+// sealConnectionCredential seals what a scheme of this kind presents — a
+// token, a username and password, or nothing — refusing any value the
+// scheme does not take: a token pasted for a basic scheme, or a credential
+// for one that presents none, would be sealed and never sent, or sent as
+// something it is not. The shape gate runs at the paste, like the CLI's.
+func sealConnectionCredential(sealer secrets.Sealer, connID string, kind spec.AuthKind, token, username, password string) ([]byte, error) {
+	refuse := func(format string, args ...any) ([]byte, error) {
+		return nil, &credentialRequestError{fmt.Errorf(format, args...)}
+	}
+	switch kind {
+	case spec.AuthNone:
+		if token != "" || username != "" || password != "" {
+			return refuse("scheme kind none presents no credential — send no token, username or password")
+		}
+		return connection.SealNone(sealer, connID)
+	case spec.AuthBasic:
+		if token != "" {
+			return refuse("an HTTP basic scheme takes a username and a password, not a token")
+		}
+		username = strings.TrimSpace(username)
+		if username == "" {
+			return refuse("an HTTP basic scheme needs a username")
+		}
+		if err := secrets.ValidateBasicShape(username, password); err != nil {
+			return nil, &credentialRequestError{err}
+		}
+		return connection.SealBasic(sealer, connID, username, password)
+	}
+	if username != "" || password != "" {
+		return refuse("scheme kind %s takes a token, not a username and password", kind)
+	}
+	if err := secrets.ValidateTokenShape("token", token); err != nil {
+		return nil, &credentialRequestError{err}
+	}
+	return connection.SealToken(sealer, connID, token, time.Time{})
+}
+
+// credentialRequestError is a credential the request got wrong — a 400 —
+// as opposed to the sealer failing, which is the server's.
+type credentialRequestError struct{ err error }
+
+func (e *credentialRequestError) Error() string { return e.err.Error() }
+func (e *credentialRequestError) Unwrap() error { return e.err }
+
+// credentialStatus is the status a sealConnectionCredential error answers.
+func credentialStatus(err error) int {
+	var req *credentialRequestError
+	if errors.As(err, &req) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Server) registerConnectionRoutes() {
@@ -202,13 +262,6 @@ func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "connector is required")
 		return
 	}
-	// The credential is validated at the PASTE, like `connections add` and
-	// `secret set`: a value that could not possibly authenticate is refused
-	// here, not discovered as a provider 401 in the middle of a run.
-	if err := secrets.ValidateTokenShape("token", req.Token); err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
-		return
-	}
 	alias := strings.TrimSpace(req.Alias)
 	if alias == "" {
 		alias = "main"
@@ -229,11 +282,6 @@ func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	scheme, _ := pkg.Connector.AuthScheme(schemeID)
-	if scheme.Kind == spec.AuthBasic {
-		httpError(w, http.StatusBadRequest,
-			"scheme %q of connector %q is HTTP basic, which needs a username and a password — this route seals a token only; name a token-shaped scheme in scheme_id", schemeID, pkg.Connector.ID)
-		return
-	}
 	baseURL, err := resolveConnectionBaseURL(pkg, req.BaseURL)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
@@ -251,9 +299,13 @@ func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	connID = "conn_" + connID
-	sealed, err := connection.SealToken(s.sealer, connID, req.Token, time.Time{})
+	// The credential is validated at the PASTE, like `connections add` and
+	// `secret set`: a value that could not possibly authenticate is refused
+	// here, not discovered as a provider 401 in the middle of a run — and
+	// only once the scheme says which values it takes.
+	sealed, err := sealConnectionCredential(s.sealer, connID, scheme.Kind, req.Token, req.Username, req.Password)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		httpError(w, credentialStatus(err), "scheme %q of connector %q: %s", schemeID, pkg.Connector.ID, err.Error())
 		return
 	}
 
@@ -341,15 +393,21 @@ func (s *Server) handlePatchConnection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Token != nil {
-		// Rotation: the same shape gate as creation, applied at the paste.
-		if err := secrets.ValidateTokenShape("token", *req.Token); err != nil {
-			httpError(w, http.StatusBadRequest, "%s", err.Error())
+	if req.Token != nil || req.Username != nil || req.Password != nil {
+		// Rotation: the same gate as creation, for the kind the connection
+		// was entrusted with.
+		kind := spec.AuthKind(conn.AuthPlacement.Kind)
+		if kind == spec.AuthNone {
+			httpError(w, http.StatusBadRequest, "connection %q presents no credential (scheme kind none), so there is nothing to rotate", conn.Alias)
 			return
 		}
-		sealed, err := connection.SealToken(s.sealer, conn.ID, *req.Token, time.Time{})
+		if kind == spec.AuthBasic && (req.Username == nil || req.Password == nil) {
+			httpError(w, http.StatusBadRequest, "connection %q is HTTP basic: rotate its username and password together", conn.Alias)
+			return
+		}
+		sealed, err := sealConnectionCredential(s.sealer, conn.ID, kind, deref(req.Token), deref(req.Username), deref(req.Password))
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "%s", err.Error())
+			httpError(w, credentialStatus(err), "connection %q: %s", conn.Alias, err.Error())
 			return
 		}
 		conn.SealedPayload = sealed
@@ -443,7 +501,12 @@ func resolveConnectionScheme(pkg *spec.Package, want string) (string, error) {
 // credential may be sent to is decided when it is entrusted, never re-derived
 // at call time.
 func resolveConnectionBaseURL(pkg *spec.Package, baseURL string) (string, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	baseURL = strings.TrimSpace(baseURL)
+	if !pkg.AddressesBaseURL() {
+		// The executor joins an operation's path after the base; a URL that
+		// IS the resource (a feed's) keeps its trailing slash.
+		baseURL = strings.TrimRight(baseURL, "/")
+	}
 	if baseURL == "" {
 		baseURL = strings.TrimRight(pkg.Connector.BaseURL.Default, "/")
 	}
@@ -459,6 +522,11 @@ func resolveConnectionBaseURL(pkg *spec.Package, baseURL string) (string, error)
 	}
 	if u.Host == "" {
 		return "", fmt.Errorf("base_url %q names no host", baseURL)
+	}
+	if u.User != nil {
+		// A credential in the URL would be stored in the clear on the record
+		// every member reads, and sent whatever the scheme says.
+		return "", fmt.Errorf("base_url names a user and password in its URL — they would be stored unsealed and sent with every call; pick the package's basic scheme and send them as username and password")
 	}
 	return baseURL, nil
 }

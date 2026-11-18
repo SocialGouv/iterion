@@ -19,7 +19,8 @@ var ErrSubscriptionNotFound = fmt.Errorf("trigger: subscription not found")
 //
 // Nothing legitimate needs the second row: a single subscription narrows
 // SEVERAL values by listing them in one filter (Filters is a map of
-// lists), and a different bot, connection or trigger is a different
+// lists), a polled trigger's one query asks what two would (a JQL ORs
+// them), and a different bot, connection or trigger is a different
 // binding.
 var ErrDuplicateConnectorBinding = errors.New("trigger: a connector subscription already binds this bot to this trigger on this connection")
 

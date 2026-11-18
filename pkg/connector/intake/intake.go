@@ -45,6 +45,10 @@ const (
 	// IntakeDead is the dead letter: matching failed past its attempts.
 	// Replayable.
 	IntakeDead = "dead"
+	// IntakePrimed is terminal: an item a poller's first scan recorded
+	// (ADR-168 §7). Durable and matched to nothing, so enabling a source
+	// never replays its backlog; a subscription's backfill alone pairs it.
+	IntakePrimed = "primed"
 )
 
 // Pair states.
@@ -100,6 +104,11 @@ type Intake struct {
 	// DedupKey is the digest of the authenticated material (ADR-168 §3), or
 	// a polled item's (item id, item version).
 	DedupKey string `json:"dedup_key" bson:"dedup_key"`
+	// Sequence numbers a poller's intakes in the order it accepted them —
+	// iterion's clock, not the vendor's: a subscription receives the intakes
+	// above the sequence it was activated at (ADR-168 §7). Set on a polled
+	// intake only.
+	Sequence int64 `json:"sequence,omitempty" bson:"sequence,omitempty"`
 	// Event is the sanitized event as JSON — outputs, payload without its
 	// redacted fields, listed headers (ADR-168 §4). Opaque here: a vendor's
 	// keys may hold anything a document field name may not.
@@ -213,8 +222,9 @@ type PairQuery struct {
 // fenced writes name the row and the generation their claim returned.
 type Store interface {
 	// Accept writes an intake once. The id is derived (IntakeID) and the
-	// row starts pending; a row that exists is left untouched whatever
-	// state it reached. It returns the stored row and whether this call
+	// row starts pending — or primed, when a poller says so (State
+	// IntakePrimed); a row that exists is left untouched whatever state it
+	// reached. It returns the stored row and whether this call
 	// wrote it — the latter also with an error, when the write landed and
 	// only reading the row back failed.
 	Accept(ctx context.Context, in Intake) (Intake, bool, error)
@@ -225,6 +235,10 @@ type Store interface {
 	// ListIntakes lists a tenant's intakes in state ("" for every state),
 	// newest first, at most limit (0 = no bound).
 	ListIntakes(ctx context.Context, tenantID, state string, limit int) ([]Intake, error)
+	// ListPollerIntakes lists a poller's intakes at or below sequence
+	// maxSeq, highest sequence first, at most limit (0 = no bound): the rows
+	// a subscription's backfill pairs.
+	ListPollerIntakes(ctx context.Context, tenantID, pollerID string, maxSeq int64, limit int) ([]Intake, error)
 	// ClaimIntakes claims up to limit claimable intakes for owner until
 	// now+ttl: pending rows past their NotBefore and claims past their
 	// expiry, in ONE order — NotBefore, then id — so a retry or an expired
@@ -287,6 +301,21 @@ func prepareIntake(in Intake) (Intake, error) {
 		return Intake{}, fmt.Errorf("%w: intake without a dedup key", ErrInvalid)
 	case in.ReceivedAt.IsZero():
 		return Intake{}, fmt.Errorf("%w: intake without a reception instant", ErrInvalid)
+	case in.PollerID != "" && in.Sequence <= 0:
+		return Intake{}, fmt.Errorf("%w: a polled intake carries its poller's sequence (got %d)", ErrInvalid, in.Sequence)
+	case in.PollerID == "" && in.Sequence != 0:
+		return Intake{}, fmt.Errorf("%w: only a polled intake carries a sequence (got %d)", ErrInvalid, in.Sequence)
+	}
+	state := IntakePending
+	switch in.State {
+	case "", IntakePending:
+	case IntakePrimed:
+		if in.PollerID == "" {
+			return Intake{}, fmt.Errorf("%w: only a poller's first scan primes an intake", ErrInvalid)
+		}
+		state = IntakePrimed
+	default:
+		return Intake{}, fmt.Errorf("%w: an intake is accepted pending or primed, not %q", ErrInvalid, in.State)
 	}
 	if len(in.Event) > 0 && !json.Valid(in.Event) {
 		return Intake{}, fmt.Errorf("%w: intake event is not JSON", ErrInvalid)
@@ -304,7 +333,7 @@ func prepareIntake(in Intake) (Intake, error) {
 	in.ID = IntakeID(in.TenantID, in.source(), in.DedupKey)
 	in.ReceivedAt = stamp(in.ReceivedAt)
 	in.ExpiresAt = stampPtr(in.ExpiresAt)
-	in.State = IntakePending
+	in.State = state
 	in.Attempts = 0
 	in.Owner = ""
 	in.Generation = 0
