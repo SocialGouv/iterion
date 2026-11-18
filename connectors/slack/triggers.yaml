@@ -1,0 +1,124 @@
+schema_version: 1
+connector: slack
+
+# The inbound contract, as Slack signs and frames a delivery to an app's
+# Events API request URL (api.slack.com/authentication/verifying-requests-from-slack).
+ingress:
+  body: json
+  credential:
+    scheme: hmac-sha256
+    in: header
+    name: X-Slack-Signature
+    encoding: hex
+    prefix: "v0="
+    # Slack signs the version, the instant and the body — the timestamp is
+    # inside the signature, which is what makes the replay window meaningful.
+    signed: "v0:{timestamp}:{body}"
+    # The signing secret comes from the app's Basic Information page: Slack
+    # generates it and the operator pastes it.
+    secret: vendor
+  timestamp:
+    in: header
+    name: X-Slack-Request-Timestamp
+    unit: s
+    # Slack's own guidance: refuse a delivery older than five minutes.
+    tolerance: 5m
+  # One app per connection, and its team id is what a delivery names: the
+  # operator binds the workspace once and another workspace's events are
+  # refused rather than run.
+  installation: 'payload.team_id'
+  # Slack verifies the endpoint the moment the URL is saved: the challenge is
+  # answered before any trigger is read, and the signature already proved who
+  # asked.
+  handshake:
+    when: 'payload.type == "url_verification"'
+    respond: 'payload.challenge'
+  # The inner event carries the vendor's name (`message`, `app_mention`, …);
+  # the outer `event_callback` is the same for all of them.
+  event: { from: 'payload.event.type' }
+  # Slack retries a delivery it did not see acknowledged, marking it in a
+  # header. It is metadata: the body digest is what dedups the retry.
+  headers: [X-Slack-Retry-Num]
+  # The legacy verification token travels in the body of some events; it is
+  # never part of the event a bot sees.
+  redact: [token]
+  ack: { status: 200 }
+
+triggers:
+  - id: slack.message.posted
+    event: message
+    display_name: Message posted
+    description: >-
+      A message posted in a channel the app is in. Slack's own edits, joins,
+      leaves and bot messages arrive as the same event with a subtype: the loop
+      guard drops the app's own, and `subtype` is available in the payload when
+      a subscription wants to tell them apart.
+    outputs:
+      - { name: subject, from: 'payload.event.text' }
+      - { name: actor, from: 'payload.event.user' }
+      - { name: text, from: 'payload.event.text' }
+      - { name: channel, from: 'payload.event.channel' }
+      - { name: ts, from: 'payload.event.ts' }
+      - name: thread
+        from: 'if(payload.event.thread_ts, payload.event.channel + ":" + payload.event.thread_ts, payload.event.channel + ":" + payload.event.ts)'
+        description: The channel and the thread the message belongs to.
+    filters:
+      - id: channel
+        from: 'payload.event.channel'
+        type: string
+        selector: slack.conversation.list
+      # One Slack message subtype (a join, a leave, a bot message): left
+      # empty, they all still arrive. Edits and deletions are dropped by the
+      # loop guard, not offered here.
+      - id: subtype
+        from: 'payload.event.subtype'
+        type: string
+    # The loop guard: a message the app itself posted carries a bot id, and a
+    # bot that answered itself would answer forever. It is written as a
+    # VERDICT (`!!`, a boolean) because the lane drops only on a true — an
+    # expression that renders the id itself would never drop anything. Edits
+    # and deletions arrive as this same event with no text of their own, so
+    # they are not messages a bot can act on.
+    ignore: '!!payload.event.bot_id || payload.event.subtype == "message_changed" || payload.event.subtype == "message_deleted"'
+    sample: samples/message-posted.json
+
+  - id: slack.mention.received
+    event: app_mention
+    display_name: Mention
+    description: Someone wrote `@<bot>` in a channel the app is in.
+    outputs:
+      - { name: subject, from: 'payload.event.text' }
+      - { name: actor, from: 'payload.event.user' }
+      - { name: text, from: 'payload.event.text' }
+      - { name: channel, from: 'payload.event.channel' }
+      - { name: ts, from: 'payload.event.ts' }
+      - name: thread
+        from: 'if(payload.event.thread_ts, payload.event.channel + ":" + payload.event.thread_ts, payload.event.channel + ":" + payload.event.ts)'
+    filters:
+      - id: channel
+        from: 'payload.event.channel'
+        type: string
+        selector: slack.conversation.list
+    ignore: '!!payload.event.bot_id'
+    sample: samples/app-mention.json
+
+  - id: slack.reaction.added
+    event: reaction_added
+    display_name: Reaction added
+    description: Someone reacted to a message with an emoji.
+    outputs:
+      - { name: subject, from: 'payload.event.reaction' }
+      - { name: actor, from: 'payload.event.user' }
+      - { name: reaction, from: 'payload.event.reaction' }
+      - { name: channel, from: 'payload.event.item.channel' }
+      - { name: message_ts, from: 'payload.event.item.ts' }
+      - { name: thread, from: 'payload.event.item.channel' }
+    filters:
+      - id: reaction
+        from: 'payload.event.reaction'
+        type: string
+      - id: channel
+        from: 'payload.event.item.channel'
+        type: string
+        selector: slack.conversation.list
+    sample: samples/reaction-added.json

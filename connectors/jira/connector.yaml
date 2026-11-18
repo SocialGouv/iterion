@@ -1,0 +1,48 @@
+schema_version: 1
+id: jira
+display_name: Jira
+description: Jira Cloud — issues and comments, from the webhooks API.
+version: 0.1.0
+
+# Authored from Jira's published webhooks and REST documentation, not generated
+# from a vendor description. The mark is drawn for this package — a nominative
+# placeholder, not Atlassian's logo.
+provenance:
+  spec_url: https://developer.atlassian.com/cloud/jira/platform/webhooks/
+  redistributable: true
+  generated_by: iterion dev
+
+base_url:
+  # Every Jira Cloud site has its own hostname, and a Data Center instance adds
+  # its own base path, so the operator supplies the origin. The prefix below
+  # is Jira CLOUD's REST root; Data Center and Server answer on /rest/api/2,
+  # which this package does not address yet.
+  path_prefix: /rest/api/3
+  operator_supplied: true
+
+# The credential an action operation spends. Inbound deliveries are proved by
+# the ingress's own secret instead (triggers.yaml), minted by iterion.
+auth:
+  - id: basic
+    kind: basic
+    display_name: Email and API token
+    description: >-
+      Basic auth with the Atlassian account's email and an API token created at
+      https://id.atlassian.com/manage-profile/security/api-tokens.
+  - id: bearer
+    kind: bearer
+    display_name: OAuth 2.0 access token
+    description: >-
+      A 3LO access token for an app granted the Jira scopes it needs.
+
+maturity: experimental
+category: issue_tracker
+# Atlassian's brand blue.
+brand_color: "#0052CC"
+icon: icon.svg
+
+default_security:
+  - terms:
+      - scheme: basic
+  - terms:
+      - scheme: bearer

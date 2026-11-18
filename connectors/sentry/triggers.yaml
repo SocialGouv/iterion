@@ -1,0 +1,103 @@
+schema_version: 1
+connector: sentry
+
+# The inbound contract of a Sentry webhook
+# (https://docs.sentry.io/organization/integrations/integration-platform/webhooks/):
+# HMAC-SHA256 in hex over the exact, unparsed request body, keyed by the
+# internal integration's Client Secret. No timestamp is signed with it, so
+# there is no replay window to enforce; the body digest is the identity, and a
+# retry meets the row its first delivery opened.
+ingress:
+  body: json
+  credential:
+    scheme: hmac-sha256
+    in: header
+    name: Sentry-Hook-Signature
+    encoding: hex
+    signed: "{body}"
+    # The Client Secret belongs to the integration the operator created in
+    # Sentry: the vendor generates it, the operator pastes it here.
+    secret: vendor
+  # No installation is declared. Every body carries the integration's own
+  # `installation.uuid`, but neither Sentry's UI nor its API names a value an
+  # operator can read BEFORE the first delivery — and an ingress refuses to be
+  # created without one — so binding it would make the source unpluggable. An
+  # internal integration belongs to one organization, and the secret it signs
+  # with is the boundary until a discoverable install id exists.
+  # The resource travels in a header; the action is a field of the body
+  # (issue: created, resolved, assigned, archived, unresolved — metric_alert:
+  # critical, warning, resolved).
+  event: { header: Sentry-Hook-Resource }
+  # Sentry's per-request id, metadata only: it is unsigned and dedups nothing.
+  delivery_id: { header: Request-ID }
+  headers: [Sentry-Hook-Resource, Request-ID]
+  ack: { status: 200 }
+
+triggers:
+  - id: sentry.issue.alerted
+    event: issue
+    display_name: Issue alert
+    description: >-
+      An issue was created or changed state — created, resolved, assigned,
+      archived, unresolved. It is the integration's own issue webhook, which
+      follows the issue's lifecycle and not an alert rule's firing: it starts
+      as soon as the integration subscribes to `issue`. Sentry sends the issue
+      as it stands, so `subject_state` is the state after the change.
+    outputs:
+      - { name: subject, from: 'payload.data.issue.title' }
+      - { name: subject_state, from: 'payload.data.issue.status' }
+      - { name: actor, from: 'payload.actor.name' }
+      - { name: thread, from: 'payload.data.issue.permalink' }
+      - { name: action, from: 'payload.action' }
+      - { name: issue_id, from: 'payload.data.issue.id' }
+      - { name: short_id, from: 'payload.data.issue.shortId' }
+      - { name: level, from: 'payload.data.issue.level' }
+      - { name: culprit, from: 'payload.data.issue.culprit' }
+      - { name: project, from: 'payload.data.issue.project.slug' }
+      - { name: url, from: 'payload.data.issue.permalink' }
+      - { name: first_seen, from: 'payload.data.issue.firstSeen' }
+      - { name: last_seen, from: 'payload.data.issue.lastSeen' }
+      # Sentry's own example sends this one as a STRING beside a numeric
+      # userCount — `"count": "3",` next to `"userCount": 3` — so the default
+      # string type is the vendor's, not a bent sample:
+      # https://docs.sentry.io/organization/integrations/integration-platform/webhooks/issues/
+      - { name: event_count, from: 'payload.data.issue.count' }
+      - { name: user_count, from: 'payload.data.issue.userCount', type: int }
+    filters:
+      - id: action
+        from: 'payload.action'
+        type: enum
+        options: [created, resolved, assigned, archived, unresolved]
+        # A resolved issue is usually a notification, not a trigger; a
+        # subscription that wants the transitions says so.
+        default: [created]
+    sample: samples/issue-alert.json
+
+  - id: sentry.metric_alert.fired
+    event: metric_alert
+    display_name: Metric alert
+    description: >-
+      A metric alert rule crossed its threshold (critical or warning) or
+      resolved. The incident is under `data.metric_alert`, the rule that fired
+      under its `alert_rule`.
+    outputs:
+      - { name: subject, from: 'payload.data.description_title' }
+      - { name: subject_state, from: 'payload.action' }
+      - { name: actor, from: 'payload.actor.name' }
+      - { name: thread, from: 'payload.data.web_url' }
+      - { name: action, from: 'payload.action' }
+      - { name: alert_name, from: 'payload.data.metric_alert.alert_rule.name' }
+      - { name: alert_id, from: 'payload.data.metric_alert.alert_rule.id' }
+      - { name: incident_title, from: 'payload.data.metric_alert.title' }
+      - { name: description, from: 'payload.data.description_text' }
+      - { name: query, from: 'payload.data.metric_alert.alert_rule.query' }
+      - { name: aggregate, from: 'payload.data.metric_alert.alert_rule.aggregate' }
+      - { name: projects, from: 'payload.data.metric_alert.projects', type: list }
+      - { name: url, from: 'payload.data.web_url' }
+    filters:
+      - id: action
+        from: 'payload.action'
+        type: enum
+        options: [critical, warning, resolved]
+        default: [critical, warning]
+    sample: samples/metric-alert.json

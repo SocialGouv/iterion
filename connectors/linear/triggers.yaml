@@ -1,0 +1,113 @@
+schema_version: 1
+connector: linear
+
+# The inbound contract, as Linear signs and frames a webhook delivery
+# (https://linear.app/developers/webhooks):
+#
+#   * `Linear-Signature` is the hex HMAC-SHA256 of the RAW request body,
+#     keyed by the webhook's signing secret. Linear recommends verifying
+#     the raw bytes rather than a re-serialised tree, which is what the
+#     lane does.
+#   * The replay window is a TIMESTAMP IN THE BODY: `webhookTimestamp`, in
+#     milliseconds. Linear also mirrors it in a `Linear-Timestamp` header,
+#     but the signed body is what carries it here, so `signed:` holds no
+#     `{timestamp}` — the body template already authenticates the instant.
+#     Linear recommends refusing a delivery more than a minute away.
+#   * Linear's hook API is GraphQL, which the executor does not speak, so
+#     the hook is declared by hand (setup.md). That is also why this package
+#     declares no operation and no filter selector.
+ingress:
+  body: json
+  credential:
+    scheme: hmac-sha256
+    in: header
+    name: Linear-Signature
+    encoding: hex
+    # The whole raw body, `webhookTimestamp` included — that is what makes
+    # the window below meaningful.
+    signed: "{body}"
+    # iterion mints the signing secret and the operator pastes it into the
+    # webhook's signing secret field, because no operation can create it.
+    secret: minted
+  timestamp:
+    in: body
+    name: webhookTimestamp
+    unit: ms
+    # Linear's own guidance: a delivery more than a minute from now is
+    # refused (https://linear.app/developers/webhooks#verify-webhook-signature).
+    tolerance: 60s
+  # A Linear webhook belongs to one organisation, and the payload names it.
+  # Binding the operator's organisation refuses a delivery minted for
+  # another, and a mis-pasted secret between two hooks surfaces as a refusal
+  # rather than a run.
+  installation: 'payload.organizationId'
+  # The entity type travels in the body (`Issue`, `Comment`, …); the
+  # `Linear-Event` header carries the same value but the body is the
+  # authenticated copy.
+  event: { from: 'payload.type' }
+  # `Linear-Delivery` is a uuid Linear sends per payload. It is unsigned, so
+  # it is metadata only: the body digest is what dedups a retry.
+  delivery_id: { header: Linear-Delivery }
+  headers: [Linear-Event, Linear-Delivery]
+  ack: { status: 200 }
+
+triggers:
+  - id: linear.issue.changed
+    event: Issue
+    display_name: Issue created or updated
+    description: >-
+      An issue was created, updated or removed. Linear delivers every one of
+      them as the `Issue` entity, so the `action` filter is what narrows a
+      subscription; the default keeps creation and edits and drops removals.
+    outputs:
+      - { name: subject, from: 'payload.data.title' }
+      - { name: subject_state, from: 'payload.data.state.name' }
+      - { name: actor, from: 'payload.actor.name' }
+      - { name: thread, from: 'payload.data.url' }
+      - { name: labels, from: 'map(payload.data.labels, l => l.name)', type: list }
+      - { name: identifier, from: 'payload.data.identifier' }
+      - { name: team, from: 'payload.data.team.key' }
+      - { name: issue_url, from: 'payload.data.url' }
+      - { name: priority, from: 'payload.data.priority', type: int }
+    filters:
+      - id: action
+        from: 'payload.action'
+        type: enum
+        options: [create, update, remove]
+        default: [create, update]
+      - id: team
+        from: 'payload.data.team.key'
+        type: string
+    # No loop guard: a webhook names the person or the OAuth client that
+    # changed the issue, and this package's own identity has no marker Linear
+    # stamps. A subscription narrows with `team` and `action` instead.
+    sample: samples/issue-created.json
+
+  - id: linear.comment.created
+    event: Comment
+    display_name: Comment created
+    description: >-
+      A comment was created, updated or removed on an issue. The body's
+      `action` is what tells them apart — `create` by default. `data.issue` is
+      Linear's CHILD issue object (id, identifier, title, team, url) and some
+      deliveries omit it altogether, carrying only `data.issueId`: the outputs
+      that read it are then empty, and a bot that needs more fetches the issue
+      through the API.
+    outputs:
+      - { name: subject, from: 'payload.data.issue.title' }
+      - { name: actor, from: 'payload.actor.name' }
+      - { name: thread, from: 'payload.data.issue.url' }
+      - { name: comment_body, from: 'payload.data.body' }
+      - { name: comment_url, from: 'payload.url' }
+      - { name: issue_identifier, from: 'payload.data.issue.identifier' }
+      - { name: team, from: 'payload.data.issue.team.key' }
+    filters:
+      - id: action
+        from: 'payload.action'
+        type: enum
+        options: [create, update, remove]
+        default: [create]
+      - id: team
+        from: 'payload.data.issue.team.key'
+        type: string
+    sample: samples/comment-created.json

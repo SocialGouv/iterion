@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>slack</title>
+  <rect x="3.5" y="5.5" width="25" height="18" rx="5.5" fill="#4A154B"/>
+  <path d="M11 23.5v5.5l6.5-5.5z" fill="#4A154B"/>
+  <circle cx="11.5" cy="14.5" r="1.9" fill="#ffffff"/>
+  <circle cx="16" cy="14.5" r="1.9" fill="#ffffff"/>
+  <circle cx="20.5" cy="14.5" r="1.9" fill="#ffffff"/>
+</svg>
