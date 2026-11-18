@@ -140,12 +140,12 @@ func TestTheProbesVerdictNamesWhatItMeasured(t *testing.T) {
 	resp, err := deathToRefusal(deathEvidence{
 		limits:    Limits{Memory: 256 << 20, CPU: 10 * time.Second},
 		signalled: true, signal: 9,
-		probe: probeResult{killed: true, peak: 300 << 20, samples: 4},
+		probe: probeResult{killed: true, peak: 300 << 20, base: 40 << 20, samples: 4},
 	})
 	if err != nil {
 		t.Fatalf("want a refusal, got %v", err)
 	}
-	for _, want := range []string{"314572800", "268435456"} {
+	for _, want := range []string{"314572800", "268435456", "41943040"} {
 		if !strings.Contains(resp.Message, want) {
 			t.Errorf("the message does not name %s: %s", want, resp.Message)
 		}

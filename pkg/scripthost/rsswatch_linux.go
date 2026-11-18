@@ -14,12 +14,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
-// rssSampleInterval is how often the parent reads the child's resident set.
-// The poll costs one open/read of a small /proc file, so the trade is between
-// that and how far a payload can run past the bound between two samples: the
-// overshoot is at most the child's own allocation rate times this interval.
-const rssSampleInterval = 20 * time.Millisecond
-
 // oomVictimScore is writable by the child's own uid and asks the kernel to
 // pick THIS process first when a cgroup runs out of memory. It is a bias, not
 // a bound: with it, a pod-level OOM kills the script instead of the runner that
@@ -29,7 +23,14 @@ const oomVictimScore = 1000
 // probeResult is what the resident-set probe saw. It carries FACTS, so the
 // verdict below is a pure function of them and testable without a process.
 type probeResult struct {
-	peak    int64  // the largest resident set observed, in bytes
+	// peak is the largest GROWTH of the resident set over the baseline the
+	// probe took when the child started — not the total. The total includes
+	// the Go runtime, the binary's resident code and the interpreter, which at
+	// a 64 MiB bound is most of the budget by itself: measured in CI, a
+	// legitimate run under the clamp floor was killed at 68665344 bytes
+	// against a 67108864-byte bound, having grown by far less than that.
+	peak    int64
+	base    int64  // the resident set the growth is measured from
 	killed  bool   // this probe is what ended the child
 	samples int    // how many reads succeeded; zero means the probe was blind
 	blind   string // why the last read failed, when none ever succeeded
@@ -53,6 +54,7 @@ func watchRSS(cmd *exec.Cmd, bound int64, interval time.Duration, stop <-chan st
 	}
 	go func() {
 		var r probeResult
+		r.base = -1
 		pid := cmd.Process.Pid
 		tick := time.NewTicker(interval)
 		defer tick.Stop()
@@ -73,10 +75,21 @@ func watchRSS(cmd *exec.Cmd, bound int64, interval time.Duration, stop <-chan st
 				}
 				r.samples++
 				r.blind = ""
-				if rss > r.peak {
-					r.peak = rss
+				// The FIRST reading is the baseline: what the child costs
+				// before its payload allocates anything. Growth from there is
+				// the quantity RLIMIT_DATA would have bounded. A payload that
+				// allocated everything before this sample would set its own
+				// baseline — 20 ms is early enough for a child that must read
+				// its request and start an interpreter, and the kernel's own
+				// RLIMIT still bounds the heap meanwhile.
+				if r.base < 0 {
+					r.base = rss
 				}
-				if rss > bound {
+				growth := rss - r.base
+				if growth > r.peak {
+					r.peak = growth
+				}
+				if growth > bound {
 					if _, kerr := proc.KillProcessGroup(cmd); kerr != nil {
 						r.blind = "kill: " + kerr.Error()
 						done <- r

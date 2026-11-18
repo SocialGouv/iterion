@@ -246,6 +246,16 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	})
 }
 
+// rssSampleInterval is how often the parent reads the child's resident set.
+// The poll costs one open/read of a small /proc file, so the trade is between
+// that and how far a payload can run past the bound between two samples: the
+// overshoot is at most the child's own allocation rate times this interval.
+//
+// It lives here, not in the Linux file, because Run names it in the refusal it
+// builds on EVERY platform: the first version defined it beside the probe and
+// the Windows and darwin vet legs caught `undefined: rssSampleInterval`.
+const rssSampleInterval = 20 * time.Millisecond
+
 // wallGrace is how much longer than the script's own wall bound the parent
 // waits. It covers process start, the request read and the response write —
 // not script time.
@@ -314,11 +324,12 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// bound".
 	if e.probe.killed {
 		return Refuse(RefusalMemory,
-			"the script host's resident set passed its %d-byte memory bound and the parent killed it "+
-				"at %d bytes. A mapping that RLIMIT_DATA does not charge (MAP_SHARED, memfd) grows the "+
-				"resident set without meeting the kernel bound, so the parent samples it every %s; "+
-				"the overshoot is at most one sample of the child's own allocator. %s",
-			e.limits.Memory, e.probe.peak, rssSampleInterval, evidence), nil
+			"the script host's resident set grew by %d bytes past its %d-byte memory bound "+
+				"(measured from a %d-byte baseline when the child started) and the parent killed it. "+
+				"A mapping that RLIMIT_DATA does not charge (MAP_SHARED, memfd) grows the resident set "+
+				"without meeting the kernel bound, so the parent samples the GROWTH every %s; the "+
+				"overshoot is at most one sample of the child's own allocator. %s",
+			e.probe.peak, e.limits.Memory, e.probe.base, rssSampleInterval, evidence), nil
 	}
 
 	// (2) A memory death announces itself: the Go runtime prints before dying.
