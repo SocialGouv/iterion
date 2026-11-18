@@ -16,7 +16,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/connection"
-	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 )
 
@@ -149,7 +148,7 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 		// no ingress has no delivery contract the lane can bind, and a
 		// polled trigger has no poller to feed it before L4-2 — listing any
 		// of them would end the plug in the bind's refusal.
-		plug := pluggableTriggers(pkg)
+		plug := pkg.DeliverableTriggers()
 		if len(plug) == 0 {
 			continue
 		}
@@ -194,23 +193,6 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
-}
-
-// pluggableTriggers are the triggers of pkg a subscription can be bound to
-// today: webhook triggers of a package that declares its ingress. A polled
-// trigger is refused at save until pollers ship (binding.ValidateSubscription),
-// so it is not offered either.
-func pluggableTriggers(pkg *spec.Package) []spec.Trigger {
-	if pkg.Ingress == nil {
-		return nil
-	}
-	var out []spec.Trigger
-	for _, t := range pkg.Triggers {
-		if !t.Polled() {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // connectionsByConnector counts the tenant's connections per connector in

@@ -49,12 +49,11 @@ func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []Bot
 	case sub.Cron != "":
 		return sub, fmt.Errorf("cron does not apply to a connector subscription")
 	case sub.Poller != "":
-		return sub, fmt.Errorf("poller %q: a polled trigger ships with polling (L4-2, #3274)", sub.Poller)
+		return sub, fmt.Errorf("poller %q: this deployment runs no pollers yet, so a subscription cannot listen to one", sub.Poller)
 	case trig.Polled():
-		// A polled trigger is fed by its poller alone, and pollers ship with
-		// the poller store: a subscription saved now would be accepted and
-		// never fire.
-		return sub, fmt.Errorf("trigger %s is polled, and pollers ship with L4-2 (#3274): a subscription to it would never fire", trig.ID)
+		// A polled trigger is fed by its poller alone, and no poller runs
+		// yet: a subscription saved now would be accepted and never fire.
+		return sub, fmt.Errorf("trigger %s is polled, and this deployment runs no pollers yet: a subscription to it would never fire", trig.ID)
 	}
 	switch sub.NoLiveRun {
 	case "", "launch", "drop":

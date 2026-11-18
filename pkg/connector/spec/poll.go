@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,7 +165,7 @@ func PollItemIdentity(poll *TriggerPoll, response, item any) (id, version string
 	}
 	id, err = pollScalar(v)
 	if err != nil || id == "" {
-		return "", "", fmt.Errorf("poll.item_id %q reads %v, not a non-empty string or number", poll.ItemID, v)
+		return "", "", fmt.Errorf("poll.item_id %q reads %v, not a non-empty string or number (%v)", poll.ItemID, v, err)
 	}
 	if poll.ItemVersion == "" {
 		raw, err := json.Marshal(item)
@@ -179,47 +181,109 @@ func PollItemIdentity(poll *TriggerPoll, response, item any) (id, version string
 	}
 	version, err = pollScalar(v)
 	if err != nil || version == "" {
-		return "", "", fmt.Errorf("poll.item_version %q reads %v, not a non-empty string or number", poll.ItemVersion, v)
+		return "", "", fmt.Errorf("poll.item_version %q reads %v, not a non-empty string or number (%v)", poll.ItemVersion, v, err)
 	}
 	return id, version, nil
 }
 
 // pollScalar renders an identity value: a string as is, a number in its
-// canonical decimal. Anything else has no stable text and is refused.
+// canonical decimal (never an exponent). A float past 2^53 is refused: JSON
+// decoding has already rounded it, so two distinct ids would read as one and
+// the second item would be dropped as seen.
 func pollScalar(v any) (string, error) {
 	switch x := v.(type) {
 	case string:
 		return x, nil
-	case float64, int64, int:
-		b, err := json.Marshal(x)
-		return string(b), err
+	case json.Number:
+		return x.String(), nil
+	case int:
+		return strconv.Itoa(x), nil
+	case int64:
+		return strconv.FormatInt(x, 10), nil
+	case float64:
+		// 2^53 itself is where two integers first decode to one float.
+		if math.Abs(x) >= 1<<53 {
+			return "", fmt.Errorf("the number %v is past 2^53, where decoded JSON can no longer tell two ids apart — read a string field", x)
+		}
+		if x == math.Trunc(x) {
+			return strconv.FormatInt(int64(x), 10), nil
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64), nil
 	}
 	return "", fmt.Errorf("%T is not a scalar", v)
 }
 
-// pollTimestampLayouts are the instants vendors write: RFC 3339 (with or
-// without fractional seconds), Jira's offset without a colon, and the
-// RFC 1123 dates of RSS.
-var pollTimestampLayouts = []string{
+// instantLayouts are the instants vendors write with a NUMERIC zone:
+// RFC 3339 (any fraction), Jira's offset without a colon, and the RFC 822
+// family of RSS with one- or two-digit days.
+var instantLayouts = []string{
 	time.RFC3339Nano,
 	"2006-01-02T15:04:05.000-0700",
 	"2006-01-02T15:04:05-0700",
 	time.RFC1123Z,
-	time.RFC1123,
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	time.RFC822Z,
+	"2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04 -0700",
+}
+
+// namedZoneLayouts are the same RFC 822 dates ending in a zone NAME, which
+// is read from rfc822Zones and never from time.Parse: Parse gives a name it
+// does not know an offset of zero, and a name it does know the offset of the
+// process's own location, so "EST" would mean one instant under TZ=UTC and
+// another five hours later under TZ=America/New_York.
+var namedZoneLayouts = []string{
+	"Mon, 02 Jan 2006 15:04:05",
+	"Mon, 2 Jan 2006 15:04:05",
+	"02 Jan 06 15:04",
+	"2 Jan 2006 15:04:05",
+	"Mon, 2 Jan 2006 15:04",
+}
+
+// rfc822Zones are the zone names RFC 822 §5.1 defines, with their offsets.
+var rfc822Zones = map[string]int{
+	"UT": 0, "UTC": 0, "GMT": 0, "Z": 0,
+	"EST": -5, "EDT": -4, "CST": -6, "CDT": -5,
+	"MST": -7, "MDT": -6, "PST": -8, "PDT": -7,
+}
+
+// ParseInstant reads an instant a vendor wrote: a numeric zone, or one of
+// the zone names RFC 822 defines. Any other zone name is an error, never a
+// guess.
+func ParseInstant(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	for _, layout := range instantLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	if i := strings.LastIndexByte(s, ' '); i > 0 {
+		head, zone := s[:i], s[i+1:]
+		if hours, ok := rfc822Zones[strings.ToUpper(zone)]; ok {
+			loc := time.FixedZone(strings.ToUpper(zone), hours*3600)
+			for _, layout := range namedZoneLayouts {
+				if t, err := time.ParseInLocation(layout, head, loc); err == nil {
+					return t, nil
+				}
+			}
+		} else if zone != "" && strings.Trim(zone, "+-0123456789") != "" {
+			for _, layout := range namedZoneLayouts {
+				if _, err := time.Parse(layout, head); err == nil {
+					return time.Time{}, fmt.Errorf("%q names zone %q, which is not one RFC 822 defines (UT, GMT, EST, EDT, CST, CDT, MST, MDT, PST, PDT) — write a numeric offset", s, zone)
+				}
+			}
+		}
+	}
+	return time.Time{}, fmt.Errorf("%q is not an RFC 3339, Jira or RFC 822 instant", s)
 }
 
 // ParsePollTimestamp reads a timestamp cursor value.
 func ParsePollTimestamp(v any) (time.Time, error) {
-	s, ok := v.(string)
+	str, ok := v.(string)
 	if !ok {
 		return time.Time{}, fmt.Errorf("a timestamp cursor reads %T, not a string", v)
 	}
-	for _, layout := range pollTimestampLayouts {
-		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("%q is not an RFC 3339, Jira or RFC 1123 timestamp", s)
+	return ParseInstant(str)
 }
 
 // validatePoll refuses a polled trigger no poller could run, and a poll:
@@ -271,45 +335,129 @@ func validatePoll(p *Package, t Trigger) error {
 	for _, prm := range op.Params {
 		keys[prm.Key] = true
 	}
+	// The walk, as exec.CallPaged runs it: the page parameter on every call
+	// of a page_number or offset walk, the size parameter on every call when
+	// the pagination declares a default size, the cursor parameter only from
+	// the second page on — each under the key its wire name maps to.
+	walked := map[string]bool{}
+	owned := map[string]bool{}
+	pg := op.Pagination
+	if pg != nil {
+		// The style itself is judged with the operation (ValidPaginationStyle
+		// is the set the walk follows).
+		pageKey, cursorKey := ParamKeyForWire(op, pg.PageParam), ParamKeyForWire(op, pg.CursorParam)
+		if pageKey != "" {
+			owned[pageKey] = true
+			if pg.Style != PageCursor {
+				walked[pageKey] = true
+			}
+		}
+		if cursorKey != "" {
+			owned[cursorKey] = true
+		}
+		if pg.SizeParam != "" && pg.DefaultSize > 0 {
+			walked[ParamKeyForWire(op, pg.SizeParam)] = true
+		}
+	}
+	required := map[string]bool{}
+	for _, prm := range op.Params {
+		if prm.Required && prm.Default == nil {
+			required[prm.Key] = true
+		}
+	}
 	for k, src := range poll.Params {
 		if !keys[k] {
 			return where("poll.params names %q, which operation %s does not declare", k, op.ID)
+		}
+		if owned[k] {
+			// Prevents: a walk that reads one hand-picked page, reports it
+			// incomplete, and so never moves the checkpoint.
+			return where("poll.params builds %q, which the pagination walk owns — the walk would read that one page, never complete, and the checkpoint would never move", k)
 		}
 		if err := checkPollRefs(fmt.Sprintf("poll.params.%s", k), src, queryIDs); err != nil {
 			return where("%v", err)
 		}
 	}
-	// The walk writes the pagination's own parameters; any other required
-	// parameter must be built here, or every tick fails the same way.
-	walked := map[string]bool{}
-	if pg := op.Pagination; pg != nil {
-		walked[pg.PageParam], walked[pg.SizeParam], walked[pg.CursorParam] = true, true, true
+	for k := range required {
+		if _, built := poll.Params[k]; built || walked[k] {
+			continue
+		}
+		if owned[k] {
+			return where("operation %s requires %q, which the pagination walk sends only from the second page — its first page cannot be asked for", op.ID, k)
+		}
+		return where("operation %s requires %q, which poll.params does not build", op.ID, k)
 	}
-	for _, prm := range op.Params {
-		if prm.Required && prm.Default == nil && !walked[prm.Key] {
-			if _, ok := poll.Params[prm.Key]; !ok {
-				return where("operation %s requires %q, which poll.params does not build", op.ID, prm.Key)
+	// Each tick's params, evaluated as the poller will: on the first tick no
+	// checkpoint exists and the optional query fields may be unset, later
+	// ticks carry one. A required parameter that builds nothing, or an
+	// expression that fails, fails every such tick.
+	firstQuery := map[string]any{}
+	for _, q := range poll.Query {
+		if q.Required {
+			firstQuery[q.ID] = pollQueryPlaceholder(q.Type)
+		}
+	}
+	ticks := []struct {
+		name       string
+		checkpoint any
+	}{{"the first tick (no checkpoint yet, optional query fields unset)", nil}}
+	if poll.Cursor != nil {
+		ticks = append(ticks, struct {
+			name       string
+			checkpoint any
+		}{"a later tick (a checkpoint set, optional query fields unset)", pollCursorPlaceholder(poll.Cursor.Kind)})
+	}
+	for _, tick := range ticks {
+		ctx := NewPollParamsContext(firstQuery, tick.checkpoint)
+		for k, src := range poll.Params {
+			v, err := evalExpr(src, ctx)
+			if err != nil {
+				return where("poll.params.%s fails on %s: %v", k, tick.name, err)
+			}
+			if v == nil && required[k] {
+				return where("poll.params.%s builds nothing on %s, and operation %s requires it", k, tick.name, op.ID)
+			}
+		}
+	}
+	readsCursor := false
+	for _, src := range poll.Params {
+		if ast, err := expr.Parse(src); err == nil {
+			for _, r := range ast.Refs() {
+				readsCursor = readsCursor || r.Namespace == NamespaceCursor
 			}
 		}
 	}
 	switch {
-	case op.Pagination != nil && poll.Items != "":
+	case readsCursor && poll.Cursor == nil:
+		return where("poll.params read cursor.value, but the poll declares no cursor: block — the value would be nil on every tick")
+	case !readsCursor && poll.Cursor != nil:
+		return where("the poll declares a cursor: block no param reads — the checkpoint would never narrow a request")
+	}
+	switch {
+	case pg != nil && poll.Items != "":
 		return where("poll.items is set, but operation %s paginates and its pagination already says where the items are", op.ID)
-	case op.Pagination == nil && poll.Items == "":
+	case pg == nil && poll.Items == "":
 		return where("poll.items is empty, and operation %s does not paginate — nothing says where its items are", op.ID)
 	case poll.Items != "":
 		if err := checkExpr("poll.items", poll.Items, NamespaceResponse); err != nil {
 			return where("%v", err)
 		}
 	}
+	// What an item's identity, revision and cursor may read. A paginated
+	// walk hands back its LAST page as the response, so on such an operation
+	// `response` would describe every item by another page's fields.
+	itemNS := []string{NamespaceResponse, NamespaceItem}
+	if pg != nil {
+		itemNS = []string{NamespaceItem}
+	}
 	if strings.TrimSpace(poll.ItemID) == "" {
 		return where("poll.item_id is empty — an item seen twice would be delivered twice")
 	}
-	if err := checkExpr("poll.item_id", poll.ItemID, NamespaceResponse, NamespaceItem); err != nil {
+	if err := checkExpr("poll.item_id", poll.ItemID, itemNS...); err != nil {
 		return where("%v", err)
 	}
 	if poll.ItemVersion != "" {
-		if err := checkExpr("poll.item_version", poll.ItemVersion, NamespaceResponse, NamespaceItem); err != nil {
+		if err := checkExpr("poll.item_version", poll.ItemVersion, itemNS...); err != nil {
 			return where("%v", err)
 		}
 	}
@@ -317,7 +465,7 @@ func validatePoll(p *Package, t Trigger) error {
 		if strings.TrimSpace(c.From) == "" {
 			return where("poll.cursor.from is empty")
 		}
-		if err := checkExpr("poll.cursor.from", c.From, NamespaceResponse, NamespaceItem); err != nil {
+		if err := checkExpr("poll.cursor.from", c.From, itemNS...); err != nil {
 			return where("%v", err)
 		}
 		switch c.Kind {
@@ -343,10 +491,35 @@ func validatePoll(p *Package, t Trigger) error {
 	if err != nil || min <= 0 {
 		return where("poll.interval.min %q is not a positive duration", poll.Interval.Min)
 	}
+	if min < time.Second {
+		// Prevents: a vendor called in a busy loop. ITERION_CONNECTOR_POLL_MIN_INTERVAL
+		// is the operator's dial on the cadence; a package asks in seconds.
+		return where("poll.interval.min %s is below a second — a poll interval is counted in seconds", min)
+	}
 	if min > def {
 		return where("poll.interval.min %s is above its default %s", min, def)
 	}
 	return nil
+}
+
+// pollQueryPlaceholder is a value of a query field's type, standing for what
+// an operator typed when the params are evaluated at load.
+func pollQueryPlaceholder(typ string) any {
+	switch typ {
+	case "int":
+		return float64(1)
+	case "bool":
+		return true
+	}
+	return "q"
+}
+
+// pollCursorPlaceholder stands for a checkpoint of the cursor's kind.
+func pollCursorPlaceholder(kind string) any {
+	if kind == CursorTimestamp {
+		return "2026-01-01T00:00:00Z"
+	}
+	return "token"
 }
 
 // checkPollRefs checks a params expression reads `query` and `cursor` only,
@@ -361,6 +534,11 @@ func checkPollRefs(where, src string, queryIDs map[string]bool) error {
 		return fmt.Errorf("%s: %w", where, err)
 	}
 	for _, r := range ast.Refs() {
+		if (r.Namespace == NamespaceQuery || r.Namespace == NamespaceCursor) && len(r.Path) == 0 {
+			// Prevents: query["typo"] or cursor[expr], which no field check
+			// can see — a field is read by its dotted name.
+			return fmt.Errorf("%s: %q reads %s by index — read %s.<field> by name", where, src, r.Namespace, r.Namespace)
+		}
 		if r.Namespace == NamespaceQuery && len(r.Path) > 0 && !queryIDs[r.Path[0]] {
 			return fmt.Errorf("%s: %q reads query.%s, which the poll's query does not declare", where, src, r.Path[0])
 		}
@@ -392,7 +570,14 @@ func checkPollSample(p *Package, t Trigger) error {
 	if len(items) == 0 {
 		return fmt.Errorf("connector %q: trigger %q: sample %q holds no item — it proves nothing the trigger reads", id, t.ID, t.Sample)
 	}
+	read := map[string]bool{}
 	for i, item := range items {
+		payload, ok := item.(map[string]any)
+		if !ok {
+			// Prevents: outputs that all read nil off an item that is not an
+			// object — the event's payload is the item.
+			return fmt.Errorf("connector %q: trigger %q: sample item %d is %T, not an object — an item is the event's payload", id, t.ID, i, item)
+		}
 		if _, _, err := PollItemIdentity(t.Poll, s.Response, item); err != nil {
 			return fmt.Errorf("connector %q: trigger %q: sample item %d: %w", id, t.ID, i, err)
 		}
@@ -405,12 +590,24 @@ func checkPollSample(p *Package, t Trigger) error {
 				if _, err := ParsePollTimestamp(v); err != nil {
 					return fmt.Errorf("connector %q: trigger %q: sample item %d: %w", id, t.ID, i, err)
 				}
+			} else if _, err := pollScalar(v); err != nil {
+				return fmt.Errorf("connector %q: trigger %q: sample item %d: an opaque cursor must be a string or number: %w", id, t.ID, i, err)
 			}
 		}
-		payload, _ := item.(map[string]any)
 		ctx := NewDeliveryContext(payload, nil, nil)
 		if err := checkExtraction(id, t, ctx); err != nil {
 			return err
+		}
+		for _, o := range t.Outputs {
+			if v, err := evalExpr(o.From, ctx); err == nil && v != nil {
+				read[o.Name] = true
+			}
+		}
+	}
+	// Prevents: a misspelt output, which reads nil on every item forever.
+	for _, o := range t.Outputs {
+		if !read[o.Name] {
+			return fmt.Errorf("connector %q: trigger %q: output %q reads nothing on any item of sample %q", id, t.ID, o.Name, t.Sample)
 		}
 	}
 	return nil

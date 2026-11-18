@@ -245,3 +245,50 @@ func TestTriggerCreateRefusesADuplicateBinding(t *testing.T) {
 		t.Fatalf("the refusal should name the row: %s", rec.Body.String())
 	}
 }
+
+// A subscription nothing can feed is refused at save: a webhook trigger of a
+// package that declares no ingress (no delivery reaches it), and a polled
+// trigger (no poller runs yet). The catalogue offers neither, and the save
+// agrees with it.
+func TestASubscriptionNothingCanFeedIsRefusedAtSave(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	pkg, _, err := w.s.connectorCatalog.Package("chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noIngress := *pkg
+	noIngress.Ingress = nil
+	w.s.connectorCatalog = connection.NewMemoryCatalog(&noIngress)
+	if rec := w.create(`{` + validConnectorSub + `}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "declares no ingress") {
+		t.Fatalf("a trigger of a package with no ingress: %d %s, want 400 naming it", rec.Code, rec.Body.String())
+	}
+	polled := *pkg
+	polled.Triggers = []spec.Trigger{{ID: "chat.message.posted", Delivery: spec.DeliveryPoll}}
+	w.s.connectorCatalog = connection.NewMemoryCatalog(&polled)
+	rec := w.create(`{` + validConnectorSub + `}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "runs no pollers yet") {
+		t.Fatalf("a polled trigger: %d %s, want 400 naming why", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "L4") || strings.Contains(rec.Body.String(), "#3274") {
+		t.Fatalf("the refusal speaks of the project's lots, not the operator's deployment: %s", rec.Body.String())
+	}
+}
+
+// triggerEventNames is what a filtered delivery's answer tells the operator
+// the package DOES believe: the events a delivery can carry, never a polled
+// trigger's empty name.
+func TestTriggerEventNamesListsWhatADeliveryCanCarry(t *testing.T) {
+	polled := spec.Trigger{ID: "chat.message.listed", Delivery: spec.DeliveryPoll}
+	for _, tc := range []struct {
+		triggers []spec.Trigger
+		want     string
+	}{
+		{nil, "no events at all"},
+		{[]spec.Trigger{polled}, "no event a delivery can carry"},
+		{[]spec.Trigger{polled, {ID: "chat.message.posted", Event: "deploy"}}, "deploy"},
+	} {
+		if got := triggerEventNames(tc.triggers); got != tc.want {
+			t.Errorf("triggerEventNames(%d triggers) = %q, want %q", len(tc.triggers), got, tc.want)
+		}
+	}
+}

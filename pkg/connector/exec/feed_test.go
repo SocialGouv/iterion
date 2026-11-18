@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
 
@@ -232,7 +233,10 @@ func TestANonFeedAnswerIsAnErrorNamingWhy(t *testing.T) {
 		{"RSS 0.91", `<rss version="0.91"><channel></channel></rss>`, `"0.91" is not 2.x`},
 		{"a feed element outside Atom", `<feed><entry/></feed>`, "neither RSS 2.0"},
 		{"an unknown charset", `<?xml version="1.0" encoding="koi8-r"?><rss version="2.0"/>`, `charset "koi8-r"`},
-		{"truncated", `<rss version="2.0"><channel><item><title>cut`, "decode the RSS document"},
+		{"truncated", `<rss version="2.0"><channel><item><title>cut`, "read the document"},
+		{"an RSS document with no channel", `<rss version="2.0"><item><title>x</title></item></rss>`, "has no <channel>"},
+		{"content after the root", `<rss version="2.0"><channel></channel></rss><rss version="2.0"/>`, "content after its root element"},
+		{"text after the root", `<rss version="2.0"><channel></channel></rss>trailing`, "text after its root element"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := callFeed(t, "application/xml", tc.body)
@@ -244,14 +248,246 @@ func TestANonFeedAnswerIsAnErrorNamingWhy(t *testing.T) {
 }
 
 // TestAFeedDeclaresNoEntityItCanExpand: a DTD's internal entity is never
-// expanded — the classic amplification never reaches the decoded answer.
+// expanded. encoding/xml refuses the undeclared reference outright, so the
+// call fails naming it — the amplification never reaches a decoded answer.
 func TestAFeedDeclaresNoEntityItCanExpand(t *testing.T) {
 	body := `<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">]>` +
 		`<rss version="2.0"><channel><item><title>&b;</title><guid>g</guid></item></channel></rss>`
 	data, _, err := callFeed(t, "application/rss+xml", body)
 	if err == nil {
-		if title := feedItems(t, data)[0]["title"]; strings.Contains(title.(string), "AAAA") {
-			t.Fatalf("a DTD entity was expanded into %q", title)
+		t.Fatalf("a document referencing a DTD entity decoded to %v — it must be refused, never expanded", data)
+	}
+	if !strings.Contains(err.Error(), "entity") {
+		t.Fatalf("err = %v, want the refusal to name the entity", err)
+	}
+}
+
+// TestAFeedIsBoundedInItemsAndDepth: the executor bounds bytes, and a feed of
+// empty items fits millions of them in that, so the count and the nesting
+// are bounded too — refused past the bound, never cut, each the operator's
+// dial (0 removes it, a non-count refuses).
+func TestAFeedIsBoundedInItemsAndDepth(t *testing.T) {
+	items := func(n int) string {
+		return `<rss version="2.0"><channel>` + strings.Repeat(`<item><guid>g</guid></item>`, n) + `</channel></rss>`
+	}
+	t.Setenv(exec.EnvFeedMaxItems, "3")
+	if _, _, err := callFeed(t, "application/rss+xml", items(3)); err != nil {
+		t.Fatalf("a feed at the bound: %v", err)
+	}
+	if _, _, err := callFeed(t, "application/rss+xml", items(4)); err == nil || !strings.Contains(err.Error(), exec.EnvFeedMaxItems) {
+		t.Fatalf("a feed past the bound = %v, want a refusal naming %s", err, exec.EnvFeedMaxItems)
+	}
+	atom := `<feed xmlns="http://www.w3.org/2005/Atom">` + strings.Repeat(`<entry><id>e</id></entry>`, 4) + `</feed>`
+	if _, _, err := callFeed(t, "application/atom+xml", atom); err == nil {
+		t.Fatal("an Atom feed past the bound was read")
+	}
+	t.Setenv(exec.EnvFeedMaxItems, "0")
+	if _, _, err := callFeed(t, "application/rss+xml", items(50)); err != nil {
+		t.Fatalf("0 removes the bound: %v", err)
+	}
+	t.Setenv(exec.EnvFeedMaxItems, "lots")
+	if _, _, err := callFeed(t, "application/rss+xml", items(1)); err == nil || !strings.Contains(err.Error(), "not a count") {
+		t.Fatalf("a bound that is not a count = %v, want a refusal", err)
+	}
+	t.Setenv(exec.EnvFeedMaxItems, "")
+	t.Setenv(exec.EnvFeedMaxDepth, "4")
+	deep := `<rss version="2.0"><channel><item><description><a>x</a></description></item></channel></rss>`
+	if _, _, err := callFeed(t, "application/rss+xml", deep); err == nil || !strings.Contains(err.Error(), exec.EnvFeedMaxDepth) {
+		t.Fatalf("a feed nested past the bound = %v, want a refusal naming %s", err, exec.EnvFeedMaxDepth)
+	}
+}
+
+// TestAnErrorAnswerIsNotDecodedAsAFeed: a 4xx/5xx body is the vendor's error
+// page, and the call fails on its status — the feed decoder never spends
+// memory on it, and the error names the status, not the feed.
+func TestAnErrorAnswerIsNotDecodedAsAFeed(t *testing.T) {
+	var accept string
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusBadGateway)
+		// A WELL-FORMED feed, so that decoding it would succeed: what is
+		// witnessed is that it is never decoded, not that it would fail.
+		_, _ = w.Write([]byte(`<rss version="2.0"><channel>` + strings.Repeat(`<item><guid>g</guid></item>`, 50) + `</channel></rss>`))
+	})
+	defer done()
+	op := feedOp()
+	pkg.Ops[0].Operations = append(pkg.Ops[0].Operations, op)
+	res, err := e.Call(context.Background(), pkg, op, nil, creds())
+	if err == nil {
+		err = res.Err
+	}
+	if err == nil || strings.Contains(err.Error(), "feed") || res.Data != nil {
+		t.Fatalf("a 502 = %v (data %T), want the status's error and no feed decoded", err, res.Data)
+	}
+	_ = accept
+}
+
+// TestAnRSSFieldIsNeverAnotherNamespaces: RSS's own elements carry no
+// namespace, and an element of the same name in another one — an Atom self
+// link, an iTunes author, a Media RSS description — replaces nothing.
+func TestAnRSSFieldIsNeverAnotherNamespaces(t *testing.T) {
+	body := `<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:media="http://search.yahoo.com/mrss/">
+<channel>
+  <itunes:title>Not the channel title</itunes:title>
+  <title>The channel</title>
+  <link>https://site.example/</link>
+  <atom:link rel="self" href="https://site.example/feed.xml"/>
+  <item>
+    <title>Episode</title>
+    <link>https://site.example/ep1</link>
+    <link>https://site.example/a-second-link</link>
+    <atom:link rel="replies" href="https://site.example/ep1/comments"/>
+    <author>host@site.example (Host)</author>
+    <itunes:author>Somebody Else</itunes:author>
+    <description>The summary.</description>
+    <media:description>A media blurb.</media:description>
+    <itunes:title>Not the title</itunes:title>
+    <media:category>not-a-category</media:category>
+    <category>news</category>
+  </item>
+</channel>
+</rss>`
+	data, _, err := callFeed(t, "application/rss+xml", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link := data.(map[string]any)["link"]; link != "https://site.example/" {
+		t.Errorf("channel link = %v, want the RSS one", link)
+	}
+	if title := data.(map[string]any)["title"]; title != "The channel" {
+		t.Errorf("channel title = %v, want the RSS one, not an earlier iTunes title", title)
+	}
+	it := feedItems(t, data)[0]
+	for k, want := range map[string]string{
+		"link": "https://site.example/ep1", "id": "https://site.example/ep1",
+		"author": "host@site.example (Host)", "summary": "The summary.", "title": "Episode",
+	} {
+		if it[k] != want {
+			t.Errorf("%s = %q, want %q", k, it[k], want)
 		}
+	}
+	if cats := it["categories"].([]any); len(cats) != 1 || cats[0] != "news" {
+		t.Errorf("categories = %v, want the RSS one only", cats)
+	}
+}
+
+// TestAnAtomTextConstructKeepsItsMarkup: an xhtml title or summary, and an
+// XML-typed content, read their markup without the wrapping div; an entry
+// with no author has the feed's.
+func TestAnAtomTextConstructKeepsItsMarkup(t *testing.T) {
+	body := `<feed xmlns="http://www.w3.org/2005/Atom">
+  <author><name>Feed Author</name></author>
+  <entry>
+    <id>urn:e1</id>
+    <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">An <em>xhtml</em> title</div></title>
+    <summary type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Sum</p></div></summary>
+    <content type="application/xhtml+xml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Body</p></div></content>
+  </entry>
+</feed>`
+	data, _, err := callFeed(t, "application/atom+xml", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := feedItems(t, data)[0]
+	for k, want := range map[string]string{"title": "An <em>xhtml</em> title", "summary": "<p>Sum</p>", "content": "<p>Body</p>", "author": "Feed Author"} {
+		if got, _ := e[k].(string); !strings.Contains(got, want) || strings.Contains(got, "<div") {
+			t.Errorf("%s = %q, want %q without its wrapping div", k, got, want)
+		}
+	}
+}
+
+// TestAFeedCharsetFollowsWHATWGAndTheHeader: Latin-1 labels read as
+// windows-1252 (how feeds are served), "utf8" is UTF-8, and a charset the
+// Content-Type names wins over the document's declaration (RFC 7303).
+func TestAFeedCharsetFollowsWHATWGAndTheHeader(t *testing.T) {
+	doc := func(decl string, title []byte) string {
+		return `<?xml version="1.0" encoding="` + decl + `"?><rss version="2.0"><channel><item><title>` +
+			string(title) + `</title><guid>g</guid></item></channel></rss>`
+	}
+	title := func(ct, body string) any {
+		t.Helper()
+		data, _, err := callFeed(t, ct, body)
+		if err != nil {
+			t.Fatalf("%s: %v", ct, err)
+		}
+		return feedItems(t, data)[0]["title"]
+	}
+	if got := title("application/rss+xml", doc("ISO-8859-1", []byte{0x93, 'q', 0x94})); got != "“q”" {
+		t.Errorf("an ISO-8859-1 label over windows-1252 bytes = %q", got)
+	}
+	if got := title("application/rss+xml", doc("utf8", []byte("café"))); got != "café" {
+		t.Errorf(`the "utf8" label = %q`, got)
+	}
+	if got := title("application/rss+xml; charset=utf-8", doc("ISO-8859-1", []byte("café"))); got != "café" {
+		t.Errorf("the header's utf-8 over a Latin-1 declaration = %q, want the header to win", got)
+	}
+	if got := title("text/xml; charset=windows-1252", doc("utf-8", []byte{'R', 0xe9, 's'})); got != "Rés" {
+		t.Errorf("the header's windows-1252 over a utf-8 declaration = %q", got)
+	}
+	if _, _, err := callFeed(t, "application/rss+xml; charset=koi8-r", doc("utf-8", []byte("x"))); err == nil || !strings.Contains(err.Error(), `charset "koi8-r"`) {
+		t.Errorf("an unknown header charset = %v, want a refusal naming it", err)
+	}
+}
+
+// TestAFeedVersionIsWhatAReaderSees: every field a reader sees moves the
+// version — published, updated, link, author, a category — and nothing a
+// reader does not: surrounding whitespace, the order of categories. The id
+// and the title are trimmed, an empty category dropped, and an instant that
+// does not parse is kept as written rather than emptied.
+func TestAFeedVersionIsWhatAReaderSees(t *testing.T) {
+	item := func(inner string) string {
+		return `<rss version="2.0"><channel><lastBuildDate>Tue, 18 Nov 2026 10:00:00 GMT</lastBuildDate><item>` + inner + `</item></channel></rss>`
+	}
+	base := `<guid> g1 </guid><title>T</title><link>https://l/1</link><pubDate>Tue, 18 Nov 2026 10:00:00 GMT</pubDate><author>a</author><category>x</category><category>y</category><category> </category>`
+	read := func(inner string) map[string]any {
+		t.Helper()
+		data, _, err := callFeed(t, "application/rss+xml", item(inner))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u := data.(map[string]any)["updated"]; u != "2026-11-18T10:00:00Z" {
+			t.Errorf("lastBuildDate = %v, want RFC 3339", u)
+		}
+		return feedItems(t, data)[0]
+	}
+	b := read(base)
+	if b["id"] != "g1" {
+		t.Errorf("id = %q, want it trimmed", b["id"])
+	}
+	if cats := b["categories"].([]any); len(cats) != 2 {
+		t.Errorf("categories = %v, want the empty one dropped", cats)
+	}
+	same := map[string]string{
+		"whitespace around the title": strings.Replace(base, "<title>T</title>", "<title>  T \n</title>", 1),
+		"categories in another order": strings.Replace(base, "<category>x</category><category>y</category>", "<category>y</category><category>x</category>", 1),
+	}
+	for name, inner := range same {
+		if v := read(inner)["version"]; v != b["version"] {
+			t.Errorf("%s moved the version", name)
+		}
+	}
+	moved := map[string]string{
+		"the published instant": strings.Replace(base, "10:00:00 GMT</pubDate>", "11:00:00 GMT</pubDate>", 1),
+		"the link":              strings.Replace(base, "https://l/1", "https://l/2", 1),
+		"the author":            strings.Replace(base, "<author>a</author>", "<author>b</author>", 1),
+		"a category":            strings.Replace(base, "<category>y</category>", "<category>z</category>", 1),
+	}
+	for name, inner := range moved {
+		if v := read(inner)["version"]; v == b["version"] {
+			t.Errorf("a change of %s kept the version — it would never be seen again", name)
+		}
+	}
+	if p := read(strings.Replace(base, "Tue, 18 Nov 2026 10:00:00 GMT", "sometime soon", 1))["published"]; p != "sometime soon" {
+		t.Errorf("an unparsable instant = %q, want it kept as written", p)
+	}
+	atom := `<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>e</id><updated>2026-11-18T10:00:00Z</updated></entry></feed>`
+	data, _, err := callFeed(t, "application/atom+xml", atom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1 := feedItems(t, data)[0]["version"]
+	data, _, _ = callFeed(t, "application/atom+xml", strings.Replace(atom, "10:00:00Z", "11:00:00Z", 1))
+	if feedItems(t, data)[0]["version"] == a1 {
+		t.Error("a change of the updated instant kept the version")
 	}
 }

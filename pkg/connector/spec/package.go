@@ -473,7 +473,15 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	// Prevents: an answer decoded as something it is not — a feed read as
 	// JSON fails every call, and an unknown format would be guessed.
 	switch op.HTTP.ResponseFormat {
-	case "", ResponseJSON, ResponseFeed:
+	case "", ResponseJSON:
+	case ResponseFeed:
+		// Prevents: a JSON response contract judging the raw XML of a feed,
+		// which fails every call.
+		for _, r := range op.Results {
+			if r.ResponseSchemaRef != "" {
+				return fmt.Errorf("operation %q: a feed answer is XML, so result %d cannot carry the JSON response contract %q", op.ID, r.Status, r.ResponseSchemaRef)
+			}
+		}
 	default:
 		return fmt.Errorf("operation %q: response_format %q is not json or feed", op.ID, op.HTTP.ResponseFormat)
 	}

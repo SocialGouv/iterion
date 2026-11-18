@@ -102,6 +102,23 @@ func WebhookTrigger(triggers []Trigger, event string) (*Trigger, bool) {
 	return nil, false
 }
 
+// DeliverableTriggers are the triggers a delivery can reach: the webhook
+// triggers of a package that declares its ingress. A polled trigger is fed
+// by its poller and never by a delivery. The catalogue offers these and the
+// ingress bind requires one, so the two cannot disagree on what is pluggable.
+func (p *Package) DeliverableTriggers() []Trigger {
+	if p.Ingress == nil {
+		return nil
+	}
+	var out []Trigger
+	for _, t := range p.Triggers {
+		if !t.Polled() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // readTriggers loads the package's declared events, if it declares any.
 //
 // An ABSENT file is not an error: most packages have no inbound half, and a
@@ -172,6 +189,7 @@ func validateTriggers(p *Package) error {
 		return err
 	}
 	seen := map[string]bool{}
+	events := map[string]string{}
 	for _, t := range p.Triggers {
 		// Prevents: a declaration no workflow could ever name, which is the
 		// silently-inert capability shape this repo calls a defect.
@@ -207,6 +225,17 @@ func validateTriggers(p *Package) error {
 			return fmt.Errorf("connector %q: duplicate trigger %q", p.Connector.ID, t.ID)
 		}
 		seen[t.ID] = true
+		// Prevents: a trigger the catalogue offers and no delivery reaches.
+		// A delivery is routed by its event name to ONE webhook trigger, so a
+		// second trigger on the same event is pluggable and never fires; a
+		// trigger that narrows the event says so with its filters.
+		if !t.Polled() {
+			if first, dup := events[t.Event]; dup {
+				return fmt.Errorf("connector %q: triggers %q and %q both declare event %q — a delivery reaches one trigger, so the second would never fire; narrow one trigger with filters instead",
+					p.Connector.ID, first, t.ID, t.Event)
+			}
+			events[t.Event] = t.ID
+		}
 		// Prevents: one id meaning two things. An operation is called and a
 		// trigger is received, but both are named by authored text in this
 		// package's namespace, and a format that allowed the collision could

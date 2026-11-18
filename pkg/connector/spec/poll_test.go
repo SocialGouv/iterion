@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -19,7 +20,7 @@ func pollPackage() *spec.Package {
 		ID: "probe.issue.search", Resource: "issue", Verb: "search",
 		HTTP: spec.HTTPBinding{Method: "GET", Path: "/issues/search"},
 		Params: []spec.Param{
-			{Key: "jql", Name: "jql", In: spec.InQuery, Type: "string", Required: true},
+			{Key: "q", Name: "q", In: spec.InQuery, Type: "string", Required: true},
 			{Key: "page", Name: "page", In: spec.InQuery, Type: "integer", Required: true},
 			{Key: "limit", Name: "limit", In: spec.InQuery, Type: "integer"},
 		},
@@ -39,8 +40,8 @@ func pollPackage() *spec.Package {
 			ID: "probe.issue.updated", Delivery: spec.DeliveryPoll,
 			Poll: &spec.TriggerPoll{
 				Operation: "probe.issue.search",
-				Params:    map[string]string{"jql": `query.jql + " AND updated >= " + if(cursor.value, cursor.value, "-1d")`},
-				Query:     []spec.PollQueryField{{ID: "jql", Required: true}},
+				Params:    map[string]string{"q": `query.q + " AND updated >= " + if(cursor.value, cursor.value, "-1d")`},
+				Query:     []spec.PollQueryField{{ID: "q", Required: true}},
 				ItemID:    "item.key", ItemVersion: "item.fields.updated",
 				Cursor:   &spec.PollCursor{From: "item.fields.updated", Kind: spec.CursorTimestamp, Overlap: "1m"},
 				Interval: spec.PollInterval{Default: "5m", Min: "1m"},
@@ -77,6 +78,20 @@ func TestAPolledTriggerValidates(t *testing.T) {
 	}
 }
 
+// TestAPollWalkTheExecutorRunsValidates: what the walk itself writes is not
+// asked of poll.params — a page parameter an overlay renamed (the walk writes
+// it under its key), and a required size the pagination's default size fills.
+func TestAPollWalkTheExecutorRunsValidates(t *testing.T) {
+	p := pollPackage()
+	op := &p.Ops[0].Operations[1]
+	op.Params[1].Key = "page_number"
+	op.Params[2].Required = true
+	op.Pagination.DefaultSize = 50
+	if err := p.Validate(); err != nil {
+		t.Fatalf("a renamed page parameter and a defaulted size must pass: %v", err)
+	}
+}
+
 // TestAPollDeclarationNoPollerCouldRunIsRefused: one case per guard, each a
 // single change to the reference package, each naming what it refuses.
 func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
@@ -101,36 +116,75 @@ func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
 		{"a parameter the operation does not declare", func(p *spec.Package) {
 			search(p).Poll.Params["since"] = "cursor.value"
 		}, `names "since"`},
-		{"a required parameter left unbuilt", func(p *spec.Package) { delete(search(p).Poll.Params, "jql") }, `requires "jql"`},
+		{"a required parameter left unbuilt", func(p *spec.Package) { delete(search(p).Poll.Params, "q") }, `requires "q"`},
 		{"params reading another namespace", func(p *spec.Package) {
-			search(p).Poll.Params["jql"] = "payload.jql"
+			search(p).Poll.Params["q"] = "payload.q"
 		}, `reads namespace "payload" — this site may read`},
 		{"params reading an undeclared query field", func(p *spec.Package) {
-			search(p).Poll.Params["jql"] = "query.filter"
+			search(p).Poll.Params["q"] = "query.filter"
 		}, "query.filter"},
 		{"params reading the cursor beyond its value", func(p *spec.Package) {
-			search(p).Poll.Params["jql"] = "cursor.updated"
+			search(p).Poll.Params["q"] = "cursor.updated"
 		}, "holds value only"},
 		{"a query field that is not an identifier", func(p *spec.Package) {
 			search(p).Poll.Query = append(search(p).Poll.Query, spec.PollQueryField{ID: "Project"})
 		}, "not a lowercase identifier"},
 		{"a duplicate query field", func(p *spec.Package) {
-			search(p).Poll.Query = append(search(p).Poll.Query, spec.PollQueryField{ID: "jql"})
+			search(p).Poll.Query = append(search(p).Poll.Query, spec.PollQueryField{ID: "q"})
 		}, "duplicate query field"},
 		{"a query field of an unknown type", func(p *spec.Package) { search(p).Poll.Query[0].Type = "date" }, `type "date"`},
 		{"items on a paginated operation", func(p *spec.Package) { search(p).Poll.Items = "response.issues" }, "already says where the items are"},
 		{"no items on an unpaginated operation", func(p *spec.Package) { feed(p).Poll.Items = "" }, "nothing says where its items are"},
 		{"items reading the item", func(p *spec.Package) { feed(p).Poll.Items = "item.entries" }, `reads namespace "item" — this site may read`},
 		{"no item id", func(p *spec.Package) { search(p).Poll.ItemID = "" }, "item_id is empty"},
-		{"an item id reading the query", func(p *spec.Package) { search(p).Poll.ItemID = "query.jql" }, `reads namespace "query" — this site may read`},
+		{"an item id reading the query", func(p *spec.Package) { search(p).Poll.ItemID = "query.q" }, `reads namespace "query" — this site may read`},
 		{"an item version reading the cursor", func(p *spec.Package) { search(p).Poll.ItemVersion = "cursor.value" }, `reads namespace "cursor" — this site may read`},
 		{"a cursor with no from", func(p *spec.Package) { search(p).Poll.Cursor.From = "" }, "cursor.from is empty"},
 		{"a cursor of an unknown kind", func(p *spec.Package) { search(p).Poll.Cursor.Kind = "sequence" }, `kind "sequence"`},
 		{"a negative overlap", func(p *spec.Package) { search(p).Poll.Cursor.Overlap = "-1m" }, "not a non-negative duration"},
 		{"an overlap on an opaque cursor", func(p *spec.Package) { search(p).Poll.Cursor.Kind = spec.CursorOpaque }, "opaque token has no before"},
 		{"no default interval", func(p *spec.Package) { search(p).Poll.Interval.Default = "" }, "interval.default"},
-		{"a zero minimum", func(p *spec.Package) { search(p).Poll.Interval.Min = "0s" }, "interval.min"},
+		{"a zero minimum", func(p *spec.Package) { search(p).Poll.Interval.Min = "0s" }, `poll.interval.min "0s" is not a positive duration`},
+		{"an unreadable minimum", func(p *spec.Package) { search(p).Poll.Interval.Min = "abc" }, `poll.interval.min "abc" is not a positive duration`},
 		{"a minimum above the default", func(p *spec.Package) { search(p).Poll.Interval.Min = "10m" }, "above its default"},
+		// The walk, as exec.CallPaged runs it.
+		{"params building the page parameter", func(p *spec.Package) { search(p).Poll.Params["page"] = "1" }, "the pagination walk owns"},
+		{"params building the cursor parameter", func(p *spec.Package) {
+			op := &p.Ops[0].Operations[1]
+			op.Params = append(op.Params, spec.Param{Key: "next", Name: "next", In: spec.InQuery, Type: "string"})
+			op.Pagination = &spec.Pagination{Style: spec.PageCursor, CursorParam: "next", CursorField: "next", ItemsField: "issues"}
+			op.Params[1].Required = false
+			search(p).Poll.Params["next"] = "cursor.value"
+		}, "the pagination walk owns"},
+		{"a required cursor parameter", func(p *spec.Package) {
+			op := &p.Ops[0].Operations[1]
+			op.Pagination = &spec.Pagination{Style: spec.PageCursor, CursorParam: "page", CursorField: "next", ItemsField: "issues"}
+		}, "only from the second page"},
+		{"a required size the walk does not send", func(p *spec.Package) { p.Ops[0].Operations[1].Params[2].Required = true }, `requires "limit"`},
+		{"a required param built by the empty cursor", func(p *spec.Package) { search(p).Poll.Params["q"] = "cursor.value" }, "builds nothing on the first tick"},
+		{"a required param built by an optional query field", func(p *spec.Package) {
+			search(p).Poll.Query[0].Required = false
+		}, "on the first tick"},
+		{"a param that fails once a checkpoint is set", func(p *spec.Package) {
+			search(p).Poll.Params["q"] = `query.q + if(cursor.value, cursor.value * 2, "")`
+		}, "fails on a later tick"},
+		{"a param reading a cursor the poll does not declare", func(p *spec.Package) { search(p).Poll.Cursor = nil }, "declares no cursor: block"},
+		{"a cursor no param reads", func(p *spec.Package) { search(p).Poll.Params["q"] = "query.q" }, "no param reads"},
+		{"the query read by index", func(p *spec.Package) { search(p).Poll.Params["q"] = `query["qq"]` }, "by index"},
+		{"an item id reading the response of a paginated operation", func(p *spec.Package) {
+			search(p).Poll.ItemID = "response.total"
+		}, `reads namespace "response" — this site may read`},
+		{"an interval below a second", func(p *spec.Package) { search(p).Poll.Interval.Min = "500ms" }, "below a second"},
+		{"an unreadable overlap", func(p *spec.Package) { search(p).Poll.Cursor.Overlap = "abc" }, "not a non-negative duration"},
+		{"an unknown response format", func(p *spec.Package) {
+			p.Ops[0].Operations[2].HTTP.ResponseFormat = "csv"
+		}, `response_format "csv" is not json or feed`},
+		{"a feed with a JSON response contract", func(p *spec.Package) {
+			p.ResponseSchemas = map[string]spec.ResponseSchema{"Feed": {Type: "object"}}
+			op := &p.Ops[0].Operations[2]
+			op.HTTP.ResponseFormat = spec.ResponseFeed
+			op.Results = []spec.ResultCase{{Status: 200, ResponseSchemaRef: "Feed"}}
+		}, "cannot carry the JSON response contract"},
 		{"an output reading headers an item has not", func(p *spec.Package) {
 			search(p).Outputs[0].From = `headers["X-Event"]`
 		}, `reads namespace "headers" — this site may read`},
@@ -153,20 +207,35 @@ func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
 func TestAPolledSampleProvesWhatThePollerReads(t *testing.T) {
 	cases := []struct {
 		name, sample, want string
+		mutate             func(*spec.Package)
 	}{
-		{"not a response", `{"payload":{}}`, "has no response"},
-		{"no item", `{"response":{"issues":[]}}`, "holds no item"},
-		{"items that are not a list", `{"response":{"issues":{"key":"ENG-1"}}}`, "not a list"},
-		{"an item with no id", `{"response":{"issues":[{"fields":{"updated":"2026-11-17T09:10:00Z"}}]}}`, "item_id"},
-		{"an item whose id is an object", `{"response":{"issues":[{"key":{"n":1},"fields":{"updated":"2026-11-17T09:10:00Z"}}]}}`, "item_id"},
-		{"an item with no cursor", `{"response":{"issues":[{"key":"ENG-1","fields":{"updated":"2026-11-17T09:10:00Z"},"x":1}]}}`, ""},
-		{"a cursor that is no timestamp", `{"response":{"issues":[{"key":"ENG-1","fields":{"updated":"yesterday"}}]}}`, "is not an RFC 3339"},
-		{"an output of the wrong type", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":7,"updated":"2026-11-17T09:10:00Z"}}]}}`, `output "subject" reads float64`},
+		{"not a response", `{"payload":{}}`, "has no response", nil},
+		{"no item", `{"response":{"issues":[]}}`, "holds no item", nil},
+		{"items that are not a list", `{"response":{"issues":{"key":"ENG-1"}}}`, "not a list", nil},
+		{"an item with no id", `{"response":{"issues":[{"fields":{"updated":"2026-11-17T09:10:00Z"}}]}}`, "item_id", nil},
+		{"an item whose id is an object", `{"response":{"issues":[{"key":{"n":1},"fields":{"updated":"2026-11-17T09:10:00Z"}}]}}`, "item_id", nil},
+		{"an item with no cursor", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"Intake stalls"}}]}}`, "cursor.from reads nothing",
+			func(p *spec.Package) { p.Triggers[0].Poll.ItemVersion = "item.key" }},
+		{"an item that is not an object", `{"response":{"issues":["ENG-1"]}}`, "not an object", nil},
+		{"an output no item fills", `{"response":{"issues":[{"key":"ENG-1","fields":{"updated":"2026-11-17T09:10:00Z"}}]}}`, `output "subject" reads nothing on any item`, nil},
+		{"an id past 2^53", `{"response":{"issues":[{"key":9007199254740993,"fields":{"summary":"s","updated":"2026-11-17T09:10:00Z"}}]}}`, "past 2^53", nil},
+		{"an opaque cursor that is an object", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"s","updated":{"t":1}}}]}}`, "opaque cursor must be a string or number",
+			func(p *spec.Package) {
+				p.Triggers[0].Poll.Cursor = &spec.PollCursor{From: "item.fields.updated", Kind: spec.CursorOpaque}
+				p.Triggers[0].Poll.ItemVersion = "item.key"
+			}},
+		{"a cursor in a zone RFC 822 does not define", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"s","updated":"Mon, 17 Nov 2026 09:10:00 CET"}}]}}`, "not one RFC 822 defines", nil},
+		{"a well-formed item", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"s","updated":"2026-11-17T09:10:00Z"}}]}}`, "", nil},
+		{"a cursor that is no timestamp", `{"response":{"issues":[{"key":"ENG-1","fields":{"updated":"yesterday"}}]}}`, "is not an RFC 3339", nil},
+		{"an output of the wrong type", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":7,"updated":"2026-11-17T09:10:00Z"}}]}}`, `output "subject" reads float64`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := pollPackage()
 			p.Triggers[0].SampleBody = []byte(tc.sample)
+			if tc.mutate != nil {
+				tc.mutate(p)
+			}
 			err := p.Validate()
 			if tc.want == "" {
 				if err != nil {
@@ -199,6 +268,27 @@ func TestAPollItemIdentity(t *testing.T) {
 	if v2 == v1 {
 		t.Fatal("a changed item kept its revision — it would never be seen again")
 	}
+	// A large integer id keeps its decimal digits, never an exponent: the
+	// seen set compares text.
+	if id, _, err := spec.PollItemIdentity(poll, nil, map[string]any{"id": float64(42000000)}); err != nil || id != "42000000" {
+		t.Fatalf("a large integer id = %q %v, want its decimal digits", id, err)
+	}
+}
+
+// TestAPollIdentityRefusesWhatCannotIdentify: an empty version, and a
+// paginated answer whose bare body is not the array its pagination promises.
+func TestAPollIdentityRefusesWhatCannotIdentify(t *testing.T) {
+	poll := &spec.TriggerPoll{ItemID: "item.id", ItemVersion: "item.rev"}
+	if _, _, err := spec.PollItemIdentity(poll, nil, map[string]any{"id": "a", "rev": ""}); err == nil || !strings.Contains(err.Error(), "item_version") {
+		t.Fatalf("an empty version = %v, want a refusal naming item_version", err)
+	}
+	op := spec.Operation{ID: "probe.issue.search", Pagination: &spec.Pagination{Style: spec.PageNumber}}
+	if _, err := spec.PollItems(op, &spec.TriggerPoll{}, map[string]any{"issues": []any{}}); err == nil || !strings.Contains(err.Error(), "bare array") {
+		t.Fatalf("a bare-array pagination over an object = %v, want a refusal", err)
+	}
+	if items, err := spec.PollItems(op, &spec.TriggerPoll{}, []any{map[string]any{"id": "a"}}); err != nil || len(items) != 1 {
+		t.Fatalf("a bare-array page = %v %v", items, err)
+	}
 }
 
 // TestParsePollTimestamp: the instants vendors write parse, and one that is
@@ -215,7 +305,18 @@ func TestParsePollTimestamp(t *testing.T) {
 			t.Errorf("%q: %v", s, err)
 		}
 	}
-	for _, v := range []any{"yesterday", "", float64(1731600000), nil} {
+	// A named RFC 822 zone is read at its own offset, never the process's.
+	for s, want := range map[string]string{
+		"Mon, 17 Nov 2026 09:10:00 EST": "2026-11-17T14:10:00Z",
+		"Mon, 17 Nov 2026 09:10:00 PDT": "2026-11-17T16:10:00Z",
+		"Mon, 17 Nov 2026 09:10:00 UT":  "2026-11-17T09:10:00Z",
+	} {
+		got, err := spec.ParsePollTimestamp(s)
+		if err != nil || got.UTC().Format(time.RFC3339) != want {
+			t.Errorf("%q = %v %v, want %s", s, got.UTC(), err, want)
+		}
+	}
+	for _, v := range []any{"yesterday", "", float64(1731600000), nil, "Mon, 17 Nov 2026 09:10:00 CET"} {
 		if _, err := spec.ParsePollTimestamp(v); err == nil {
 			t.Errorf("%v parsed as an instant", v)
 		}
@@ -241,8 +342,8 @@ triggers:
     poll:
       operation: probe.issue.search
       params:
-        jql: 'query.jql + " AND updated >= " + if(cursor.value, cursor.value, "-1d")'
-      query: [ { id: jql, required: true } ]
+        q: 'query.q + " AND updated >= " + if(cursor.value, cursor.value, "-1d")'
+      query: [ { id: q, required: true } ]
       item_id: 'item.key'
       item_version: 'item.fields.updated'
       cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
@@ -294,10 +395,10 @@ func TestWebhookTrigger(t *testing.T) {
 	triggers := []spec.Trigger{
 		{ID: "probe.issue.polled", Delivery: spec.DeliveryPoll},
 		{ID: "probe.issue.commented", Event: "issue_comment"},
-		{ID: "probe.issue.commented_again", Event: "issue_comment"},
+		{ID: "probe.issue.labeled", Event: "issues"},
 	}
 	if got, ok := spec.WebhookTrigger(triggers, "issue_comment"); !ok || got.ID != "probe.issue.commented" {
-		t.Fatalf("issue_comment = %v %v, want the first webhook trigger declaring it", got, ok)
+		t.Fatalf("issue_comment = %v %v, want the webhook trigger declaring it", got, ok)
 	}
 	if got, ok := spec.WebhookTrigger(triggers, ""); ok {
 		t.Fatalf("an unnamed delivery reached %s", got.ID)
@@ -316,5 +417,27 @@ func TestWebhookTrigger(t *testing.T) {
 	// delivery's.
 	if got, ok := spec.WebhookTrigger([]spec.Trigger{{ID: "probe.issue.bare"}}, ""); ok {
 		t.Fatalf("an unnamed delivery reached %s", got.ID)
+	}
+}
+
+// TestTwoWebhookTriggersOnOneEventAreRefused: a delivery reaches one trigger
+// per event, so a second webhook trigger on the same event would be offered
+// and never fire. Polled triggers declare no event and never collide.
+func TestTwoWebhookTriggersOnOneEventAreRefused(t *testing.T) {
+	p := pollPackage()
+	p.Ingress = &spec.Ingress{
+		Credential: spec.IngressCredential{Scheme: spec.SchemeHMACSHA256, In: "header", Name: "X-Probe-Signature", Secret: "minted"},
+		Event:      spec.IngressLocator{Header: "X-Probe-Event"},
+	}
+	p.Triggers = append(p.Triggers,
+		spec.Trigger{ID: "probe.issue.commented", Event: "issue_comment"},
+		spec.Trigger{ID: "probe.issue.recommented", Event: "issue_comment"},
+	)
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "both declare event") {
+		t.Fatalf("two webhook triggers on one event = %v, want a refusal", err)
+	}
+	p.Triggers = p.Triggers[:3]
+	if err := p.Validate(); err != nil {
+		t.Fatalf("one webhook trigger beside two polled ones must pass: %v", err)
 	}
 }

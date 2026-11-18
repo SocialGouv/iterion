@@ -468,7 +468,7 @@ func TestConnectorWebhook_AnUnnamedDeliveryNeverReachesAPolledTrigger(t *testing
 		Poll: &spec.TriggerPoll{
 			Operation: "forgejo.issue.list",
 			Params:    map[string]string{"owner": "query.owner", "repo": "query.repo"},
-			Query:     []spec.PollQueryField{{ID: "owner"}, {ID: "repo"}},
+			Query:     []spec.PollQueryField{{ID: "owner", Required: true}, {ID: "repo", Required: true}},
 			ItemID:    "item.number",
 			Interval:  spec.PollInterval{Default: "5m", Min: "1m"},
 		},

@@ -172,3 +172,37 @@ func TestTheLocalTenantsMapBothWays(t *testing.T) {
 		}
 	}
 }
+
+// An event belongs to its trigger only if it came the way the trigger is fed.
+// A package that turned a webhook trigger into a polled one leaves intakes its
+// ingress wrote — stored, dead-lettered, replayed — and subscriptions saved
+// before the change; neither may launch through a trigger no delivery feeds.
+// The mirror holds too: a poller's intake never reaches a webhook trigger.
+func TestAnEventReachesATriggerOnlyTheWayTheTriggerIsFed(t *testing.T) {
+	polled := slackPackage()
+	polled.Triggers[0].Delivery = spec.DeliveryPoll
+	polled.Triggers[0].Event = ""
+	m := matcherWorld(t, &fakeCatalog{pkg: polled}, connectorSub("s1", "t1", "conn-a", nil))
+	if _, refusal, err := m.Trigger(slackIntake("t1")); err != nil || !strings.Contains(refusal, "fed by a poller") {
+		t.Fatalf("an ingress intake for a polled trigger = %q %v, want a refusal naming the poller", refusal, err)
+	}
+	vs, err := m.Match(context.Background(), slackIntake("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vs {
+		if v.Matched {
+			t.Fatalf("subscription %s matched an ingress event through a polled trigger", v.SubscriptionID)
+		}
+	}
+
+	webhook := matcherWorld(t, &fakeCatalog{pkg: slackPackage()}, connectorSub("s1", "t1", "conn-a", nil))
+	fromPoller := slackIntake("t1")
+	fromPoller.IngressID, fromPoller.PollerID = "", "poller-1"
+	if _, refusal, err := webhook.Trigger(fromPoller); err != nil || !strings.Contains(refusal, "fed by an ingress") {
+		t.Fatalf("a poller intake for a webhook trigger = %q %v, want a refusal naming the ingress", refusal, err)
+	}
+	if tr, refusal, err := webhook.Trigger(slackIntake("t1")); err != nil || refusal != "" || tr.ID != "slack.message.posted" {
+		t.Fatalf("an ingress intake for its webhook trigger = %v %q %v, want it resolved", tr.ID, refusal, err)
+	}
+}

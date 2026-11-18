@@ -615,6 +615,22 @@ func (op Operation) HasBodyParams() bool {
 	return false
 }
 
+// ParamKeyForWire maps a parameter's WIRE name onto the public key a caller
+// writes, since an overlay may have renamed it, falling back to the wire name
+// itself. The pagination walk and the poll validation read pagination
+// parameters through it, so both name the same parameter.
+func ParamKeyForWire(op Operation, wire string) string {
+	if wire == "" {
+		return ""
+	}
+	for _, p := range op.Params {
+		if p.Name == wire {
+			return p.Key
+		}
+	}
+	return wire
+}
+
 // ValidBodyEncoding reports whether e is one iterion can actually build.
 func ValidBodyEncoding(e BodyEncoding) bool {
 	switch e {
