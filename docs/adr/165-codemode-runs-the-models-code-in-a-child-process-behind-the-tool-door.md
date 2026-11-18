@@ -557,3 +557,35 @@ launch request now carries the override, the strongest rung of both ladders:
   still enforces the truth, so the launch names the compile-time twin in its
   warning instead of refusing — philosophy 1, a bound with two owners is the
   defect, not a warning.
+
+## Amendment — 2026-11-18: the network wall is seccomp, not Landlock (#3371)
+
+The 2026-11-10 reasoning that "Landlock is not filesystem-only" overstated what
+it gives: Landlock has exactly two network rights, `BIND_TCP` and
+`CONNECT_TCP`, from ABI 4. Measured with the real `Confine`, a confined child
+could therefore send **UDP on every kernel**, and on the production nodes
+(kernel 6.1, ABI 2, #3299) **open TCP as well**. `codemode-confinement.md`
+already recorded the UDP residual as "not this slice"; the production kernel
+made it the whole network.
+
+**Decision (Jo):** the child denies itself socket **creation** with a seccomp
+filter installed by `Confine` after the Landlock domain — `socket`,
+`socketpair` and the `io_uring` trio answer `EACCES`, on every thread
+(`SECCOMP_FILTER_FLAG_TSYNC`), and a syscall under another architecture or the
+x32 ABI kills the process. The child needs no socket: its channel to the parent
+is two pipes, and it refuses to run with an inherited socket, which would walk
+around a creation-only filter. The filter needs no privilege and holds on any
+kernel with seccomp, ABI 0 included; it was measured to install and refuse all
+of the above under docker's and containerd's default profiles with every
+capability dropped. amd64 and arm64 carry rows; any other architecture fails
+the confinement rather than run without the wall, and `confinementVerdict`
+offers no allowance for a posture without it.
+
+Rejected, each measured: a **network namespace per child** — the tighter wall,
+refused `EPERM` under `RuntimeDefault` (`CLONE_NEWUSER` needs `CAP_SYS_ADMIN`
+there; `unshare` from a running Go process is `EINVAL` anyway), so it would
+cost the runner pod's own posture; a **kernel upgrade** alone — ABI 4 still
+leaves UDP open; a **NetworkPolicy** — the child shares the runner's network
+namespace, so a policy cannot tell them apart. The escape suite's network arms
+no longer depend on the ABI and run on every lane, which retires the CI record
+`ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET`.

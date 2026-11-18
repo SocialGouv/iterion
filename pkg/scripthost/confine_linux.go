@@ -94,13 +94,11 @@ func Confine(l Limits) (Applied, error) {
 
 	switch applied.LandlockABI, err = landlockDenyAll(allThreads); {
 	case err == nil:
-		return applied, nil
 	case errors.Is(err, errLandlockAbsent):
-		// A kernel with no Landlock leaves the filesystem and every socket
-		// open. That is reported, not swallowed: applied.LandlockABI is zero
-		// and RunChild refuses on it unless the request carries the explicit
-		// allowance.
-		return applied, nil
+		// A kernel with no Landlock leaves the filesystem open. That is
+		// reported, not swallowed: applied.LandlockABI is zero and RunChild
+		// refuses on it unless the request carries the explicit allowance.
+		// The socket wall below does not depend on Landlock and still goes up.
 	default:
 		// Landlock exists and REFUSED. That is a bug or a policy conflict, and
 		// it must not be read as absence — the two were collapsed once, and a
@@ -109,6 +107,16 @@ func Confine(l Limits) (Applied, error) {
 		// produced a child with a full filesystem and no error at all.
 		return Applied{}, err
 	}
+
+	// The network wall, on every kernel (socketdeny_linux.go): Landlock's
+	// network rights are TCP-only and arrive at ABI 4, so they never covered
+	// UDP and did not cover TCP on the production kernel. A failure here is a
+	// failure to confine — never a child running with sockets.
+	if err := denySocketCreation(); err != nil {
+		return Applied{}, err
+	}
+	applied.SocketsDenied = true
+	return applied, nil
 }
 
 // setBound applies one rlimit and returns what the kernel accepted.
