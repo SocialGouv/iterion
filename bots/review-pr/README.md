@@ -602,13 +602,29 @@ A routing cell names a node by id. The role rename (ADR-169) retired
 decides **nothing**: the launch falls back on this bot's literals and the
 cell's effort goes with it — silently. `scripts/ops/revi-effort-cells.py
 migrate-ids` rewrites a stored block in place (backup first, read-back
-after), and `--dry-run` says what it would do:
+after), and `--dry-run` says what it would do.
+
+The catalogue serves **one** version of this bot to every integration, so
+the roll that ships 0.10.0 moves them all at once, and a block spelled for
+either side is inert on the other: migrating before the roll strands the
+runs still on 0.9.x, migrating after it strands the runs in between. The
+migration therefore runs in two phases around the roll:
 
 ```
 iterion remote login                      # the operator's own session
-scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --dry-run
-scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --yes
+# before the roll: the role cells are written BESIDE the retired ones
+scripts/ops/revi-effort-cells.py migrate-ids --stage --dir backups/revi --all --dry-run
+scripts/ops/revi-effort-cells.py migrate-ids --stage --dir backups/revi --all --yes
+# roll; once every replica serves 0.10.0, the block becomes the roles alone
+scripts/ops/revi-effort-cells.py migrate-ids --prune --dir backups/revi --all --dry-run
+scripts/ops/revi-effort-cells.py migrate-ids --prune --dir backups/revi --all --yes
 ```
+
+While staged, each bundle finds its own selectors and warns about the
+others (a cell naming no node pins nothing). Both phases start from the block
+saved before the first write, so `--prune` must be given the `--dir` of the
+`--stage`; a block changed between the two, or staged from another dir, is
+refused rather than overwritten.
 
 A **launch var** still carrying `mono_family` is admitted and ignored (the
 var stays declared for exactly that); a stored `review_mode=mono|dual` is
@@ -631,7 +647,12 @@ mono-claude (`mono_family` unset), so on most integrations `reviewer_claude`
 and a paired one (`review_mode=dual`, or the audit tier) follows this bot's
 literal (`reviewer_gpt` → `reviewer`). The merge keeps the cell of the step
 that ran: `converge_gpt` → `converge` on mono-gpt only, dropped everywhere
-else (it never ran). Cells no node takes any more are dropped
+else (it never ran). `converge` is the one name both versions give a
+different node, so on a staged mono-gpt block a 0.9.x audit-tier merge reads
+the gpt twin's cell until the roll. The supervisors keep their names, and a
+name says which route its pacer watches (`pacer` the claude route,
+`pacer_gpt` the gpt one): where the reviewer changes route (mono-claude), the
+two pacer cells swap with it. Cells no node takes any more are dropped
 (`reviewer_<other>_glance`, the `#glm` routes of nodes on claw). `evolve`'s
 `review_claude`/`review_gpt` follow the same rule. A **glob** cell is reported,
 never rewritten (`review-pr/reviewer_*` no longer covers `reviewer`): the
