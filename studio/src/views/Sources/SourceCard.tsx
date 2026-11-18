@@ -1,12 +1,12 @@
 // One catalog card: the mark, the name, one badge per fact that decides a
-// choice (category, maturity, tier), and the counts that say whether it is
-// already in use.
+// choice (category, maturity, tier, delivery — a polled source needs no
+// vendor-side hook), and the counts that say whether it is already in use.
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { ClampText } from "@/components/ui/ClampText";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
-import { sourceCategoryLabel, type Source } from "@/api/sources";
+import { sourceCategoryLabel, sourceDeliveryLabel, type Source } from "@/api/sources";
 
 const MATURITY_LABELS: Record<string, string> = {
   spotted: "Repéré",
@@ -39,6 +39,11 @@ export function SourceCard({
       <div className="flex items-center gap-1.5 text-xs text-fg-subtle">
         <Badge variant="neutral">{sourceCategoryLabel(source.category)}</Badge>
         {source.tier && <Badge variant="neutral">{source.tier}</Badge>}
+        {source.delivery && (
+          <Badge variant={source.delivery === "push" ? "neutral" : "info"}>
+            {sourceDeliveryLabel(source.delivery)}
+          </Badge>
+        )}
       </div>
       <div className="mt-auto flex items-center justify-between pt-1.5 text-xs text-fg-subtle">
         <span>

@@ -44,4 +44,17 @@ describe("SourceCard", () => {
     );
     expect(screen.getByRole("button", { name: "Brancher Probe" })).toBeTruthy();
   });
+
+  // A polled source needs no vendor-side hook: the card says how its
+  // triggers arrive before the operator opens it.
+  it("says how the source's triggers arrive", () => {
+    const { rerender } = render(
+      <SourceCard source={{ ...SOURCE, delivery: "poll" }} onOpen={() => {}} />,
+    );
+    expect(screen.getByText("interrogé")).toBeTruthy();
+    rerender(<SourceCard source={{ ...SOURCE, delivery: "mixed" }} onOpen={() => {}} />);
+    expect(screen.getByText("webhook + interrogé")).toBeTruthy();
+    rerender(<SourceCard source={{ ...SOURCE, delivery: "push" }} onOpen={() => {}} />);
+    expect(screen.getByText("webhook")).toBeTruthy();
+  });
 });

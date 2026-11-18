@@ -6,7 +6,12 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Drawer } from "@/components/ui/Drawer";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
-import { sourceCategoryLabel, type Source } from "@/api/sources";
+import {
+  pollContractText,
+  sourceCategoryLabel,
+  sourceDeliveryLabel,
+  type Source,
+} from "@/api/sources";
 
 const MATURITY_LABELS: Record<string, string> = {
   spotted: "Repéré",
@@ -62,7 +67,11 @@ export function SourceDetail({
               </Badge>
             )}
             {source.tier && <Badge variant="neutral">catalogue {source.tier}</Badge>}
-            {source.delivery && <Badge variant="neutral">{source.delivery === "push" ? "webhook" : source.delivery}</Badge>}
+            {source.delivery && (
+              <Badge variant={source.delivery === "push" ? "neutral" : "info"}>
+                {sourceDeliveryLabel(source.delivery)}
+              </Badge>
+            )}
           </div>
 
           <div className="text-xs text-fg-subtle">
@@ -93,11 +102,30 @@ export function SourceDetail({
               <ul className="mt-1 flex flex-col gap-2">
                 {source.triggers.map((t) => (
                   <li key={t.id} className="rounded-[var(--radius-md)] border border-border-default p-2">
-                    <div className="text-xs font-medium text-fg-default">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-fg-default">
                       {t.display_name || t.id}
+                      {source.delivery === "mixed" && t.delivery && (
+                        <Badge variant={t.delivery === "poll" ? "info" : "neutral"}>
+                          {sourceDeliveryLabel(t.delivery)}
+                        </Badge>
+                      )}
                     </div>
                     {t.description && (
                       <div className="text-xs text-fg-subtle mt-0.5">{t.description}</div>
+                    )}
+                    {t.delivery === "poll" && (
+                      <div className="mt-1 text-xs text-fg-subtle">{pollContractText(t.interval)}</div>
+                    )}
+                    {t.query && t.query.length > 0 && (
+                      <div className="mt-1 text-xs text-fg-subtle">
+                        Requête :{" "}
+                        {t.query.map((q) => (
+                          <code key={q.id} className="mr-1">
+                            {q.id}
+                            {q.required ? " *" : ""}
+                          </code>
+                        ))}
+                      </div>
                     )}
                     {t.outputs && t.outputs.length > 0 && (
                       <div className="mt-1 text-xs text-fg-subtle">

@@ -8475,6 +8475,8 @@ export interface components {
         };
         Subscription: {
             args_var?: string;
+            backfill?: number;
+            backfill_done?: boolean;
             bot_id: string;
             connection_id?: string;
             connector_key?: string;
@@ -8511,7 +8513,11 @@ export interface components {
             no_live_run?: string;
             origin?: string;
             overlap?: string;
+            poll_query?: {
+                [key: string]: string;
+            };
             poller?: string;
+            poller_since?: number;
             repo?: string;
             retry_jitter?: string;
             retry_max_attempts?: number;
@@ -8898,8 +8904,10 @@ export interface components {
             capabilities?: string[];
             connector: string;
             display_name?: string;
+            password?: string;
             scheme_id?: string;
-            token: string;
+            token?: string;
+            username?: string;
         };
         connectionDTO: {
             alias: string;
@@ -8925,9 +8933,11 @@ export interface components {
         connectionPatchReq: {
             capabilities?: string[];
             display_name?: string;
+            password?: string;
             status?: string;
             status_reason?: string;
             token?: string;
+            username?: string;
         };
         createApiKeyReq: {
             base_url?: string;

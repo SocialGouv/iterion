@@ -5,8 +5,11 @@
 // &trigger=&bot=), so a reload or a shared link reopens the same step;
 // the narrowing and the mapping are state — they describe a draft, not a
 // place. Enable creates the connector webhook config bound to the
-// connection (one delivery URL, one secret) and the subscription.
-import { useQuery } from "@tanstack/react-query";
+// connection (one delivery URL, one secret) and the subscription. A polled
+// trigger (ADR-168 §7) has no delivery URL: iterion reads the source, so
+// enable creates the subscription alone, with the query its poller is
+// derived from server-side and an optional backfill.
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch, useLocation, Link } from "wouter";
 import { useMemo, useState } from "react";
 
@@ -15,11 +18,19 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
+import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
-import { listSources, type Source } from "@/api/sources";
-import { listConnections } from "@/api/connections";
+import {
+  formatPollInterval,
+  listSources,
+  pollContractText,
+  sourceDeliveryLabel,
+  type Source,
+  type SourceTrigger,
+} from "@/api/sources";
+import { listConnections, patchConnection } from "@/api/connections";
 import { listBots } from "@/api/bots";
 import {
   createTrigger,
@@ -88,9 +99,15 @@ export default function PlugWizardView() {
     enabled: !!sourceID,
   });
 
-  // The draft's narrowing and mapping: state, not URL.
+  // The draft's narrowing and mapping: state, not URL. A polled trigger's
+  // query values and backfill are narrowing too — what the draft reads.
   const [filters, setFilters] = useState<Record<string, string[]>>({});
   const [varMap, setVarMap] = useState<Record<string, string>>({});
+  const [pollQuery, setPollQuery] = useState<Record<string, string>>({});
+  const [backfill, setBackfill] = useState("0");
+  const [granting, setGranting] = useState(false);
+  const [grantError, setGrantError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [preview, setPreview] = useState<TriggerPreviewResult | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -100,6 +117,49 @@ export default function PlugWizardView() {
   const [reusedHookId, setReusedHookId] = useState<string | null>(null);
 
   const trigger = source?.triggers?.find((t) => t.id === triggerID);
+  const polled = trigger?.delivery === "poll";
+
+  // The query values as the server keys the poller: typed values only — an
+  // empty one is an unset one server-side too — sent as strings.
+  const serverPollQuery = (): Record<string, string> | undefined => {
+    const out = Object.fromEntries(
+      Object.entries(pollQuery)
+        .map(([id, v]) => [id, v.trim()] as const)
+        .filter(([, v]) => v !== ""),
+    );
+    return Object.keys(out).length ? out : undefined;
+  };
+  const missingQuery = polled
+    ? (trigger?.query ?? [])
+        .filter((f) => f.required && !(pollQuery[f.id] ?? "").trim())
+        .map((f) => f.id)
+    : [];
+  const backfillValue = /^\d+$/.test(backfill.trim()) ? Number(backfill.trim()) : null;
+
+  // The grants the subscription leans on: the save requires `trigger`, and a
+  // poller reads through the connection, which requires `action`. Judged on
+  // the listed connection; one the list does not hold is the server's call.
+  const pickedConnection = connections.data?.find((c) => c.id === connectionID);
+  const missingGrants = pickedConnection
+    ? (polled ? ["action", "trigger"] : ["trigger"]).filter(
+        (cap) => !(pickedConnection.capabilities ?? []).includes(cap),
+      )
+    : [];
+  const grant = async () => {
+    if (!pickedConnection) return;
+    setGranting(true);
+    setGrantError(null);
+    try {
+      await patchConnection(teamID, connectionID, {
+        capabilities: [...(pickedConnection.capabilities ?? []), ...missingGrants],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["connections", teamID, sourceID] });
+    } catch (e) {
+      setGrantError(String(e));
+    } finally {
+      setGranting(false);
+    }
+  };
 
   // The server's var_map is {bot var: event expression} (binding judges
   // the key against the bot's declared vars and the value against the
@@ -125,6 +185,7 @@ export default function PlugWizardView() {
           trigger_id: triggerID,
           filters,
           var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
+          ...(polled ? { poll_query: serverPollQuery() } : {}),
         }),
       );
     } catch (e) {
@@ -138,25 +199,28 @@ export default function PlugWizardView() {
     setEnabling(true);
     setEnableError(null);
     try {
-      // One delivery URL per connection: reuse the webhook config one
-      // exists, else create it (the secret is minted here, shown once).
-      const hooks = await listWebhooks(teamID);
-      const existing = hooks.find(
-        (h) => h.connector_connection_id === connectionID,
-      );
-      let hook: WebhookWithToken | null = null;
-      if (!existing) {
-        hook = await createWebhook(teamID, {
-          name: `${source?.display_name ?? sourceID} — ${triggerID}`,
-          provider: "connector",
-          connector_connection_id: connectionID,
-        });
-        setEnabledHook(hook);
-        setReusedHookId(null);
-      } else {
-        // The operator still declares the URL at the vendor: show it
-        // even when no secret is minted.
-        setReusedHookId(existing.id);
+      // A polled trigger is read by its poller: nothing is delivered, so
+      // no webhook config — no URL, no secret — is minted for it.
+      if (!polled) {
+        // One delivery URL per connection: reuse the webhook config one
+        // exists, else create it (the secret is minted here, shown once).
+        const hooks = await listWebhooks(teamID);
+        const existing = hooks.find(
+          (h) => h.connector_connection_id === connectionID,
+        );
+        if (!existing) {
+          const hook: WebhookWithToken = await createWebhook(teamID, {
+            name: `${source?.display_name ?? sourceID} — ${triggerID}`,
+            provider: "connector",
+            connector_connection_id: connectionID,
+          });
+          setEnabledHook(hook);
+          setReusedHookId(null);
+        } else {
+          // The operator still declares the URL at the vendor: show it
+          // even when no secret is minted.
+          setReusedHookId(existing.id);
+        }
       }
       await createTrigger({
         bot_id: botID,
@@ -166,6 +230,7 @@ export default function PlugWizardView() {
         trigger_id: triggerID,
         filters,
         var_map: Object.keys(serverVarMap()).length ? serverVarMap() : undefined,
+        ...(polled ? { poll_query: serverPollQuery(), backfill: backfillValue ?? 0 } : {}),
         enabled: true,
       });
       // The terminal state lives in the URL: a reload or a shared link
@@ -290,6 +355,9 @@ export default function PlugWizardView() {
             triggerID={triggerID}
             filters={filters}
             setFilters={setFilters}
+            pollQuery={pollQuery}
+            setPollQuery={setPollQuery}
+            missingQuery={missingQuery}
             onPick={(id) => {
               // A narrowing belongs to its trigger: picking another one
               // leaves the previous draft's keys behind, where they would
@@ -302,8 +370,17 @@ export default function PlugWizardView() {
               }
               setFilters(seeded);
               setVarMap({});
-              setParams({ trigger: id, step: "bot" });
+              setPollQuery({});
+              setBackfill("0");
+              setPreview(null);
+              // A trigger with something to read or type — its filters, a
+              // polled one's contract and query — stays on this step until
+              // the operator continues; one with nothing goes on.
+              const configurable =
+                (picked?.filters?.length ?? 0) > 0 || picked?.delivery === "poll";
+              setParams(configurable ? { trigger: id } : { trigger: id, step: "bot" });
             }}
+            onNext={() => setParams({ step: "bot" })}
           />
         )}
         {step === "bot" && (
@@ -328,9 +405,20 @@ export default function PlugWizardView() {
         {step === "review" && (
           <StepReview
             source={source}
+            trigger={trigger}
             connectionID={connectionID}
             triggerID={triggerID}
             botID={botID}
+            pollQuery={serverPollQuery()}
+            missingQuery={missingQuery}
+            backfill={backfill}
+            setBackfill={setBackfill}
+            backfillValid={backfillValue !== null}
+            missingGrants={missingGrants}
+            granting={granting}
+            grantError={grantError}
+            onGrant={grant}
+            onBackToEvent={() => setParams({ step: "event" })}
             hook={enabledHook}
             reusedHookId={reusedHookId}
             done={params.get("enabled") === "1"}
@@ -397,16 +485,26 @@ function StepEvent({
   triggerID,
   filters,
   setFilters,
+  pollQuery,
+  setPollQuery,
+  missingQuery,
   onPick,
+  onNext,
 }: {
   source: Source;
   triggerID: string;
   filters: Record<string, string[]>;
   setFilters: (f: Record<string, string[]>) => void;
+  pollQuery: Record<string, string>;
+  setPollQuery: (q: Record<string, string>) => void;
+  missingQuery: string[];
   onPick: (id: string) => void;
+  onNext: () => void;
 }) {
   const triggers = source.triggers ?? [];
   const selected = triggers.find((t) => t.id === triggerID);
+  // A card mixing webhook and polled triggers says each one's delivery.
+  const mixed = source.delivery === "mixed";
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2" role="radiogroup" aria-label="Événement">
@@ -423,8 +521,13 @@ function StepEvent({
                 : "border-border-default hover:border-fg-subtle"
             }`}
           >
-            <span className="font-medium text-fg-default">
+            <span className="flex items-center gap-1.5 font-medium text-fg-default">
               {t.display_name || t.id}
+              {mixed && t.delivery && (
+                <Badge variant={t.delivery === "poll" ? "info" : "neutral"}>
+                  {sourceDeliveryLabel(t.delivery)}
+                </Badge>
+              )}
             </span>
             {t.description && (
               <span className="block text-xs text-fg-subtle mt-0.5">{t.description}</span>
@@ -432,6 +535,13 @@ function StepEvent({
           </button>
         ))}
       </div>
+      {selected?.delivery === "poll" && (
+        <PollFields
+          trigger={selected}
+          pollQuery={pollQuery}
+          setPollQuery={setPollQuery}
+        />
+      )}
       {selected?.filters?.map((f) => (
         <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
           Filtre {f.id}
@@ -470,6 +580,75 @@ function StepEvent({
           )}
         </label>
       ))}
+      {selected && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={onNext} disabled={missingQuery.length > 0}>
+            Continuer
+          </Button>
+          {missingQuery.length > 0 && (
+            <span className="text-xs text-fg-subtle">
+              Requis : {missingQuery.join(", ")}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// PollFields is a polled trigger's half of the event step: the contract
+// polling keeps, said before the choice, and one input per query field the
+// poller is keyed by — an int numeric, a bool true/false, every value kept
+// as the string the server parses.
+function PollFields({
+  trigger,
+  pollQuery,
+  setPollQuery,
+}: {
+  trigger: SourceTrigger;
+  pollQuery: Record<string, string>;
+  setPollQuery: (q: Record<string, string>) => void;
+}) {
+  const set = (id: string, v: string) => setPollQuery({ ...pollQuery, [id]: v });
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs text-fg-subtle">
+        {pollContractText(trigger.interval)}
+      </p>
+      {(trigger.query ?? []).map((f) => {
+        const label = `Requête ${f.id}${f.required ? " (requis)" : ""}`;
+        return (
+          <label key={`${trigger.id}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
+            <span>
+              Requête {f.id}
+              {f.required && <span aria-hidden="true"> *</span>}
+            </span>
+            {f.type === "bool" ? (
+              <Select
+                value={pollQuery[f.id] ?? ""}
+                onChange={(e) => set(f.id, e.target.value)}
+                aria-label={label}
+                required={f.required}
+              >
+                <option value="">— non défini —</option>
+                <option value="true">oui (true)</option>
+                <option value="false">non (false)</option>
+              </Select>
+            ) : (
+              <Input
+                type={f.type === "int" ? "number" : "text"}
+                inputMode={f.type === "int" ? "numeric" : undefined}
+                step={f.type === "int" ? 1 : undefined}
+                value={pollQuery[f.id] ?? ""}
+                onChange={(e) => set(f.id, e.target.value)}
+                aria-label={label}
+                required={f.required}
+              />
+            )}
+            {f.description && <span className="text-fg-subtle">{f.description}</span>}
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -531,7 +710,7 @@ function StepMapping({
   runPreview,
   onNext,
 }: {
-  trigger?: Source["triggers"] extends (infer T)[] | undefined ? T : never;
+  trigger?: SourceTrigger;
   varMap: Record<string, string>;
   setVarMap: (m: Record<string, string>) => void;
   preview: TriggerPreviewResult | null;
@@ -585,7 +764,12 @@ function StepMapping({
           ) : preview.matched ? (
             <>
               <span className="font-medium text-fg-default">
-                Correspond ✓ {preview.sample ? "(échantillon du paquet)" : ""}
+                Correspond ✓{" "}
+                {preview.sample
+                  ? trigger?.delivery === "poll"
+                    ? "(premier élément de l'échantillon)"
+                    : "(échantillon du paquet)"
+                  : ""}
               </span>
               {preview.vars && (
                 <pre className="mt-1 whitespace-pre-wrap text-fg-subtle">
@@ -607,9 +791,20 @@ function StepMapping({
 
 function StepReview({
   source,
+  trigger,
   connectionID,
   triggerID,
   botID,
+  pollQuery,
+  missingQuery,
+  backfill,
+  setBackfill,
+  backfillValid,
+  missingGrants,
+  granting,
+  grantError,
+  onGrant,
+  onBackToEvent,
   hook,
   reusedHookId,
   done,
@@ -618,9 +813,20 @@ function StepReview({
   onEnable,
 }: {
   source: Source;
+  trigger?: SourceTrigger;
   connectionID: string;
   triggerID: string;
   botID: string;
+  pollQuery?: Record<string, string>;
+  missingQuery: string[];
+  backfill: string;
+  setBackfill: (v: string) => void;
+  backfillValid: boolean;
+  missingGrants: string[];
+  granting: boolean;
+  grantError: string | null;
+  onGrant: () => void;
+  onBackToEvent: () => void;
   hook: WebhookWithToken | null;
   reusedHookId: string | null;
   done: boolean;
@@ -628,6 +834,8 @@ function StepReview({
   enabling: boolean;
   onEnable: () => void;
 }) {
+  const polled = trigger?.delivery === "poll";
+  const blocked = missingGrants.length > 0 || (polled && (missingQuery.length > 0 || !backfillValid));
   return (
     <div className="flex flex-col gap-3 text-sm text-fg-default">
       <ul className="flex flex-col gap-1 text-xs text-fg-subtle">
@@ -640,10 +848,78 @@ function StepReview({
         <li>
           Événement : <code>{triggerID}</code>
         </li>
+        {polled && (
+          <li>
+            Livraison :{" "}
+            <span className="text-fg-default">
+              interrogé
+              {trigger?.interval ? ` toutes les ${formatPollInterval(trigger.interval)}` : ""}
+            </span>
+          </li>
+        )}
+        {polled &&
+          Object.entries(pollQuery ?? {}).map(([id, v]) => (
+            <li key={id}>
+              Requête {id} : <code>{v}</code>
+            </li>
+          ))}
         <li>
           Bot : <code>{botID}</code>
         </li>
       </ul>
+      {polled && (
+        <p className="text-xs text-fg-subtle">{pollContractText(trigger?.interval)}</p>
+      )}
+      {!done && missingGrants.length > 0 && (
+        <InlineBanner
+          tone="warning"
+          layout="inline"
+          action={
+            <Button size="sm" variant="secondary" onClick={onGrant} disabled={granting}>
+              {granting ? "Mise à jour…" : `Accorder ${missingGrants.join(" et ")}`}
+            </Button>
+          }
+        >
+          Cette connexion n&apos;accorde pas {missingGrants.join(" ni ")}.{" "}
+          {polled
+            ? "Un déclencheur interrogé lit la source par la connexion (action) et en livre les éléments (trigger)."
+            : "Un abonnement écoute les événements de la connexion (trigger)."}
+          {grantError && <span className="block mt-1">Échec de la mise à jour : {grantError}</span>}
+        </InlineBanner>
+      )}
+      {!done && polled && missingQuery.length > 0 && (
+        <InlineBanner
+          tone="warning"
+          layout="inline"
+          action={
+            <Button size="sm" variant="secondary" onClick={onBackToEvent}>
+              Revenir à l&apos;événement
+            </Button>
+          }
+        >
+          Requête incomplète : {missingQuery.join(", ")} requis.
+        </InlineBanner>
+      )}
+      {!done && polled && (
+        <label className="flex flex-col gap-1 text-xs text-fg-default">
+          Backfill
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            step={1}
+            value={backfill}
+            onChange={(e) => setBackfill(e.target.value)}
+            aria-label="Backfill"
+            aria-invalid={!backfillValid || undefined}
+          />
+          <span className="text-fg-subtle">
+            {backfillValid
+              ? "Livre une fois les N derniers éléments déjà présents quand l'abonnement démarre ; 0 n'en livre aucun."
+              : "Un nombre entier, 0 ou plus."}
+          </span>
+        </label>
+      )}
       {reusedHookId && !hook && (
         <div className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
           <p className="font-medium text-fg-default">
@@ -669,15 +945,20 @@ function StepReview({
       {source.setup && (
         <details className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
           <summary className="cursor-pointer font-medium text-fg-default">
-            Configuration chez le fournisseur ({source.display_name})
+            {polled
+              ? `Notes de configuration (${source.display_name})`
+              : `Configuration chez le fournisseur (${source.display_name})`}
           </summary>
           <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{source.setup}</pre>
         </details>
       )}
       {done ? (
         <InlineBanner tone="success">
-          Abonnement activé — cette source lance {botID || "le bot"} à chaque
-          événement correspondant.
+          {polled
+            ? `Abonnement activé — iterion interroge ${source.display_name}${
+                trigger?.interval ? ` toutes les ${formatPollInterval(trigger.interval)}` : ""
+              } et lance ${botID || "le bot"} pour chaque élément nouveau ou révisé qui correspond.`
+            : `Abonnement activé — cette source lance ${botID || "le bot"} à chaque événement correspondant.`}
         </InlineBanner>
       ) : (
         <>
@@ -685,7 +966,7 @@ function StepReview({
             <InlineBanner tone="danger">Échec de l'activation : {error}</InlineBanner>
           )}
           <div>
-            <Button onClick={onEnable} disabled={enabling}>
+            <Button onClick={onEnable} disabled={enabling || blocked}>
               {enabling ? "Activation…" : "Activer l'abonnement"}
             </Button>
           </div>
