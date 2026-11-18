@@ -246,7 +246,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 		# under restartPolicy: Never, so waiting for one burns the whole
 		# window. Name it instead of outliving it.
 		case "$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)" in
-		CreateContainerError | CreateContainerConfigError | InvalidImageName | ImagePullBackOff)
+		CreateContainerError | CreateContainerConfigError | InvalidImageName | ImagePullBackOff | ErrImagePull | ErrImageNeverPull)
 			say "FAIL $p cannot start: $(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null)"
 			rc_startup=1
 			continue
@@ -276,8 +276,14 @@ if [ -n "${rc_startup:-}" ] || [ "${pending:-1}" -ne 0 ]; then
 fi
 
 for p in $PODS; do
-	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 || true
-	printf '%s\n' "$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')" > "$EVIDENCE/$p.exit"
+	# Both reads are guarded: an unreadable log fails every posture grep below,
+	# and an unreadable exit code became "reported no exit code" — each a red
+	# verdict about a runtime nobody had judged.
+	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 \
+		|| die "the logs of $p could not be read, so nothing can be judged: $EVIDENCE/$p.log"
+	code=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') \
+		|| die "the exit code of $p could not be read, so nothing can be judged"
+	printf '%s\n' "$code" > "$EVIDENCE/$p.exit"
 done
 exit_of() { cat "$EVIDENCE/$1.exit"; }
 
@@ -293,7 +299,7 @@ grep -q '^Seccomp:[[:space:]]*2' "$EVIDENCE/posture-runtimedefault.log" \
 	|| { say "FAIL the RuntimeDefault arm carried NO seccomp filter, so it measured an unconfined container"; rc=1; }
 grep -q '^Seccomp:[[:space:]]*0' "$EVIDENCE/posture-unconfined.log" \
 	|| { say "FAIL the Unconfined twin also reports a filter, so 'Seccomp: 2' above proves nothing"; rc=1; }
-grep -q '^uid=10001' "$EVIDENCE/posture-runtimedefault.log" \
+grep -q '^uid=10001 ' "$EVIDENCE/posture-runtimedefault.log" \
 	|| { say "FAIL the arm did not run as uid 10001, so it is not the runner's posture"; rc=1; }
 grep -q '^NoNewPrivs:[[:space:]]*1' "$EVIDENCE/posture-unconfined.log" \
 	|| { say "FAIL the Unconfined twin lost no_new_privs too, so it varies two things and cannot attribute either"; rc=1; }
@@ -303,6 +309,7 @@ grep -q '^NoNewPrivs:[[:space:]]*1' "$EVIDENCE/posture-unconfined.log" \
 # containerd's RuntimeDefault failing to confine a child.
 case "$(exit_of bench-runtimedefault)" in
 0) ;;
+2) say "nothing was tested: the bench pod refused its own arguments"; exit 2 ;;
 4) say "nothing was tested: the bench pod is not the posture asked about"; exit 2 ;;
 6) say "a leg could not run in this pod, so the deployment was not judged"; exit 2 ;;
 7) say "the bench pod ran without checking its posture, so it says nothing about this cluster"; exit 2 ;;

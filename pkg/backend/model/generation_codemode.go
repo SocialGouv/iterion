@@ -62,13 +62,14 @@ var codemodeInputSchema = json.RawMessage(`{
 // by the executor; nil means nobody chose. It is passed THROUGH, not
 // inspected: Limits.Clamp in the parent is what fills the unset fields from
 // DefaultLimits and holds the rest under Ceiling, and a second opinion here
-// would be a bound with two owners. OnClamp is how a reduction is reported.
-func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits)) {
+// would be a bound with two owners. OnClamp is how a reduction is reported;
+// onWarn carries what the host could not do that leaves the verdict standing.
+func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) {
 	var limits scripthost.Limits
 	if want != nil {
 		limits = *want
 	}
-	opts.Tools = append(opts.Tools, codemodeTool(scripthost.Host{OnClamp: onClamp}, limits))
+	opts.Tools = append(opts.Tools, codemodeTool(scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, limits))
 }
 
 // codemodeTool is the tool whose input is a program.
