@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.13.0](https://github.com/SocialGouv/iterion/compare/v7.12.0...v7.13.0) (2026-11-18)
+
+### Features
+
+* **connectors:** seven push sources for the catalogue (L3, [#3273](https://github.com/SocialGouv/iterion/issues/3273)) ([#3358](https://github.com/SocialGouv/iterion/issues/3358)) ([c7f6254](https://github.com/SocialGouv/iterion/commit/c7f6254003837d39f87c36e34220d4389f92252a)), references [#3360](https://github.com/SocialGouv/iterion/issues/3360)
+
+    <details><summary>why</summary>
+
+    The catalogue lists only packages that declare triggers AND an ingress, and no shipped package declared one — so every source card was a built-in, none a connector.
+
+    </details>
+
 ## [7.12.0](https://github.com/SocialGouv/iterion/compare/v7.11.1...v7.12.0) (2026-11-18)
 
 ### Features
