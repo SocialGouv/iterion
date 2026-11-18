@@ -19,8 +19,10 @@
 //   - RLIMIT_AS cannot express a script's heap budget. A Go child dies at
 //     startup ("runtime: out of memory") below roughly 2 GiB of address space,
 //     because the runtime reserves far more virtual memory than it commits.
-//     RLIMIT_DATA is the knob that works: a child starts under 64 MiB and a
-//     400 MiB allocation inside the VM dies.
+//     RLIMIT_DATA is the knob that works, set as ROOM above the data segment
+//     the child already holds (the shipped binary holds ~86 MiB before the
+//     interpreter exists): 64 MiB of room runs real work, and a 400 MiB
+//     allocation inside the VM dies.
 //   - RLIMIT_CPU is the only thing that stops a native regex bomb. goja's
 //     own interrupt does not: measured here, a backreference regex ran past
 //     60 s of wall clock with an interrupt posted at 1 s, while RLIMIT_CPU=2s
@@ -33,6 +35,7 @@ package scripthost
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -121,8 +124,11 @@ type Limits struct {
 	// seconds and rounding down would silently tighten an operator's choice.
 	CPU time.Duration `json:"cpu_ns"`
 
-	// Memory bounds the child's data segment (RLIMIT_DATA), which is where a
-	// Go heap grows. NOT RLIMIT_AS: see the package comment.
+	// Memory is how far the script may GROW the child's data segment
+	// (RLIMIT_DATA), which is where a Go heap grows: the kernel's limit is
+	// the segment the child holds when it confines itself plus this. Room,
+	// not a total, so the same number means the same thing whatever the
+	// binary weighs (#3383). NOT RLIMIT_AS: see the package comment.
 	Memory int64 `json:"memory_bytes"`
 
 	// ScriptBytes caps the source. Enforced parent-side before the spawn.
@@ -157,9 +163,9 @@ type Limits struct {
 }
 
 // DefaultLimits is what a script runs under when nobody chose. The memory
-// floor is deliberate: 64 MiB of RLIMIT_DATA was measured to start a Go child
-// and to kill a 400 MiB allocation, so the default is not a guess about what
-// fits — it is above the floor that was shown to work.
+// floor is deliberate: 64 MiB of room was measured to run real work on the
+// shipped child and to kill a 400 MiB allocation, so the default is not a
+// guess about what fits — it is above the floor that was shown to work.
 func DefaultLimits() Limits {
 	return Limits{
 		Wall:        30 * time.Second,
@@ -175,16 +181,17 @@ func DefaultLimits() Limits {
 	}
 }
 
-// MemoryFloor is the smallest RLIMIT_DATA a child RELIABLY starts and works
-// under: 64 MiB, a quarter of the default. Measured, not guessed — the two
-// records that name the number:
+// MemoryFloor is the smallest memory ROOM a child RELIABLY works under:
+// 64 MiB above its own data segment, a quarter of the default. Measured, not
+// guessed — the records that name the number:
 //
-//   - the package comment: 64 MiB "was measured to start a Go child and to
-//     kill a 400 MiB allocation" — the child starts there, and real work
-//     happens;
-//   - #3290: a memory BOMB at 64 MiB died of SIGSEGV on the shipped image —
-//     allocation pressure at the floor is where an untyped death used to
-//     live, now reported as the typed memory refusal.
+//   - #3383: on the shipped binary, 10 000 string pushes complete at 64 MiB
+//     of room (TestTheMemoryFloorIsRoomForTheScript), and a memory bomb there
+//     dies with the runtime's own "out of memory", the typed memory refusal.
+//     The same script died 5 runs out of 5 when the 64 MiB was a TOTAL: the
+//     child already held ~86 MiB, so the bound was spent before it started;
+//   - #3290: a memory BOMB at a 64 MiB total died of SIGSEGV on the shipped
+//     image — the same spent bound, seen from the bomb's side.
 //
 // Below the floor a child may still start (a trivial 1+1 completed at
 // 1 MiB in the same session's probe), but real work cannot: bounds below
@@ -309,8 +316,32 @@ type Applied struct {
 	AllThreads bool `json:"all_threads"`
 
 	// MemoryBytes and CPUSeconds are the values the kernel accepted.
+	// MemoryBytes is the RLIMIT_DATA itself: MemoryBaseBytes plus the
+	// script's room (Limits.Memory), clamped by any stricter limit the
+	// environment already set.
 	MemoryBytes uint64 `json:"memory_bytes"`
 	CPUSeconds  uint64 `json:"cpu_seconds"`
+
+	// MemoryBaseBytes is the data segment the child held when it confined
+	// itself — the binary's own footprint, before the interpreter exists. The
+	// memory bound is room ABOVE it, so a reader comparing MemoryBytes with
+	// the bound it asked for needs this number to see the two agree.
+	MemoryBaseBytes uint64 `json:"memory_base_bytes"`
+}
+
+// growthBound is the RLIMIT_DATA that leaves a script memory bytes of room
+// above the base the process already holds. A memory of zero or less is
+// "nobody chose" and stays 0, which setBound reads as no bound; a sum past
+// the uint64 range saturates instead of wrapping to a limit smaller than the
+// base, which would kill the child on its next allocation.
+func growthBound(base uint64, memory int64) uint64 {
+	if memory <= 0 {
+		return 0
+	}
+	if uint64(memory) > math.MaxUint64-base {
+		return math.MaxUint64
+	}
+	return base + uint64(memory)
 }
 
 // Request is the single JSON document the parent writes to the child's stdin.

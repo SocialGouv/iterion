@@ -36,8 +36,8 @@ func TestAMappingRLIMITDataDoesNotChargeGrowsTheResidentSet(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("a MAP_SHARED mapping under RLIMIT_DATA died (%v) — the axis this probe covers "+
 			"would not exist, and the probe's own verdict would be about something else. "+
-			"Helper exits: 3 = the mmap was refused (charged), 5 = setrlimit, 6 = no base, 7 = bad room. "+
-			"stderr: %.400s", err, stderr.Bytes())
+			"Helper exits: 3 = the mmap was refused (charged), 5 = setrlimit, 6 = no base, 7 = bad room. stderr: %.400s",
+			err, stderr.Bytes())
 	}
 }
 
@@ -105,17 +105,17 @@ func TestRSSProbeHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	// The bound the premise test names, applied by the child to itself: ROOM
-	// above the data segment it already holds.
+	// above the data segment it already holds, the way Confine sets it.
 	if room := os.Getenv("ITERION_RLIMIT_DATA_ROOM_MIB"); room != "" {
 		r, err := strconv.Atoi(room)
 		if err != nil {
 			os.Exit(7)
 		}
-		base, err := ownDataSegment()
+		base, err := dataSegmentBytes()
 		if err != nil {
 			os.Exit(6)
 		}
-		lim := base + uint64(r)<<20
+		lim := growthBound(base, int64(r)<<20)
 		if err := syscall.Setrlimit(syscall.RLIMIT_DATA, &syscall.Rlimit{Cur: lim, Max: lim}); err != nil {
 			os.Exit(5)
 		}
@@ -138,31 +138,6 @@ func TestRSSProbeHelper(t *testing.T) {
 
 // rssHelper spawns the helper above in its own process group, which the probe
 // needs to be able to kill the whole child rather than one of its threads.
-// ownDataSegment is this process's VmData — mm->data_vm, the counter
-// RLIMIT_DATA is compared with — in bytes.
-func ownDataSegment() (uint64, error) {
-	raw, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return 0, err
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		name, rest, ok := strings.Cut(line, ":")
-		if !ok || name != "VmData" {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) < 1 {
-			break
-		}
-		kb, err := strconv.ParseUint(fields[0], 10, 64)
-		if err != nil {
-			return 0, err
-		}
-		return kb << 10, nil
-	}
-	return 0, errors.New("no VmData line in /proc/self/status")
-}
-
 func rssHelper(t *testing.T, mib string, env map[string]string) (*exec.Cmd, *bytes.Buffer) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRSSProbeHelper$", "-test.count=1")

@@ -49,38 +49,48 @@ type probeResult struct {
 // Landlock, which codemode requires, since 5.13) gets an error naming the
 // missing field, never a silent fall back to VmRSS.
 func chargedBytes(status io.Reader) (int64, error) {
-	var anon, shmem int64
-	var haveAnon, haveShmem bool
+	f, err := statusBytes(status, "RssAnon", "RssShmem")
+	if err != nil {
+		return 0, err
+	}
+	return f["RssAnon"] + f["RssShmem"], nil
+}
+
+// statusBytes reads the named kB fields of a /proc/<pid>/status document, in
+// bytes. Every name is required: a missing one is an error that names it,
+// never a zero that would read as "nothing held". It is the one reader of that
+// document — the probe's charge and the child's own data segment both go
+// through it, so the two cannot drift into parsing it differently.
+func statusBytes(status io.Reader, names ...string) (map[string]int64, error) {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	got := make(map[string]int64, len(names))
 	sc := bufio.NewScanner(status)
 	for sc.Scan() {
 		line := sc.Text()
-		var dst *int64
-		switch {
-		case strings.HasPrefix(line, "RssAnon:"):
-			dst, haveAnon = &anon, true
-		case strings.HasPrefix(line, "RssShmem:"):
-			dst, haveShmem = &shmem, true
-		default:
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || !want[name] {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			return 0, fmt.Errorf("scripthost: status line has no value: %q", line)
+		fields := strings.Fields(rest)
+		if len(fields) < 1 {
+			return nil, fmt.Errorf("scripthost: status line has no value: %q", line)
 		}
-		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("scripthost: status value %q: %w", fields[1], err)
+			return nil, fmt.Errorf("scripthost: status value %q: %w", fields[0], err)
 		}
-		*dst = kb * 1024
+		got[name] = kb * 1024
 	}
 	if err := sc.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
-	switch {
-	case !haveAnon:
-		return 0, fmt.Errorf("scripthost: the status document carries no RssAnon line")
-	case !haveShmem:
-		return 0, fmt.Errorf("scripthost: the status document carries no RssShmem line")
+	for _, n := range names {
+		if _, ok := got[n]; !ok {
+			return nil, fmt.Errorf("scripthost: the status document carries no %s line", n)
+		}
 	}
-	return anon + shmem, nil
+	return got, nil
 }

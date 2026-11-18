@@ -117,10 +117,10 @@ const spinner = `let n=0; for(let i=0;i<6000000;i++){ n+=i%7 } n`
 const spinnerBudget = time.Minute
 
 // bombMemory is the package's own default, and it may not be shrunk to make
-// the leg cheaper: RLIMIT_DATA bounds the Go HEAP, and a bound below what the
-// child's own runtime needs makes it CRASH instead of being refused —
-// measured at 64 MiB, which produced `script_host_died` with a SIGSEGV where
-// the leg wanted `memory_exceeded`.
+// the leg cheaper: the leg proves the bound a deployment RUNS, which is the
+// default. (The bound is room above the child's own data segment, #3383; a
+// bomb at the 64 MiB floor dies with the runtime's "out of memory" too, but
+// that is not the number production runs.)
 //
 // So the leg adapts to the container instead of to the bound: three
 // concurrent bombs at this size need ~768 MiB, and under a tighter cgroup the

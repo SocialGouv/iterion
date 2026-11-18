@@ -173,7 +173,7 @@
         },
         "memory": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
-          "description": "Bytes of the child's data segment, RLIMIT_DATA (default 268435456, floor 67108864, ceiling 2147483648). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",
+          "description": "Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",
           "minimum": 0,
           "type": "integer"
         },

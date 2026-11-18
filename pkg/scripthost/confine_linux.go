@@ -5,6 +5,7 @@ package scripthost
 import (
 	"errors"
 	"fmt"
+	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -81,7 +82,22 @@ func Confine(l Limits) (Applied, error) {
 	// setting. What this bounds is the Go HEAP — a MAP_SHARED or memfd mapping
 	// is not charged to it, so a native payload's real ceiling is the pod's
 	// memory cgroup.
-	if applied.MemoryBytes, err = setBound(unix.RLIMIT_DATA, "RLIMIT_DATA", uint64(l.Memory)); err != nil {
+	//
+	// The bound is the script's GROWTH: the kernel's limit is the data segment
+	// this process already holds plus l.Memory. The holding is the binary's,
+	// not the script's — the shipped child holds ~86 MiB before the
+	// interpreter exists, because the Go runtime maps a 64 MiB heap arena
+	// read-write and ~9 MiB of it is resident. An absolute limit at the
+	// 64 MiB floor therefore started the child ABOVE its own bound: every
+	// mapping the runtime then needed was refused, and a script pushing
+	// 10 000 strings died of a SIGSEGV in the garbage collector, 5 runs out
+	// of 5 (#3383). As growth, the same number means the same room whatever
+	// the binary weighs — the meaning the parent's RSS probe already has.
+	if applied.MemoryBaseBytes, err = dataSegmentBytes(); err != nil {
+		return Applied{}, err
+	}
+	if applied.MemoryBytes, err = setBound(unix.RLIMIT_DATA, "RLIMIT_DATA",
+		growthBound(applied.MemoryBaseBytes, l.Memory)); err != nil {
 		return Applied{}, err
 	}
 	// The only bound that stops a native regex bomb: goja's interrupt does not
@@ -117,6 +133,24 @@ func Confine(l Limits) (Applied, error) {
 	}
 	applied.SocketsDenied = true
 	return applied, nil
+}
+
+// dataSegmentBytes is this process's data segment as the kernel counts it for
+// RLIMIT_DATA: VmData is mm->data_vm, the very counter the limit is compared
+// with on every mapping, so the base and the bound speak the same unit. It
+// must run BEFORE the deny-all ruleset, which refuses the read afterwards.
+func dataSegmentBytes() (uint64, error) {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0, fmt.Errorf("scripthost: reading this process's data segment, which the memory bound "+
+			"is room above: %w", err)
+	}
+	defer f.Close()
+	got, err := statusBytes(f, "VmData")
+	if err != nil {
+		return 0, err
+	}
+	return uint64(got["VmData"]), nil
 }
 
 // setBound applies one rlimit and returns what the kernel accepted.

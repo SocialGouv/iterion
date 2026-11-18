@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -591,6 +592,30 @@ func TestADeathIsReadInOrderOfEvidence(t *testing.T) {
 			}
 			if resp.Refusal != tc.want {
 				t.Errorf("got %q, want %s (message: %s)", resp.Refusal, tc.want, resp.Message)
+			}
+		})
+	}
+}
+
+// The memory bound is room above the base (#3383). Zero is "nobody chose" and
+// must stay no bound at all: base+0 would be a limit the child already meets,
+// killing it on its next allocation. A sum past the range saturates rather than
+// wrapping to a limit under the base.
+func TestTheMemoryBoundIsRoomAboveTheBase(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		base   uint64
+		memory int64
+		want   uint64
+	}{
+		{"room above the base", 86 << 20, 64 << 20, 150 << 20},
+		{"nobody chose", 86 << 20, 0, 0},
+		{"a negative bound is not a tiny one", 86 << 20, -1, 0},
+		{"a sum past the range saturates", math.MaxUint64 - 10, 64 << 20, math.MaxUint64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := growthBound(tc.base, tc.memory); got != tc.want {
+				t.Errorf("growthBound(%d, %d) = %d, want %d", tc.base, tc.memory, got, tc.want)
 			}
 		})
 	}

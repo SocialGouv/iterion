@@ -360,7 +360,8 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// Positive identification, so it outranks every threshold below.
 	if looksLikeMemoryDeath(e.stderrText) {
 		return Refuse(RefusalMemory,
-			"the script host died allocating past its %d-byte memory bound. %s", e.limits.Memory, evidence), nil
+			"the script host died allocating past its %d-byte memory bound (room above the data segment "+
+				"the host itself held before the script ran). %s", e.limits.Memory, evidence), nil
 	}
 
 	// (3) The CPU bound: the kernel kills on it, so the child must have been
@@ -416,14 +417,17 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 
 	// (6) The child crashed inside the Go runtime. That is the script host
 	// failing, not the deployment — so it is a refusal, and the ambiguity is
-	// NAMED rather than resolved. Measured: the same allocation bomb prints
-	// `runtime: out of memory` under a 128 MiB bound and dies with
-	// `SIGSEGV: segmentation violation` under 64 MiB, so a crash under a tight
-	// bound is usually the bound and the runtime does not say so. Calling it
-	// memory_exceeded would be a guess wearing a verdict.
+	// NAMED rather than resolved. Measured: when a mapping the runtime needs
+	// is refused at the wrong moment, it dies of `SIGSEGV: segmentation
+	// violation` in the garbage collector rather than printing
+	// `runtime: out of memory` (the same bomb did both, #3290; a bound with no
+	// room left did it on a 10 000-push script, #3383), so a crash under a
+	// tight bound is usually the bound and the runtime does not say so.
+	// Calling it memory_exceeded would be a guess wearing a verdict.
 	if looksLikeRuntimeCrash(e.stderrText) {
 		return Refuse(RefusalHostDied,
-			"the script host crashed against a %d-byte memory bound and a %s CPU bound, and the "+
+			"the script host crashed against a %d-byte memory bound (room above its own data segment) "+
+				"and a %s CPU bound, and the "+
 				"runtime did not name a cause; a crash under a tight memory bound is usually the bound. %s",
 			e.limits.Memory, time.Duration(e.limits.CPUSeconds())*time.Second, evidence), nil
 	}

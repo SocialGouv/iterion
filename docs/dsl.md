@@ -436,7 +436,7 @@ agent surveyor:
     tool_calls: 256          ## nested calls ONE program may make (default 64)
     wall: "2m"               ## the child's lifetime (default "30s")
     cpu: "45s"               ## its CPU-seconds ceiling (default "10s")
-    memory: 536870912        ## bytes of RLIMIT_DATA (default 268435456)
+    memory: 536870912        ## bytes of heap ROOM above the host's own (default 268435456)
     script_bytes: 524288     ## bytes of program source (default 262144)
     result_bytes: 2097152    ## bytes it may return (default 1048576)
     tool_result_bytes: 131072 ## bytes of ONE tool result (default 65536)
@@ -447,10 +447,14 @@ count are **bare integers**, because this DSL has no byte-size value form and
 inventing one is its own lot. **A bound of `0` is the DEFAULT, not a ban** —
 `Limits.Clamp` reads any non-positive bound as "nobody chose", so
 `tool_calls: 0` is sixty-four calls. There is deliberately no way to spell a
-ban: a node that must run no program declares `codemode: off`. And there is a **floor** on `memory:`: a bound below 64 MiB — the measured
-minimum a Go child works under — is raised to the floor where the program
-spawns (the platform reports the raise), so **C350** tells the author at
-compile. The floor is measured, not guessed (#3290). An unreadable or negative duration is **C349**
+ban: a node that must run no program declares `codemode: off`. `memory:` is **room, not a total**: the
+kernel's `RLIMIT_DATA` is the data segment the script host already holds
+(~86 MiB for the shipped binary, before the program runs) plus this number, so
+it does not shrink as the binary grows (#3383). And there is a **floor** on
+`memory:`: a bound below 64 MiB — the measured minimum room a Go child works
+under — is raised to the floor where the program spawns (the platform reports
+the raise), so **C350** tells the author at compile. The floor is measured,
+not guessed (#3290, #3383). An unreadable or negative duration is **C349**
 and falls back to its default. Mind the direction: the default is tighter than
 a bound you were RAISING and looser than one you were LOWERING — a mistyped
 `wall: "5 s"` is enforced as the 30-second default, six times what was meant.
