@@ -294,6 +294,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	meta := gitlabIssueMeta(p)
+	meta.DeliveryID = forgeDeliveryID(r, webhooks.ProviderGitLab)
 	label := webhooks.FirstMatchingLabel(cfg.LabelAllowlist, p.AddedLabels)
 	if p.State != "opened" || label == "" ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "issues", "issues") ||
@@ -320,13 +321,17 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	// "gl|issue|" keeps the key space disjoint from the mr|/note|/cmd| paths.
+	// The key is the first claim of the (issue, label) trigger lane: re-adding
+	// the label launches again once the lane's previous run has ended, a
+	// redelivery of a claimed event replays no-op (webhooks_trigger_lane.go).
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{},
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, label))
 }
 
 // gitlabIssueLabeledVars composes the implementer-bot launch vars for a
@@ -677,7 +682,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		ref = p.DefaultBranch
 	}
-	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, gitlabNoteMeta(p), idemKey, route, vars, p.CloneURL, ref, payloadHash, srcIP, launchProvenance{}, nil)
 }
 
 // buildCommandVars composes the launch vars for a generic command on a GitLab
