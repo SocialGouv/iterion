@@ -93,3 +93,56 @@ func TestSettleReReadsTheRunBeforeEnding(t *testing.T) {
 	sink.awaitText(t, "before\nafter\n", 2*time.Second)
 	sink.assertOpen(t, 300*time.Millisecond)
 }
+
+// A retained PAUSE is not the truth of a run the status re-reads as terminal:
+// the settle must conclude instead of parking on an epoch whose producer ended
+// on another replica (round 2, F1).
+func TestSettleEndsPastAStaleRetainedPause(t *testing.T) {
+	prevSettle, prevEvery := logTerminalSettle, logTerminalSettleEvery
+	logTerminalSettle, logTerminalSettleEvery = 120*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { logTerminalSettle, logTerminalSettleEvery = prevSettle, prevEvery })
+	tightenBoundLogPoll(t, 20*time.Millisecond)
+	tightenLogLaneWait(t, 20*time.Millisecond)
+
+	svc, native := newLogLaneService(t)
+	ctx := t.Context()
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	// A producer of THIS process paused, leaving its epoch retained.
+	buf, _ := NewRunLogBuffer("")
+	lane := svc.registerRunLogOrigin(ctx, "r", buf, logDurable)
+	if lane == nil {
+		t.Fatal("no lane was registered")
+	}
+	lane.Close(logEndPaused)
+	// Elsewhere the run was resumed and finished: the status is terminal.
+	if err := native.UpdateRunStatus(ctx, "r", store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+
+	sub := subscribeBoundLogs(t, svc, "r")
+	sink := newLogSink(sub)
+	if _, errs := sink.awaitEnd(t, 3*time.Second); len(errs) != 0 {
+		t.Fatalf("the settle published errors: %v", errs)
+	}
+}
+
+// An end already applied is final: a failure recorded while the stream drains
+// afterwards adds neither a second end nor an error on a finished run
+// (round 2, F2).
+func TestReArmAddsNothingAfterAnAppliedEnd(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	pipe := runstream.NewLogPipe()
+	m := &liveLogMerge{l: svc.liveEvents, ctx: t.Context(), runID: "r", out: pipe, entry: &liveLogEntry{}, endAt: time.Now()}
+	svc.recordLogProducerFailure("r", fmt.Errorf("a later producer failed: %w", store.ErrRunDataCapability))
+	if m.rearm() {
+		t.Fatal("rearm acted after the stream's end was applied")
+	}
+	go pipe.Finish(nil)
+	for err := range pipe.Errors() {
+		t.Fatalf("a finished stream published an error: %v", err)
+	}
+	if m.applies != 0 {
+		t.Fatalf("applies = %d, want none after the end was applied", m.applies)
+	}
+}

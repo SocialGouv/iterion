@@ -243,6 +243,17 @@ type liveLogMerge struct {
 	stallWarned bool
 }
 
+// retainedEnd reads the value a retained closed subscription carries. A closed
+// channel without a readable value is a lost stream, never an implicit end.
+func retainedEnd(sub *LogWakeSubscription) logEnd {
+	select {
+	case w := <-sub.C:
+		return w.End
+	default:
+		return logEndLost
+	}
+}
+
 // laneC is the lane's channel, nil when the merge holds none: a nil channel
 // blocks forever in the select, which is exactly the "parked" state.
 func (m *liveLogMerge) laneC() <-chan LogWake {
@@ -463,9 +474,26 @@ func (m *liveLogMerge) run() {
 			if !m.stillTerminal() {
 				continue
 			}
-			if sub, _, err := m.l.svc.observedLogLane(m.ctx, m.runID, false); err == nil && sub != nil {
-				m.adoptLane(sub)
-				continue
+			if sub, _, err := m.l.svc.observedLogLane(m.ctx, m.runID, false); err != nil {
+				if runstream.IsPermanentError(err) {
+					m.out.Fail(err)
+					return
+				}
+			} else if sub != nil {
+				if !sub.Closed {
+					// An open epoch is a producer that came back: it beats E3.
+					m.adoptLane(sub)
+					continue
+				}
+				end := retainedEnd(sub)
+				sub.Cancel()
+				// A retained terminal or lost end is still the truth; a retained
+				// PAUSE is not — the run was just re-read as terminal, so the
+				// settle concludes instead of parking on an epoch whose producer
+				// ended on another replica.
+				if end != logEndPaused && m.applyEnd(sub.epoch, end, logEndByRetained) {
+					return
+				}
 			}
 			if m.applyEnd(0, logEndTerminal, logEndBySettle) {
 				return
@@ -482,6 +510,12 @@ func (m *liveLogMerge) rearm() bool {
 	if m.ctx.Err() != nil {
 		m.failStopped()
 		return true
+	}
+	if !m.endAt.IsZero() {
+		// The stream's end is applied: a later registration or failure cannot
+		// add a second one (first-end-wins), and must not turn a clean end into
+		// an error the client has no stream left to read.
+		return false
 	}
 	if fobs, err, ok := m.l.svc.logProducerFailureFor(m.runID); ok {
 		m.recordEnd(logEndByLane)
