@@ -167,11 +167,8 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 		return
 	}
 	var triggerID string
-	for _, t := range pkg.Triggers {
-		if t.Event == event {
-			triggerID = t.ID
-			break
-		}
+	if t, ok := spec.WebhookTrigger(pkg.Triggers, event); ok {
+		triggerID = t.ID
 	}
 	if triggerID == "" {
 		filter(fmt.Sprintf("the %s package declares no %q event — it declares %s, and an engine may believe only what the package declares",
@@ -317,7 +314,13 @@ func triggerEventNames(triggers []spec.Trigger) string {
 	}
 	names := make([]string, 0, len(triggers))
 	for _, t := range triggers {
-		names = append(names, t.Event)
+		// A polled trigger names no event a delivery could carry.
+		if !t.Polled() {
+			names = append(names, t.Event)
+		}
+	}
+	if len(names) == 0 {
+		return "no event a delivery can carry"
 	}
 	return strings.Join(names, ", ")
 }

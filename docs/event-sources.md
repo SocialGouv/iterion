@@ -55,6 +55,56 @@ the secret on the vendor's webhook settings. When the package ships a
 instructions for that vendor's settings screens. Packages that declare how
 to provision their hook automate this in a later wave (ADR-168 §6).
 
+## Polled triggers
+
+A trigger with `delivery: poll` is read by a poller rather than pushed by a
+webhook: one **read** operation of the same package, called on an interval
+([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §7).
+
+```yaml
+- id: jira.issue.updated
+  delivery: poll
+  poll:
+    operation: jira.search.issues      # a read operation of this package
+    params:                            # expressions over query and cursor
+      jql: 'query.jql + " AND updated >= " + if(cursor.value, cursor.value, "-1d")'
+    query: [ { id: jql, required: true } ]   # what the operator types
+    item_id: 'item.key'
+    item_version: 'item.fields.updated'
+    cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
+    interval: { default: 5m, min: 1m }
+  outputs:
+    - { name: subject, from: 'payload.fields.summary' }
+  sample: samples/issue-updated.json   # {"response": <one decoded answer>}
+```
+
+- **A polled trigger declares no `event`.** Its poller names it; an event
+  would let a webhook delivery reach it, and the ingress lane never routes a
+  delivery to a polled trigger.
+- **Items.** A paginated operation's items are its pagination's
+  `items_field`, and `poll.items` is refused there; an unpaginated
+  operation needs `poll.items`, an expression over `response`.
+- **Identity.** `item_id` (required) and `item_version` read `item` and
+  `response`; without `item_version` an item's revision is the digest of the
+  item itself. An item seen at one (id, version) is delivered once.
+- **The event is the item.** `outputs`, `filters` and `ignore` read the item
+  as `payload` — one vocabulary for pushed and polled events — and no
+  `headers`, which an item has none of.
+- **Feeds.** An operation with `response_format: feed` reads RSS 2.0 or
+  Atom 1.0 into one shape: `{title, link, updated, items: [{id, version,
+  title, link, summary, content, published, updated, author,
+  categories}]}`. An item's `id` falls back from its guid (Atom `id`) to its
+  link to the digest of its content, its `version` is that digest, and
+  instants are rewritten as RFC 3339. UTF-8, US-ASCII, ISO-8859-1 and
+  windows-1252 are read; any other declared charset is refused by name.
+- **The sample** is one recorded answer, `{"response": …}`: every item in it
+  must yield an identity, a cursor the declared kind parses, and the
+  trigger's outputs with their types — or the package does not load.
+
+The format and the decoder are in place; pollers themselves ship with L4-2
+(#3274). Until then a subscription to a polled trigger is refused at save,
+naming why, rather than accepted to never fire.
+
 ## Icons
 
 A package may ship `icon:` (a file in the package, `icon.svg` by

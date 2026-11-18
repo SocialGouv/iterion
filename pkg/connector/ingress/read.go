@@ -170,14 +170,8 @@ func Read(req Request) (Delivery, error) {
 			d.DeliveryID = id
 		}
 	}
-	var trig *spec.Trigger
-	for i := range req.Triggers {
-		if req.Triggers[i].Event == name {
-			trig = &req.Triggers[i]
-			break
-		}
-	}
-	if trig == nil {
+	trig, ok := spec.WebhookTrigger(req.Triggers, name)
+	if !ok {
 		d.Filtered = fmt.Sprintf("the package declares no trigger for event %.64q", name)
 		return d, nil
 	}

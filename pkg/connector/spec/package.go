@@ -470,6 +470,13 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	if op.HTTP.RequestBody != "" && !ValidBodyEncoding(op.HTTP.RequestBody) {
 		return fmt.Errorf("operation %q: request body encoding %q is not one iterion can build (want json|form|multipart)", op.ID, op.HTTP.RequestBody)
 	}
+	// Prevents: an answer decoded as something it is not — a feed read as
+	// JSON fails every call, and an unknown format would be guessed.
+	switch op.HTTP.ResponseFormat {
+	case "", ResponseJSON, ResponseFeed:
+	default:
+		return fmt.Errorf("operation %q: response_format %q is not json or feed", op.ID, op.HTTP.ResponseFormat)
+	}
 	seenStatus := map[int]bool{}
 	for _, r := range op.Results {
 		if seenStatus[r.Status] {

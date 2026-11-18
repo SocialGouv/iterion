@@ -54,6 +54,13 @@ type Trigger struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	// DisplayName is the catalog's label for the event.
 	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	// Delivery is how the trigger's events reach iterion: webhook (empty,
+	// matched by Event on an authenticated delivery) or poll (read by its
+	// own poller through Poll).
+	Delivery string `yaml:"delivery,omitempty" json:"delivery,omitempty"`
+	// Poll is a polled trigger's query: the operation, its parameters, and
+	// how items, identities and the checkpoint are read (poll.go).
+	Poll *TriggerPoll `yaml:"poll,omitempty" json:"poll,omitempty"`
 	// Outputs are the named values extracted from a delivery: what the
 	// studio offers for mapping and what a run receives by default.
 	Outputs []TriggerOutput `yaml:"outputs,omitempty" json:"outputs,omitempty"`
@@ -76,6 +83,23 @@ type triggersDoc struct {
 	Connector string    `yaml:"connector"`
 	Ingress   *Ingress  `yaml:"ingress,omitempty"`
 	Triggers  []Trigger `yaml:"triggers"`
+}
+
+// WebhookTrigger is the one reading of "which trigger does this delivery's
+// event name": the first webhook trigger declaring exactly that vendor event.
+// A polled trigger is fed by its poller alone and is never a delivery's, and
+// an empty name — a delivery whose event header is absent — names nothing,
+// rather than every trigger that declares none.
+func WebhookTrigger(triggers []Trigger, event string) (*Trigger, bool) {
+	if event == "" {
+		return nil, false
+	}
+	for i := range triggers {
+		if !triggers[i].Polled() && triggers[i].Event == event {
+			return &triggers[i], true
+		}
+	}
+	return nil, false
 }
 
 // readTriggers loads the package's declared events, if it declares any.
@@ -163,10 +187,17 @@ func validateTriggers(p *Package) error {
 			return fmt.Errorf("connector %q: trigger %q names connector %q — a package declares events in its own namespace only",
 				p.Connector.ID, t.ID, first)
 		}
-		// Prevents: a trigger iterion could never match to a delivery. The
-		// vendor's event name is the only thing an inbound request carries
-		// that says what happened.
-		if strings.TrimSpace(t.Event) == "" {
+		// Prevents: a delivery mode nothing serves, judged before anything
+		// that depends on it so the refusal names the value at fault.
+		if t.Delivery != "" && t.Delivery != DeliveryWebhook && t.Delivery != DeliveryPoll {
+			return fmt.Errorf("connector %q: trigger %q: delivery %q is not %s or %s",
+				p.Connector.ID, t.ID, t.Delivery, DeliveryWebhook, DeliveryPoll)
+		}
+		// Prevents: a webhook trigger iterion could never match to a
+		// delivery. The vendor's event name is the only thing an inbound
+		// request carries that says what happened. A polled trigger is named
+		// by its poller instead, and validatePoll refuses it an event.
+		if !t.Polled() && strings.TrimSpace(t.Event) == "" {
 			return fmt.Errorf("connector %q: trigger %q declares no event — a delivery is matched by the vendor's own event name, so a trigger without one can never fire",
 				p.Connector.ID, t.ID)
 		}
@@ -183,6 +214,9 @@ func validateTriggers(p *Package) error {
 		// to name a trigger would inherit the ambiguity.
 		if _, ok := p.Operation(t.ID); ok {
 			return fmt.Errorf("connector %q: trigger %q is also an operation id — one id is one thing", p.Connector.ID, t.ID)
+		}
+		if err := validatePoll(p, t); err != nil {
+			return err
 		}
 		if err := validateTriggerExtraction(p, t); err != nil {
 			return err

@@ -142,7 +142,21 @@ type HTTPBinding struct {
 	// Accept overrides the response media type when the vendor answers
 	// something other than JSON.
 	Accept string `yaml:"accept,omitempty" json:"accept,omitempty"`
+	// ResponseFormat is how the answer is decoded: json (empty) or feed —
+	// an RSS 2.0 or Atom 1.0 document read into one normalized shape
+	// (pkg/connector/exec/feed.go), so a feed is polled like any other list.
+	ResponseFormat ResponseFormat `yaml:"response_format,omitempty" json:"response_format,omitempty"`
 }
+
+// ResponseFormat is the decoding of an operation's answer.
+type ResponseFormat string
+
+const (
+	// ResponseJSON is the default: the body is JSON.
+	ResponseJSON ResponseFormat = "json"
+	// ResponseFeed is an RSS 2.0 or Atom 1.0 document.
+	ResponseFeed ResponseFormat = "feed"
+)
 
 // RequestContentType is the header value to send: the vendor's own media type
 // when it named a specific one, else the canonical type for the encoding.

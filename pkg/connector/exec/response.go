@@ -25,7 +25,7 @@ func newBody(raw []byte) io.Reader { return bytes.NewReader(raw) }
 // checkpoint that as a success. Only then does a declared result case decide
 // whether the success is complete or merely accepted.
 func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http.Response, body []byte) Result {
-	data, decodeErr := decodeJSON(body)
+	data, decodeErr := decodeAnswer(op, body)
 	res := Result{Status: resp.StatusCode, Data: data, Bytes: len(body)}
 
 	if resp.StatusCode >= 400 {
@@ -60,7 +60,7 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 		res.Err = &Error{
 			Class:   spec.ErrUpstream,
 			Status:  resp.StatusCode,
-			Message: fmt.Sprintf("the vendor answered %d with a body that is not JSON: %v", resp.StatusCode, decodeErr),
+			Message: fmt.Sprintf("the vendor answered %d with a body that is not %s: %v", resp.StatusCode, answerFormat(op), decodeErr),
 			Cause:   decodeErr,
 		}
 		// The mutation CERTAINLY happened — the vendor answered 2xx — and only

@@ -1103,6 +1103,23 @@ func asError(err error, out **Error) bool {
 	return ok
 }
 
+// decodeAnswer decodes a successful body the way its operation declares:
+// a feed through decodeFeed, anything else as JSON.
+func decodeAnswer(op spec.Operation, body []byte) (any, error) {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed && len(strings.TrimSpace(string(body))) > 0 {
+		return decodeFeed(body)
+	}
+	return decodeJSON(body)
+}
+
+// answerFormat names what an operation's body was expected to be.
+func answerFormat(op spec.Operation) string {
+	if op.HTTP.ResponseFormat == spec.ResponseFeed {
+		return "an RSS 2.0 or Atom 1.0 feed"
+	}
+	return "JSON"
+}
+
 // decodeJSON decodes a body, tolerating an empty one.
 func decodeJSON(body []byte) (any, error) {
 	if len(strings.TrimSpace(string(body))) == 0 {

@@ -783,3 +783,21 @@ func TestIngress_ABodyTimestampResignedRetryOpensNoSecondIntake(t *testing.T) {
 		t.Fatalf("dedup = %s, want the body's digest without its timestamp (%s)", d1.DedupKey, want)
 	}
 }
+
+// A polled trigger declares no event — its poller names it — so a delivery
+// that names no event at all must not reach it: the poller is its only feed.
+func TestReadAnUnnamedDeliveryNeverReachesAPolledTrigger(t *testing.T) {
+	d, err := Read(forgejoRequest(func(r *Request) {
+		r.Header.Del("X-Forgejo-Event")
+		r.Triggers = append(r.Triggers, spec.Trigger{
+			ID: "forgejo.issue.polled", Delivery: spec.DeliveryPoll,
+			Outputs: []spec.TriggerOutput{{Name: "actor", From: "payload.sender.login"}},
+		})
+	}))
+	if err != nil {
+		t.Fatalf("an authenticated delivery with no event: %v", err)
+	}
+	if d.TriggerID != "" || d.Filtered == "" {
+		t.Fatalf("the unnamed delivery read as trigger %q (filtered %q) — a polled trigger is fed by its poller only", d.TriggerID, d.Filtered)
+	}
+}
