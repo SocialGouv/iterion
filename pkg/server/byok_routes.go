@@ -268,9 +268,10 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "not a member")
 		return
 	}
-	// Team admins see all team-wide keys + their own user-scoped
-	// keys (matches BYOK plan). Members only see what's visible.
-	keys, err := s.apiKeys.ListByTeam(teamPathTenantCtx(r), teamID, id.UserID)
+	// The team page lists the team's own keys. A user-scoped row is a
+	// personal credential, managed at /api/me/api-keys; a machine lane
+	// cannot spend one anyway — validateKeyOverrides refuses that pin.
+	keys, err := s.apiKeys.ListByTeam(teamPathTenantCtx(r), teamID, "")
 	s.writeApiKeyList(w, r, keys, err)
 }
 
