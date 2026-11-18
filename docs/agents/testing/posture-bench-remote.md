@@ -55,6 +55,37 @@ The bench's own `4` ("this pod is not the posture asked about"), `6` (a leg
 could not run here) and `7` (the pod never checked its posture) all map to **2
 — nothing was tested**, never to a green and never to a red about the cluster.
 
+## Measured on production (2026-11-18)
+
+The image built from `iterion-runner-devbox@sha256:3d269f8d…` (the digest the
+production deployment runs), one pod on `node3`, namespace created for the run
+and deleted after it:
+
+| | production | `kind` arm |
+|---|---|---|
+| containerd | **2.3.6** | 2.1.1 |
+| kernel | 6.1.0-54 | 6.8.0-149 |
+| **Landlock ABI** | **2** | 4 |
+| legs | 7/7 held | 7/7 held |
+| a compromised child's `connect` | **SUCCEEDED** | refused `EACCES` |
+
+**The one that matters is the ABI.** Landlock gained TCP rights in ABI 3, so on
+this kernel the domain cannot refuse a socket connection: leg 5 reports the
+attempt as **NOT covered**, and what the other legs prove — open and exec
+refused, memory and CPU bombs killed, siblings surviving — is unchanged. A
+kind-hosted bench on a newer kernel would have reported a confinement the
+production node does not have on that axis. That is the class of answer this arm
+exists for, and it is a property of the NODE KERNEL, not of codemode.
+
+The runner image also gives its process two supplementary groups the chart does
+not name — `sudo` and `users`, because the image's `devbox` user is in them.
+`-expect-groups` exists for exactly this: the runtime adds the image's groups,
+so the operator declares the deployment's real set and the bench requires an
+**exact match in both directions** (an undeclared observed group refuses, and so
+does a declared group that is absent). Refusing them outright would make the
+runner image unmeasurable in a cluster while the same binary measures clean
+under docker, where the groups are the single one passed to `--user`.
+
 ## Witnessed, not assumed
 
 Against a `kind` cluster driven purely through `kubectl`:

@@ -52,6 +52,11 @@ usage: codemode-remote-bench.sh --bench-image <ref> --kubeconfig <path> --namesp
                   so the Unconfined twin is admissible — the twin is the control
                   that proves the measured arm's seccomp read can distinguish.
   --uid           the uid the image runs as (default 1000, the devbox runner).
+  --expect-groups the supplementary groups this deployment really gives, comma
+                  separated. A container runtime adds the IMAGE's own groups
+                  (`devbox` is in `sudo` and `users`), which the chart does not
+                  decide; the bench refuses to measure unless they are declared,
+                  and then requires an EXACT match in both directions.
   --pull-policy   IfNotPresent (default) or Never.
   --keep          leave the pods behind for inspection.
   --max-wait      seconds to wait for terminal phases (default 600).
@@ -61,7 +66,7 @@ USAGE
 	exit 2
 }
 
-BENCH_IMAGE="" KUBECONFIG_PATH="" CONTEXT="" NS="" CREATE_NS="" UID_WANT=1000
+BENCH_IMAGE="" KUBECONFIG_PATH="" CONTEXT="" NS="" CREATE_NS="" UID_WANT=1000 EXPECT_GROUPS=""
 PULL_POLICY=IfNotPresent KEEP="" MAX_WAIT=600
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -71,6 +76,7 @@ while [ $# -gt 0 ]; do
 	--namespace) NS=${2:-}; shift 2 ;;
 	--create-namespace) CREATE_NS=1; shift ;;
 	--uid) UID_WANT=${2:-}; shift 2 ;;
+	--expect-groups) EXPECT_GROUPS=${2:-}; shift 2 ;;
 	--pull-policy) PULL_POLICY=${2:-}; shift 2 ;;
 	--keep) KEEP=1; shift ;;
 	--max-wait) MAX_WAIT=${2:-}; shift 2 ;;
@@ -208,7 +214,11 @@ EOF
 # shellcheck disable=SC2016
 POSTURE='["sh","-c","grep -E \"^(Seccomp|Seccomp_filters|NoNewPrivs|Cap(Eff|Bnd|Inh|Amb|Prm)):\" /proc/self/status; echo uid=$(id -u) gid=$(id -g)"]'
 BENCH='["/bench/inpodbench"]'
-BENCH_ARGS="[\"-binary\",\"/usr/local/bin/iterion\",\"-require-uid\",\"$UID_WANT\"]"
+BENCH_ARGS="[\"-binary\",\"/usr/local/bin/iterion\",\"-require-uid\",\"$UID_WANT\""
+if [ -n "$EXPECT_GROUPS" ]; then
+	BENCH_ARGS="$BENCH_ARGS,\"-expect-groups\",\"$EXPECT_GROUPS\""
+fi
+BENCH_ARGS="$BENCH_ARGS]"
 
 # Applied ONE AT A TIME, so an admission refusal names the pod it refused
 # instead of failing a five-document apply and leaving the caller to guess.

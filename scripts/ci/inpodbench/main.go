@@ -54,6 +54,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -208,7 +209,27 @@ func main() {
 		"refuse to measure unless this process runs as this uid, has a seccomp filter loaded, "+
 			"holds no capability in its effective or bounding set, and has no_new_privs set "+
 			"(empty disables the check)")
+	// The supplementary groups a container runtime derives from the IMAGE are
+	// not something the chart decides, so a pod whose image ships them can
+	// only be measured if the operator names them. Empty keeps the strict
+	// answer: the group `-require-uid` names, and nothing else.
+	expectGroups := flag.String("expect-groups", "",
+		"comma-separated supplementary group ids this deployment really gives (the image's own "+
+			"groups included); observed and declared must match EXACTLY, in both directions. "+
+			"Empty means only the group -require-uid names")
 	flag.Parse()
+
+	var declaredGroups []int
+	if *expectGroups != "" {
+		for _, raw := range strings.Split(*expectGroups, ",") {
+			g, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || g < 0 {
+				fmt.Fprintf(os.Stderr, "inpodbench: -expect-groups %q: %q is not a group id\n", *expectGroups, raw)
+				os.Exit(exitUsage)
+			}
+			declaredGroups = append(declaredGroups, g)
+		}
+	}
 
 	// Strengthening the probe set broke the mutants twice: their profiles
 	// denied one syscall, then two, while the set grew to five, and each time
@@ -261,7 +282,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "inpodbench: -require-uid %q is not a uid\n", *requireUID)
 			os.Exit(exitUsage)
 		}
-		if err := requirePosture(int(wantUID)); err != nil {
+		if err := requirePosture(int(wantUID), declaredGroups); err != nil {
 			fmt.Printf("VERDICT: this process is not under the posture it was asked to measure: %v\n", err)
 			// Through verdict() like every other measuring exit. It is a no-op
 			// on this branch — reaching it means -require-uid was given, so
@@ -1083,7 +1104,23 @@ func readFile(path string) []byte {
 //
 // Seccomp: 2 is SECCOMP_MODE_FILTER. The twin reading is what makes it mean
 // something — an Unconfined container reports 0 — and both are measured.
-func requirePosture(wantUID int) error {
+// groupSet renders a supplementary-group set in a stable order, so a message
+// never depends on map iteration order (a flaky expectation is worse than a
+// missing one).
+func groupSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := strconv.Atoi(out[i])
+		b, _ := strconv.Atoi(out[j])
+		return a < b
+	})
+	return out
+}
+
+func requirePosture(wantUID int, declared []int) error {
 	// runAsNonRoot: true is the one field of the chart's pod securityContext
 	// that a plain container CAN honour, and it was the one this check did not
 	// require: `--uid 0` reported every leg held, indistinguishable from a
@@ -1139,11 +1176,40 @@ func requirePosture(wantUID int) error {
 	// out root-group and group-writable. The chart sets fsGroup to runAsUser
 	// (values.yaml:891), so any other group is a widening of the boundary the
 	// pod IS.
+	//
+	// The set is EQUAL in both directions. An empty declaration keeps the
+	// chart's answer — only the group the chart itself names — so a caller who
+	// says nothing cannot widen anything by omission. A NON-empty one is the
+	// deployment's real answer, named by the operator, for the case the chart
+	// does not decide: a container runtime adds the IMAGE's supplementary
+	// groups (`devbox` is in `sudo` and `users` in the runner image), and a
+	// check that refused them forever would make that image unmeasurable in a
+	// cluster while the same binary measured clean under docker, where the
+	// groups are exactly the one passed to `--user`. Declaring them is what
+	// turns "unmeasurable" into a posture the verdict names — observed and
+	// declared must match exactly, so a NEW group still refuses.
+	want := map[string]bool{strconv.Itoa(wantUID): true}
+	if len(declared) > 0 {
+		want = map[string]bool{}
+		for _, g := range declared {
+			want[strconv.Itoa(g)] = true
+		}
+	}
+	observed := map[string]bool{}
 	for _, g := range strings.Fields(field("Groups")) {
-		if g != strconv.Itoa(wantUID) {
-			return fmt.Errorf("supplementary group %s (Groups: %s), want only %d: the chart sets "+
-				"fsGroup to runAsUser and names no supplementalGroups",
-				g, field("Groups"), wantUID)
+		observed[g] = true
+		if !want[g] {
+			return fmt.Errorf("supplementary group %s (Groups: %s), want only %v: the chart sets "+
+				"fsGroup to runAsUser and names no supplementalGroups, so a group beyond the "+
+				"declared set is a widening the deployment did not state",
+				g, field("Groups"), groupSet(want))
+		}
+	}
+	for g := range want {
+		if !observed[g] {
+			return fmt.Errorf("declared supplementary group %s is ABSENT (Groups: %s, want %v): "+
+				"the declaration does not describe this pod, so the posture is not the one named",
+				g, field("Groups"), groupSet(want))
 		}
 	}
 	if got := field("NoNewPrivs"); got != "1" {

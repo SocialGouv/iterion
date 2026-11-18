@@ -177,9 +177,9 @@ branch's parent and nothing here touches `pkg/scripthost`. And **the cluster
 arm's posture readback is a sibling pod**: the bench pod checks itself through
 `-require-uid`, which is what makes the arm sound.
 
-**The production node's containerd.** The arm that can measure it exists and is
-witnessed on a local cluster, but has **not yet run against production**: its
-own build is unmeasured.
+**The production node's confinements.** Measured 2026-11-18: containerd 2.3.6,
+kernel 6.1, **Landlock ABI 2 — `connect` is not confined there**
+([detail](posture-bench-remote.md)).
 
 The production **runner image** is no longer owed: `iterion-runner-devbox`
 (uid 1000, `iterion v6.1.0+f446b258cf38`, `tini`) holds 7/7 with the escape leg
