@@ -103,4 +103,6 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.225.0"
+  ## See review-pr's floor: below 7.12.0 the engine resolver writes mono/dual
+  ## into a bot whose enum accepts neither.
+  iterion: ">= 7.12.0"

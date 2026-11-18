@@ -300,12 +300,21 @@ RETIRED_NODES = {
 }
 
 # Routes retired with their node: `converge` runs on claw, which reads no
-# provider hint, so it declares no `#glm` rescue any more.
-RETIRED_ROUTES = {"converge#glm"}
+# provider hint, so it declares no `#glm` rescue any more. A retired route is
+# dropped whether it is spelled on the old node or the new one.
+RETIRED_ROUTES = {"converge#glm", "reviewer#glm", "reviewer_glance#glm"}
+
+# Targets whose RENAMED cell wins a collision with one the block already
+# carries. Only `converge` qualifies: the pre-rename claude merge cell
+# (claude_code + anthropic) describes a route the surviving node cannot take,
+# while `converge_gpt` names the route it does. Everywhere else the cell
+# already spelled with the role name is the CURRENT one — a partially
+# migrated block keeps it, and the leftover old spelling is dropped.
+RENAME_WINS = {"converge"}
 
 
 def renamed_selector(selector):
-    """(new selector, changed?) for one stored selector; new is "" when the
+    """(new selector, retired?) for one stored selector; new is "" when the
     selector names a cell no node can take any more."""
     node, sep, route = selector.partition("#")
     bot, slash, name = node.rpartition("/")
@@ -318,6 +327,10 @@ def renamed_selector(selector):
     new = RETIRED_NODES[name]
     if not new:
         return "", True
+    # The route can be retired on the NEW name too: `converge_gpt#glm`
+    # renames onto `converge#glm`, which no node declares.
+    if new + sep + route in RETIRED_ROUTES:
+        return "", True
     return bot + "/" + new + sep + route, True
 
 
@@ -325,8 +338,8 @@ def migrated_block(routing):
     """The block with every retired selector renamed; answer (block, changes,
     dropped), where a change is (from, to)."""
     out = copy.deepcopy(routing or {})
-    changes, dropped = [], []
-    kept, from_rename = [], set()
+    dropped = []
+    kept, from_rename, renames = [], {}, []
     for o in out.get("overrides") or []:
         new, retired = renamed_selector(o.get("selector", ""))
         if not retired:
@@ -336,13 +349,29 @@ def migrated_block(routing):
             dropped.append(o["selector"])
             continue
         if new != o["selector"]:
-            changes.append((o["selector"], new))
-            from_rename.add(new)
+            renames.append((o["selector"], new))
+            from_rename[new] = o["selector"]
         kept.append((new, dict(o, selector=new), True))
-    # A rename landing on a cell the block already carried: the renamed one
-    # wins (it names the route the node takes now), the older spelling is
+    # A rename landing on a cell the block already carries: one of the two
+    # describes the route the node takes now, the other is a leftover. Which
+    # one wins depends on the target — see RENAME_WINS — and the loser is
     # dropped rather than left to contend for one selector.
-    out["overrides"] = [o for sel, o, renamed in kept if renamed or sel not in from_rename]
+    final = []
+    for sel, o, renamed in kept:
+        if renamed and sel in from_rename:
+            carried = [k for k in kept if k[0] == sel and not k[2]]
+            if carried and sel.rpartition("/")[2].partition("#")[0] not in RENAME_WINS:
+                dropped.append(from_rename[sel])
+                continue
+            if carried:
+                dropped.append(sel)
+                final = [k for k in final if k[0] != sel]
+        final.append((sel, o, renamed))
+    out["overrides"] = [o for _, o, _ in final]
+    # Only a rename whose cell SURVIVED is a change; one dropped by the
+    # collision rule is reported as a drop, never as a rewrite.
+    survivors = {sel for sel, _, renamed in final if renamed}
+    changes = [(a, b) for a, b in renames if b in survivors]
     return out, changes, dropped
 
 
@@ -355,23 +384,25 @@ def carries_retired(routing):
 
 def migrate_one(args, integ):
     """Rename one integration's cells; answer True when it carries the roles."""
-    backup = backup_path(args.dir, integ)
-    if not os.path.exists(backup):
-        record = {"team_id": integ["team_id"], "team": integ["team"], "id": integ["id"], "repo": integ["repo"], "routing": integ["routing"]}
-        with open(backup, "w") as f:
-            json.dump(record, f, indent=2, sort_keys=True)
-            f.write("\n")
-        print("saved    %s (%s) -> %s" % (integ["repo"], integ["id"], backup))
     stored = stored_routing(integ["team_id"], integ["id"])
     wanted, changes, dropped = migrated_block(stored)
     if not changes and not dropped:
         print("unchanged %s (%s): no retired selector" % (integ["repo"], integ["id"]))
         return True
     if args.dry_run:
+        # A dry run touches NOTHING — not the instance, not the backup dir.
+        # Its own line says what --yes would do.
         print("WOULD    %s (%s): %s%s" % (integ["repo"], integ["id"],
               ", ".join("%s -> %s" % c for c in changes),
               ("" if not dropped else ", drop " + ", ".join(dropped))))
         return True
+    backup = backup_path(args.dir, integ)
+    if not os.path.exists(backup):
+        record = {"team_id": integ["team_id"], "team": integ["team"], "id": integ["id"], "repo": integ["repo"], "routing": stored}
+        with open(backup, "w") as f:
+            json.dump(record, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print("saved    %s (%s) -> %s" % (integ["repo"], integ["id"], backup))
     if patch_routing(integ, wanted) == "parked":
         print("PARKED   %s (%s): the org queued the change for an admin's approval — not applied" % (integ["repo"], integ["id"]))
         return False
@@ -384,19 +415,20 @@ def migrate_one(args, integ):
 
 
 def cmd_migrate_ids(args):
+    # The selection is over EVERY integration, not only the ones that need it:
+    # `--only <a clean one>` must answer "unchanged … no retired selector",
+    # not refuse it as "not a target" — the operator asking about a name is
+    # asking a question, not asserting that the name needs work.
     integs = discover()
-    targets = [i for i in integs if carries_retired(i["routing"])]
-    if not targets:
-        # Still answer the names the operator asked about, so a one-name run
-        # says which integration it looked at and found nothing to do on.
-        for integ in selected(integs, args.only, args.all) if args.only else []:
-            print("unchanged %s (%s): no retired selector" % (integ["repo"], integ["id"]))
-        print("every integration already names the roles")
-        return 0
-    picked = selected(targets, args.only, args.all)
-    os.makedirs(args.dir, mode=0o700, exist_ok=True)
-    failed = each(picked, "migrated", lambda integ: migrate_one(args, integ))
-    print("\n%d integration(s) carry a retired selector, %d migrated" % (len(targets), len(picked) - failed))
+    picked = selected(integs, args.only, args.all)
+    dirty = [i for i in picked if carries_retired(i["routing"])]
+    if dirty and not args.dry_run:
+        os.makedirs(args.dir, mode=0o700, exist_ok=True)
+    verb = "would migrate" if args.dry_run else "migrated"
+    # Every named integration is answered, clean or not: migrate_one prints
+    # its own "unchanged … no retired selector" and writes nothing.
+    failed = each(picked, verb, lambda integ: migrate_one(args, integ))
+    print("\n%d of %d integration(s) read carry a retired selector" % (len(dirty), len(picked)))
     return failed
 
 

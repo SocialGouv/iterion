@@ -721,34 +721,51 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 	// backs it up first, and reads it back.
 	t.Run("migrate-ids renames the retired node names and drops what no node takes", func(t *testing.T) {
 		reset()
-		retired := cloneBlock(t, &prod)
-		retired.Overrides = append(retired.Overrides,
-			llmroute.Override{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash", Effort: "high"},
-			llmroute.Override{Selector: "review-pr/converge_gpt", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash", Effort: "low"},
-			llmroute.Override{Selector: "review-pr/converge#glm", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"},
-			llmroute.Override{Selector: "review-pr/reviewer_claude_glance", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"},
-		)
+		// A block as a pre-rename integration carries it: the retired ids
+		// only, with the claude merge cell and its GLM route beside the gpt
+		// twin, a glance claude cell, and one cell a product added.
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		retired := llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+			{Selector: "review-pr/reviewer_claude_glance", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+			{Selector: "review-pr/reviewer_gpt_glance", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/converge", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/converge_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/converge#glm", Backend: "claw", Provider: "openai_compatible", Model: gw},
+			{Selector: "review-pr/reviewer_claude#glm", Backend: "claw", Provider: "openai_compatible", Model: gw},
+			{Selector: "review-pr/supervisor:pacer", Model: gw},
+		}}
 		in.write("t1", i1, retired)
 
 		b := filepath.Join(dir, "migrate")
-		if out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run"); code != 0 || sent != 0 || !strings.Contains(out, "review-pr/reviewer_gpt -> review-pr/reviewer") {
+		out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run")
+		if code != 0 || sent != 0 {
 			t.Fatalf("a dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
-		if !hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt") || !hasCell(in.integ(i1).Routing, "review-pr/converge_gpt") {
-			t.Fatal("the dry run wrote: the retired selectors are gone")
+		for _, want := range []string{"review-pr/reviewer_gpt -> review-pr/reviewer", "review-pr/reviewer_claude -> review-pr/reviewer_alternate", "review-pr/reviewer_claude#glm -> review-pr/reviewer_alternate#glm", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the dry run does not say %q:\n%s", want, out)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(b, i1+".json")); err == nil {
+			t.Error("a dry run wrote a backup — it must touch nothing, the backup dir included")
+		}
+		if !hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt") {
+			t.Fatal("the dry run wrote")
 		}
 
-		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
 		if code != 0 || sent != 1 || !strings.Contains(out, "migrated group/api ("+i1+")") {
 			t.Fatalf("migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 		got := blockSelectors(in.integ(i1).Routing)
-		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/reviewer_alternate#glm"} {
+		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/reviewer_alternate#glm", "review-pr/supervisor:pacer"} {
 			if !slices.Contains(got, want) {
 				t.Errorf("the migrated block does not carry %q: %v", want, got)
 			}
 		}
-		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_claude", "review-pr/converge_gpt", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
+		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_claude", "review-pr/reviewer_gpt_glance", "review-pr/converge_gpt", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
 			if slices.Contains(got, gone) {
 				t.Errorf("the migrated block still carries the retired %q: %v", gone, got)
 			}

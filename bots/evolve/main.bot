@@ -844,8 +844,9 @@ agent load_nexie_handoff:
 ## The alternate reviewer (ADR-169: roles, not vendors). claude_code uses
 ## Claude Code OAuth (forfait, no API key). It judges the vision passed in
 ## its input; no memory block (claude_code ignores memory anyway) — it reads
-## the workspace to verify evidence. Only a paired review runs it.
-judge reviewer_alternate:
+## the workspace to verify evidence. It runs on every round, and a paired
+## round adds reviewer_alternate beside it.
+judge reviewer:
   model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5-5}"
   backend: "claude_code"
   input: review_input
@@ -859,9 +860,9 @@ judge reviewer_alternate:
   ## branches are workspace-safe (the guard rejects >1 mutating branch).
   readonly: true
 
-## The reviewer. claw + openai/gpt-6-astra (ChatGPT forfait). It runs on
-## every round, and a paired round adds reviewer_alternate beside it.
-judge reviewer:
+## The alternate reviewer (ADR-169: roles, not vendors). claw +
+## openai/gpt-6-astra (ChatGPT forfait); only a paired review runs it.
+judge reviewer_alternate:
   model: "${ITERION_EVOLVE_MODEL_GPT:-openai/gpt-6-astra}"
   backend: "claw"
   input: review_input
@@ -875,9 +876,8 @@ judge reviewer:
   ## pushed the SECOND request over it (context_length_exceeded, observed in
   ## the 2026-06-24 dogfood). The shared review prompt says reviewers MAY read
   ## the workspace — so this reviewer judges the vision on its TEXTUAL merits
-  ## (coherence, evidence-citation, constraint-honesty) while the claude
-  ## alternate reviewer (which keeps tools) does the file-grounded
-  ## verification.
+  ## (coherence, evidence-citation, constraint-honesty) while the reviewer
+  ## (which keeps tools) does the file-grounded verification.
   ## Cross-family perspective is preserved; the forfait window cannot
   ## overflow. ITERION_EVOLVE_MODEL_GPT changes the MODEL only — the backend
   ## is pinned to claw and the empty list holds whatever model runs here; a
@@ -1018,18 +1018,18 @@ workflow evolve:
   }
 
   ## Both reviewers join at aggregate_review (await: wait_all).
-  reviewer_alternate -> aggregate_review with {
-    claude_approved: "{{outputs.reviewer_alternate.approved}}",
-    claude_concerns: "{{outputs.reviewer_alternate.concerns}}",
-    claude_missing: "{{outputs.reviewer_alternate.missing_axes}}",
-    claude_confidence: "{{outputs.reviewer_alternate.confidence}}",
+  reviewer -> aggregate_review with {
+    claude_approved: "{{outputs.reviewer.approved}}",
+    claude_concerns: "{{outputs.reviewer.concerns}}",
+    claude_missing: "{{outputs.reviewer.missing_axes}}",
+    claude_confidence: "{{outputs.reviewer.confidence}}",
   }
 
-  reviewer -> aggregate_review with {
-    gpt_approved: "{{outputs.reviewer.approved}}",
-    gpt_concerns: "{{outputs.reviewer.concerns}}",
-    gpt_missing: "{{outputs.reviewer.missing_axes}}",
-    gpt_confidence: "{{outputs.reviewer.confidence}}",
+  reviewer_alternate -> aggregate_review with {
+    gpt_approved: "{{outputs.reviewer_alternate.approved}}",
+    gpt_concerns: "{{outputs.reviewer_alternate.concerns}}",
+    gpt_missing: "{{outputs.reviewer_alternate.missing_axes}}",
+    gpt_confidence: "{{outputs.reviewer_alternate.confidence}}",
   }
 
   ## Initial path: aggregate → carry (stamps the synthesised vision +

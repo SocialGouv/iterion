@@ -199,8 +199,8 @@ judge reviewer:
   ## Explicit backend pin: "openai/gpt-6-astra" only resolves via claw.
   ## Without it the auto-resolver routes through claude_code, which
   ## doesn't recognise openai/* models and the schema validator fails.
-  ## Backend, model AND provider are dials, so an instance points the
-  ## second reviewer at whatever its credentials serve — all three move
+  ## Backend, model AND provider are dials, so an instance points this
+  ## reviewer at whatever its credentials serve — all three move
   ## together, or the slot lands on a route nobody chose. The glance tier
   ## has its own backend and model dials (the _GLANCE ones) and shares the
   ## provider one, so a remedy moves both tiers:
@@ -1461,10 +1461,10 @@ compute tier_expand:
     post_to_board: "if(vars.publish_mode == 'off', false, if(vars.post_to_board != 'auto', vars.post_to_board == 'true', vars.review_tier != 'glance'))"
     effective_review_mode: "if(vars.review_mode == 'paired' || vars.review_tier == 'audit', 'paired', 'single')"
 
-## Converges the reviewer branch(es) and fills in whichever family did not
+## Converges the reviewer branch(es) and fills in whichever role did not
 ## run, so the merging agent sees a stated absence instead of a raw template.
-## Reads BOTH a family's full-strength and glance node: topology's condition
-## router only ever schedules one of the two per family per run, so the
+## The gpt family reads BOTH its full-strength and glance node: topology's
+## condition router only ever schedules one of the two per run, so the
 ## `if()` fallback chain below picks up whichever one actually executed.
 compute merge_reviews:
   output: family_reviews

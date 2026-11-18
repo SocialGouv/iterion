@@ -165,7 +165,7 @@ func TestReviewPRConciseScope(t *testing.T) {
 		t.Fatal("scope is not wired")
 	}
 	for _, nodes := range []map[string]any{
-		{}, {"reviewer": []any{"a.go", "test.go"}}, {"reviewer_alternate_glance": []any{"a.go"}, "reviewer_glance": []any{"a.go", "test.go"}},
+		{}, {"reviewer": []any{"a.go", "test.go"}}, {"reviewer_glance": []any{"a.go"}, "reviewer": []any{"a.go", "test.go"}},
 		{"reviewer": []string{"a.go", "test.go"}}, {"reviewer_alternate": []string{"a.go"}, "reviewer": []any{"a.go", "test.go"}},
 	} {
 		ctx := &expr.Context{Outputs: func(path []string) any {

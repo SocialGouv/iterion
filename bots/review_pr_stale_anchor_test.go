@@ -145,7 +145,7 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 	// default topology.
 	t.Run("single topology: claims no cross-confirmation", func(t *testing.T) {
 		got, _, _ := run(t, head)
-		if strings.Contains(got.Summary, "cross-confirmed by both model families") {
+		if strings.Contains(got.Summary, "cross-confirmed by both reviewers") {
 			t.Errorf("a single-family review reports a cross-family comparison:\n%s", got.Summary)
 		}
 		if !strings.Contains(got.Summary, "Revue simple") {

@@ -126,6 +126,11 @@ func TestReviewPRRunDetails(t *testing.T) {
 			note: "the claude reviewer ran on its fallback route (glm-5.3)",
 		},
 		{
+			// The script's arm, not the bot's route: `converge` declares no
+			// fallbacks since ADR-169 made it the one merge step, so this
+			// flag is set here rather than produced by a run. The publish
+			// script still owes a note for a deployment that re-points the
+			// merge at a CLI backend carrying a rescue.
 			name: "the gate note names a merge step served by its fallback",
 			refs: map[string]string{
 				"run.id": "run-123", "input.scope_files": "3",
@@ -147,6 +152,15 @@ func TestReviewPRRunDetails(t *testing.T) {
 			refs:         map[string]string{"run.id": "run-123"},
 			want:         []string{"Run : <code>run-123</code>"},
 			absent:       []string{"<a href="},
+		},
+		{
+			name: "a paired review says it ran two reviewers",
+			refs: map[string]string{
+				"run.id": "run-123", "input.effective_review_mode": "paired",
+				"input.ai_reviewer_alternate_model": "claude-opus-5-5",
+				"input.ai_reviewer_model":           "openai/gpt-6-astra",
+			},
+			want: []string{"Revue à deux relecteurs ; 0 finding(s) cross-confirmed by both reviewers."},
 		},
 		{
 			name: "both reviewers and a measured zero",

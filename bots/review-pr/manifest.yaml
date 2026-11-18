@@ -153,14 +153,11 @@ version: 0.10.0
 ## 'gpt'` takes a twin of the merge step on claw + openai/gpt-6-sol (its own
 ## three dials, `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`, moving
 ## together), and the pacer is one supervisor per family
-## (`pacer` / `pacer_gpt`), each watching its own reviewer. The trade, named:
-## Opus 5.5 is no longer the default merger of a mono-GPT review — a
-## deployment that wants it back dials the twin or pins
-## `--var mono_family=claude`. The twin shares the merge prompts, output
-## schema, effort dial and capabilities BY NAME, and both twins feed
-## `pr_gate`, which now carries the merge's payload AND its engine telemetry
-## forward under one set of names, so no downstream reader — the published
-## run table included — has to know which twin ran. The twin declares the
+## (`pacer` / `pacer_gpt`), each watching its own reviewer. The merge is ONE
+## step (`converge`, on claw since ADR-169): it feeds `pr_gate`, which
+## carries its payload AND its engine telemetry forward under one set of
+## names, so no downstream reader — the published run table included — has
+## to know which node merged. It declares the
 ## three file tools the merge needs: on claw a `tools:` list IS the node's
 ## whole surface, so an undeclared one left the board capability and
 ## `tool_max_steps:` as silent no-ops — the merge could neither file its
@@ -309,7 +306,12 @@ version: 0.10.0
 ## that release is cut, when the release-floors hook writes its number
 ## (docs/agents/workflow/release.md).
 requires:
-  iterion: ">= 7.2.0"
+  ## 7.12.0 is the release that carries `review_mode: auto|single|paired` and
+  ## the retired-spelling mapping (ADR-169). Below it the engine's own
+  ## resolver writes `mono`/`dual` into the run's inputs, and this bot's
+  ## enum gate refuses every launch — an opaque refusal with no hint that
+  ## the fix is an engine upgrade.
+  iterion: ">= 7.12.0"
 ## 0.9.0 — ticket conformance now works with NO configuration on the
 ## forge's own issues. Since 0.6.0 the check only ran when an operator
 ## pinned `tracker_api_base` per repo, which meant that on 16 connected
@@ -544,7 +546,7 @@ forge:
 produces:
   - kind: review
     # The merged, de-duplicated finding set + the merged open questions, read
-    # from the node BOTH merge twins feed: `mono_family` decides which of
+    # from the node the ONE merge step feeds (the twins are gone: ADR-169).
     # `converge` / `converge_gpt` merges, and pr_gate carries the payload of
     # whichever ran under the field names this resolver reads (findings,
     # questions, total_findings). Naming a twin here would hand a GPT-family
