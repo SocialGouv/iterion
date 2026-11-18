@@ -3,14 +3,12 @@ package reviewtopology
 import (
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // The review topology names ROLES, not vendors (ADR-169): the resolver
-// decides HOW MANY reviewers run, never which family serves them. The family
-// inventory therefore decides nothing here — which is the point, and what
-// these witnesses pin down.
+// decides HOW MANY reviewers run, never which family serves them, and it
+// reads no credential at all — which is what these witnesses pin down.
 
 func wfWithVars(names ...string) *ir.Workflow {
 	vars := make(map[string]*ir.Var, len(names))
@@ -20,7 +18,7 @@ func wfWithVars(names ...string) *ir.Workflow {
 	return &ir.Workflow{Vars: vars}
 }
 
-func TestResolveFamilies(t *testing.T) {
+func TestResolve(t *testing.T) {
 	tests := []struct {
 		override string
 		want     string
@@ -44,27 +42,10 @@ func TestResolveFamilies(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.override, func(t *testing.T) {
-			if got := ResolveFamilies(FamilyInventory{}, tt.override); got != tt.want {
-				t.Fatalf("ResolveFamilies(%q) = %q, want %q", tt.override, got, tt.want)
+			if got := Resolve(tt.override); got != tt.want {
+				t.Fatalf("Resolve(%q) = %q, want %q", tt.override, got, tt.want)
 			}
 		})
-	}
-}
-
-// The inventory is the SAME answer on every host: a credential-rich host is
-// not a request to spend two reviewer passes, and a credential-poor one is
-// not a reason to refuse the launch — its role node fails with its own error
-// exactly like every other literal route in the catalogue.
-func TestResolveIgnoresTheCredentialInventory(t *testing.T) {
-	rich := InventoryFromReport(detect.Report{
-		Providers: []detect.ProviderStatus{{Name: "anthropic", Available: true}, {Name: "openai", Available: true}},
-		Backends:  []detect.BackendStatus{{Name: detect.BackendClaudeCode, Available: true}},
-	})
-	poor := InventoryFromReport(detect.Report{})
-	for _, override := range []string{"", "auto", "single", "paired", "mono", "dual"} {
-		if got, want := ResolveFamilies(rich, override), ResolveFamilies(poor, override); got != want {
-			t.Errorf("override %q resolves %q on a rich host and %q on an empty one", override, got, want)
-		}
 	}
 }
 

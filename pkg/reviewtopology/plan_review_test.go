@@ -42,7 +42,7 @@ func TestResolvePlanReview(t *testing.T) {
 	}
 }
 
-// TestFamiliesFromReportCountsOnlyParticipatingCredentials pins what a
+// TestFamiliesCountOnlyParticipatingCredentials pins what a
 // credential has to be for `plan_review: auto` to see a second family. Only
 // two families participate (claude, gpt), and a backend outside them backs
 // NONE — so a host credentialed claude + kimi has one family and the pair
@@ -56,7 +56,7 @@ func TestResolvePlanReview(t *testing.T) {
 // behaviour, not an intent this test endorses — `plan_review: on` is the
 // override, measured below, and gating on the families a bundle's peer node
 // declares is a change to the gate, not to this mapping.
-func TestFamiliesFromReportCountsOnlyParticipatingCredentials(t *testing.T) {
+func TestFamiliesCountOnlyParticipatingCredentials(t *testing.T) {
 	rep := detect.Report{
 		Backends: []detect.BackendStatus{
 			{Name: detect.BackendClaudeCode, Available: true},
@@ -68,9 +68,9 @@ func TestFamiliesFromReportCountsOnlyParticipatingCredentials(t *testing.T) {
 			{Name: "openai", Available: false},
 		},
 	}
-	got := FamiliesFromReport(rep)
+	got := InventoryFromReport(rep).Families()
 	if len(got) != 1 || !got[FamilyClaude] {
-		t.Fatalf("FamiliesFromReport(claude_code + kimi + moonshot) = %v, want only %q: a backend and a provider outside the two participating families back none", got, FamilyClaude)
+		t.Fatalf("Families(claude_code + kimi + moonshot) = %v, want only %q: a backend and a provider outside the two participating families back none", got, FamilyClaude)
 	}
 	if mode := ResolvePlanReview(got, ""); mode != PlanReviewOff {
 		t.Errorf("plan_review auto on a claude + kimi host = %q, want %q — the pair review needs two participating families, whatever CLI the bundle pins its peer to", mode, PlanReviewOff)
@@ -83,14 +83,14 @@ func TestFamiliesFromReportCountsOnlyParticipatingCredentials(t *testing.T) {
 // The local gateway row (#2646) participates in NO review family: a gateway
 // may serve anything, so its presence must not read as a second family and
 // turn a mono resolution dual.
-func TestFamiliesFromReportIgnoresTheGatewayRow(t *testing.T) {
+func TestFamiliesIgnoresTheGatewayRow(t *testing.T) {
 	rep := detect.Report{
 		Providers: []detect.ProviderStatus{
 			{Name: "openai_compatible", Available: true, Source: "OPENAI_COMPATIBLE_BASE_URL"},
 		},
 	}
-	if got := FamiliesFromReport(rep); len(got) != 0 {
-		t.Errorf("FamiliesFromReport(gateway only) = %v, want empty — the gateway backs no review family", got)
+	if got := InventoryFromReport(rep).Families(); len(got) != 0 {
+		t.Errorf("Families(gateway only) = %v, want empty — the gateway backs no review family", got)
 	}
 }
 

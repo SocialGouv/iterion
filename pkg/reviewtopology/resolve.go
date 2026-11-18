@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -27,8 +26,8 @@ import (
 const (
 	VarReviewMode = "review_mode"
 	VarPlanReview = "plan_review"
-	// VarLLMFamilies is the generic, role-free fact behind the two above: a
-	// bot declaring it receives the sorted comma-joined list of review
+	// VarLLMFamilies is the generic, role-free fact beside the two role vars:
+	// a bot declaring it receives the sorted comma-joined list of review
 	// families backed by a credential (e.g. "claude,gpt"). It exists so a
 	// bot can build its OWN policy in a compute node without the engine
 	// learning a new role var per pattern — the engine publishes the fact a
@@ -76,24 +75,12 @@ const (
 
 // FamilySet is the set of distinct review families backed by an available
 // credential — the input the plan-review and llm_families resolutions read.
-// Built from a host detection report (FamiliesFromReport) or assembled
-// directly by a caller that knows the run's credentials from another source
-// (the cloud publisher derives it from the sealed per-run bundle).
+// Built from a host detection report (InventoryFromReport) or from a
+// caller's own credential names (InventoryFromCredentialNames — the cloud
+// publisher derives one from the sealed per-run bundle).
 type FamilySet map[string]bool
 
-// FamiliesFromReport returns the set of distinct review families backed by
-// an available credential in the detection report — either a participating
-// provider key (anthropic/zai→claude, openai→gpt) OR a usable backend whose
-// nodes run that family (claude_code→claude, codex→gpt). The union is what
-// makes a forfait-only host (claude_code OAuth, no anthropic key) report a
-// "claude" family, so the plan-review switch can count pairs the host can
-// actually serve.
-func FamiliesFromReport(rep detect.Report) FamilySet {
-	return InventoryFromReport(rep).Families()
-}
-
-// Resolve computes the effective review topology from a detection report
-// and an operator override.
+// Resolve computes the effective review topology from an operator override.
 //
 // override is one of "single", "paired", or "auto" (also "" / any unknown →
 // auto):
@@ -108,19 +95,13 @@ func FamiliesFromReport(rep detect.Report) FamilySet {
 //
 // The returned mode is always concrete ("single" or "paired"), never
 // "auto". The pre-ADR-169 spellings are still accepted (see retiredModes).
-func Resolve(rep detect.Report, override string) string {
-	return ResolveFamilies(InventoryFromReport(rep), override)
-}
-
-// ResolveFamilies is Resolve on an already-assembled inventory (see
-// FamilyInventory for who assembles one without a detection report).
 //
-// The inventory decides nothing here: with the family no longer a var, a
-// host with one credential and a host with ten resolve the same way, and a
-// run whose role no credential serves fails at its first node with that
-// node's own error — the ordinary fate of every bot's literal route, not a
-// launch-time opinion this package would have to keep true.
-func ResolveFamilies(_ FamilyInventory, override string) string {
+// It reads no credential, and that is the point: with the family no longer a
+// var, a host with one credential and a host with ten resolve the same way,
+// and a run whose role no credential serves fails at its first node with
+// that node's own error — the ordinary fate of every bot's literal route,
+// not a launch-time opinion this package would have to keep true.
+func Resolve(override string) string {
 	mode := strings.ToLower(strings.TrimSpace(override))
 	if retired, ok := retiredModes[mode]; ok {
 		return retired
@@ -204,7 +185,7 @@ func InjectReviewModeIfDeclared(wf *ir.Workflow, inputs map[string]any, flagOver
 	if override == "" {
 		override = inputOverride(inputs, VarReviewMode)
 	}
-	mode = ResolveFamilies(FamilyInventory{}, override)
+	mode = Resolve(override)
 	if inputs != nil {
 		inputs[VarReviewMode] = mode
 	}
@@ -281,15 +262,6 @@ func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, inv Fam
 		inputs[VarLLMFamilies] = list
 	}
 	return list, true
-}
-
-// FamiliesFromCredentialNames assembles a family set from bare credential
-// names: provider keys (anthropic/zai→claude, openai→gpt) and
-// backend-shaped OAuth credentials (claude_code→claude, codex→gpt).
-// The cloud publisher's counterpart of FamiliesFromReport — it knows what
-// sealed into a run's bundle, not what a host detection probe would see.
-func FamiliesFromCredentialNames(providers, backends []string) FamilySet {
-	return InventoryFromCredentialNames(providers, backends).Families()
 }
 
 // Injection summarises what InjectAll applied to a run's inputs. Zero-value
