@@ -891,6 +891,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	}()
 
 	runLog, runLogger := s.prepareRunLog(parent, runID)
+	// The bail stays the launcher's until spawnRun hands the run to its
+	// goroutine: an error before that releases it and classifies the run.
+	logOwner := s.ownRunLog(parent, runID, runLog, logMemoryOnly)
+	defer logOwner.Abandon()
 
 	// The connector catalog an `action:` node resolves through, on the same
 	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
@@ -902,7 +906,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// that ever reaches it (#1802).
 	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir, connection.TrustOfRun(spec.Trust))
 	if err != nil {
-		s.dropRunLog(runID, runLog)
+		// logOwner.Abandon (deferred) returns the bail and classifies the run.
 		return nil, err
 	}
 
@@ -963,7 +967,6 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		UsageCapSource:  s.usageCapSource,
 	})
 	if err != nil {
-		s.dropRunLog(runID, runLog)
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
@@ -981,7 +984,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		answerNode: spec.CallbackAnswerNode,
 	}
 
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, runLog, spec.Timeout, false,
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, launchBundle, fin, cb, executor, runLogger, runLog, logOwner, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		invocation.OwnedBirth,
@@ -1349,6 +1352,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 
 	runLog, runLogger := s.prepareRunLog(parent, spec.RunID)
+	// Armed until spawnRun hands the run over: an error before that releases
+	// the bail and classifies the run (a failed resume of a paused run keeps
+	// logEndPaused, it does not read as a terminal finish).
+	logOwner := s.ownRunLog(parent, spec.RunID, runLog, logMemoryOnly)
+	defer logOwner.Abandon()
 
 	// A resume rebuilds the executor from scratch, so it needs the catalog
 	// too: without it a run that launched fine dies at the first action node
@@ -1360,7 +1368,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// arriving through a different surface.
 	connectors, connectorClient, err := s.localConnectors(wf, "", connection.TrustOfRun(r.Trust))
 	if err != nil {
-		s.dropRunLog(spec.RunID, runLog)
 		return nil, err
 	}
 
@@ -1382,7 +1389,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
 	if err != nil {
-		s.dropRunLog(spec.RunID, runLog)
 		return nil, err
 	}
 	executor.SetRunExtraEnv(s.runEnv)
@@ -1417,7 +1423,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		autoMerge:     r.AutoMerge,
 	}
 	claim := newResumeClaim()
-	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, runLog, spec.Timeout, spec.Force,
+	res, err := s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, resumeBundle, resumeFin, callbackOpts{}, executor, runLogger, runLog, logOwner, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		false,
@@ -1729,6 +1735,7 @@ func (s *Service) spawnRun(
 	executor *model.ClawExecutor,
 	runLogger *iterlog.Logger,
 	runLog *RunLogBuffer,
+	logOwner *runLogOwner,
 	timeout time.Duration,
 	force bool,
 	promote runtime.AttachmentPromoteFunc,
@@ -1772,18 +1779,21 @@ func (s *Service) spawnRun(
 	// write. WithoutCancel drops only the cancellation and the deadline.
 	sctx := context.WithoutCancel(parent)
 	if _, _, err := store.LoadRunWithValueFormat(sctx, s.store, runID); err != nil {
+		// The bail was armed before this call: a refusal here returns it, so
+		// no lane is left with a producer that never started.
+		logOwner.Abandon()
 		return nil, err
 	}
 	lock, err := s.store.LockRun(sctx, runID)
 	if err != nil {
-		s.dropRunLog(runID, runLog)
+		logOwner.Abandon()
 		return nil, fmt.Errorf("runview: lock run: %w", err)
 	}
 
 	ctx, regErr := s.manager.Register(parent, runID)
 	if regErr != nil {
 		func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-		s.dropRunLog(runID, runLog)
+		logOwner.Abandon()
 		return nil, regErr
 	}
 	// The alert registration joins the lifecycle registration: the run's
@@ -1820,7 +1830,7 @@ func (s *Service) spawnRun(
 			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID, runLog)
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1846,7 +1856,7 @@ func (s *Service) spawnRun(
 			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID, runLog)
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
 			if startedRun {
 				return nil, s.endCreatedRun(sctx, runID, err)
@@ -1879,7 +1889,7 @@ func (s *Service) spawnRun(
 			releaseAlerts()
 			s.manager.Deregister(runID)
 			func() { defer func() { _ = lock.Unlock() }(); closeExecutor() }()
-			s.dropRunLog(runID, runLog)
+			logOwner.Abandon()
 			err := fmt.Errorf("runview: persist budget override: %w", saveErr)
 			// Only when THIS call made the run. On a resume the document
 			// existed all along and nothing has been published yet, so
@@ -1973,6 +1983,10 @@ func (s *Service) spawnRun(
 	s.registerRunEngine(runID, eng, steerCh)
 
 	done := make(chan struct{})
+	// The bail changes hands HERE, synchronously before the goroutine exists:
+	// a launcher's deferred Abandon that runs after this point is a no-op, so
+	// it can never release the log lane of a run that is alive.
+	logOwner.Transfer()
 	transferred = true
 	go func() {
 		var paused bool
@@ -2006,6 +2020,11 @@ func (s *Service) spawnRun(
 			// but the PRODUCER's bail ends here: the resume takes a fresh
 			// one, and a bail outliving its producer would orphan the
 			// epoch (H5 / codex-F1).
+			//
+			// The log epoch ends PAUSED, not terminal: a dormant run is not a
+			// finished one, and the retained value says so before dropRunLog
+			// releases the bail (this defer runs first, LIFO).
+			runLog.setLogEnd(logEndPaused)
 			releaseAlerts()
 		}()
 		// Release this root's pipeline-concurrency slot. A no-op for run IDs

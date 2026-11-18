@@ -941,6 +941,15 @@ type Service struct {
 	// level — a hot-swap pair must not serialize each other.
 	alertSeamMu sync.Mutex
 
+	// logRegistry carries the log lanes of this service's producers to its
+	// bound log subscribers (R54 slice 4): one retained epoch per producer
+	// registration, wakes without payload, and the epoch's one end. nil only
+	// on a Service built outside NewService — log lanes then stay off.
+	logRegistry *logRegistry
+	// logSeamMu serializes THIS service's log registration seam, as
+	// alertSeamMu does for alerts, and for the same reason.
+	logSeamMu sync.Mutex
+
 	// recoveryDispatch is built once on construction so each Launch /
 	// Resume reuses the same dispatcher rather than allocating a new
 	// recipes map + closure on the per-run hot path.
@@ -1510,6 +1519,11 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	if s.publisher == nil && !s.recoveryPassive {
 		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
 	}
+
+	// The log registry precedes the recovery pass for the same reason the
+	// alert registry does: a boot-time reattach of a detached runner
+	// registers its log lane during reconcileOrphans.
+	s.logRegistry = newLogRegistry()
 
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)

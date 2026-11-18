@@ -219,10 +219,9 @@ func (s *Service) activeDurationForRun(runID string) int64 {
 // emitted during this run is captured for the WS subscribers.
 func (s *Service) prepareRunLog(ctx context.Context, runID string) (*RunLogBuffer, *iterlog.Logger) {
 	var filePath string
-	if s.storeDir != "" {
-		runDir := filepath.Join(s.storeDir, "runs", runID)
-		if err := os.MkdirAll(runDir, 0o755); err == nil {
-			filePath = filepath.Join(runDir, "run.log")
+	if path, ok := s.runLogPath(runID); ok {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			filePath = path
 		}
 	}
 	buf, fileErr := NewRunLogBuffer(filePath)
@@ -231,22 +230,43 @@ func (s *Service) prepareRunLog(ctx context.Context, runID string) (*RunLogBuffe
 	}
 	s.recordLogBirth(ctx, buf, runID)
 
+	// A predecessor buffer still registered for this ID (a run goroutine that
+	// did not clean up) returns its bail BEFORE this producer registers: two
+	// buffers of one run share the same observation, so registering first
+	// would JOIN the predecessor's live epoch and its release would never end
+	// it. Its subscribers are left to see EOF below.
+	s.runLogsMu.Lock()
+	old := s.runLogs[runID]
+	s.runLogsMu.Unlock()
+	if old != nil && old != buf {
+		old.releaseLogLane()
+	}
+
+	// The lane is registered before the buffer is installed, with the
+	// durability the tee actually achieved: a buffer whose file could not be
+	// opened is memory-only, and its lane is refused at adoption.
+	dur := logMemoryOnly
+	if buf.fileTee() {
+		dur = logDurable
+	}
+	s.registerRunLogOrigin(ctx, runID, buf, dur)
+
 	// A fork, so this run's secret matcher lands on a handle of its own:
 	// BuildExecutor sets it here (iterion#2822) and the service logger —
 	// shared by every run in this process — keeps its own reading.
 	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
 
 	s.runLogsMu.Lock()
-	if old, ok := s.runLogs[runID]; ok {
-		// Defensive: a previous run goroutine for this ID didn't
-		// fully clean up. The store lock should make this impossible,
-		// but if it ever happens we want the WS subscribers of the
-		// stale buffer to see EOF rather than dangle forever.
-		old.Close()
-	}
 	s.runLogs[runID] = buf
 	s.runLoggers[runID] = perRunLogger
 	s.runLogsMu.Unlock()
+
+	// Defensive: a previous run goroutine for this ID didn't fully clean up
+	// (the store lock should make this impossible). Its subscribers see EOF
+	// rather than dangle forever; its bail was already returned above.
+	if old != nil && old != buf {
+		old.Close()
+	}
 
 	return buf, perRunLogger
 }
@@ -287,11 +307,15 @@ func (s *Service) prepareRunLogNoFile(ctx context.Context, runID string) *RunLog
 	buf, _ := NewRunLogBuffer("")
 	s.recordLogBirth(ctx, buf, runID)
 	s.runLogsMu.Lock()
-	if old, ok := s.runLogs[runID]; ok {
-		old.Close()
-	}
+	old := s.runLogs[runID]
 	s.runLogs[runID] = buf
 	s.runLogsMu.Unlock()
+	if old != nil && old != buf {
+		// Same teardown as the file-backed replacement, outside the lock:
+		// the predecessor's bail is returned and its subscribers see EOF.
+		old.releaseLogLane()
+		old.Close()
+	}
 	return buf
 }
 
@@ -311,4 +335,75 @@ func (s *Service) dropRunLog(runID string, buf *RunLogBuffer) {
 	}
 	s.runLogsMu.Unlock()
 	buf.Close()
+	// The producer's bail is returned after the buffer's subscribers saw EOF:
+	// the lane publishes the end setLogEnd recorded (logEndTerminal by
+	// default) and its topic stays retained for a subscriber that parks
+	// across the close.
+	buf.releaseLogLane()
+	s.clearLogProducerFailure(runID)
+}
+
+// runLogOwner holds a producer's log bail until it hands the run to its
+// goroutine. Transfer runs SYNCHRONOUSLY immediately before the `go` that
+// takes the run over; from then on Abandon is a no-op, so a launcher's late
+// defer can never release the bail of a run that is alive.
+type runLogOwner struct {
+	s     *Service
+	runID string
+	buf   *RunLogBuffer
+	mu    sync.Mutex
+	held  bool
+}
+
+// ownRunLog arms ownership of a producer's buffer, registering its lane when
+// prepareRunLog did not (the detached paths, whose buffer has no file tee of
+// its own). The caller MUST Transfer before handing the run to its goroutine,
+// and Abandon on every path that ends before that hand-off.
+func (s *Service) ownRunLog(ctx context.Context, runID string, buf *RunLogBuffer, dur logDurability) *runLogOwner {
+	if buf != nil && !buf.laneRegistered() {
+		s.registerRunLogOrigin(ctx, runID, buf, dur)
+	}
+	return &runLogOwner{s: s, runID: runID, buf: buf, held: buf != nil}
+}
+
+// Transfer hands the bail to the run's goroutine. Idempotent.
+func (o *runLogOwner) Transfer() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.held = false
+	o.mu.Unlock()
+}
+
+// Abandon returns the bail of a producer that never started: the run's own
+// status classifies the epoch (paused keeps a resume possible, terminal ends
+// the stream, anything else is lost), then the buffer is dropped. Idempotent;
+// a no-op once Transfer handed the bail on.
+func (o *runLogOwner) Abandon() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	held := o.held
+	o.held = false
+	o.mu.Unlock()
+	if !held {
+		return
+	}
+	if o.buf != nil {
+		o.buf.setLogEnd(o.s.classifyRunLogExit(o.runID))
+	}
+	o.s.dropRunLog(o.runID, o.buf)
+}
+
+// classifyRunLogExit reads the run's stored status and classifies it for the
+// log stream. A status that cannot be read is LOST: a vanished producer is a
+// typed error, never a silent completion.
+func (s *Service) classifyRunLogExit(runID string) logEnd {
+	run, err := s.store.LoadRun(store.TeamBlind(context.Background()), runID)
+	if err != nil || run == nil {
+		return logEndLost
+	}
+	return classifyLogExit(run.Status)
 }

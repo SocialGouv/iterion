@@ -447,7 +447,13 @@ func (s *Service) tryReattachByPID(runID string) bool {
 func (s *Service) reattachDetached(runID string, pid int) {
 	// A reattach at boot has no request: the run's birth is read team-blind
 	// (detached runs are local, a filesystem store).
-	logBuf := s.prepareRunLogNoFile(store.TeamBlind(context.Background()), runID)
+	blind := store.TeamBlind(context.Background())
+	logBuf := s.prepareRunLogNoFile(blind, runID)
+	// The reattach is a producer: it registers the run's log epoch (the
+	// subprocess writes run.log under the store's root) and holds the bail
+	// until the watcher owns it. Without that, a failed registration left the
+	// lane with no producer at all.
+	logOwner := s.ownRunLog(blind, runID, logBuf, s.detachedLogDurability())
 
 	done := make(chan struct{})
 	var cancelOnce sync.Once
@@ -461,9 +467,15 @@ func (s *Service) reattachDetached(runID string, pid int) {
 
 	if err := s.manager.RegisterDetached(runID, pid, cancel, done); err != nil {
 		s.logger.Warn("runview: reattach: register %s pid=%d: %v", runID, pid, err)
+		// No handle means no watcher: the bail is returned here or the lane
+		// keeps a producer that does not exist.
+		logOwner.Abandon()
 		return
 	}
 
+	// The bail changes hands synchronously, before the watcher goroutine
+	// exists: a late Abandon must not release a live run's lane.
+	logOwner.Transfer()
 	go func() {
 		watchDetachedExit(s, runID, pid, done, logBuf)
 	}()
@@ -493,7 +505,17 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}, lo
 				if pidS := store.AsPIDStore(s.store); pidS != nil {
 					_ = pidS.RemovePIDFile(runID)
 				}
+				// The run's stored status classifies its log epoch: a runner
+				// killed while its status still reads running is LOST, never a
+				// silent terminal finish.
+				end := logEndLost
+				if r, lerr := s.store.LoadRun(store.TeamBlind(context.Background()), runID); lerr == nil {
+					end = classifyLogExit(r.Status)
+				}
 				s.closeRunAndReleaseAlerts(runID)
+				if logBuf != nil {
+					logBuf.setLogEnd(end)
+				}
 				s.dropRunLog(runID, logBuf)
 				s.manager.Deregister(runID)
 				return

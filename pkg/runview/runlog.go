@@ -82,6 +82,96 @@ type RunLogBuffer struct {
 	// buffer registered. birthKnown is false until it is recorded.
 	birth      string
 	birthKnown bool
+
+	// lane is the log registry epoch this buffer's producer publishes to:
+	// a payload-free wake after each byte reaches the file, and the epoch's
+	// one end when the buffer's last holder releases it. Nil for a legacy
+	// tailer buffer and for stores that persist no run logs.
+	lane *logLane
+	// onTeeFailure types a failed file write (the lane's single typing
+	// site): the stream must fail, never wake on bytes the store lacks.
+	onTeeFailure func(error)
+	// end is the value setLogEnd recorded; releaseLogLane publishes it,
+	// defaulting to logEndTerminal (a closed buffer's run has finished).
+	end logEnd
+	// fileErr is the first failed file write. Once set, no further wake is
+	// published: the store is missing bytes and a wake would lie.
+	fileErr error
+	// laneHandled records that the lane registration was attempted, so a
+	// second ownership pass does not recapture and re-adopt.
+	laneHandled bool
+	laneOnce    sync.Once
+}
+
+// markLaneHandled records that a lane registration was attempted for the
+// buffer, whatever its outcome.
+func (b *RunLogBuffer) markLaneHandled() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.laneHandled = true
+}
+
+// laneRegistered reports whether a lane registration was already attempted.
+func (b *RunLogBuffer) laneRegistered() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.laneHandled
+}
+
+// attachLogLane binds the buffer to its producer lane and its failure hook.
+func (b *RunLogBuffer) attachLogLane(l *logLane, onTeeFailure func(error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lane = l
+	b.onTeeFailure = onTeeFailure
+}
+
+// setLogEnd records the value the lane publishes at release. The first value
+// wins: a producer's fin is sticky.
+func (b *RunLogBuffer) setLogEnd(e logEnd) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.end == logEndNone {
+		b.end = e
+	}
+}
+
+// fileTee reports whether writes reach the buffer's file right now.
+func (b *RunLogBuffer) fileTee() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.file != nil && b.fileErr == nil
+}
+
+// persistFailure returns the first failed file write, nil when none.
+func (b *RunLogBuffer) persistFailure() error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.fileErr
+}
+
+// releaseLogLane returns the producer's bail exactly once: the LAST bail
+// publishes the epoch's end (the recorded setLogEnd, else logEndTerminal) and
+// the topic is retained for a subscriber that parks across the close.
+func (b *RunLogBuffer) releaseLogLane() {
+	if b == nil {
+		return
+	}
+	b.laneOnce.Do(func() {
+		b.mu.RLock()
+		l, end := b.lane, b.end
+		b.mu.RUnlock()
+		if l == nil {
+			return
+		}
+		if end == logEndNone {
+			end = logEndTerminal
+		}
+		l.Close(end)
+	})
 }
 
 // SetBirth records the birth of the run the buffer was created for.
@@ -154,9 +244,13 @@ func (b *RunLogBuffer) Write(p []byte) (int, error) {
 	}
 
 	// File tee under the mutex so the file's byte order matches the
-	// in-memory ring's logical order.
+	// in-memory ring's logical order. A failed write is kept — the first one
+	// is what the stream fails on — and is reported after the unlock.
+	var firstTeeErr error
 	if b.file != nil {
-		_, _ = b.file.Write(p)
+		if _, err := b.file.Write(p); err != nil && b.fileErr == nil {
+			b.fileErr, firstTeeErr = err, err
+		}
 	}
 
 	chunkOffset := b.written
@@ -177,7 +271,28 @@ func (b *RunLogBuffer) Write(p []byte) (int, error) {
 			b.dropsLog.Add(1)
 		}
 	}
+	// The wake follows the file write (flush-before-publish): a wake implies
+	// the store sees the bytes. A failed tee never wakes — the stream fails
+	// through onTeeFailure instead.
+	var (
+		wake         bool
+		lane         *logLane
+		onTeeFailure func(error)
+	)
+	if b.lane != nil && b.fileErr == nil {
+		wake, lane = true, b.lane
+	}
+	if firstTeeErr != nil {
+		onTeeFailure = b.onTeeFailure
+	}
 	b.mu.Unlock()
+
+	if firstTeeErr != nil && onTeeFailure != nil {
+		onTeeFailure(firstTeeErr)
+	}
+	if wake {
+		lane.Wake()
+	}
 	return len(p), nil
 }
 

@@ -61,7 +61,7 @@ func TestCloseUnderLockAcrossSuccessAndPersistenceFailures(t *testing.T) {
 			case "budget":
 				extra.budgetOverrides = &store.RunBudgetOverrides{}
 			}
-			res, e := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, extra, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+			res, e := svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, nil, 0, false, nil, "", nil, "", false, extra, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 			if path == "success" {
 				if e != nil {
 					t.Fatal(e)
@@ -110,7 +110,7 @@ func TestPrelaunchCloserPanicStillReleasesAcquiredLock(t *testing.T) {
 				t.Error("expected closer panic")
 			}
 		}()
-		_, _ = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, 0, false, nil, "", nil, "", false, launchExtras{routePolicy: &store.RunLLMRoutePolicy{}}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
+		_, _ = svc.spawnRun(spec.Ctx, "r", spec.Workflow, "", "", "", nil, finalizationOpts{}, callbackOpts{}, ex, iterlog.Nop(), nil, nil, 0, false, nil, "", nil, "", false, launchExtras{routePolicy: &store.RunLLMRoutePolicy{}}, nil, func(context.Context, context.Context, *runtime.Engine) error { return nil })
 	}()
 	if pc.calls != 1 {
 		t.Fatalf("Close retried after panic: %d", pc.calls)

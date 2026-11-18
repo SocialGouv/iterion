@@ -1,8 +1,6 @@
 package runview
 
 import (
-	"path/filepath"
-
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 )
 
@@ -21,7 +19,13 @@ import (
 // Mirrors startEventSource but operates on opaque byte streams rather
 // than line-delimited JSON.
 func startLogSource(s *Service, runID string, buf *RunLogBuffer, done <-chan struct{}) {
-	path := filepath.Join(s.storeDir, "runs", runID, "run.log")
+	// The tailer reads the SAME canonical run.log a local producer tees to:
+	// both derive from the store's root, never from the service's storeDir.
+	path, ok := s.runLogPath(runID)
+	if !ok {
+		s.logger.Warn("runview: run %s: the store has no filesystem root — no run.log tailer", runID)
+		return
+	}
 	emit := func(_ int64, chunk []byte) {
 		_, _ = buf.Write(chunk)
 	}
