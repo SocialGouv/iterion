@@ -493,11 +493,12 @@ func (s *Server) handlePutPoolEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lender := poolLenderKey(pool)
+	keyID := strings.TrimSpace(req.KeyID)
 	p := credpool.Pledge{
-		ID:         credpool.PledgeID(lender, src, req.Ref),
+		ID:         credpool.PledgeID(lender, src, req.Ref, keyID),
 		PoolID:     pool.ID,
 		UserID:     lender,
-		Credential: credpool.Credential{Source: src, Ref: req.Ref, KeyID: strings.TrimSpace(req.KeyID)},
+		Credential: credpool.Credential{Source: src, Ref: req.Ref, KeyID: keyID},
 		Enabled:    true, Health: credpool.HealthOK,
 		Backend: req.Backend, Model: req.Model,
 		// LendScope is DERIVED from the pool's owner scope, never taken
@@ -646,7 +647,7 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := credpool.Pledge{
-		ID:         credpool.PledgeID(lender, credpool.SourceOAuth, string(kind)),
+		ID:         credpool.OAuthPledgeID(lender, string(kind)),
 		PoolID:     pool.ID,
 		UserID:     lender,
 		Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: string(kind)},

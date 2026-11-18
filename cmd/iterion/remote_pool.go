@@ -94,7 +94,7 @@ var remotePoolPauseCmd = &cobra.Command{
 	Short: "Stop serving new runs, keeping your terms for later",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, false)
+		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, remotePoolKeyID, false)
 	}),
 }
 
@@ -103,7 +103,7 @@ var remotePoolResumeCmd = &cobra.Command{
 	Short: "Resume a paused contribution with its previous terms",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, true)
+		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, remotePoolKeyID, true)
 	}),
 }
 
@@ -112,7 +112,7 @@ var remotePoolWithdrawCmd = &cobra.Command{
 	Short: "Remove your contribution entirely",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolWithdraw(cmd.Context(), c, p, remotePoolSource, remotePoolRef)
+		return cli.RemotePoolWithdraw(cmd.Context(), c, p, remotePoolSource, remotePoolRef, remotePoolKeyID)
 	}),
 }
 
@@ -206,8 +206,12 @@ func init() {
 	for _, c := range kindFlagged {
 		c.Flags().StringVar(&remotePoolSource, "source", "oauth", "What you lend: oauth (a subscription) or api_key (a metered provider key)")
 		c.Flags().StringVar(&remotePoolRef, "ref", "claude_code", "Which one: a subscription (claude_code|codex) or a provider (anthropic, openai, …)")
+		// One contribution exists per key, so two keys of one provider are
+		// two pledges: every command that acts on ONE must be able to name
+		// which. Required on `share` for api_key, and the tie-breaker on the
+		// others as soon as several keys are lent.
+		c.Flags().StringVar(&remotePoolKeyID, "key-id", "", "Which of your keys (required for --source api_key; names the pledge for pause/resume/withdraw)")
 	}
-	remotePoolShareCmd.Flags().StringVar(&remotePoolKeyID, "key-id", "", "Which of your keys to lend (required for --source api_key)")
 	remotePoolShareCmd.Flags().Float64Var(&remotePoolUSDPerDay, "max-usd-day", 0, "Estimated spend ceiling per day (0 = no limit)")
 	remotePoolShareCmd.Flags().Float64Var(&remotePoolUSDPerWeek, "max-usd-week", 0, "Estimated spend ceiling per week (0 = no limit)")
 	remotePoolShareCmd.Flags().IntVar(&remotePoolRunsPerDay, "max-runs-day", 0, "Runs you will serve per day (0 = no limit)")

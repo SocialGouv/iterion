@@ -30,16 +30,19 @@ type doorPublishFixture struct {
 	// donorGatewayKeyID names the gateway key row seeded in the donor
 	// store: a drifted gateway pledge's KeyID points at it.
 	donorGatewayKeyID string
-	rs                *store.FilesystemRunStore
-	pub               *Publisher
-	broker            *credpool.Broker
-	pools             *credpool.MemoryPoolStore
-	pledges           *credpool.MemoryPledgeStore
-	leases            *credpool.MemoryLeaseStore
-	tenantKey         string
-	logs              *bytes.Buffer
-	published         []*queue.RunMessage
-	publishOK         *bool
+	// donorBPledgeID is donor B's entry — the one the resume-switches-to-A
+	// test withdraws by id (an api_key pledge is identified by its key).
+	donorBPledgeID string
+	rs             *store.FilesystemRunStore
+	pub            *Publisher
+	broker         *credpool.Broker
+	pools          *credpool.MemoryPoolStore
+	pledges        *credpool.MemoryPledgeStore
+	leases         *credpool.MemoryLeaseStore
+	tenantKey      string
+	logs           *bytes.Buffer
+	published      []*queue.RunMessage
+	publishOK      *bool
 }
 
 // newDoorPublishFixture wires the whole launch path: a tenant with ONLY an
@@ -107,14 +110,14 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor",
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "zai", dkid), PoolID: "pool-1", UserID: "donor",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai", KeyID: dkid},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: consenting,
 	}); err != nil {
 		t.Fatalf("seed pledge: %v", err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai"), PoolID: "pool-1", UserID: "donor-b",
+		ID: credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai", dkid2), PoolID: "pool-1", UserID: "donor-b",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai", KeyID: dkid2},
 		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: true,
 	}); err != nil {
@@ -128,6 +131,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	logs := &bytes.Buffer{}
 	f := &doorPublishFixture{
 		donorGatewayKeyID: gwKeyID,
+		donorBPledgeID:    credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai", dkid2),
 		sealer:            sealer, rs: rs, broker: broker, pools: pools, pledges: pledges, leases: leases, tenantKey: kid,
 		logs: logs, published: []*queue.RunMessage{}, publishOK: new(bool),
 	}
@@ -245,7 +249,7 @@ func TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo(t *testing.T) {
 	}
 
 	// The landscape flips: B withdraws — the resume must switch to A.
-	bid := credpool.PledgeID("donor-b", credpool.SourceAPIKey, "zai")
+	bid := f.donorBPledgeID
 	if err := f.pledges.Upsert(ctx, credpool.Pledge{
 		ID: bid, PoolID: "pool-1", UserID: "donor-b",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"},

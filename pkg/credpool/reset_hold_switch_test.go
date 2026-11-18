@@ -189,7 +189,7 @@ func TestResetHoldSwitch_HF_aTransientBlipOnTheFirstChoiceHoldsTheNext(t *testin
 	g1 := rvaResume(t, h, "r", StrategyPriority, nil)
 	t.Logf("launch during a store blip on a: served by %s held=%v", g1.DonorID, g1.Held)
 	armed = false
-	pa, _ := h.pledges.Get(context.Background(), PledgeID("a", SourceOAuth, "claude_code"))
+	pa, _ := h.pledges.Get(context.Background(), PledgeID("a", SourceOAuth, "claude_code", ""))
 	t.Logf("a after the blip: health=%q (not parked — a transient error)", pa.Health)
 	h.now = h.now.Add(time.Minute)
 	g2 := rvaResume(t, h, "r", StrategyPriority, nil)

@@ -21,7 +21,7 @@ import (
 
 var leaseWant = []credpool.Credential{{Source: credpool.SourceOAuth, Ref: "claude_code"}}
 
-var leasePledge = credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+var leasePledge = credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 
 // leaseFixture is a run whose previous attempt holds the donor's lease after
 // an interim report of $1 (a drain), parked failed_resumable with its

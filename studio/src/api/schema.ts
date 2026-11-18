@@ -1697,6 +1697,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/pool/entries/{pledge}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/me/pool/entries/{pledge} */
+        delete: operations["deleteMePoolEntriesByPledge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/pool/history": {
         parameters: {
             query?: never;
@@ -12953,6 +12972,26 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteMePoolEntriesByPledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
