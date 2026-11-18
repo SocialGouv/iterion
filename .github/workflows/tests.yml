@@ -787,7 +787,11 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 15
+    # The sum of the harness's two inner `go test -timeout`s (20m + 15m) plus
+    # setup: a hang is named by go test's own timeout, and this ceiling only
+    # backstops the steps around it. At 15 it cut a green 11-14 min suite
+    # whenever two runs shared the runners (#3390).
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -859,9 +863,10 @@ jobs:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
           # This includes the complete server suite, which already exceeds
-          # five minutes without Mongo. Keep its package budget below the
-          # job's fifteen-minute limit without shortening any test coverage.
-          go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
+          # five minutes without Mongo and reached the old 10m package budget
+          # with it under queue load (600.6s, #3390). The budget stays below
+          # the job's ceiling without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 20m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
