@@ -33,5 +33,6 @@ func init() {
 		// The team the delivery names; a system-console hook serves several, so
 		// the connection is bound to one.
 		installation: "k3y8b7nqj7n8xr9e5t6m1wz1ho",
+		eventPath:    `"posted"`,
 	})
 }

@@ -29,7 +29,6 @@
         "id": "6c1f0b3a-2d4e-4f5a-9b8c-7d6e5f4a3b2c",
         "identifier": "ENG-128",
         "title": "Intake drops a delivery whose signature header repeats",
-        "state": { "id": "3b4c5d6e-7f80-4a1b-9c2d-3e4f5a6b7c8d", "name": "Todo", "type": "unstarted" },
         "team": { "id": "0f1e2d3c-4b5a-4968-8776-655443322110", "key": "ENG", "name": "Engineering" },
         "url": "https://linear.app/acme/issue/ENG-128/intake-drops-a-delivery-whose-signature-header-repeats"
       }

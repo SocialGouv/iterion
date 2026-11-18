@@ -15,13 +15,15 @@ its own connection.
 4. **Set the content type to `application/json`.** The hook form offers the
    form encoding too, and this package reads only JSON: a form-encoded
    delivery is refused.
-5. **Set the token.** Mattermost generates one; replace it with a long random
-   value of your own and paste the same value into the connection's secret
-   field. Mattermost owns this value, so iterion cannot generate it for you.
+5. **Copy the token.** Mattermost generates it: the hook page shows it with
+   **Copy Token** (and **Regenerate Token** rolls it). Paste that value into
+   the connection's secret field — Mattermost owns it, so iterion cannot mint
+   it.
 6. **Save**, then post a message in one of the hook's channels: the delivery
    arrives signed by nothing but that token, which is exactly what
    authenticates it.
 
-The hook's team is bound to the connection when the first delivery arrives; two
-teams need two connections. A message carries no `root_id`, so a reply and a
+The ingress asks for the hook's **team id** when you create it: read it with
+`GET /api/v4/teams/name/<team-name>` (`id` in the answer). Two teams need two
+connections. A message carries no `root_id`, so a reply and a
 top-level post are the same event and the channel is the conversation.

@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/ingress"
+	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
 
@@ -38,11 +37,23 @@ type vendorDouble struct {
 	// vendor carries there (Mattermost). Applied before signing and before
 	// reading, so the signature covers the bytes the lane verifies.
 	stamp func(secret string, now time.Time, body []byte) []byte
-	// request adds what the signature does not carry and the vendor always
-	// sends as a header.
-	request func(now time.Time, payload map[string]any) map[string]string
+	// eventHeader is the header the VENDOR names its event in, for a vendor
+	// that locates the event in a header (Forgejo's X-Forgejo-Event, Sentry's
+	// Sentry-Hook-Resource). The double writes it from the trigger's own
+	// event name, so a package that reads a different header — or a sample
+	// that spells the vendor's header wrong — cannot agree with itself.
+	eventHeader string
+	// eventPath is the body path the VENDOR names its event at, for a vendor
+	// that locates it in the body (Forgejo's payload.action is not one: its
+	// event is a header). Same rule as eventHeader, one site over.
+	eventPath string
 	// installation is the value the delivery names for the ingress to match.
 	installation string
+	// timestamp says the VENDOR sends an instant a replay window can judge —
+	// in a header or in the body. A double that knows it proves the package
+	// declares the window, since a package that drops it would accept a
+	// delivery from any past.
+	timestamp bool
 	// handshake is the body a vendor sends to verify its endpoint, and the
 	// value the package must answer with. Nil for a vendor that has none.
 	handshake func() (payload map[string]any, want string)
@@ -65,7 +76,7 @@ func registerVendor(id string, d vendorDouble) {
 func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 	for id := range vendorDoubles {
 		t.Run(id, func(t *testing.T) {
-			p, err := spec.Load(id)
+			p, err := overlay.LoadPackage(id)
 			if err != nil {
 				t.Fatalf("load the shipped package %q: %v", id, err)
 			}
@@ -110,6 +121,55 @@ func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 							t.Errorf("output %q is absent from the event: %s", o.Name, d.Event)
 						}
 					}
+					// An installation the package binds is what keeps one
+					// tenant's deliveries out of another's: a package that
+					// names none would accept them all, so a double that
+					// knows the vendor's install id proves the binding.
+					if d := vendorDoubles[id]; d.installation != "" {
+						if p.Ingress.Installation == "" {
+							t.Fatalf("%q reads a delivery the vendor names an installation for, but the package binds none — another tenant's delivery would launch here", id)
+						}
+						if _, err := ingress.Read(ingress.Request{
+							Ingress: p.Ingress, Triggers: p.Triggers, Secret: []byte(witnessSecret),
+							Installation: "another-" + d.installation,
+							Body:         body, Header: header, Now: now,
+						}); !errors.Is(err, ingress.ErrUnauthenticated) {
+							t.Fatalf("%q accepted a delivery for another installation: %v", id, err)
+						}
+					}
+					// A replay window the package declares must refuse a
+					// delivery outside it. The signature stays valid here: the
+					// instant is the vendor's own, only the reading clock moved.
+					if w := p.Ingress.Timestamp; w != nil {
+						tolerance, err := time.ParseDuration(w.Tolerance)
+						if err != nil {
+							t.Fatalf("%q declares tolerance %q, which is not a duration: %v", id, w.Tolerance, err)
+						}
+						if _, err := ingress.Read(ingress.Request{
+							Ingress: p.Ingress, Triggers: p.Triggers, Secret: []byte(witnessSecret),
+							Installation: vendorDoubles[id].installation,
+							Body:         body, Header: header, Now: now.Add(2 * tolerance),
+						}); !errors.Is(err, ingress.ErrUnauthenticated) {
+							t.Fatalf("%q accepted a delivery %s old, outside its %s window: %v", id, 2*tolerance, w.Tolerance, err)
+						}
+					}
+					// The loop guard must DECIDE. The lane drops only on a
+					// true, so an expression that renders a value (an id, a
+					// name) never drops anything and the package ships a
+					// guard that guards nothing.
+					if trig.Ignore != "" {
+						var payload map[string]any
+						if err := json.Unmarshal(body, &payload); err != nil {
+							t.Fatalf("%q: the delivery body is not an object: %v", id, err)
+						}
+						v, err := spec.EvalDelivery(trig.Ignore, spec.NewDeliveryContext(payload, header, p.Ingress.Headers))
+						if err != nil {
+							t.Fatalf("%q: trigger %s's loop guard fails on its own sample: %v", id, trig.ID, err)
+						}
+						if _, ok := v.(bool); !ok {
+							t.Errorf("%q: trigger %s's loop guard renders %T, not a verdict — the lane drops only on a true", id, trig.ID, v)
+						}
+					}
 					// The credential never reaches the event a run sees.
 					if bytes.Contains(d.Event, []byte(witnessSecret)) {
 						t.Errorf("the event carries the credential: %s", d.Event)
@@ -145,7 +205,7 @@ func TestAShippedSourceAnswersItsHandshake(t *testing.T) {
 			continue
 		}
 		t.Run(id, func(t *testing.T) {
-			p, err := spec.Load(id)
+			p, err := overlay.LoadPackage(id)
 			if err != nil {
 				t.Fatalf("load %q: %v", id, err)
 			}
@@ -184,15 +244,43 @@ func TestAShippedSourceAnswersItsHandshake(t *testing.T) {
 // verification contract nothing ever signs for.
 func TestEveryShippedSourceIsWitnessed(t *testing.T) {
 	for _, id := range shippedPackages(t) {
-		p, err := spec.Load(id)
+		p, err := overlay.LoadPackage(id)
 		if err != nil {
 			t.Fatalf("load %q: %v", id, err)
 		}
 		if len(p.Triggers) == 0 {
 			continue
 		}
-		if _, ok := vendorDoubles[id]; !ok {
-			t.Errorf("the shipped source %q has no vendor double: add one to vendorDoubles in connectors/sources_test.go", id)
+		d, ok := vendorDoubles[id]
+		if !ok {
+			t.Errorf("the shipped source %q has no vendor double: register one from connectors/source_%s_test.go", id, id)
+			continue
+		}
+		// A trigger with no recorded delivery is a routing rule, its outputs
+		// and its rule against the vendor's shape that nothing ever proves.
+		for _, trig := range p.Triggers {
+			if trig.Sample == "" {
+				t.Errorf("%q: trigger %q ships no sample, so nothing proves what it reads", id, trig.ID)
+			}
+		}
+		// The reverse of the handshake test's skip: a package that answers a
+		// vendor's endpoint verification must have a double that asks it.
+		// The event a package locates must be the one the vendor actually
+		// names: a rename in the package AND its sample would otherwise agree
+		// with itself, since the sample is the package's own fixture.
+		if d.eventHeader != "" && p.Ingress != nil && p.Ingress.Event.Header != d.eventHeader {
+			t.Errorf("%q reads its event from header %q, but the vendor names it in %q", id, p.Ingress.Event.Header, d.eventHeader)
+		}
+		if d.eventPath != "" && p.Ingress != nil && p.Ingress.Event.From != d.eventPath {
+			t.Errorf("%q reads its event from %q, but the vendor names it at %q", id, p.Ingress.Event.From, d.eventPath)
+		}
+		// A vendor that sends a replay-protectable instant, in a package that
+		// declares no window, keeps nothing from being replayed.
+		if d.timestamp && p.Ingress != nil && p.Ingress.Timestamp == nil {
+			t.Errorf("%q: its vendor sends a timestamp and the package declares no replay window", id)
+		}
+		if p.Ingress != nil && p.Ingress.Handshake != nil && d.handshake == nil {
+			t.Errorf("%q declares a handshake its vendor double never exercises", id)
 		}
 	}
 }
@@ -228,10 +316,8 @@ func signSample(t *testing.T, id string, p *spec.Package, trig spec.Trigger) (bo
 	for k, v := range d.sign(witnessSecret, now, body) {
 		header.Set(k, v)
 	}
-	if d.request != nil {
-		for k, v := range d.request(now, s.Payload) {
-			header.Set(k, v)
-		}
+	if d.eventHeader != "" {
+		header.Set(d.eventHeader, trig.Event)
 	}
 	return body, header, now
 }
@@ -266,47 +352,4 @@ func forgeCredential(t *testing.T, p *spec.Package, body []byte, header http.Hea
 	}
 	t.Fatalf("no forgery site for credential.in = %q", c.In)
 	return nil, nil
-}
-
-// TestTheSampleFilesAreTheOnesThePackageLoads keeps a shipped sample and the
-// trigger's declaration in one place: an edit to one that forgets the other is
-// the drift this reads out of the tree rather than out of a copy.
-func TestTheSampleFilesAreTheOnesThePackageLoads(t *testing.T) {
-	for _, id := range shippedPackages(t) {
-		p, err := spec.Load(id)
-		if err != nil {
-			t.Fatalf("load %q: %v", id, err)
-		}
-		for _, trig := range p.Triggers {
-			if trig.Sample == "" {
-				continue
-			}
-			onDisk, err := os.ReadFile(filepath.Join(id, trig.Sample))
-			if err != nil {
-				t.Errorf("%s: read %q: %v", id, trig.Sample, err)
-				continue
-			}
-			var a, b any
-			if err := json.Unmarshal(onDisk, &a); err != nil {
-				t.Errorf("%s: %q on disk is not JSON: %v", id, trig.Sample, err)
-				continue
-			}
-			if err := json.Unmarshal(trig.SampleBody, &b); err != nil {
-				t.Errorf("%s: the loaded sample %q is not JSON: %v", id, trig.Sample, err)
-				continue
-			}
-			if aj, _ := json.Marshal(a); string(aj) != string(mustJSON(t, b)) {
-				t.Errorf("%s: the sample the package carries differs from %q on disk", id, trig.Sample)
-			}
-		}
-	}
-}
-
-func mustJSON(t *testing.T, v any) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	return b
 }

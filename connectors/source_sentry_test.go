@@ -19,9 +19,10 @@ func init() {
 			mac.Write(body)
 			return map[string]string{"Sentry-Hook-Signature": hex.EncodeToString(mac.Sum(nil))}
 		},
-		// The installation a webhook body names: every payload carries
-		// `installation.uuid`, and the internal integration is installed on
-		// one organization.
-		installation: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+		// No installation: Sentry's body carries `installation.uuid`, but no
+		// value of it is discoverable before the first delivery, so the
+		// package binds none (the integration's signing secret is the
+		// boundary).
+		eventHeader: "Sentry-Hook-Resource",
 	})
 }

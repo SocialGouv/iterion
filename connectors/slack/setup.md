@@ -6,8 +6,11 @@ two apps and two signing secrets.
 1. **Create the app.** <https://api.slack.com/apps> → **Create New App** →
    **From scratch**, pick the workspace.
 2. **Give the bot its scopes.** *OAuth & Permissions* → **Scopes** →
-   **Bot Token Scopes**: `chat:write` (the reply operation),
-   `channels:read` and `groups:read` (the channel picker).
+   **Bot Token Scopes**: `chat:write` (the reply operation), `channels:read`
+   and `groups:read` (the channel picker), and one per event you subscribe to
+   below — `channels:history` for `message.channels`, `app_mentions:read` for
+   `app_mention`, `reactions:read` for `reaction_added`. Without them Slack
+   accepts the subscription and delivers nothing.
 3. **Subscribe to the events.** *Event Subscriptions* → **Enable Events** →
    paste the delivery URL the wizard shows as **Request URL**. Slack answers
    immediately: it asks the endpoint to echo a challenge, which the package
@@ -22,5 +25,7 @@ two apps and two signing secrets.
    field. Slack generated it, so iteration cannot: this is the one value the
    wizard asks you to bring.
 
-The app's team id is bound to the connection when the first delivery arrives;
-if you connect a second workspace, give it its own connection.
+The ingress asks for the app's **team id** when you create it: it is the
+`T…` segment of the workspace URL (`app.slack.com/client/T024BE7LD/…`). One
+workspace per connection — a second workspace needs its own app and its own
+connection.

@@ -55,7 +55,11 @@ triggers:
       - { name: issue_type, from: 'payload.issue.fields.issuetype.name' }
       - { name: project_key, from: 'payload.issue.fields.project.key' }
       - { name: project_name, from: 'payload.issue.fields.project.name' }
-      - { name: issue_url, from: 'payload.issue.self' }
+      - name: issue_url
+        from: 'payload.issue.self'
+        description: >-
+          The issue's REST URL. Jira's payload carries no browse URL, and the
+          language cannot rewrite one, so this link needs the API credential.
       - { name: created_at, from: 'payload.issue.fields.created' }
     filters:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
@@ -80,7 +84,11 @@ triggers:
       - { name: issue_key, from: 'payload.issue.key' }
       - { name: issue_type, from: 'payload.issue.fields.issuetype.name' }
       - { name: project_key, from: 'payload.issue.fields.project.key' }
-      - { name: issue_url, from: 'payload.issue.self' }
+      - name: issue_url
+        from: 'payload.issue.self'
+        description: >-
+          The issue's REST URL. Jira's payload carries no browse URL, and the
+          language cannot rewrite one, so this link needs the API credential.
       - { name: updated_at, from: 'payload.issue.fields.updated' }
       - { name: updated_fields, from: 'map(payload.changelog.items, i => i.field)', type: list }
     filters:
@@ -112,7 +120,9 @@ triggers:
         description: >-
           The comment body in Atlassian Document Format (a map). Jira Server and
           Data Center send a plain string instead.
-      - { name: comment_url, from: 'payload.comment.self' }
+      - name: comment_url
+        from: 'payload.comment.self'
+        description: The comment's REST URL, not a link a person can open.
       - { name: author_account_id, from: 'payload.comment.author.accountId' }
       - { name: author_display_name, from: 'payload.comment.author.displayName' }
     filters:
@@ -144,7 +154,9 @@ triggers:
         description: >-
           The edited body in Atlassian Document Format (a map). Jira Server and
           Data Center send a plain string instead.
-      - { name: comment_url, from: 'payload.comment.self' }
+      - name: comment_url
+        from: 'payload.comment.self'
+        description: The comment's REST URL, not a link a person can open.
       - { name: author_account_id, from: 'payload.comment.author.accountId' }
       - { name: editor_account_id, from: 'payload.comment.updateAuthor.accountId' }
     filters:
@@ -175,7 +187,9 @@ triggers:
         description: >-
           The deleted body in Atlassian Document Format (a map). Jira Server and
           Data Center send a plain string instead.
-      - { name: comment_url, from: 'payload.comment.self' }
+      - name: comment_url
+        from: 'payload.comment.self'
+        description: The comment's REST URL, not a link a person can open.
       - { name: author_account_id, from: 'payload.comment.author.accountId' }
     filters:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }

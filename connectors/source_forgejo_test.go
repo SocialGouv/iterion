@@ -16,5 +16,6 @@ func init() {
 			mac.Write(body)
 			return map[string]string{"X-Forgejo-Signature": hex.EncodeToString(mac.Sum(nil))}
 		},
+		eventHeader: "X-Forgejo-Event",
 	})
 }

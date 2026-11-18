@@ -14,8 +14,9 @@ provenance:
 
 base_url:
   # Every Jira Cloud site has its own hostname, and a Data Center instance adds
-  # its own base path, so the operator supplies the origin. The REST root is
-  # /rest/api/3 on both.
+  # its own base path, so the operator supplies the origin. The prefix below
+  # is Jira CLOUD's REST root; Data Center and Server answer on /rest/api/2,
+  # which this package does not address yet.
   path_prefix: /rest/api/3
   operator_supplied: true
 

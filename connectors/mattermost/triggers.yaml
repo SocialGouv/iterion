@@ -51,8 +51,9 @@ triggers:
       - { name: posted_at, from: 'payload.timestamp', type: int }
       - name: files
         from: 'payload.file_ids'
-        type: list
-        description: Ids of the files attached to the post.
+        description: >-
+          The ids of the files attached to the post, comma-separated. The wire
+          type is a string, not a list, and the language has no split.
       - name: thread
         from: 'payload.channel_id'
         description: >-

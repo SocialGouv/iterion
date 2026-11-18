@@ -14,5 +14,6 @@ func init() {
 		sign: func(secret string, _ time.Time, _ []byte) map[string]string {
 			return map[string]string{"Authorization": "Bearer " + secret}
 		},
+		eventPath: "payload.status",
 	})
 }

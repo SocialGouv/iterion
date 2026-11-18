@@ -18,10 +18,12 @@ ingress:
     # The Client Secret belongs to the integration the operator created in
     # Sentry: the vendor generates it, the operator pastes it here.
     secret: vendor
-  # Every webhook body carries the integration's own installation uuid. One
-  # internal integration serves one organization, so an organization's
-  # delivery is bound once and another's is refused rather than run.
-  installation: 'payload.installation.uuid'
+  # No installation is declared. Every body carries the integration's own
+  # `installation.uuid`, but neither Sentry's UI nor its API names a value an
+  # operator can read BEFORE the first delivery — and an ingress refuses to be
+  # created without one — so binding it would make the source unpluggable. An
+  # internal integration belongs to one organization, and the secret it signs
+  # with is the boundary until a discoverable install id exists.
   # The resource travels in a header; the action is a field of the body
   # (issue: created, resolved, assigned, archived, unresolved — metric_alert:
   # critical, warning, resolved).
@@ -36,16 +38,18 @@ triggers:
     event: issue
     display_name: Issue alert
     description: >-
-      An issue alert rule fired on an issue, or the issue changed state
-      (created, resolved, assigned, archived, unresolved). Sentry sends the
-      issue as it stands, so `subject_state` is the state after the change.
+      An issue was created or changed state — created, resolved, assigned,
+      archived, unresolved. It is the integration's own issue webhook, which
+      follows the issue's lifecycle and not an alert rule's firing: it starts
+      as soon as the integration subscribes to `issue`. Sentry sends the issue
+      as it stands, so `subject_state` is the state after the change.
     outputs:
       - { name: subject, from: 'payload.data.issue.title' }
       - { name: subject_state, from: 'payload.data.issue.status' }
       - { name: actor, from: 'payload.actor.name' }
       - { name: thread, from: 'payload.data.issue.permalink' }
       - { name: action, from: 'payload.action' }
-      - { name: issue_id, from: 'payload.data.issue.id', type: int }
+      - { name: issue_id, from: 'payload.data.issue.id' }
       - { name: short_id, from: 'payload.data.issue.shortId' }
       - { name: level, from: 'payload.data.issue.level' }
       - { name: culprit, from: 'payload.data.issue.culprit' }

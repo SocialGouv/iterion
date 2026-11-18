@@ -16,7 +16,7 @@
     },
     "data": {
       "issue": {
-        "id": 5566778899,
+        "id": "5566778899",
         "shortId": "BACKEND-4F",
         "title": "TypeError: cannot read property 'intake' of undefined",
         "culprit": "handleDelivery in api/intake/worker.py",

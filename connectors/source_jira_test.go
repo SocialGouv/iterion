@@ -19,5 +19,6 @@ func init() {
 			mac.Write(body)
 			return map[string]string{"X-Hub-Signature": "sha256=" + hex.EncodeToString(mac.Sum(nil))}
 		},
+		eventPath: "payload.webhookEvent",
 	})
 }

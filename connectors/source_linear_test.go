@@ -32,8 +32,12 @@ func init() {
 			return map[string]string{"Linear-Signature": hex.EncodeToString(mac.Sum(nil))}
 		},
 		installation: linearOrganizationID,
+		// The instant travels in the body, and Linear asks for a one-minute
+		// window over it.
+		timestamp: true,
 		// Linear has no endpoint-verification handshake: a new webhook sends
 		// nothing until an event fires.
+		eventPath: "payload.type",
 	})
 }
 

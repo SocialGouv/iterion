@@ -67,9 +67,19 @@ triggers:
         from: 'payload.event.channel'
         type: string
         selector: slack.conversation.list
+      # One Slack message subtype (a join, a leave, a bot message): left
+      # empty, they all still arrive. Edits and deletions are dropped by the
+      # loop guard, not offered here.
+      - id: subtype
+        from: 'payload.event.subtype'
+        type: string
     # The loop guard: a message the app itself posted carries a bot id, and a
-    # bot that answered itself would answer forever.
-    ignore: 'payload.event.bot_id'
+    # bot that answered itself would answer forever. It is written as a
+    # VERDICT (`!!`, a boolean) because the lane drops only on a true — an
+    # expression that renders the id itself would never drop anything. Edits
+    # and deletions arrive as this same event with no text of their own, so
+    # they are not messages a bot can act on.
+    ignore: '!!payload.event.bot_id || payload.event.subtype == "message_changed" || payload.event.subtype == "message_deleted"'
     sample: samples/message-posted.json
 
   - id: slack.mention.received
@@ -89,7 +99,7 @@ triggers:
         from: 'payload.event.channel'
         type: string
         selector: slack.conversation.list
-    ignore: 'payload.event.bot_id'
+    ignore: '!!payload.event.bot_id'
     sample: samples/app-mention.json
 
   - id: slack.reaction.added

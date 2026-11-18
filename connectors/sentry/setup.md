@@ -15,8 +15,10 @@ events. Two organizations need two connections.
 4. **Save**, then copy the **Client Secret** from the integration's page and
    paste it into the connection's secret field. Sentry generated it; iterion
    cannot.
-5. **Check the alert rules.** An issue webhook fires only for issues an alert
-   rule covers, and a metric alert only when a metric alert rule crosses its
+5. **Know what each resource means.** The `issue` webhook follows the issue
+   lifecycle of every project the integration is installed on — it is not an
+   alert rule firing, and it needs no rule. The `metric alert` webhook is the
+   one that follows a metric alert rule crossing its
    threshold — with no rule, no delivery ever arrives.
 6. **Send a test alert** from an alert rule, or resolve an issue that has one:
    the delivery is signed with the Client Secret and the first one binds the

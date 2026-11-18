@@ -23,6 +23,8 @@ func init() {
 			}
 		},
 		installation: "T024BE7LD",
+		// Slack signs the instant and puts it in X-Slack-Request-Timestamp.
+		timestamp: true,
 		// Slack verifies the request URL as soon as it is saved: a
 		// `url_verification` body whose challenge must come back.
 		handshake: func() (map[string]any, string) {
@@ -32,5 +34,8 @@ func init() {
 				"token":     "verification-token",
 			}, "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"
 		},
+		// The inner event carries the vendor's name; the outer `event_callback`
+		// is the same for all of them.
+		eventPath: "payload.event.type",
 	})
 }

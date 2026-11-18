@@ -88,10 +88,13 @@ triggers:
     display_name: Comment created
     description: >-
       A comment was created, updated or removed on an issue. The body's
-      `action` is what tells them apart — `create` by default.
+      `action` is what tells them apart — `create` by default. `data.issue` is
+      Linear's CHILD issue object (id, identifier, title, team, url) and some
+      deliveries omit it altogether, carrying only `data.issueId`: the outputs
+      that read it are then empty, and a bot that needs more fetches the issue
+      through the API.
     outputs:
       - { name: subject, from: 'payload.data.issue.title' }
-      - { name: subject_state, from: 'payload.data.issue.state.name' }
       - { name: actor, from: 'payload.actor.name' }
       - { name: thread, from: 'payload.data.issue.url' }
       - { name: comment_body, from: 'payload.data.body' }
