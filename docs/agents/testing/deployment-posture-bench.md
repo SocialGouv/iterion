@@ -143,8 +143,8 @@ reported in the log: unpinned, the same command measured 2.1.1 then 2.2.0.
 
 Each arm reads its filter back against an `Unconfined` twin reporting
 `Seccomp: 0`, which also settles that `NoNewPrivs: 1` comes from
-`allowPrivilegeEscalation: false` and not from seccomp — the twin keeps that
-flag so only seccomp differs, and both arms now assert it.
+`allowPrivilegeEscalation: false`: the twin keeps that flag, so only seccomp
+differs.
 
 The claim these arms support is precise: **under the full posture a child still
 OBTAINS a Landlock domain (ABI 4, all threads) — none of these flags refuses
@@ -153,6 +153,11 @@ and an exec is leg 5's business, not an inference from the ABI. For a
 non-blocking claim the conjunction suffices: these flags are restrictions and a
 syscall's success is monotonically decreasing in restrictions, so if one
 blocked Landlock the run carrying all of them would have failed.
+
+## The remote arm
+
+`bench:codemode-bench-image` + `bench:codemode-remote` carry this bench to a
+cluster this host does not own: [its own page](posture-bench-remote.md).
 
 ## The mutants, and why the bench ships with them
 
@@ -172,9 +177,9 @@ branch's parent and nothing here touches `pkg/scripthost`. And **the cluster
 arm's posture readback is a sibling pod**: the bench pod checks itself through
 `-require-uid`, which is what makes the arm sound.
 
-**The production node's containerd.** `kind` runs containerd 2.1.1, and a
-default profile is a property of its build, so re-run this bench against a
-production node and record the version it reports.
+**The production node's containerd.** The arm that can measure it exists and is
+witnessed on a local cluster, but has **not yet run against production**: its
+own build is unmeasured.
 
 The production **runner image** is no longer owed: `iterion-runner-devbox`
 (uid 1000, `iterion v6.1.0+f446b258cf38`, `tini`) holds 7/7 with the escape leg
