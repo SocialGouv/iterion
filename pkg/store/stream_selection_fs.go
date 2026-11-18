@@ -229,6 +229,11 @@ func (s *FilesystemRunStore) OpenFilesystemStream(ctx context.Context, id string
 				}
 				return false, errors.Join(ErrInvalidRunDataIdentity, e, ctx.Err())
 			}
+			// streamHeader compared the header; the tenant parsed from the
+			// same bytes is compared with the one the caller's binding observed.
+			if e = CheckRunObservedTenant(ctx, tenant); e != nil {
+				return false, e
+			}
 			n.observation, e = CaptureRunObservation(h, tenant, true)
 			if e != nil {
 				return false, e
@@ -531,6 +536,12 @@ func (n *filesystemStreamSelection) check(ctx context.Context) (context.Context,
 		}
 		if present != n.present || present && (h != n.header || tenant != n.observation.TenantID()) {
 			return nil, ErrRunDataIdentityChanged
+		}
+		// The operation's ctx may carry an observed tenant the open never saw.
+		if present {
+			if e = CheckRunObservedTenant(ctx, tenant); e != nil {
+				return nil, e
+			}
 		}
 		if e = n.validateRoots(); e != nil {
 			return nil, e

@@ -51,6 +51,9 @@ func (s *FilesystemRunStore) runPayloadPath(ctx context.Context, id string, part
 		if err := CheckRunDataBinding(ctx, header); err != nil {
 			return "", err
 		}
+		if err := checkRunJSONObservation(ctx, raw); err != nil {
+			return "", err
+		}
 		if header.Protocol == IncarnationRunData {
 			if err := s.guardNotDeleted(id); err != nil {
 				return "", err

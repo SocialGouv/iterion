@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestBindRunObservationCarriesHeaderAndFormatOnly(t *testing.T) {
+func TestBindRunObservationCarriesHeaderAndFormat(t *testing.T) {
 	t.Parallel()
 	header := RunDataHeader{RunID: "r", Format: ExactValueFormat, BirthID: "birth-a"}
 	o, err := CaptureRunObservation(header, "stored-tenant", true)
@@ -76,8 +76,8 @@ func TestBindRunObservationRefusesWhatItCannotBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BindRunObservation(t.Context(), absent); !errors.Is(err, ErrRunDataCapability) {
-		t.Fatalf("observed absence bound: %v", err)
+	if _, err := BindRunObservation(t.Context(), absent); !errors.Is(err, ErrRunDataBindingRequired) {
+		t.Fatalf("observed absence: %v, want ErrRunDataBindingRequired", err)
 	}
 	present, err := CaptureRunObservation(RunDataHeader{RunID: "r", Format: LegacyValueFormat, BirthID: "a"}, "", true)
 	if err != nil {

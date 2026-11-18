@@ -33,19 +33,18 @@ func (o RunObservation) TenantID() string      { return o.tenant }
 func (o RunObservation) ParentPresent() bool   { return o.present }
 func (o RunObservation) Observed() bool        { return o.observed }
 
-// BindRunObservation carries a present observation's header and format as the
-// original read intent of ctx. A binding or format ctx already carries is
-// compared, never replaced: a successor is refused, not adopted. Only header
-// and format travel — tenant and presence are not compared by this binding,
-// and the caller's transport identity is left unchanged.
+// BindRunObservation carries a present observation's header, the tenant its
+// store recorded, and its format as the original read intent of ctx. A binding
+// or format ctx already carries is merged, never replaced: a successor or
+// another observed tenant is refused, not adopted. Native reads compare the
+// tenant with the one they parse (CheckRunObservedTenant). Presence is not
+// bound, and the caller's transport identity is left unchanged. An absent
+// observation has no header to bind: ErrRunDataBindingRequired.
 func BindRunObservation(ctx context.Context, o RunObservation) (context.Context, error) {
-	if ctx == nil || !o.observed {
+	if ctx == nil {
 		return nil, ErrRunDataBindingRequired
 	}
-	if !o.present {
-		return nil, fmt.Errorf("%w: an absent parent has no header to bind", ErrRunDataCapability)
-	}
-	binding, err := CaptureRunDataBinding(o.header)
+	binding, err := CaptureRunDataObservation(o)
 	if err != nil {
 		return nil, err
 	}

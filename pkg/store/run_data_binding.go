@@ -54,14 +54,19 @@ func (h RunDataHeader) validate() (RunDataHeader, error) {
 
 // RunDataBinding is a copied original observation, not a grant to execute or
 // modify a run. Its private state cannot change through a mutable Run/header.
-// A zero value is not an observation of historical absence.
+// A zero value is not an observation of historical absence. tenantObserved
+// tells an observed "" (a run that records no tenant) from a binding that
+// carries no tenant at all (a header-only capture).
 type RunDataBinding struct {
-	header   RunDataHeader
-	observed bool
+	header         RunDataHeader
+	tenant         string
+	tenantObserved bool
+	observed       bool
 }
 
 type runDataBindingKey struct{}
 
+// CaptureRunDataBinding captures a header only: the binding observes no tenant.
 func CaptureRunDataBinding(header RunDataHeader) (RunDataBinding, error) {
 	h, err := header.validate()
 	if err != nil {
@@ -70,12 +75,53 @@ func CaptureRunDataBinding(header RunDataHeader) (RunDataBinding, error) {
 	return RunDataBinding{header: h, observed: true}, nil
 }
 
+// CaptureRunDataObservation captures a present observation: its header and the
+// tenant its store recorded, "" included. An absent parent has no header to
+// bind and is refused, as is an unknown observation.
+func CaptureRunDataObservation(o RunObservation) (RunDataBinding, error) {
+	if !o.observed {
+		return RunDataBinding{}, ErrRunDataBindingRequired
+	}
+	if !o.present {
+		return RunDataBinding{}, fmt.Errorf("%w: an absent parent has no header to bind", ErrRunDataBindingRequired)
+	}
+	b, err := CaptureRunDataBinding(o.header)
+	if err != nil {
+		return RunDataBinding{}, err
+	}
+	b.tenant, b.tenantObserved = o.tenant, true
+	return b, nil
+}
+
 // Header returns a value copy; mutating it cannot retarget the binding.
 func (b RunDataBinding) Header() RunDataHeader { return b.header }
 
-// WithRunDataBinding retains a first observation or compares it with the one
-// already carried. It never adopts a successor or implicitly switches children.
-// Child receipt rebinding belongs to the owned-birth preparation seam.
+// TenantID returns the observed tenant and whether the binding carries one: a
+// header-only binding answers ("", false), a run observed without a tenant
+// ("", true).
+func (b RunDataBinding) TenantID() (string, bool) { return b.tenant, b.tenantObserved }
+
+// mergeRunDataBinding combines the binding ctx carries with an incoming one.
+// The header is compared strictly. An observed tenant is kept whichever side
+// carries it, so a header-only re-bind never drops it; two observed tenants
+// that differ are another identity.
+func mergeRunDataBinding(carried, incoming RunDataBinding) (RunDataBinding, error) {
+	if carried.header != incoming.header || carried.observed != incoming.observed {
+		return RunDataBinding{}, ErrRunDataIdentityChanged
+	}
+	if !incoming.tenantObserved {
+		return carried, nil
+	}
+	if carried.tenantObserved && carried.tenant != incoming.tenant {
+		return RunDataBinding{}, ErrRunDataIdentityChanged
+	}
+	return incoming, nil
+}
+
+// WithRunDataBinding retains a first observation or merges it with the one
+// already carried (mergeRunDataBinding). It never adopts a successor or
+// implicitly switches children. Child receipt rebinding belongs to the
+// owned-birth preparation seam.
 func WithRunDataBinding(ctx context.Context, b RunDataBinding) (context.Context, error) {
 	if ctx == nil || !b.observed {
 		return nil, ErrRunDataBindingRequired
@@ -86,15 +132,19 @@ func WithRunDataBinding(ctx context.Context, b RunDataBinding) (context.Context,
 	if _, err := b.header.validate(); err != nil {
 		return nil, err
 	}
-	if old, ok := ctx.Value(runDataBindingKey{}).(RunDataBinding); ok && old != b {
-		return nil, ErrRunDataIdentityChanged
+	merged := b
+	if old, ok := ctx.Value(runDataBindingKey{}).(RunDataBinding); ok {
+		var err error
+		if merged, err = mergeRunDataBinding(old, b); err != nil {
+			return nil, err
+		}
 	}
 	if format, ok := ctx.Value(runValueFormatKey{}).(RunValueFormat); ok {
 		if format.RunID != b.header.RunID || format.Format != b.header.Format {
 			return nil, ErrRunDataIdentityChanged
 		}
 	}
-	return context.WithValue(ctx, runDataBindingKey{}, b), nil
+	return context.WithValue(ctx, runDataBindingKey{}, merged), nil
 }
 
 // WithoutRunDataBinding returns ctx without the run data binding and value
@@ -142,6 +192,28 @@ func CheckRunDataBinding(ctx context.Context, current RunDataHeader) error {
 	// A format-only rebind must not silently retain an incompatible data scope.
 	if f, ok := ctx.Value(runValueFormatKey{}).(RunValueFormat); ok && (f.RunID != h.RunID || f.Format != h.Format) {
 		return ErrRunDataIdentityChanged
+	}
+	return nil
+}
+
+// CheckRunObservedTenant compares the tenant ctx's binding observed with the
+// canonical tenant a store parsed from the same record whose header it
+// compared with CheckRunDataBinding. An unbound ctx and a header-only binding
+// keep the legacy answer. "" observed is a value: a binding that observed ""
+// refuses a record of "T", and the reverse.
+func CheckRunObservedTenant(ctx context.Context, canonical string) error {
+	if ctx == nil {
+		return ErrRunDataBindingRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b, bound := RunDataBindingFrom(ctx)
+	if !bound {
+		return nil
+	}
+	if tenant, observed := b.TenantID(); observed && tenant != canonical {
+		return fmt.Errorf("%w: run %s records another tenant than the one its binding observed", ErrRunDataIdentityChanged, b.header.RunID)
 	}
 	return nil
 }

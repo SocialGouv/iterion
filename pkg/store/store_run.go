@@ -274,6 +274,9 @@ func (s *FilesystemRunStore) loadRunRawContext(ctx context.Context, id string) (
 	if err := CheckRunDataBinding(ctx, header); err != nil {
 		return nil, err
 	}
+	if err := checkRunJSONObservation(ctx, data); err != nil {
+		return nil, err
+	}
 
 	if err := DecodeValueRecordJSON(ctx, format, ExactRun, data, &r); err != nil {
 		return nil, runJSONUndecodable(id, data, fmt.Errorf("store: decode run %s: %w", id, err))

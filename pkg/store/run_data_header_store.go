@@ -99,6 +99,9 @@ func (s *FilesystemRunStore) ObserveRunDataHeader(ctx context.Context, id string
 	if err != nil {
 		return RunDataHeader{}, err
 	}
+	if err := checkRunJSONObservation(ctx, raw); err != nil {
+		return RunDataHeader{}, err
+	}
 	if err := s.guardNotDeleted(id); err != nil {
 		return RunDataHeader{}, err
 	}
