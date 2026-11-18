@@ -758,7 +758,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, retired)
 
 		b := filepath.Join(dir, "migrate")
-		out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run", "--assume-family", "claude")
+		out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--all", "--dry-run", "--assume-family", "claude")
 		if code != 0 || sent != 0 {
 			t.Fatalf("a dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
@@ -777,12 +777,14 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatal("the dry run wrote")
 		}
 
-		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
+		out, code, sent = in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
 		if code != 0 || sent != 1 || !strings.Contains(out, "migrated group/api ("+i1+")") {
 			t.Fatalf("migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 		got := blockSelectors(in.integ(i1).Routing)
-		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/supervisor:pacer"} {
+		// mono-claude: the pacer that watched reviewer_claude watched THE
+		// reviewer, and `reviewer` is watched by pacer_gpt now.
+		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/supervisor:pacer_gpt"} {
 			if !slices.Contains(got, want) {
 				t.Errorf("the migrated block does not carry %q: %v", want, got)
 			}
@@ -811,7 +813,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Errorf("the backup does not hold the pre-migration block:\n%s", raw)
 		}
 		// A second run has nothing left to do.
-		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 || sent != 0 || !strings.Contains(out, "no retired selector") {
+		if out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 || sent != 0 || !strings.Contains(out, "already migrated") {
 			t.Fatalf("a second migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
@@ -827,11 +829,11 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
 		}})
 		b := filepath.Join(dir, "ambiguous-family")
-		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes")
 		if code == 0 || sent != 0 || !strings.Contains(out, "AMBIGUOUS") || !strings.Contains(out, "--assume-family") {
 			t.Fatalf("migrate-ids on an integration with no mono_family exited %d after %d PATCH(es), want AMBIGUOUS and nothing written:\n%s", code, sent, out)
 		}
-		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "gpt"); code != 0 {
+		if out, code, _ := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "gpt"); code != 0 {
 			t.Fatalf("migrate-ids --assume-family gpt exited %d:\n%s", code, out)
 		}
 		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" {
@@ -850,11 +852,11 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			{Selector: "review-pr/reviewer_*", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
 		}})
 		b := filepath.Join(dir, "glob")
-		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--dry-run")
+		out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--dry-run")
 		if code == 0 || sent != 0 || !strings.Contains(out, "GLOB") || !strings.Contains(out, "review-pr/reviewer_*") {
 			t.Fatalf("a dry run over a stranded glob exited %d after %d PATCH(es), want a GLOB line and a non-zero exit:\n%s", code, sent, out)
 		}
-		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
+		out, code, sent = in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude")
 		if code == 0 || sent != 0 || !strings.Contains(out, "rewrite it by hand") {
 			t.Fatalf("a run over a stranded glob exited %d after %d PATCH(es), want it reported and nothing written:\n%s", code, sent, out)
 		}
@@ -896,7 +898,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 				}
 				in.write("t1", i1, block)
 				b := filepath.Join(dir, "order-"+strings.ReplaceAll(tc.name, " ", "_")+"-"+strings.ReplaceAll(order[0], "/", "_"))
-				if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+				if out, code, _ := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 					t.Fatalf("%s, order %v: migrate-ids exited %d:\n%s", tc.name, order, code, out)
 				}
 				got := blockSelectors(in.integ(i1).Routing)
@@ -928,7 +930,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "medium"},
 		}})
 		b := filepath.Join(dir, "mono-gpt")
-		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+		if out, code, _ := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
 		}
 		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "xhigh" || e["review-pr/reviewer_alternate"] != "medium" {
@@ -948,7 +950,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
 			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
 		}})
-		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+		if out, code, _ := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
 			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
 		}
 		raw, err := os.ReadFile(filepath.Join(b, i1+".pre-migrate-ids.json"))
@@ -959,8 +961,185 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
 			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
 		}})
-		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code == 0 || sent != 0 || !strings.Contains(out, "DIFFERENT pre-migration backup") {
+		if out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code == 0 || sent != 0 || !strings.Contains(out, "changed since its pre-migration backup") {
 			t.Fatalf("migrate-ids over a different pre-migration backup exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+
+	// The catalogue serves ONE review-pr version to every integration: the
+	// roll that ships the rename moves them all at once, and a block spelled
+	// for either vocabulary is inert under the other. --stage writes the
+	// role cells BESIDE the retired ones so both bundles find theirs while
+	// the fleet moves; --prune, after the roll, leaves the roles alone.
+	t.Run("migrate-ids stages both vocabularies before the roll and prunes after it", func(t *testing.T) {
+		reset()
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate", "mono_family": "gpt"})
+		defer in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+		// A mono-gpt gateway integration as production stores it: the claude
+		// merge cell beside the gpt twin, on different models here so the
+		// one `converge` keeps is visible.
+		retired := llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+			{Selector: "review-pr/reviewer_gpt_glance", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "medium"},
+			{Selector: "review-pr/reviewer_claude_glance", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/converge", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/claude-merge", Effort: "xhigh"},
+			{Selector: "review-pr/converge_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+			{Selector: "review-pr/converge#glm", Backend: "claw", Provider: "openai_compatible", Model: gw},
+			{Selector: "review-pr/supervisor:pacer_gpt", Model: gw},
+		}}
+		in.write("t1", i1, retired)
+		// An integration with no block at all has nothing to stage.
+		in.write("t2", i2, llmroute.Policy{})
+		b := filepath.Join(dir, "two-phase")
+
+		out, code, sent := in.run("migrate-ids", "--stage", "--dir", b, "--all", "--dry-run")
+		if code != 0 || sent != 0 {
+			t.Fatalf("a staging dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		if !strings.Contains(out, "unchanged group/api ("+i2+"): no retired selector") {
+			t.Errorf("an integration with no block is reported as work to do:\n%s", out)
+		}
+		// A block already in the role vocabulary, pacers included, is left
+		// alone under either family reading — a migration must be a fixed
+		// point of itself, or the second run swaps the pacers back.
+		if !strings.Contains(out, "unchanged group/api ("+i3+"): no retired selector") {
+			t.Errorf("a block already spelled with the roles is reported as work to do:\n%s", out)
+		}
+		if _, err := os.Stat(filepath.Join(b, i1+".pre-migrate-ids.json")); err == nil {
+			t.Error("a staging dry run wrote a backup")
+		}
+
+		out, code, sent = in.run("migrate-ids", "--stage", "--dir", b, "--only", i1, "--yes")
+		if code != 0 || sent != 1 || !strings.Contains(out, "staged") {
+			t.Fatalf("--stage exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		staged := in.integ(i1).Routing
+		got := blockSelectors(staged)
+		// Every selector the block carried is still there for the bundle
+		// before the roll — the retired names, their routes, the pacer.
+		for _, o := range retired.Overrides {
+			if !slices.Contains(got, o.Selector) {
+				t.Errorf("the staged block lost the retired %q, which the bundle before the roll still reads: %v", o.Selector, got)
+			}
+		}
+		// And the bundle after it finds its roles, with the cells the
+		// integration ran: reviewer_gpt was its reviewer.
+		e := blockEfforts(staged)
+		if e["review-pr/reviewer"] != "high" || e["review-pr/reviewer_glance"] != "low" || e["review-pr/reviewer_alternate"] != "medium" {
+			t.Errorf("the staged role cells: %v, want reviewer=high (reviewer_gpt), reviewer_glance=low, reviewer_alternate=medium (reviewer_claude)", e)
+		}
+		// mono-gpt merged on the gpt twin: `converge` takes ITS cell.
+		if e["review-pr/converge"] != "low" {
+			t.Errorf("the staged converge carries effort %q, want low — the gpt twin's cell, the merge a mono-gpt integration runs after the roll", e["review-pr/converge"])
+		}
+		if n := len(got); n != len(slices.Compact(slices.Sorted(slices.Values(got)))) {
+			t.Errorf("the staged block names a selector twice: %v", got)
+		}
+
+		// A second --stage has nothing to add.
+		if out, code, sent := in.run("migrate-ids", "--stage", "--dir", b, "--only", i1, "--yes"); code != 0 || sent != 0 || !strings.Contains(out, "already staged") {
+			t.Fatalf("a second --stage exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+
+		// After the roll: --prune leaves the role view, computed from the
+		// block as it was before staging.
+		out, code, sent = in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes")
+		if code != 0 || sent != 1 {
+			t.Fatalf("--prune exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		got = blockSelectors(in.integ(i1).Routing)
+		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_gpt_glance", "review-pr/reviewer_claude", "review-pr/reviewer_claude_glance", "review-pr/converge_gpt", "review-pr/converge#glm"} {
+			if slices.Contains(got, gone) {
+				t.Errorf("the pruned block still carries the retired %q: %v", gone, got)
+			}
+		}
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" || e["review-pr/converge"] != "low" {
+			t.Errorf("the pruned role cells: %v, want reviewer=high and converge=low", e)
+		}
+		if !hasCell(in.integ(i1).Routing, "review-pr/supervisor:pacer_gpt") {
+			t.Errorf("the pruned block lost the pacer cell: %v", got)
+		}
+		if out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes"); code != 0 || sent != 0 || !strings.Contains(out, "already migrated") {
+			t.Fatalf("a second --prune exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+
+	// Between the phases the block is the operator's as much as the
+	// script's: one changed after --stage is neither the origin nor its
+	// staged form, and --prune refuses it rather than overwrite the change.
+	// A block staged from ANOTHER dir is refused too: the dir given holds no
+	// origin, and one derived from the staged block would lose what a pacer
+	// swap set aside.
+	t.Run("migrate-ids refuses to prune a block changed since the stage, or staged from another dir", func(t *testing.T) {
+		reset()
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+		}})
+		b := filepath.Join(dir, "two-phase-moved")
+		if out, code, _ := in.run("migrate-ids", "--stage", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+			t.Fatalf("--stage exited %d:\n%s", code, out)
+		}
+		if out, code, sent := in.run("migrate-ids", "--prune", "--dir", filepath.Join(dir, "two-phase-other"), "--only", i1, "--yes", "--assume-family", "claude"); code == 0 || sent != 0 || !strings.Contains(out, "staged with another --dir") {
+			t.Fatalf("--prune with a dir that holds no stage exited %d after %d PATCH(es), want it refused:\n%s", code, sent, out)
+		}
+		moved := withCell(t, in.integ(i1).Routing, "review-pr/reviewer", func(o *llmroute.Override) { o.Effort = "max" })
+		in.write("t1", i1, moved)
+		if out, code, sent := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code == 0 || sent != 0 || !strings.Contains(out, "changed since its pre-migration backup") {
+			t.Fatalf("--prune over a block changed since the stage exited %d after %d PATCH(es), want it refused:\n%s", code, sent, out)
+		}
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "max" {
+			t.Errorf("the refused prune overwrote the operator's change: %v", e)
+		}
+	})
+
+	// Supervisor names say which ROUTE they watch, not which role: `pacer`
+	// watches the claude-route node, `pacer_gpt` the gpt-route one, in both
+	// vocabularies. A mono-claude integration's reviewer crosses that line
+	// (reviewer_claude becomes `reviewer`, which `pacer_gpt` watches), so its
+	// pacer cells swap — and while both bundles run, the stage keeps the
+	// stored `pacer` cell, whose old meaning is the one that runs.
+	t.Run("migrate-ids swaps a mono-claude integration's pacer cells with its reviewer", func(t *testing.T) {
+		reset()
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+		defer in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+		block := llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/gw/claude-route", Effort: "high"},
+			{Selector: "review-pr/supervisor:pacer", Model: "openai_compatible/gw/claude-pacer"},
+			{Selector: "review-pr/supervisor:pacer_gpt", Model: "openai_compatible/gw/gpt-pacer"},
+		}}
+		in.write("t1", i1, block)
+		models := func() map[string]string {
+			out := map[string]string{}
+			for _, o := range in.integ(i1).Routing.Overrides {
+				out[o.Selector] = o.Model
+			}
+			return out
+		}
+		b := filepath.Join(dir, "pacer-swap")
+		if out, code, _ := in.run("migrate-ids", "--stage", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+			t.Fatalf("--stage exited %d:\n%s", code, out)
+		}
+		if m := models(); m["review-pr/supervisor:pacer"] != "openai_compatible/gw/claude-pacer" || m["review-pr/supervisor:pacer_gpt"] != "openai_compatible/gw/claude-pacer" {
+			t.Errorf("the staged pacers: %v, want pacer kept (it watches reviewer_claude until the roll) and pacer_gpt on the claude pacer's model (it watches `reviewer` after it)", m)
+		}
+		if out, code, _ := in.run("migrate-ids", "--prune", "--dir", b, "--only", i1, "--yes", "--assume-family", "claude"); code != 0 {
+			t.Fatalf("--prune exited %d:\n%s", code, out)
+		}
+		if m := models(); m["review-pr/supervisor:pacer_gpt"] != "openai_compatible/gw/claude-pacer" || m["review-pr/supervisor:pacer"] != "openai_compatible/gw/gpt-pacer" {
+			t.Errorf("the pruned pacers: %v, want pacer_gpt=claude-pacer (the reviewer's) and pacer=gpt-pacer (the alternate's)", m)
+		}
+		// A mono-gpt integration's reviewer stays on its route: no swap.
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate", "mono_family": "gpt"})
+		in.write("t1", i1, block)
+		if out, code, _ := in.run("migrate-ids", "--prune", "--dir", filepath.Join(dir, "pacer-noswap"), "--only", i1, "--yes"); code != 0 {
+			t.Fatalf("--prune exited %d:\n%s", code, out)
+		}
+		if m := models(); m["review-pr/supervisor:pacer"] != "openai_compatible/gw/claude-pacer" || m["review-pr/supervisor:pacer_gpt"] != "openai_compatible/gw/gpt-pacer" {
+			t.Errorf("a mono-gpt integration's pacers moved: %v", m)
 		}
 	})
 }
