@@ -1,0 +1,20 @@
+{
+  "headers": {
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  "payload": {
+    "token": "mm-outgoing-hook-token",
+    "team_id": "k3y8b7nqj7n8xr9e5t6m1wz1ho",
+    "team_domain": "fabrique",
+    "channel_id": "b4p9d8xqkfr8zqkd3n5y7c4mme",
+    "channel_name": "iterion-alerts",
+    "timestamp": 1763400000000,
+    "user_id": "7y6tg5r4e3w2q1az9b8c7d6e5f",
+    "user_name": "alice",
+    "post_id": "q1w2e3r4t5y6u7i8o9p0asdfgh",
+    "text": "the intake replay is failing again on the same delivery",
+    "trigger_word": "iterion",
+    "file_ids": "8f2a1c406b0e4f3a9a1e5c3f0d2b7e11"
+  }
+}

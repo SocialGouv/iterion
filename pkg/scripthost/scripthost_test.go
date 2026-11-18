@@ -546,6 +546,15 @@ func TestADeathIsReadInOrderOfEvidence(t *testing.T) {
 			limits: limits, signalled: true, burned: 10 * time.Millisecond, stdoutCut: true}, RefusalResultBytes},
 		{"signalled, nothing names a bound", deathEvidence{
 			limits: limits, signalled: true, signal: 9, burned: 10 * time.Millisecond}, RefusalHostDied},
+		// The parent's probe ACTED, so it is positive identification — and it
+		// outranks the CPU threshold, which would otherwise claim a kill made
+		// by an allocation that happened to have burned its budget.
+		{"the resident-set probe that killed is a memory verdict", deathEvidence{
+			limits: limits, signalled: true, signal: 9, burned: 10 * time.Millisecond,
+			probe: probeResult{killed: true, peak: 300 << 20, samples: 4}}, RefusalMemory},
+		{"the probe beats the CPU threshold it outranks", deathEvidence{
+			limits: limits, signalled: true, signal: 9, burned: 10 * time.Second,
+			probe: probeResult{killed: true, peak: 300 << 20, samples: 4}}, RefusalMemory},
 		{"a runtime crash is the host's, not the deployment's", deathEvidence{
 			limits: limits, stderrText: "SIGSEGV: segmentation violation"}, RefusalHostDied},
 		{"nothing at all is a broken deployment", deathEvidence{

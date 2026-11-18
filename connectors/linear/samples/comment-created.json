@@ -1,0 +1,37 @@
+{
+  "headers": {
+    "Linear-Event": "Comment",
+    "Linear-Delivery": "3c7a4f10-8b2d-4e69-9a5c-1d2e3f4a5b6c",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "payload": {
+    "action": "create",
+    "type": "Comment",
+    "createdAt": "2026-11-17T09:10:00.000Z",
+    "organizationId": "e5f6a7b8-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+    "webhookId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "webhookTimestamp": 1731600600000,
+    "url": "https://linear.app/acme/issue/ENG-128/intake-drops-a-delivery-whose-signature-header-repeats#comment-7f8e9d0c",
+    "actor": {
+      "id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "name": "Alice Martin",
+      "type": "user",
+      "url": "https://linear.app/acme/profiles/alice"
+    },
+    "data": {
+      "id": "7f8e9d0c-1b2a-4c3d-9e4f-5a6b7c8d9e0f",
+      "body": "/iterion reproduis et corrige",
+      "issueId": "6c1f0b3a-2d4e-4f5a-9b8c-7d6e5f4a3b2c",
+      "userId": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "createdAt": "2026-11-17T09:10:00.000Z",
+      "updatedAt": "2026-11-17T09:10:00.000Z",
+      "issue": {
+        "id": "6c1f0b3a-2d4e-4f5a-9b8c-7d6e5f4a3b2c",
+        "identifier": "ENG-128",
+        "title": "Intake drops a delivery whose signature header repeats",
+        "team": { "id": "0f1e2d3c-4b5a-4968-8776-655443322110", "key": "ENG", "name": "Engineering" },
+        "url": "https://linear.app/acme/issue/ENG-128/intake-drops-a-delivery-whose-signature-header-repeats"
+      }
+    }
+  }
+}

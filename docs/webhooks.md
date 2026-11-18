@@ -1608,8 +1608,9 @@ walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
 400 at write (`not spendable by this lane`), like the `openai_compatible`
 gateway pin above and like its `secret_overrides` twin, which
 requires an org-scoped secret. The team key list an admin picks from
-includes their own user-scoped keys (`GET /api/teams/{id}/api-keys`), so this
-is the refusal that tells them which ones a webhook can actually spend.
+(`GET /api/teams/{id}/api-keys`) offers the team's own keys only, so a
+personal one never appears there; the refusal is what tells an operator that
+a webhook can never spend one.
 
 ### `launch_vars` — pin run vars from the org config
 

@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.13.1](https://github.com/SocialGouv/iterion/compare/v7.13.0...v7.13.1) (2026-11-18)
+
+### Bug Fixes
+
+* **server:** the team api-keys page lists the team's keys only ([#3368](https://github.com/SocialGouv/iterion/issues/3368)) ([ede1f4c](https://github.com/SocialGouv/iterion/commit/ede1f4cb27b59ef6dfc9506a6e5fa81586b03ff0))
+
+    <details><summary>why</summary>
+
+    GET /api/teams/{id}/api-keys called ListByTeam with the caller's user id, which matches scope_user in {"", caller}: every caller saw their own personal keys mixed into the team's list. An operator reading a team's credentials page then believed the team held keys it never had (two personal Anthropic plan keys appeared under a team that runs on its own gateway keys only). A user-scoped key is a personal credential, managed at /api/me/api-keys, and no machine lane can spend one…
+
+    </details>
+
+## [7.13.0](https://github.com/SocialGouv/iterion/compare/v7.12.0...v7.13.0) (2026-11-18)
+
+### Features
+
+* **connectors:** seven push sources for the catalogue (L3, [#3273](https://github.com/SocialGouv/iterion/issues/3273)) ([#3358](https://github.com/SocialGouv/iterion/issues/3358)) ([c7f6254](https://github.com/SocialGouv/iterion/commit/c7f6254003837d39f87c36e34220d4389f92252a)), references [#3360](https://github.com/SocialGouv/iterion/issues/3360)
+
+    <details><summary>why</summary>
+
+    The catalogue lists only packages that declare triggers AND an ingress, and no shipped package declared one — so every source card was a built-in, none a connector.
+
+    </details>
+
 ## [7.12.0](https://github.com/SocialGouv/iterion/compare/v7.11.1...v7.12.0) (2026-11-18)
 
 ### Features

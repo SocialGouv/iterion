@@ -1,0 +1,70 @@
+schema_version: 1
+connector: mattermost
+
+# The inbound contract, as Mattermost frames and authenticates an outgoing
+# webhook (https://docs.mattermost.com/developers/integrate/webhooks/outgoing):
+# the hook is created with the JSON content type, and the token the operator
+# set on the hook travels in the BODY — Mattermost sends no signature header.
+ingress:
+  body: json
+  credential:
+    scheme: token
+    in: body
+    # OutgoingWebhookPayload.Token (server/public/model/outgoing_webhook.go).
+    name: token
+    # The operator chooses the token when creating the hook in Mattermost and
+    # pastes the same value here: the vendor owns it, iterion cannot mint it.
+    # It is the one part of the body the lane compares byte for byte, and the
+    # only proof the delivery has — a hook with no token authenticates nothing.
+    secret: vendor
+  # An outgoing webhook carries no event name at all — no header names one and
+  # the payload has no type field; every delivery is a posted message. The
+  # event is therefore the constant the trigger below declares, which is what
+  # keeps the vendor's own word ("posted") in one place.
+  event: { from: '"posted"' }
+  # OutgoingWebhookPayload carries team_id, channel_id, channel_name,
+  # team_domain, post_id, timestamp, user_id, user_name, text, trigger_word and
+  # file_ids. A system-console hook is shared by every team, so the team is
+  # bound as the installation and another team's delivery is refused.
+  installation: 'payload.team_id'
+  ack: { status: 200 }
+
+triggers:
+  - id: mattermost.post.posted
+    event: posted
+    display_name: Message posted
+    description: >-
+      A message posted in a channel the outgoing webhook watches — every
+      message there when the hook has no trigger word, the ones carrying it
+      when it has one. Mattermost sends no marker telling a thread reply from
+      a top-level post, so both arrive as this same event.
+    outputs:
+      - { name: subject, from: 'payload.text' }
+      - { name: actor, from: 'payload.user_name' }
+      - { name: text, from: 'payload.text' }
+      - { name: channel, from: 'payload.channel_name' }
+      - { name: channel_id, from: 'payload.channel_id' }
+      - { name: team, from: 'payload.team_domain' }
+      - { name: user_id, from: 'payload.user_id' }
+      - { name: post_id, from: 'payload.post_id' }
+      - { name: trigger_word, from: 'payload.trigger_word' }
+      - { name: posted_at, from: 'payload.timestamp', type: int }
+      - name: files
+        from: 'payload.file_ids'
+        description: >-
+          The ids of the files attached to the post, comma-separated. The wire
+          type is a string, not a list, and the language has no split.
+      - name: thread
+        from: 'payload.channel_id'
+        description: >-
+          The channel the post landed in. The outgoing-webhook payload carries
+          no root_id, so the channel — not a thread — is the conversation this
+          delivery belongs to.
+    filters:
+      - id: channel_id
+        from: 'payload.channel_id'
+        type: string
+    # No loop guard: the payload carries no marker for a bot's own post (no
+    # bot id, no app id), and Mattermost does not say a reply post is one. A
+    # trigger word on the hook is the operator's loop control (setup.md).
+    sample: samples/message-posted.json

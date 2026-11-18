@@ -836,6 +836,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 				// was declared, and the operator owes the why.
 				b.logger.Warn("[%s] codemode: the platform adjusted this node's script bounds to what a child can work under (requested %+v, applied %+v)", task.NodeID, requested, applied)
 			}
+		}, func(msg string) {
+			if b.logger != nil {
+				b.logger.Warn("[%s] %s", task.NodeID, msg)
+			}
 		})
 	}
 

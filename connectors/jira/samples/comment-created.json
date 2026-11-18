@@ -1,0 +1,76 @@
+{
+  "headers": {
+    "X-Atlassian-Webhook-Identifier": "c1e7f0a2-5d38-4f61-9b7c-0a2e6d4f8b13",
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "timestamp": 1731607200000,
+    "webhookEvent": "comment_created",
+    "user": {
+      "self": "https://acme.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+      "accountId": "5b10ac8d82e05b22cc7d4ef5",
+      "accountType": "atlassian",
+      "displayName": "Alice Martin",
+      "active": true,
+      "timeZone": "Europe/Paris"
+    },
+    "comment": {
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10062/comment/10130",
+      "id": "10130",
+      "author": {
+        "self": "https://acme.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+        "accountId": "5b10ac8d82e05b22cc7d4ef5",
+        "accountType": "atlassian",
+        "displayName": "Alice Martin",
+        "active": true,
+        "timeZone": "Europe/Paris"
+      },
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              { "type": "text", "text": "Reproduced on staging, the second delivery loses its signature." }
+            ]
+          }
+        ]
+      },
+      "updateAuthor": {
+        "self": "https://acme.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+        "accountId": "5b10ac8d82e05b22cc7d4ef5",
+        "displayName": "Alice Martin",
+        "active": true
+      },
+      "created": "2026-11-17T11:12:41.000+0000",
+      "updated": "2026-11-17T11:12:41.000+0000",
+      "jsdPublic": true
+    },
+    "issue": {
+      "id": "10062",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10062",
+      "key": "OPS-128",
+      "fields": {
+        "summary": "Webhook drops a delivery whose signature header repeats",
+        "issuetype": { "id": "10004", "name": "Bug", "subtask": false },
+        "project": {
+          "self": "https://acme.atlassian.net/rest/api/3/project/10000",
+          "id": "10000",
+          "key": "OPS",
+          "name": "Operations",
+          "projectTypeKey": "software",
+          "simplified": false
+        },
+        "status": {
+          "self": "https://acme.atlassian.net/rest/api/3/status/3",
+          "name": "In Progress",
+          "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+        },
+        "labels": ["sources", "webhooks"],
+        "created": "2026-11-17T09:12:41.000+0000",
+        "updated": "2026-11-17T11:12:41.000+0000"
+      }
+    }
+  }
+}

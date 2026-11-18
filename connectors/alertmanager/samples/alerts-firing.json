@@ -1,0 +1,60 @@
+{
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "version": "4",
+    "groupKey": "{}/{alertname=\"HighErrorRate\"}:{job=\"api\"}",
+    "truncatedAlerts": 0,
+    "status": "firing",
+    "receiver": "iterion-webhook",
+    "groupLabels": { "alertname": "HighErrorRate" },
+    "commonLabels": {
+      "alertname": "HighErrorRate",
+      "severity": "critical",
+      "job": "api",
+      "instance": "api-7d9f4b6c8-x2k4p"
+    },
+    "commonAnnotations": {
+      "summary": "API error rate above 5% for 10 minutes",
+      "runbook_url": "https://runbooks.example/api/high-error-rate"
+    },
+    "externalURL": "https://alertmanager.example",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "HighErrorRate",
+          "severity": "critical",
+          "job": "api",
+          "instance": "api-7d9f4b6c8-x2k4p"
+        },
+        "annotations": {
+          "summary": "API error rate above 5% for 10 minutes",
+          "runbook_url": "https://runbooks.example/api/high-error-rate"
+        },
+        "startsAt": "2026-11-17T09:02:11.418Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://prometheus.example/graph?g0.expr=sum(rate(http_requests_total%7Bstatus%3D~%225..%22%7D%5B5m%5D))",
+        "fingerprint": "5ef4a1c2d3e4f506"
+      },
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "HighErrorRate",
+          "severity": "critical",
+          "job": "api",
+          "instance": "api-7d9f4b6c8-q8n3w"
+        },
+        "annotations": {
+          "summary": "API error rate above 5% for 10 minutes",
+          "runbook_url": "https://runbooks.example/api/high-error-rate"
+        },
+        "startsAt": "2026-11-17T09:03:47.902Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://prometheus.example/graph?g0.expr=sum(rate(http_requests_total%7Bstatus%3D~%225..%22%7D%5B5m%5D))",
+        "fingerprint": "b7c1d2e3f4051627"
+      }
+    ]
+  }
+}

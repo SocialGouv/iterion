@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>alertmanager</title>
+  <path d="M16 4.5 28.5 26.5a1.6 1.6 0 0 1-1.4 2.5H4.9a1.6 1.6 0 0 1-1.4-2.5z" fill="#E6522C"/>
+  <rect x="14.6" y="11.5" width="2.8" height="9" rx="1.4" fill="#ffffff"/>
+  <circle cx="16" cy="24" r="1.7" fill="#ffffff"/>
+</svg>

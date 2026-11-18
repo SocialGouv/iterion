@@ -51,6 +51,41 @@ func sourcesWorld(t *testing.T) (*Server, *trigger.MemorySubscriptionStore) {
 	}); err != nil {
 		t.Fatalf("publish tool: %v", err)
 	}
+	// A package that declares a trigger but NO ingress: the lane has nothing
+	// to read a delivery with, so listing it would end every plug in the
+	// bind's refusal. It is the fixture that proves the ingress clause on its
+	// own — the outbound-only package above proves the trigger clause.
+	noIngress := "schema_version: 1\nid: noingress\nversion: 0.1.0\n" +
+		"base_url:\n  default: https://no-ingress.example\n" +
+		"auth:\n- id: token\n  kind: api_key\n  in: header\n  name: Authorization\n"
+	if err := pkgs.Publish(context.Background(), connection.StoredPackage{
+		TenantID: "t1", ConnectorID: "noingress",
+		Files: map[string]string{
+			"connector.yaml": noIngress,
+			"triggers.yaml":  "schema_version: 1\nconnector: noingress\ntriggers:\n- id: noingress.event.received\n  event: event\n",
+		}, CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("publish noingress: %v", err)
+	}
+	// And the mirror: a package with an ingress but NO trigger is an outbound
+	// tool that signs deliveries nothing reads, not a source either. These two
+	// fixtures exist one per clause because a fixture that misses both would
+	// leave each clause looking tested while neither is.
+	ingressOnly := "schema_version: 1\nid: ingressonly\nversion: 0.1.0\n" +
+		"base_url:\n  default: https://ingressonly.example\n" +
+		"auth:\n- id: token\n  kind: api_key\n  in: header\n  name: Authorization\n"
+	ingressOnlyTriggers := "schema_version: 1\nconnector: ingressonly\n" +
+		"ingress:\n  credential:\n    scheme: hmac-sha256\n    in: header\n    name: X-Ingress-Signature\n    secret: minted\n" +
+		"  event:\n    header: X-Ingress-Event\n"
+	if err := pkgs.Publish(context.Background(), connection.StoredPackage{
+		TenantID: "t1", ConnectorID: "ingressonly",
+		Files: map[string]string{
+			"connector.yaml": ingressOnly,
+			"triggers.yaml":  ingressOnlyTriggers,
+		}, CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("publish ingressonly: %v", err)
+	}
 	s.connectorPackages = pkgs
 	if err := s.connectionStore.Create(context.Background(), connection.Connection{
 		ID: "conn-probe", TenantID: "t1", Connector: "probe", Alias: "main",
@@ -164,11 +199,21 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	if ing["credential_scheme"] != "hmac-sha256" || ing["secret_origin"] != "minted" {
 		t.Fatalf("probe ingress: %v", ing)
 	}
-	// The baked forgejo ships a trigger but no ingress block: the lane
-	// cannot bind it, so listing it would end every plug in the bind's
-	// refusal — it returns when its triggers.yaml declares its ingress.
-	if _, ok := byID["forgejo"]; ok {
-		t.Fatal("a package without an ingress block is listed as pluggable")
+	// The baked forgejo declares both a trigger and the ingress a delivery
+	// is read through, so it is pluggable and listed.
+	shipped := []string{"forgejo", "slack", "jira", "linear", "mattermost", "sentry", "alertmanager"}
+	for _, id := range shipped {
+		e, ok := byID[id]
+		if !ok {
+			t.Fatalf("the shipped source %q is not in the catalog: %v", id, byID)
+		}
+		if e["kind"] != "connector" || e["tier"] != "baked" {
+			t.Fatalf("%s card: %v", id, e)
+		}
+		ing, ok := e["ingress"].(map[string]any)
+		if !ok || ing["credential_scheme"] == "" || ing["secret_origin"] == "" {
+			t.Fatalf("%s ingress summary: %v", id, e["ingress"])
+		}
 	}
 	if _, ok := byID["tool"]; ok {
 		t.Fatal("an outbound-only package is listed as a source")
@@ -179,8 +224,15 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 			t.Fatalf("builtin %s: got %v", b, e)
 		}
 	}
-	if len(byID) != 5 {
-		t.Fatalf("catalog holds %d entries, want 5: %v", len(byID), byID)
+	if _, ok := byID["ingressonly"]; ok {
+		t.Fatal("a package that declares an ingress but no trigger is listed as a source")
+	}
+	if _, ok := byID["noingress"]; ok {
+		t.Fatal("a package whose trigger declares no ingress is listed as pluggable — every plug would end in the bind's refusal")
+	}
+	// probe + the four built-in families + the seven shipped sources.
+	if len(byID) != 12 {
+		t.Fatalf("catalog holds %d entries, want 12: %v", len(byID), byID)
 	}
 }
 

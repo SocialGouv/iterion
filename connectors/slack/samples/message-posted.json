@@ -1,0 +1,23 @@
+{
+  "headers": {
+    "X-Slack-Request-Timestamp": "1731600000",
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "token": "verification-token-removed-by-redact",
+    "team_id": "T024BE7LD",
+    "api_app_id": "A07V1L2M3N4",
+    "type": "event_callback",
+    "event_id": "Ev07XYZABC",
+    "event_time": 1731600000,
+    "event": {
+      "type": "message",
+      "user": "U061F7AUR",
+      "text": "Le catalogue de sources est en ligne ?",
+      "ts": "1731599999.000100",
+      "event_ts": "1731599999.000100",
+      "channel": "C0LAN2Q65",
+      "channel_type": "channel"
+    }
+  }
+}
