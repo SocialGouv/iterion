@@ -139,18 +139,23 @@ admission and the default stream migration remain separately gated.
 ## Snapshot scan binding
 
 BuildSnapshot loads metadata through LoadRunWithValueFormat, then scans events
-with that same run's header bound into the context. A native filesystem or
-Mongo store then refuses a run recreated under the same ID with a different
-header between those two reads, as it already refused a deleted one: the HTTP
-and WS snapshot fails instead of folding a successor's events into the loaded
+with that run's observation — its header and the tenant its store recorded —
+bound into the context. A native filesystem or Mongo store then refuses a run
+recreated under the same ID with a different header, or in another tenant,
+between those two reads, as it already refused a deleted one: the HTTP and WS
+snapshot fails instead of folding a successor's events into the loaded
 metadata. A scan failure after events reached the reducer returns no snapshot.
 Metadata naming another run, or none, is refused before the scan; a custom
 store that ignores its context gets no guarantee.
 
 The binding covers this function's own two reads; a caller that already
 carries a binding — the WS socket's origin, [run-ws-origin.md](run-ws-origin.md)
-— has both reads compared with it. It does not detect a canonical-tenant
-change under an unchanged header, distinguish historical runs whose births
-are both empty, or pin Service.SnapshotCtx's merge reconciliation, which reads
-the run before BuildSnapshot (SnapshotWithoutReconcileCtx skips it). `store.BindRunObservation` is the shared
-compare-only helper for such a binding. Protocol-one admission stays off.
+— has both reads compared with it, and a header-only re-bind keeps its tenant.
+Each native read compares that tenant with the one the strict parser reads
+from the same record (a duplicate, case-alias or non-string `tenant_id` is
+`ErrInvalidRunDataIdentity`); a tenant-scoped Mongo query does not see a
+successor in another tenant, which answers as absent. Historical runs whose
+births are both empty stay indistinguishable. Service.SnapshotCtx's merge
+reconciliation writes only to the birth it loaded (`store.ExpectedBirth`).
+`store.BindRunObservation` is the shared compare-only helper for such a
+binding. Protocol-one admission stays off.

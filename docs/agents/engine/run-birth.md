@@ -74,8 +74,9 @@ guards remain required beyond this error propagation.
 
 ## Staged data identity
 
-`RunDataBinding` retains an original header observation separately from numeric
-format and execution authority. Rebinding a successor or another child refuses;
+`RunDataBinding` retains an original header and tenant observation apart
+from numeric format and execution authority. Rebinding a successor or other
+child refuses;
 a format-only context cannot erase data identity. Observed historical absence
 differs from no binding. JSON/BSON header parsers reject ambiguous selector
 spellings without decoding execution payloads.

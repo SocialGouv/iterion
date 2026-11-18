@@ -50,8 +50,7 @@ predecessor's buffer stays registered under the ID (a subscriber still holds
 it), a successor-bound reader gets persisted bytes without live tailing until
 that buffer is released. Only a request carrying an expected birth
 skips the out-of-band merge reconciliation (a snapshot, an assistant watch's
-creation; Mongo's conditional merge write has no birth predicate); a
-socket's snapshot reconciles.
+creation); a socket's snapshot reconciles.
 
 ## Capture at the upgrade
 
@@ -82,8 +81,9 @@ unbound `authCtx`: a resume or a child run never inherits the binding.
 A bound socket calls `runstream.RequireBoundObservationSource` before any
 snapshot or subscription. The capability endorses the actual receiver, never
 through embedding: `FileSource`, the resolved `MongoSource` and the Service's
-own source implement it; the raw-collection `NewMongo` does not, and a
-wrapper forwards it explicitly. A source lacking it is refused with
+own source implement it, file and Service ones over a self-endorsing store
+(`store.BoundObservationStore`); `NewMongo` does not; a wrapper forwards it
+explicitly. A source lacking it is refused with
 `ErrRunDataCapability` as `event_stream_failed` or `log_stream_failed`; the
 socket stays open.
 

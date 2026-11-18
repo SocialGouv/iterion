@@ -34,7 +34,13 @@ a blocked external reader still controls when its `Read` returns.
 
 Mongo Run metadata updates combine the captured format's scalar/cardinality
 predicate with the original tenant and business conditions in the actual
-mutation. Child collections publish in a transaction that writes the parent.
+mutation. The merge state machine's two doors, `ClaimMerge` and
+`UpdateRunMergeIf`, also carry the birth their caller loaded
+(`store.ExpectedBirth`): the filesystem store compares it under its lock,
+Mongo inside the same conditional write, and a successor recreated under the
+ID answers `ErrRunDataIdentityChanged` instead of receiving the outcome; `""`
+is the historical empty birth. Other metadata writes carry no caller birth.
+Child collections publish in a transaction that writes the parent.
 This parent write conflicts with deletion, recreation or concurrent changes;
 a retry reads again but retains the original format. Legacy orphan children
 reserve the parent's unique key transactionally against insert-first birth.
