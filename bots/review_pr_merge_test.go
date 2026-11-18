@@ -47,8 +47,11 @@ func TestReviewPrCatalogueNamesRolesNotVendors(t *testing.T) {
 			}
 		}
 	}
-	if v := wf.Vars["mono_family"]; v != nil {
-		t.Error("review-pr still declares mono_family — the family of a review is no longer a var (ADR-169); a deployment re-targets a ROLE through a routing cell")
+	// `mono_family` stays DECLARED and decides nothing: a launch that still
+	// sends it is admitted and ignored, where an undeclared name would be
+	// refused as an unknown input before any injection could map it.
+	if v := wf.Vars["mono_family"]; v == nil {
+		t.Error("review-pr no longer declares mono_family — every integration pinned to it would be refused as an unknown input; it is retired, not removed, until #2699 migrates the launch vars")
 	}
 	if v := wf.Vars[reviewtopology.VarReviewMode]; v == nil {
 		t.Fatal("review-pr no longer declares review_mode — the topology is not injectable")

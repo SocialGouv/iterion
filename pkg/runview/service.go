@@ -166,11 +166,12 @@ type LaunchSpec struct {
 	// inherits the workflow/node `permission:` DSL then
 	// ITERION_PERMISSION. See docs/permissions.md.
 	Permission string
-	// ReviewMode is the run-level review-topology override (auto|single|paired)
-	// ("", "auto", "mono", "dual") from the studio Launch toggle /
+	// ReviewMode is the run-level review-topology override
+	// ("", "auto", "single", "paired") from the studio Launch toggle /
 	// dispatcher. Only affects bots that declare a review_mode var. ""
-	// / "auto" resolves from detected provider credentials at launch;
-	// "mono"/"dual" force it. See pkg/reviewtopology.
+	// / "auto" resolves to single; "paired" adds the second reviewer. The
+	// retired "mono"/"dual" spellings still read as single/paired. See
+	// pkg/reviewtopology.
 	ReviewMode string
 	// RetryPolicy is the retry contract already RESOLVED across its layers
 	// by the launch site (per-run override → launching surface → bot

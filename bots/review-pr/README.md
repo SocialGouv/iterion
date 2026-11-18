@@ -610,6 +610,14 @@ scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --dry-run
 scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --yes
 ```
 
+A **launch var** still carrying `mono_family` is admitted and ignored (the
+var stays declared for exactly that); a stored `review_mode=mono|dual` is
+resolved to `single|paired` at launch. One case is not covered: a run that
+was **frozen before the rename and is resumed** replays its own inputs, and
+nothing rewrites them — the bot's guards read `paired` and see `dual`, so
+such a run resumes as a `single` review. Resuming it under the new vocabulary
+means launching a fresh run.
+
 The mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
 `reviewer_claude` → `reviewer_alternate`, `reviewer_gpt_glance` →
 `reviewer_glance`, `converge_gpt` → `converge`. Two cells are dropped

@@ -1616,11 +1616,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// runner's env fallback is unknowable here, and injecting "no family"
 	// facts about credentials we cannot see would be asserting a falsehood.
 	// bundle.APIKeys only, deliberately: a pinned key is spendable by the
-	// routes that name it, but these vars SHAPE THE PROGRAM (review_mode,
-	// llm_families), and widening a run's family set because one node pins a
-	// provider would switch a mono topology to dual behind the author's
-	// back. A node that wants a family pins it; funding it does not ask for
-	// a different review.
+	// routes that name it, but one of these vars SHAPES THE PROGRAM
+	// (`llm_families`), and widening a run's family set because one node
+	// pins a provider would report a host that is not this one. The review
+	// mode is not one of them any more — it reads no credential (ADR-169).
 	providers := make([]string, 0, len(bundle.APIKeys))
 	for prov := range bundle.APIKeys {
 		providers = append(providers, string(prov))
@@ -4269,19 +4268,34 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// after the fact when the donor is already out of pocket.
 	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID, creds.grants...)
 
-	// Resolve the credential-derived topology vars (review_mode,
-	// plan_review, llm_families) from what actually sealed into the run —
-	// the queued-run counterpart of the host-detection injection every
-	// in-process launch surface applies. Only when the bundle resolved at
-	// least one participating credential: an empty set means the run rides
-	// the runner's env fallback, which is unknowable here, and the bots'
-	// own defaults must survive untouched.
+	// Resolve the review mode on EVERY lane, credential or not: it reads no
+	// credential since ADR-169, so the empty-bundle exception below — which
+	// exists because plan_review and llm_families are facts about
+	// credentials this publisher cannot see — does not apply to it.
+	// Skipping it let a frozen `mono` reach the bot's enum gate (a refusal)
+	// and a `dual` reach its guards as an unknown value (a paired review
+	// silently downgraded to single).
+	if _, declares := wf.Vars[reviewtopology.VarReviewMode]; declares {
+		if inputs == nil {
+			inputs = map[string]any{}
+			r.Inputs = inputs
+		}
+		if mode, injected := reviewtopology.InjectReviewModeIfDeclared(wf, inputs, spec.ReviewMode); injected {
+			p.logger.Info("cloudpublisher: run %s review topology: %s", runID, mode)
+		}
+	}
+	// The two injections that READ the bundle — plan_review and
+	// llm_families — only when it resolved at least one participating
+	// credential: an empty set means the run rides the runner's env
+	// fallback, which is unknowable here, and the bots' own defaults must
+	// survive untouched rather than be resolved from a false "no
+	// credentials" premise.
 	if len(creds.families.Families()) > 0 {
 		if inputs == nil {
 			inputs = map[string]any{}
 			r.Inputs = inputs
 		}
-		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+		if inj := reviewtopology.InjectDerivedIfDeclared(wf, inputs, creds.families); inj.Summary() != "" {
 			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
 		}
 	}

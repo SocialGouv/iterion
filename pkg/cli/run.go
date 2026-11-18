@@ -150,10 +150,10 @@ type RunOptions struct {
 	// budget; zero fields inherit. See applyBudgetOverrides.
 	Budget BudgetOverrides
 	// ReviewMode is the run-level override for review-loop bots'
-	// mono/dual topology ("", "auto", "mono", "dual"). Only bots that
-	// declare a review_mode var are affected. "" / "auto" resolves from
-	// detected provider credentials at launch (pkg/reviewtopology);
-	// "mono"/"dual" force the topology. See docs on review topology.
+	// topology ("", "auto", "single", "paired"). Only bots that declare a
+	// review_mode var are affected. "" / "auto" resolves to single;
+	// "paired" adds the second reviewer. The retired "mono"/"dual"
+	// spellings still read as single/paired (pkg/reviewtopology).
 	ReviewMode string
 	// ModelFor / BackendFor are launch-time per-node/-group model+backend
 	// overrides (repeatable --model / --backend flags), each a

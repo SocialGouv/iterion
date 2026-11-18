@@ -42,6 +42,9 @@ vars:
   ## and model serves each role is the node's own route, re-targeted by a
   ## routing cell, never by a bot var.
   review_mode: string [enum: "auto", "single", "paired"] = "single"
+  ## RETIRED (ADR-169) — decides nothing; kept DECLARED so a launch that
+  ## still sends it is not refused as an unknown input. See review-pr's copy.
+  mono_family: string = ""
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional steering hints (objective / horizon / focus). The dispatcher
   ## fills this from the issue title + body; on an interactive

@@ -174,9 +174,10 @@ func declaresVar(wf *ir.Workflow, name string) bool {
 // inputs[review_mode] (from --var / a preset) is used; otherwise "auto".
 // Auto and any unrecognised value resolve to single.
 //
-// The concrete mode is always written back, so a launch var still carrying
-// a retired spelling (mono|dual) reaches the bot's declared enum as
-// single|paired and never trips it.
+// The concrete mode is written back, so a launch var still carrying a
+// retired spelling (mono|dual) reaches the bot's declared enum as
+// single|paired and never trips it. An injection that wrote nothing (a nil
+// inputs map) answers injected=false.
 func InjectReviewModeIfDeclared(wf *ir.Workflow, inputs map[string]any, flagOverride string) (mode string, injected bool) {
 	if !declaresVar(wf, VarReviewMode) {
 		return "", false
@@ -186,9 +187,12 @@ func InjectReviewModeIfDeclared(wf *ir.Workflow, inputs map[string]any, flagOver
 		override = inputOverride(inputs, VarReviewMode)
 	}
 	mode = Resolve(override)
-	if inputs != nil {
-		inputs[VarReviewMode] = mode
+	if inputs == nil {
+		// Nothing to write into: the mode is resolved, but no injection
+		// happened — reporting one would log a write that does not exist.
+		return mode, false
 	}
+	inputs[VarReviewMode] = mode
 	return mode, true
 }
 
@@ -284,8 +288,19 @@ type Injection struct {
 // It returns no error: with the family no longer a var, nothing here can
 // refuse a launch.
 func InjectAll(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory, reviewModeOverride string) Injection {
-	var inj Injection
+	inj := InjectDerivedIfDeclared(wf, inputs, inv)
 	inj.ReviewMode, inj.ReviewModeInjected = InjectReviewModeIfDeclared(wf, inputs, reviewModeOverride)
+	return inj
+}
+
+// InjectDerivedIfDeclared applies the two injections that READ the credential
+// set — plan_review and llm_families. They are the ones a surface owes the
+// run only when it can see the credentials; the review mode is not one of
+// them (it reads no credential since ADR-169), which is why a lane that
+// resolved no family still resolves the mode through
+// InjectReviewModeIfDeclared.
+func InjectDerivedIfDeclared(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory) Injection {
+	var inj Injection
 	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, inv)
 	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, inv)
 	return inj

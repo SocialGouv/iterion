@@ -648,7 +648,7 @@ the demand — per-ticket verdicts in the review, gaps as
   tracker ticket(s) it references.
 - **Triggers**: review-pr, pr-review, review
 - **Tags**: code-review, read-only
-- **Vars**: `base_ref` (string), `fixer_hint` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `publish_mode` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `fixer_hint` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `publish_mode` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci
@@ -1783,7 +1783,7 @@ Showcase of two iterion features:
   heuristic; Nexie can consult it before deciding to route here.
 - **Triggers**: evolve, evolution, vision, architecture, long-term, strategy, roadmap-vision
 - **Tags**: conversational, strategy
-- **Vars**: `review_mode` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `mono_family` (string), `review_mode` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/evolve/main.bot`
 
 ### `whats-next` — Nexie
