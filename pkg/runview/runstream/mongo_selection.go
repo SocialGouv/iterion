@@ -213,6 +213,27 @@ func retryAfter(ctx context.Context, label string, err error, delay time.Duratio
 		return true
 	}
 }
+
+// retryAfterOrFinal is retryAfter that also wakes on the producer's end of the
+// stream: retry=false stops the subscription, ended=true carries that end so
+// the caller takes its one last drain. A nil final never fires.
+func retryAfterOrFinal(ctx context.Context, final <-chan struct{}, label string, err error, delay time.Duration, warn func(error)) (retry, ended bool) {
+	if ctx.Err() != nil {
+		return false, false
+	}
+	warn(fmt.Errorf("%s in %s: %w", label, delay, err))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, false
+	case <-final:
+		return false, true
+	case <-timer.C:
+		return true, false
+	}
+}
+
 func nextMongoDelay(d time.Duration) time.Duration {
 	if d >= 15*time.Second {
 		return 30 * time.Second

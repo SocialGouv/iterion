@@ -37,18 +37,27 @@ var (
 	fileTerminalSettleInterval = 25 * time.Millisecond
 )
 
-// FileStreamHints are optional wake inputs of one event subscription. They
-// carry no payload: every event is still read from the subscription's retained
-// selection and validated there.
+// FileStreamHints are optional wake inputs of one subscription. They carry no
+// payload: every event and every log byte is still read from the
+// subscription's retained selection and validated there.
 //
 // Drain requests a drain now. Terminal requests the end check now, without
 // the settle wait: the confirmed status takes a final drain and the end
 // check's status read — a run still terminal ends (a terminal event already
 // read ends at once), a run resumed since the check keeps tailing. A
 // non-positive TerminalPoll keeps the default terminal poll interval.
+//
+// Final is the producer's own end of the stream, and it supersedes the status:
+// with Final set, a log subscription no longer ends on a terminal status and
+// TerminalPoll is ignored — the producer keeps writing its finalize after that
+// status. On Final the stream takes one last drain through its cursor and ends
+// (bytes written before the producer declared the end are still delivered); a
+// log file still absent after that last drain is a single clean empty end. A
+// closed Final is a hint that already fired. Nil keeps the status-driven
+// behaviour.
 type FileStreamHints struct {
-	Drain, Terminal <-chan struct{}
-	TerminalPoll    time.Duration
+	Drain, Terminal, Final <-chan struct{}
+	TerminalPoll           time.Duration
 }
 
 // fileRun is what one selected-file producer runs: its drain, its optional
@@ -215,6 +224,17 @@ func (f *FileSource) subscribeEvents(ctx context.Context, id string, position Ev
 	return pipe, nil
 }
 func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (LogSubscription, error) {
+	return f.subscribeLogs(ctx, id, from, FileStreamHints{})
+}
+
+// SubscribeLogsHinted is SubscribeLogs with wake inputs: a bound reader wakes
+// the subscription instead of relying on the file watcher alone, and Final
+// makes the producer — not the status — the end of the stream (FileStreamHints).
+func (f *FileSource) SubscribeLogsHinted(ctx context.Context, id string, from int64, hints FileStreamHints) (LogSubscription, error) {
+	return f.subscribeLogs(ctx, id, from, hints)
+}
+
+func (f *FileSource) subscribeLogs(ctx context.Context, id string, from int64, hints FileStreamHints) (LogSubscription, error) {
 	c, cancel, done, finish, e := f.register(ctx)
 	if e != nil {
 		return nil, e
@@ -244,6 +264,23 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 		// joined identity/missing error must never be an empty successful log;
 		// a transient failure of the check is retried like the open.
 		delay := 250 * time.Millisecond
+		// finalDrain is the end of the stream: one last drain through the
+		// cursor, which validates the selection before reading. Bytes written
+		// before the producer declared the end are delivered; a file still
+		// absent is a single clean empty end.
+		finalDrain := func() {
+			e := cursor.Drain(c)
+			if e == nil {
+				return
+			}
+			if IsPermanentError(e) {
+				pipe.Fail(e)
+				return
+			}
+			if c.Err() == nil {
+				pipe.Warn(fmt.Errorf("runstream: final log drain of %s: %w", id, e))
+			}
+		}
 		for {
 			file, e := selection.OpenLog(c)
 			if IsPermanentError(e) {
@@ -251,10 +288,24 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 				return
 			}
 			if isFileMissing(e) {
+				if hints.Final == nil {
+					return
+				}
+				// The producer declares the end: hold until it does.
+				select {
+				case <-c.Done():
+					return
+				case <-hints.Final:
+				}
+				finalDrain()
 				return
 			}
 			if e != nil {
-				if !retryAfter(c, fileRetryLabel, e, delay, pipe.Warn) {
+				retry, final := retryAfterOrFinal(c, hints.Final, fileRetryLabel, e, delay, pipe.Warn)
+				if final {
+					finalDrain()
+				}
+				if !retry {
 					return
 				}
 				delay = nextMongoDelay(delay)
@@ -267,7 +318,7 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (
 			file.Close()
 			break
 		}
-		f.runSelectedFile(c, selection, fileRun{id: id, logs: true, drain: cursor.Drain, hints: FileStreamHints{TerminalPoll: fileTerminalPollInterval}, warn: pipe.Warn, fail: pipe.Fail})
+		f.runSelectedFile(c, selection, fileRun{id: id, logs: true, drain: cursor.Drain, hints: hints, warn: pipe.Warn, fail: pipe.Fail})
 	}()
 	return pipe, nil
 }
@@ -280,7 +331,10 @@ type fileRound struct {
 	// hinted is true when the terminal status was confirmed on a Terminal
 	// hint, the producer's own end-of-events barrier.
 	hinted bool
-	err    error
+	// final is true when the round ended on FileStreamHints.Final, the
+	// producer's own end of the stream. Written before done closes.
+	final bool
+	err   error
 }
 
 func newFileRound(ctx context.Context, s store.FilesystemStreamSelection, hints FileStreamHints) *fileRound {
@@ -291,6 +345,17 @@ func newFileRound(ctx context.Context, s store.FilesystemStreamSelection, hints 
 	r := &fileRound{ctx: c, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
+		if hints.Final != nil {
+			// The producer owns the end: a status does not end the round and
+			// the terminal poll is off. Final fires once and only once.
+			select {
+			case <-c.Done():
+			case <-hints.Final:
+				r.final = true
+				cancel()
+			}
+			return
+		}
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		check := func(hinted bool) bool {
@@ -354,6 +419,21 @@ func (f *FileSource) runSelectedFile(ctx context.Context, s store.FilesystemStre
 			return
 		}
 		if ctx.Err() != nil || errors.Is(e, errEventDeliveryStopped) {
+			return
+		}
+		if round.final {
+			// The producer declared the end: one last drain through the same
+			// cursor, then the stream is over. The status is not consulted —
+			// a finalize keeps writing after the terminal status.
+			if _, e := f.finalDrain(ctx, s, run, false); e != nil {
+				if IsPermanentError(e) {
+					run.fail(e)
+					return
+				}
+				if ctx.Err() == nil {
+					run.warn(e)
+				}
+			}
 			return
 		}
 		if terminal && e == nil {
