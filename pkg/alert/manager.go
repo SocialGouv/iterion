@@ -243,7 +243,7 @@ func (m *Manager) Register(runID string, obs store.RunObservation, lane Observed
 		old := rs.bails
 		rs.bails = nil
 		for _, b := range old {
-			b.once.Do(func() { _ = b.lane.Close() })
+			b.closeLocked()
 		}
 	}
 	rs.obs = obs
@@ -337,12 +337,14 @@ func (m *Manager) observationLocked(runID string) (store.RunObservation, bool) {
 // Close releases exactly the bail it was handed for — never "the newest bail
 // of this run ID", which a late holder would otherwise consume from a
 // successor's episode (H5). Idempotent: a bail closed twice, or already
-// closed by a replacement, is a no-op.
+// closed by a replacement, is a no-op. Its closed state is guarded by the
+// manager's mutex alone — no second lock — so a Close racing a replacement or
+// a release-all can never wait on a lock the other holds.
 type Bail struct {
-	once  sync.Once
-	m     *Manager
-	runID string
-	lane  ObservedLane
+	m      *Manager
+	runID  string
+	lane   ObservedLane
+	closed bool // guarded by m.mu
 }
 
 // Close releases this bail and closes its lane. The episode keeps its dedup
@@ -351,9 +353,7 @@ func (b *Bail) Close() {
 	if b == nil {
 		return
 	}
-	b.once.Do(func() {
-		b.m.closeBail(b)
-	})
+	b.m.closeBail(b)
 }
 
 // closeBail removes b from its run's live bails and closes b's lane. Another
@@ -369,6 +369,15 @@ func (m *Manager) closeBail(b *Bail) {
 			}
 		}
 	}
+	b.closeLocked()
+}
+
+// closeLocked closes b's lane the first time it runs; m.mu is held.
+func (b *Bail) closeLocked() {
+	if b.closed {
+		return
+	}
+	b.closed = true
 	_ = b.lane.Close()
 }
 
@@ -391,7 +400,7 @@ func (m *Manager) releaseAllLocked(runID string) {
 	bails := rs.bails
 	rs.bails = nil
 	for _, b := range bails {
-		b.once.Do(func() { _ = b.lane.Close() })
+		b.closeLocked()
 	}
 }
 
