@@ -275,7 +275,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/repomap` | generates this repository's discoverability commons: small, committed indexes that let an agent — one working on the repo, or a bot running inside… | `Extractor` |
 | `pkg/retrycoord` | contains the policy shared by runner replicas when deciding whether a retry wave should be admitted. | — |
 | `pkg/retrypolicy` | the shared "should this failed run be retried, and when?" contract — the after-the-failure counterpart to pkg/schedgate's before-the-launch gate. | — |
-| `pkg/reviewtopology` | resolves the review topology (single|paired) for review-loop bots (`review-pr`, `evolve`), plus the plan-review switch and the credential-backed family fact,… | — |
+| `pkg/reviewtopology` | resolves the review topology for review-loop bots (review-pr, evolve) and injects the resolved review_mode var into a run's inputs when the target… | — |
 | `pkg/routing` | evaluates a run's launch-frozen RoutingPolicy against its terminal state. | — |
 | `pkg/runner` | implements the cloud-mode iterion runner pod. | — |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — |
