@@ -913,16 +913,17 @@ human ask_continue:
 
 ## Deterministic join: wait for BOTH reviewers, merge their verdicts into
 ## one advisory the operator sees. Not a gate — the human is the gate.
-## In single only `reviewer`'s edge fires, so the alternate's fields are
-## absent. Absent must read as "this reviewer did not object" rather than as
-## a rejection — otherwise single could never approve. `both_approved` is
+## In single only `reviewer`'s edge fires (it fills the claude_* fields), so
+## the alternate's gpt_* fields are absent. Absent must read as "this
+## reviewer did not object" rather than as a rejection — otherwise single
+## could never approve. `both_approved` is
 ## therefore "no participating reviewer objected".
 compute aggregate_review:
   input: review_merge_input
   output: review_summary
   await: best_effort
   expr:
-    both_approved: "if(vars.review_mode == 'paired', input.claude_approved, true) && input.gpt_approved"
+    both_approved: "input.claude_approved && if(vars.review_mode == 'paired', input.gpt_approved, true)"
     combined_concerns: "concat(input.claude_concerns, input.gpt_concerns)"
     combined_missing: "concat(input.claude_missing, input.gpt_missing)"
     ## Each operand needs its own fallback: in MONO the absent family's edge

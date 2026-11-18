@@ -339,39 +339,35 @@ def migrated_block(routing):
     dropped), where a change is (from, to)."""
     out = copy.deepcopy(routing or {})
     dropped = []
-    kept, from_rename, renames = [], {}, []
+    # Pass 1: rename every cell, remembering where each one came from.
+    entries = []  # (selector, cell, renamed, original selector)
     for o in out.get("overrides") or []:
         new, retired = renamed_selector(o.get("selector", ""))
         if not retired:
-            kept.append((o["selector"], o, False))
-            continue
-        if not new:
+            entries.append((o["selector"], o, False, o["selector"]))
+        elif not new:
             dropped.append(o["selector"])
-            continue
-        if new != o["selector"]:
-            renames.append((o["selector"], new))
-            from_rename[new] = o["selector"]
-        kept.append((new, dict(o, selector=new), True))
-    # A rename landing on a cell the block already carries: one of the two
-    # describes the route the node takes now, the other is a leftover. Which
-    # one wins depends on the target — see RENAME_WINS — and the loser is
-    # dropped rather than left to contend for one selector.
-    final = []
-    for sel, o, renamed in kept:
-        if renamed and sel in from_rename:
-            carried = [k for k in kept if k[0] == sel and not k[2]]
-            if carried and sel.rpartition("/")[2].partition("#")[0] not in RENAME_WINS:
-                dropped.append(from_rename[sel])
+        else:
+            entries.append((new, dict(o, selector=new), True, o["selector"]))
+    # Pass 2: a rename landing on a cell the block already carries leaves
+    # ONE of the two — decided from the whole block, never from the stored
+    # order. RENAME_WINS names the targets where the renamed cell describes
+    # the route the node takes now; everywhere else the cell already spelled
+    # with the role name is the current one and the leftover is dropped.
+    renamed_to = {sel for sel, _, renamed, _ in entries if renamed}
+    carried = {sel for sel, _, renamed, _ in entries if not renamed}
+    collisions = renamed_to & carried
+    final, changes = [], []
+    for sel, o, renamed, origin in entries:
+        if sel in collisions:
+            rename_wins = sel.rpartition("/")[2].partition("#")[0] in RENAME_WINS
+            if renamed != rename_wins:
+                dropped.append(origin)
                 continue
-            if carried:
-                dropped.append(sel)
-                final = [k for k in final if k[0] != sel]
-        final.append((sel, o, renamed))
-    out["overrides"] = [o for _, o, _ in final]
-    # Only a rename whose cell SURVIVED is a change; one dropped by the
-    # collision rule is reported as a drop, never as a rewrite.
-    survivors = {sel for sel, _, renamed in final if renamed}
-    changes = [(a, b) for a, b in renames if b in survivors]
+        if renamed:
+            changes.append((origin, sel))
+        final.append(o)
+    out["overrides"] = final
     return out, changes, dropped
 
 

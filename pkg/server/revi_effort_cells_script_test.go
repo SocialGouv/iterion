@@ -790,6 +790,46 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatalf("a second migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
+
+	// The collision rule must not depend on the stored ORDER: a block that
+	// lists `converge_gpt` before the claude `converge` cell is the same
+	// block, and must leave ONE `converge` — the renamed one, whose route
+	// the surviving node takes.
+	t.Run("migrate-ids resolves a converge collision whatever the stored order", func(t *testing.T) {
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		for _, order := range [][]string{
+			{"review-pr/converge", "review-pr/converge_gpt"},
+			{"review-pr/converge_gpt", "review-pr/converge"},
+		} {
+			reset()
+			block := llmroute.Policy{}
+			for _, sel := range order {
+				effort := "low"
+				if sel == "review-pr/converge" {
+					effort = "high" // the claude twin's cell: the loser
+				}
+				block.Overrides = append(block.Overrides, llmroute.Override{Selector: sel, Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: effort})
+			}
+			in.write("t1", i1, block)
+			b := filepath.Join(dir, "order-"+strings.ReplaceAll(order[0], "/", "_"))
+			if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+				t.Fatalf("order %v: migrate-ids exited %d:\n%s", order, code, out)
+			}
+			got := blockSelectors(in.integ(i1).Routing)
+			n := 0
+			for _, sel := range got {
+				if sel == "review-pr/converge" {
+					n++
+				}
+			}
+			if n != 1 {
+				t.Errorf("order %v: the migrated block carries %d `review-pr/converge` cells, want exactly 1: %v", order, n, got)
+			}
+			if e := blockEfforts(in.integ(i1).Routing)["review-pr/converge"]; e != "low" {
+				t.Errorf("order %v: the surviving converge cell carries effort %q, want the renamed converge_gpt cell's \"low\"", order, e)
+			}
+		}
+	})
 }
 
 // blockSelectors is a block's selectors in order.
