@@ -306,12 +306,13 @@ version: 0.10.0
 ## that release is cut, when the release-floors hook writes its number
 ## (docs/agents/workflow/release.md).
 requires:
-  ## 7.12.0 is the release that carries `review_mode: auto|single|paired` and
-  ## the retired-spelling mapping (ADR-169). Below it the engine's own
-  ## resolver writes `mono`/`dual` into the run's inputs, and this bot's
-  ## enum gate refuses every launch — an opaque refusal with no hint that
-  ## the fix is an engine upgrade.
-  iterion: ">= 7.12.0"
+  ## The release that carries `review_mode: auto|single|paired` and the
+  ## retired-spelling mapping (ADR-169) — `next` until it is cut, when the
+  ## release-floors hook writes its number. Below it the engine's own
+  ## resolver writes `mono`/`dual` into the run's inputs, and this bot's enum
+  ## gate refuses every launch — an opaque refusal with no hint that the fix
+  ## is an engine upgrade.
+  iterion: ">= next"
 ## 0.9.0 — ticket conformance now works with NO configuration on the
 ## forge's own issues. Since 0.6.0 the check only ran when an operator
 ## pinned `tracker_api_base` per repo, which meant that on 16 connected
