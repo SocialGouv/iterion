@@ -799,6 +799,30 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		}
 	})
 
+	// A glob cell covered every reviewer slot and no longer covers the
+	// renamed primary: `reviewer_*` does not match `reviewer`. It cannot be
+	// rewritten mechanically, so the run reports it and does not count the
+	// integration as migrated — a dry run says so before anything is written.
+	t.Run("migrate-ids reports a glob the rename stranded", func(t *testing.T) {
+		reset()
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_*", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+		}})
+		b := filepath.Join(dir, "glob")
+		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--dry-run")
+		if code == 0 || sent != 0 || !strings.Contains(out, "GLOB") || !strings.Contains(out, "review-pr/reviewer_*") {
+			t.Fatalf("a dry run over a stranded glob exited %d after %d PATCH(es), want a GLOB line and a non-zero exit:\n%s", code, sent, out)
+		}
+		out, code, sent = in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		if code == 0 || sent != 0 || !strings.Contains(out, "rewrite it by hand") {
+			t.Fatalf("a run over a stranded glob exited %d after %d PATCH(es), want it reported and nothing written:\n%s", code, sent, out)
+		}
+		if !hasCell(in.integ(i1).Routing, "review-pr/reviewer_*") {
+			t.Error("the run rewrote the glob — it must leave it to the operator")
+		}
+	})
+
 	// The collision rule must not depend on the stored ORDER: a block that
 	// lists `converge_gpt` before the claude `converge` cell is the same
 	// block, and must leave ONE `converge` — the renamed one, whose route

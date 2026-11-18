@@ -107,3 +107,38 @@ func TestInjectAllSummaryNamesTheModeAndTheFamilies(t *testing.T) {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 }
+
+// An engine with the role vocabulary still runs bundles written before it.
+// An integration pinned to review-pr ≤ 0.9.25 declares the OLD enum, and the
+// launch gate judges the injected value against it: the injection must write
+// a spelling that enum accepts, or every launch of an untouched bot is
+// refused. The reported mode stays the role either way.
+func TestInjectReviewModeSpeaksTheWorkflowsOwnEnum(t *testing.T) {
+	withEnum := func(values ...string) *ir.Workflow {
+		return &ir.Workflow{Vars: map[string]*ir.Var{VarReviewMode: {Name: VarReviewMode, Type: ir.VarString, EnumValues: values}}}
+	}
+	for _, tc := range []struct {
+		name      string
+		wf        *ir.Workflow
+		override  string
+		wantMode  string
+		wantInput string
+	}{
+		{"an old bundle, default", withEnum("auto", "mono", "dual"), "", ModeSingle, "mono"},
+		{"an old bundle, paired asked", withEnum("auto", "mono", "dual"), ModePaired, ModePaired, "dual"},
+		{"an old bundle, a retired spelling asked", withEnum("auto", "mono", "dual"), "dual", ModePaired, "dual"},
+		{"a new bundle", withEnum("auto", "single", "paired"), "dual", ModePaired, "paired"},
+		{"no enum at all", wfWithVars(VarReviewMode), "mono", ModeSingle, "single"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := map[string]any{}
+			mode, injected := InjectReviewModeIfDeclared(tc.wf, inputs, tc.override)
+			if !injected || mode != tc.wantMode {
+				t.Fatalf("got (%q, injected=%v), want the role %q", mode, injected, tc.wantMode)
+			}
+			if got := inputs[VarReviewMode]; got != tc.wantInput {
+				t.Fatalf("inputs[review_mode] = %v, want %q — the spelling this workflow's enum accepts", got, tc.wantInput)
+			}
+		})
+	}
+}

@@ -80,6 +80,7 @@ pending_approval) is reported as parked, not applied.
 
 import argparse
 import copy
+import fnmatch
 import json
 import os
 import subprocess
@@ -348,6 +349,25 @@ def renamed_selector(selector):
     return bot + "/" + new + sep + route, True
 
 
+def stranded_globs(routing):
+    """The glob selectors of a migrated bot that matched a retired node but
+    do not match its role: `review-pr/reviewer_*` covered every reviewer slot
+    and no longer covers the renamed primary `reviewer`. A glob cannot be
+    rewritten mechanically — the operator decides what it should cover — so
+    it is REPORTED, never edited, and the run does not count as migrated."""
+    out = []
+    for o in (routing or {}).get("overrides") or []:
+        sel = o.get("selector", "")
+        node = sel.partition("#")[0]
+        bot, slash, name = node.rpartition("/")
+        if not slash or not any(c in name for c in "*?["):
+            continue
+        for old, new in RETIRED_NODES.get(bot, {}).items():
+            if new and fnmatch.fnmatchcase(old, name) and not fnmatch.fnmatchcase(new, name):
+                out.append((sel, old, new))
+    return out
+
+
 def migrated_block(routing):
     """The block with every retired selector renamed; answer (block, changes,
     dropped), where a change is (from, to)."""
@@ -397,7 +417,13 @@ def migrate_one(args, integ):
     """Rename one integration's cells; answer True when it carries the roles."""
     stored = stored_routing(integ["team_id"], integ["id"])
     wanted, changes, dropped = migrated_block(stored)
+    globs = stranded_globs(stored)
+    for sel, old, new in globs:
+        print("GLOB     %s (%s): `%s` matched the retired `%s` but not its role `%s` — rewrite it by hand"
+              % (integ["repo"], integ["id"], sel, old, new))
     if not changes and not dropped:
+        if globs:
+            return False
         print("unchanged %s (%s): no retired selector" % (integ["repo"], integ["id"]))
         return True
     if args.dry_run:
@@ -406,7 +432,7 @@ def migrate_one(args, integ):
         print("WOULD    %s (%s): %s%s" % (integ["repo"], integ["id"],
               ", ".join("%s -> %s" % c for c in changes),
               ("" if not dropped else ", drop " + ", ".join(dropped))))
-        return True
+        return not globs
     backup = backup_path(args.dir, integ)
     if not os.path.exists(backup):
         record = {"team_id": integ["team_id"], "team": integ["team"], "id": integ["id"], "repo": integ["repo"], "routing": stored}
@@ -422,7 +448,7 @@ def migrate_one(args, integ):
     print("migrated %s (%s): %s%s" % (integ["repo"], integ["id"],
           ", ".join("%s -> %s" % c for c in changes),
           ("" if not dropped else ", dropped " + ", ".join(dropped))))
-    return True
+    return not globs
 
 
 def cmd_migrate_ids(args):
@@ -432,7 +458,7 @@ def cmd_migrate_ids(args):
     # asking a question, not asserting that the name needs work.
     integs = discover()
     picked = selected(integs, args.only, args.all)
-    dirty = [i for i in picked if carries_retired(i["routing"])]
+    dirty = [i for i in picked if carries_retired(i["routing"]) or stranded_globs(i["routing"])]
     if dirty and not args.dry_run:
         os.makedirs(args.dir, mode=0o700, exist_ok=True)
     verb = "would migrate" if args.dry_run else "migrated"

@@ -14,6 +14,7 @@ package reviewtopology
 
 import (
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -192,8 +193,30 @@ func InjectReviewModeIfDeclared(wf *ir.Workflow, inputs map[string]any, flagOver
 		// happened — reporting one would log a write that does not exist.
 		return mode, false
 	}
-	inputs[VarReviewMode] = mode
+	inputs[VarReviewMode] = spellingFor(wf, mode)
 	return mode, true
+}
+
+// spellingFor answers the spelling of a resolved mode the WORKFLOW accepts.
+// An engine carrying this vocabulary still runs bundles written before it —
+// an integration pinned to review-pr ≤ 0.9.25 declares
+// `[enum: "auto","mono","dual"]` — and the launch gate judges the injected
+// value against that enum: writing `single` there refuses every launch of a
+// bot its operator never touched. So when the declared enum lacks the role
+// but holds its retired spelling, the retired spelling is written; any other
+// declaration (no enum, the new enum, an enum that holds neither) gets the
+// role. The mode REPORTED is always the role.
+func spellingFor(wf *ir.Workflow, mode string) string {
+	v := wf.Vars[VarReviewMode]
+	if v == nil || v.EnumValues == nil || slices.Contains(v.EnumValues, mode) {
+		return mode
+	}
+	for retired, role := range retiredModes {
+		if role == mode && slices.Contains(v.EnumValues, retired) {
+			return retired
+		}
+	}
+	return mode
 }
 
 // PlanReviewEnv is the machine/deployment-wide default for the

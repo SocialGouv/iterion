@@ -620,7 +620,13 @@ means launching a fresh run.
 
 The table is per bot — `evolve` renamed its reviewers too, with its slots
 the other way round (`review_claude` → `reviewer`, `review_gpt` →
-`reviewer_alternate`), and the same command migrates its cells. For this
+`reviewer_alternate`), and the same command migrates its cells. A **glob** cell is
+reported, never rewritten: `review-pr/reviewer_*` covered every reviewer slot
+and no longer covers the renamed primary `reviewer`, so the command prints a
+`GLOB` line, writes nothing for it and exits non-zero until the operator
+rewrites it. And the engine stays compatible the other way: an integration
+still pinned to review-pr ≤ 0.9.25 is handed `mono`/`dual` — the spelling
+its own enum accepts — not `single`/`paired`. For this
 bot, the mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
 `reviewer_claude` → `reviewer_alternate`, `reviewer_gpt_glance` →
 `reviewer_glance`, `converge_gpt` → `converge`. Two cells are dropped
