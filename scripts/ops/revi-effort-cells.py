@@ -60,11 +60,11 @@ not exposed, the request has no expected-version field).
 
 migrate-ids exists because a cell whose selector names no node decides
 nothing: the launch falls back on the bot's own literals, so the routing AND
-the effort the cell carried go inert without a word. It renames, per bot,
-review-pr's reviewer_gpt/reviewer_claude/converge_gpt (and their glance
-variants) to reviewer/reviewer_alternate/reviewer_glance/converge, and
-evolve's review_claude/review_gpt to reviewer/reviewer_alternate (its slots
-go the other way round), drops the cells whose
+the effort the cell carried go inert without a word. It renames, per bot and
+per the topology the integration RAN (its launch_vars: the node it ran as
+its reviewer becomes `reviewer`, the other `reviewer_alternate`), review-pr's
+reviewer_claude/reviewer_gpt/converge_gpt and their glance variants, and
+evolve's review_claude/review_gpt, drops the cells whose
 node no longer exists (reviewer_claude_glance, and converge#glm — the merge
 runs on claw, which reads no provider hint). Two cells landing on one
 selector — a block that carried both `converge` and `converge_gpt` — leave
@@ -162,6 +162,7 @@ def discover():
                     "id": integ["id"],
                     "repo": integ.get("repo_full_name", ""),
                     "routing": integ.get("routing"),
+                    "launch_vars": integ.get("launch_vars") or {},
                 })
     return found
 
@@ -290,47 +291,86 @@ def read_backup(directory, integ):
         return json.load(f)
 
 
-# The retired node names of ADR-169, PER BOT. A bot's nodes were renamed
-# from vendor words to roles; a cell still naming the old id decides
-# nothing, so the launch falls back on the bot's literals — silently, with
-# the routing and the effort both gone. Empty = the node no longer exists.
-RETIRED_NODES = {
+# The retired node names of ADR-169, per bot and per the topology the
+# integration RAN. A bot's nodes were renamed from vendor words to roles; a
+# cell still naming the old id decides nothing, so the launch falls back on
+# the bot's literals — silently, with the routing and the effort both gone.
+#
+# Which old node becomes `reviewer` is not a property of the bot: it is
+# whichever node the integration ran as its reviewer. The old default was
+# mono-claude (`mono_family` unset = claude), so on most integrations the
+# claude node was THE reviewer and its cell must land on `reviewer` — the
+# node a single review runs — not on `reviewer_alternate`, which only a
+# paired one reaches. A paired run (`review_mode: dual`, or the audit tier)
+# ran both; there the bot's own literal decides (review-pr's `reviewer` is
+# its gpt route, evolve's its claude one).
+SLOTS = {
     "review-pr": {
-        "reviewer_gpt": "reviewer",
-        "reviewer_gpt_glance": "reviewer_glance",
-        "reviewer_claude": "reviewer_alternate",
-        "reviewer_claude_glance": "",
-        "converge_gpt": "converge",
+        "claude": {"reviewer": "reviewer_claude", "glance": "reviewer_claude_glance"},
+        "gpt": {"reviewer": "reviewer_gpt", "glance": "reviewer_gpt_glance"},
+        "literal": "gpt",
+        "merge": {"claude": "converge", "gpt": "converge_gpt"},
     },
-    # evolve's slots go the OTHER way round: its tooled claude_code judge is
-    # the one every round runs, so it became `reviewer`. The table is keyed
-    # by bot for exactly this reason — one bot's mapping is not another's.
     "evolve": {
-        "review_claude": "reviewer",
-        "review_gpt": "reviewer_alternate",
+        "claude": {"reviewer": "review_claude"},
+        "gpt": {"reviewer": "review_gpt"},
+        "literal": "claude",
     },
 }
 
 # Routes retired with their node, per bot: review-pr's `converge` and its
-# claw reviewers read no provider hint, so they declare no `#glm` rescue any
-# more. A retired route is dropped whether it is spelled on the old node or
-# the new one.
+# reviewers read no provider hint any more, so they declare no `#glm` rescue.
+# A retired route is dropped whether it is spelled on the old node or the new.
 RETIRED_ROUTES = {
     "review-pr": {"converge#glm", "reviewer#glm", "reviewer_glance#glm"},
 }
 
-# (bot, target) pairs whose RENAMED cell wins a collision with one the block
-# already carries. Only review-pr's `converge` qualifies: the pre-rename
-# claude merge cell describes a route the surviving node cannot take, while
-# `converge_gpt` names the route it does. Everywhere else the cell already
-# spelled with the role name is the CURRENT one, and the leftover old
-# spelling is dropped.
-RENAME_WINS = {("review-pr", "converge")}
+
+def ran_topology(launch_vars):
+    """(primary family, paired?) the integration's launch vars ran."""
+    lv = launch_vars or {}
+    mode = str(lv.get("review_mode", "")).strip().lower()
+    paired = mode in ("dual", "paired") or str(lv.get("review_tier", "")).strip().lower() == "audit"
+    family = str(lv.get("mono_family", "")).strip().lower() or "claude"
+    return family, paired
 
 
-def renamed_selector(selector):
-    """(new selector, retired?) for one stored selector; new is "" when the
-    selector names a cell no node can take any more."""
+def rename_table(bot, launch_vars):
+    """{old node: new node ("" = dropped)} for one bot under one integration,
+    and the merge target whose RENAMED cell wins a collision (or None)."""
+    slots = SLOTS.get(bot)
+    if not slots:
+        return {}, None
+    family, paired = ran_topology(launch_vars)
+    primary = slots["literal"] if paired else family
+    if primary not in ("claude", "gpt"):
+        primary = "claude"
+    other = "gpt" if primary == "claude" else "claude"
+    table = {
+        slots[primary]["reviewer"]: "reviewer",
+        slots[other]["reviewer"]: "reviewer_alternate",
+    }
+    if "glance" in slots[primary]:
+        table[slots[primary]["glance"]] = "reviewer_glance"
+    if "glance" in slots[other]:
+        table[slots[other]["glance"]] = ""  # the alternate has no glance tier
+    rename_wins = None
+    merge = slots.get("merge")
+    if merge:
+        if not paired and family == "gpt":
+            # mono-gpt merged on the gpt twin: its cell is the live route.
+            table[merge["gpt"]] = merge["claude"]
+            rename_wins = merge["claude"]
+        else:
+            # Every other topology merged on the claude `converge`; the gpt
+            # twin never ran, so its cell must not start deciding a route.
+            table[merge["gpt"]] = ""
+    return table, rename_wins
+
+
+def renamed_selector(selector, launch_vars=None):
+    """(new selector, retired?) for one stored selector under one
+    integration; new is "" when no node can take the cell any more."""
     node, sep, route = selector.partition("#")
     bot, slash, name = node.rpartition("/")
     if not slash:
@@ -338,7 +378,7 @@ def renamed_selector(selector):
     routes = RETIRED_ROUTES.get(bot, set())
     if name + sep + route in routes:
         return "", True
-    nodes = RETIRED_NODES.get(bot, {})
+    nodes, _ = rename_table(bot, launch_vars)
     if name not in nodes:
         return selector, False
     new = nodes[name]
@@ -349,7 +389,7 @@ def renamed_selector(selector):
     return bot + "/" + new + sep + route, True
 
 
-def stranded_globs(routing):
+def stranded_globs(routing, launch_vars=None):
     """The glob selectors of a migrated bot that matched a retired node but
     do not match its role: `review-pr/reviewer_*` covered every reviewer slot
     and no longer covers the renamed primary `reviewer`. A glob cannot be
@@ -362,13 +402,13 @@ def stranded_globs(routing):
         bot, slash, name = node.rpartition("/")
         if not slash or not any(c in name for c in "*?["):
             continue
-        for old, new in RETIRED_NODES.get(bot, {}).items():
+        for old, new in rename_table(bot, launch_vars)[0].items():
             if new and fnmatch.fnmatchcase(old, name) and not fnmatch.fnmatchcase(new, name):
                 out.append((sel, old, new))
     return out
 
 
-def migrated_block(routing):
+def migrated_block(routing, launch_vars=None):
     """The block with every retired selector renamed; answer (block, changes,
     dropped), where a change is (from, to)."""
     out = copy.deepcopy(routing or {})
@@ -376,7 +416,7 @@ def migrated_block(routing):
     # Pass 1: rename every cell, remembering where each one came from.
     entries = []  # (selector, cell, renamed, original selector)
     for o in out.get("overrides") or []:
-        new, retired = renamed_selector(o.get("selector", ""))
+        new, retired = renamed_selector(o.get("selector", ""), launch_vars)
         if not retired:
             entries.append((o["selector"], o, False, o["selector"]))
         elif not new:
@@ -385,8 +425,8 @@ def migrated_block(routing):
             entries.append((new, dict(o, selector=new), True, o["selector"]))
     # Pass 2: a rename landing on a cell the block already carries leaves
     # ONE of the two — decided from the whole block, never from the stored
-    # order. RENAME_WINS names the targets where the renamed cell describes
-    # the route the node takes now; everywhere else the cell already spelled
+    # order. rename_table names the target whose renamed cell describes the
+    # route the node takes now (mono-gpt's merge); everywhere else the cell already spelled
     # with the role name is the current one and the leftover is dropped.
     renamed_to = {sel for sel, _, renamed, _ in entries if renamed}
     carried = {sel for sel, _, renamed, _ in entries if not renamed}
@@ -395,7 +435,7 @@ def migrated_block(routing):
     for sel, o, renamed, origin in entries:
         if sel in collisions:
             bot, _, node = sel.partition("#")[0].rpartition("/")
-            rename_wins = (bot, node) in RENAME_WINS
+            rename_wins = rename_table(bot, launch_vars)[1] == node
             if renamed != rename_wins:
                 dropped.append(origin)
                 continue
@@ -406,9 +446,9 @@ def migrated_block(routing):
     return out, changes, dropped
 
 
-def carries_retired(routing):
+def carries_retired(routing, launch_vars=None):
     for o in (routing or {}).get("overrides") or []:
-        if renamed_selector(o.get("selector", ""))[1]:
+        if renamed_selector(o.get("selector", ""), launch_vars)[1]:
             return True
     return False
 
@@ -416,8 +456,9 @@ def carries_retired(routing):
 def migrate_one(args, integ):
     """Rename one integration's cells; answer True when it carries the roles."""
     stored = stored_routing(integ["team_id"], integ["id"])
-    wanted, changes, dropped = migrated_block(stored)
-    globs = stranded_globs(stored)
+    lv = integ.get("launch_vars") or {}
+    wanted, changes, dropped = migrated_block(stored, lv)
+    globs = stranded_globs(stored, lv)
     for sel, old, new in globs:
         print("GLOB     %s (%s): `%s` matched the retired `%s` but not its role `%s` — rewrite it by hand"
               % (integ["repo"], integ["id"], sel, old, new))
@@ -433,9 +474,19 @@ def migrate_one(args, integ):
               ", ".join("%s -> %s" % c for c in changes),
               ("" if not dropped else ", drop " + ", ".join(dropped))))
         return not globs
-    backup = backup_path(args.dir, integ)
-    if not os.path.exists(backup):
-        record = {"team_id": integ["team_id"], "team": integ["team"], "id": integ["id"], "repo": integ["repo"], "routing": stored}
+    # Its OWN backup file, never the effort procedure's `<id>.json`: that one
+    # may hold an earlier state of the block, and reusing it would leave the
+    # block this PATCH overwrites saved nowhere. An existing migration backup
+    # is kept only when it IS this block (a re-run); otherwise it refuses.
+    backup = os.path.join(args.dir, integ["id"] + ".pre-migrate-ids.json")
+    if os.path.exists(backup):
+        with open(backup) as f:
+            kept = json.load(f)
+        if not same(kept.get("routing"), stored):
+            raise Refusal("%s already holds a DIFFERENT pre-migration backup of %s — use a new --dir" % (backup, integ["repo"]))
+    else:
+        record = {"team_id": integ["team_id"], "team": integ["team"], "id": integ["id"], "repo": integ["repo"],
+                  "launch_vars": lv, "routing": stored}
         with open(backup, "w") as f:
             json.dump(record, f, indent=2, sort_keys=True)
             f.write("\n")
@@ -458,7 +509,7 @@ def cmd_migrate_ids(args):
     # asking a question, not asserting that the name needs work.
     integs = discover()
     picked = selected(integs, args.only, args.all)
-    dirty = [i for i in picked if carries_retired(i["routing"]) or stranded_globs(i["routing"])]
+    dirty = [i for i in picked if carries_retired(i["routing"], i.get("launch_vars")) or stranded_globs(i["routing"], i.get("launch_vars"))]
     if dirty and not args.dry_run:
         os.makedirs(args.dir, mode=0o700, exist_ok=True)
     verb = "would migrate" if args.dry_run else "migrated"

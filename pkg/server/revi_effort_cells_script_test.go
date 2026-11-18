@@ -248,6 +248,20 @@ func cloneBlock(t *testing.T, p *llmroute.Policy) llmroute.Policy {
 	return out
 }
 
+// writeLaunchVars REPLACES an integration's launch vars (the server refuses a
+// PATCH that drops a pinned key without `launch_vars_replace`), the input
+// migrate-ids reads to know which node the integration ran as its reviewer.
+func (in *reviEffortInstance) writeLaunchVars(teamID, id string, vars map[string]string) {
+	in.t.Helper()
+	r := forgeReq(superAdminCtx(), "PATCH", "/api/teams/"+teamID+"/forge/repo-bots/"+id, `{"launch_vars":`+string(mustJSON(in.t, vars))+`,"launch_vars_replace":true}`, teamID)
+	r.SetPathValue("integration_id", id)
+	w := httptest.NewRecorder()
+	in.s.handleUpdateForgeRepoBots(w, r)
+	if w.Code != http.StatusOK {
+		in.t.Fatalf("patch launch vars %s: %d %s", id, w.Code, w.Body.String())
+	}
+}
+
 // extraCellSelector names a cell nobody ships: the script must preserve the
 // cells it did not write, whatever they point at.
 const extraCellSelector = "review-pr/reviewer#glm"
@@ -748,12 +762,15 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 		if code != 0 || sent != 0 {
 			t.Fatalf("a dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
-		for _, want := range []string{"review-pr/reviewer_gpt -> review-pr/reviewer", "review-pr/reviewer_claude -> review-pr/reviewer_alternate", "review-pr/reviewer_claude#glm -> review-pr/reviewer_alternate#glm", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
+		// The seeded integration carries no mono_family: it ran the old
+		// DEFAULT, mono-claude, where `reviewer_claude` was THE reviewer — so
+		// its cell lands on `reviewer`, the node a single review runs.
+		for _, want := range []string{"review-pr/reviewer_claude -> review-pr/reviewer", "review-pr/reviewer_gpt -> review-pr/reviewer_alternate", "review-pr/reviewer_claude_glance -> review-pr/reviewer_glance", "review-pr/converge#glm", "review-pr/converge_gpt"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("the dry run does not say %q:\n%s", want, out)
 			}
 		}
-		if _, err := os.Stat(filepath.Join(b, i1+".json")); err == nil {
+		if _, err := os.Stat(filepath.Join(b, i1+".pre-migrate-ids.json")); err == nil {
 			t.Error("a dry run wrote a backup — it must touch nothing, the backup dir included")
 		}
 		if !hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt") {
@@ -765,7 +782,7 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatalf("migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 		got := blockSelectors(in.integ(i1).Routing)
-		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/reviewer_alternate#glm", "review-pr/supervisor:pacer"} {
+		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/supervisor:pacer"} {
 			if !slices.Contains(got, want) {
 				t.Errorf("the migrated block does not carry %q: %v", want, got)
 			}
@@ -782,11 +799,11 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Errorf("the migrated block names a selector twice: %v", got)
 		}
 		// The effort each cell carried survives the rename.
-		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" || e["review-pr/converge"] != "low" {
-			t.Errorf("the efforts moved with the rename: %v, want reviewer=high and converge=low", e)
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" || e["review-pr/reviewer_glance"] != "low" || e["review-pr/converge"] != "low" {
+			t.Errorf("the efforts moved with the rename: %v, want reviewer=high, reviewer_glance=low (the claude glance) and converge=low", e)
 		}
 		// And the backup holds the block as it was, retired names included.
-		raw, err := os.ReadFile(filepath.Join(b, i1+".json"))
+		raw, err := os.ReadFile(filepath.Join(b, i1+".pre-migrate-ids.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -827,39 +844,100 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 	// lists `converge_gpt` before the claude `converge` cell is the same
 	// block, and must leave ONE `converge` — the renamed one, whose route
 	// the surviving node takes.
-	t.Run("migrate-ids resolves a converge collision whatever the stored order", func(t *testing.T) {
+	t.Run("migrate-ids resolves a converge collision by the topology the integration ran, whatever the stored order", func(t *testing.T) {
 		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
-		for _, order := range [][]string{
-			{"review-pr/converge", "review-pr/converge_gpt"},
-			{"review-pr/converge_gpt", "review-pr/converge"},
+		for _, tc := range []struct {
+			name       string
+			launchVars map[string]string
+			wantEffort string // of the surviving converge cell
+		}{
+			// The old default merged on the claude `converge`: its cell is
+			// the live route, and the gpt twin's never ran.
+			{"mono-claude (the old default)", map[string]string{"gate_context": "revi/gate"}, "high"},
+			// mono-gpt merged on `converge_gpt`: the renamed cell wins.
+			{"mono-gpt", map[string]string{"gate_context": "revi/gate", "mono_family": "gpt"}, "low"},
 		} {
-			reset()
-			block := llmroute.Policy{}
-			for _, sel := range order {
-				effort := "low"
-				if sel == "review-pr/converge" {
-					effort = "high" // the claude twin's cell: the loser
+			for _, order := range [][]string{
+				{"review-pr/converge", "review-pr/converge_gpt"},
+				{"review-pr/converge_gpt", "review-pr/converge"},
+			} {
+				reset()
+				in.writeLaunchVars("t1", i1, tc.launchVars)
+				block := llmroute.Policy{}
+				for _, sel := range order {
+					effort := "low"
+					if sel == "review-pr/converge" {
+						effort = "high" // the claude merge's cell
+					}
+					block.Overrides = append(block.Overrides, llmroute.Override{Selector: sel, Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: effort})
 				}
-				block.Overrides = append(block.Overrides, llmroute.Override{Selector: sel, Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: effort})
-			}
-			in.write("t1", i1, block)
-			b := filepath.Join(dir, "order-"+strings.ReplaceAll(order[0], "/", "_"))
-			if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
-				t.Fatalf("order %v: migrate-ids exited %d:\n%s", order, code, out)
-			}
-			got := blockSelectors(in.integ(i1).Routing)
-			n := 0
-			for _, sel := range got {
-				if sel == "review-pr/converge" {
-					n++
+				in.write("t1", i1, block)
+				b := filepath.Join(dir, "order-"+strings.ReplaceAll(tc.name, " ", "_")+"-"+strings.ReplaceAll(order[0], "/", "_"))
+				if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+					t.Fatalf("%s, order %v: migrate-ids exited %d:\n%s", tc.name, order, code, out)
+				}
+				got := blockSelectors(in.integ(i1).Routing)
+				n := 0
+				for _, sel := range got {
+					if sel == "review-pr/converge" {
+						n++
+					}
+				}
+				if n != 1 {
+					t.Errorf("%s, order %v: %d `review-pr/converge` cells, want exactly 1: %v", tc.name, order, n, got)
+				}
+				if e := blockEfforts(in.integ(i1).Routing)["review-pr/converge"]; e != tc.wantEffort {
+					t.Errorf("%s, order %v: the surviving converge cell carries effort %q, want %q — the merge the integration actually ran", tc.name, order, e, tc.wantEffort)
 				}
 			}
-			if n != 1 {
-				t.Errorf("order %v: the migrated block carries %d `review-pr/converge` cells, want exactly 1: %v", order, n, got)
-			}
-			if e := blockEfforts(in.integ(i1).Routing)["review-pr/converge"]; e != "low" {
-				t.Errorf("order %v: the surviving converge cell carries effort %q, want the renamed converge_gpt cell's \"low\"", order, e)
-			}
+		}
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+	})
+
+	// A mono-gpt integration ran `reviewer_gpt` as THE reviewer: its cell
+	// lands on `reviewer`, and the claude node becomes the alternate.
+	t.Run("migrate-ids maps a mono-gpt integration's reviewer onto the role it ran", func(t *testing.T) {
+		reset()
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate", "mono_family": "gpt"})
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "xhigh"},
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "medium"},
+		}})
+		b := filepath.Join(dir, "mono-gpt")
+		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
+		}
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "xhigh" || e["review-pr/reviewer_alternate"] != "medium" {
+			t.Errorf("a mono-gpt integration's cells: %v, want reviewer=xhigh (was reviewer_gpt) and reviewer_alternate=medium (was reviewer_claude)", e)
+		}
+		in.writeLaunchVars("t1", i1, map[string]string{"gate_context": "revi/gate"})
+	})
+
+	// The effort procedure's own backup (`<id>.json`) may hold an EARLIER
+	// state of the block; migrate-ids writes its own file and refuses one
+	// that is not this block, so the block a PATCH overwrites is always saved.
+	t.Run("migrate-ids saves the block it overwrites under its own backup", func(t *testing.T) {
+		reset()
+		const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+		b := filepath.Join(dir, "own-backup")
+		in.run("backup", "--dir", b) // the effort procedure's <id>.json, of the block before
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "high"},
+		}})
+		if out, code, _ := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 {
+			t.Fatalf("migrate-ids exited %d:\n%s", code, out)
+		}
+		raw, err := os.ReadFile(filepath.Join(b, i1+".pre-migrate-ids.json"))
+		if err != nil || !strings.Contains(string(raw), "review-pr/reviewer_claude") {
+			t.Fatalf("the block migrate-ids overwrote is not saved under its own backup (err=%v):\n%s", err, raw)
+		}
+		// A DIFFERENT pre-migration backup already there refuses.
+		in.write("t1", i1, llmroute.Policy{Overrides: []llmroute.Override{
+			{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
+		}})
+		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code == 0 || sent != 0 || !strings.Contains(out, "DIFFERENT pre-migration backup") {
+			t.Fatalf("migrate-ids over a different pre-migration backup exited %d after %d PATCH(es):\n%s", code, sent, out)
 		}
 	})
 }

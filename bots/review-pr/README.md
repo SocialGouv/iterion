@@ -618,21 +618,24 @@ nothing rewrites them — the bot's guards read `paired` and see `dual`, so
 such a run resumes as a `single` review. Resuming it under the new vocabulary
 means launching a fresh run.
 
-The table is per bot — `evolve` renamed its reviewers too, with its slots
-the other way round (`review_claude` → `reviewer`, `review_gpt` →
-`reviewer_alternate`), and the same command migrates its cells. A **glob** cell is
-reported, never rewritten: `review-pr/reviewer_*` covered every reviewer slot
-and no longer covers the renamed primary `reviewer`, so the command prints a
-`GLOB` line, writes nothing for it and exits non-zero until the operator
-rewrites it. And the engine stays compatible the other way: an integration
-still pinned to review-pr ≤ 0.9.25 is handed `mono`/`dual` — the spelling
-its own enum accepts — not `single`/`paired`. For this
-bot, the mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
-`reviewer_claude` → `reviewer_alternate`, `reviewer_gpt_glance` →
-`reviewer_glance`, `converge_gpt` → `converge`. Two cells are dropped
-because no node takes them any more: `reviewer_claude_glance` (the glance
-tier runs `reviewer_glance`) and `converge#glm` (the merge runs on claw,
-which reads no provider hint).
+The mapping is per bot **and per the topology the integration ran**, read
+from its own `launch_vars`: the node it ran as its reviewer becomes
+`reviewer`, the other becomes `reviewer_alternate`. The old default was
+mono-claude (`mono_family` unset), so on most integrations `reviewer_claude`
+→ `reviewer`, `reviewer_claude_glance` → `reviewer_glance` and `reviewer_gpt`
+→ `reviewer_alternate`; a `mono_family=gpt` integration maps the other way,
+and a paired one (`review_mode=dual`, or the audit tier) follows this bot's
+literal (`reviewer_gpt` → `reviewer`). The merge keeps the cell of the step
+that ran: `converge_gpt` → `converge` on mono-gpt only, dropped everywhere
+else (it never ran). Cells no node takes any more are dropped
+(`reviewer_<other>_glance`, the `#glm` routes of nodes on claw). `evolve`'s
+`review_claude`/`review_gpt` follow the same rule. A **glob** cell is reported,
+never rewritten (`review-pr/reviewer_*` no longer covers `reviewer`): the
+command prints a `GLOB` line and exits non-zero until the operator rewrites
+it. The block it overwrites is saved as `<id>.pre-migrate-ids.json`, never
+over the effort procedure's backup. And the engine stays compatible the
+other way: an integration still pinned to review-pr ≤ 0.9.25 is handed
+`mono`/`dual` — the spelling its own enum accepts.
 
 ## Layout — a bot in several files
 
