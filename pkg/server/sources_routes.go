@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 )
 
@@ -143,14 +144,13 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 		if err != nil {
 			return nil, err
 		}
-		// A package with no inbound half is an outbound tool, not a
-		// source: it has nothing to plug. And a package whose triggers
-		// declare no ingress block has no delivery contract the connector
-		// lane can bind — listing it would end every plug in the bind's
-		// refusal — so only packages the lane can actually receive a
-		// delivery for are listed (a legacy-lane package arrives here
-		// when its triggers.yaml declares its ingress).
-		if len(pkg.Triggers) == 0 || pkg.Ingress == nil {
+		// A card lists what an operator can plug, and nothing else: an
+		// outbound-only package has nothing, a package whose triggers declare
+		// no ingress has no delivery contract the lane can bind, and a
+		// polled trigger has no poller to feed it before L4-2 — listing any
+		// of them would end the plug in the bind's refusal.
+		plug := pluggableTriggers(pkg)
+		if len(plug) == 0 {
 			continue
 		}
 		e := sourceEntry{
@@ -180,7 +180,7 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 			}
 			e.Ingress = ing
 		}
-		for _, tr := range pkg.Triggers {
+		for _, tr := range plug {
 			st := sourceTrigger{ID: tr.ID, DisplayName: tr.DisplayName, Description: tr.Description}
 			for _, o := range tr.Outputs {
 				st.Outputs = append(st.Outputs, sourceOutput{Name: o.Name, Description: o.Description, Type: o.Type})
@@ -194,6 +194,23 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// pluggableTriggers are the triggers of pkg a subscription can be bound to
+// today: webhook triggers of a package that declares its ingress. A polled
+// trigger is refused at save until pollers ship (binding.ValidateSubscription),
+// so it is not offered either.
+func pluggableTriggers(pkg *spec.Package) []spec.Trigger {
+	if pkg.Ingress == nil {
+		return nil
+	}
+	var out []spec.Trigger
+	for _, t := range pkg.Triggers {
+		if !t.Polled() {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // connectionsByConnector counts the tenant's connections per connector in
