@@ -29,6 +29,10 @@ func (inheritingFileSource) SubscribeEvents(context.Context, string, int64) (Eve
 	return NewEventPipe(), nil
 }
 
+// inheritingRunStore embeds the native filesystem store: it inherits the
+// store's endorsement method but is not the receiver that endorses itself.
+type inheritingRunStore struct{ *store.FilesystemRunStore }
+
 func TestRequireBoundObservationSourceAdmitsOnlyItsReceiver(t *testing.T) {
 	t.Parallel()
 	st, err := store.New(t.TempDir())
@@ -49,6 +53,9 @@ func TestRequireBoundObservationSourceAdmitsOnlyItsReceiver(t *testing.T) {
 		"discarding":        contextDiscardingSource{},
 		"embedding-wrapper": inheritingFileSource{file},
 		"mongo-legacy":      NewMongo(nil, nil, nil, nil),
+		// The source endorses itself, but the store it reads through only
+		// inherits the native store's endorsement by embedding.
+		"file-over-embedding-store": NewFileSource(inheritingRunStore{st}, "", nil),
 	} {
 		if err := RequireBoundObservationSource(src); !errors.Is(err, store.ErrRunDataCapability) {
 			t.Errorf("%s admitted: %v", name, err)

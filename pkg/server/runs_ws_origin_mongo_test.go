@@ -70,6 +70,35 @@ func (s *wsOriginHookSource) failure() error {
 	return s.hookErr
 }
 
+// W18: the Service's own source, no injected one, over the native Mongo
+// store is admitted for a bound subscription — the store endorses itself —
+// and over a wrapper that embeds it is refused typed. CI's mongo-conformance
+// job supplies the URI.
+func TestRunWSServiceSourceStoreCapabilityNativeMongo(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; Mongo store capability unverified")
+	}
+	ctx := store.WithIdentity(t.Context(), "ws-origin-tenant", "owner")
+	ms, err := mongostore.New(ctx, mongostore.Config{URI: uri, Database: fmt.Sprintf("ws_store_capability_%d", time.Now().UnixNano()), Blob: wsOriginExactBlob{}, RunFilesScratchDir: filepath.Join(t.TempDir(), "scratch")})
+	mustWS(t, err)
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_ = ms.DB().Drop(c)
+		_ = ms.Close(c)
+	})
+	native := newTestRunviewService(t, t.TempDir(), runview.WithRecoveryPassive(), runview.WithStore(ms))
+	if err := runstream.RequireBoundObservationSource(native.StreamSource()); err != nil {
+		t.Fatalf("native Mongo store refused: %v", err)
+	}
+	embedding := &struct{ *mongostore.Store }{ms}
+	wrapped := newTestRunviewService(t, t.TempDir(), runview.WithRecoveryPassive(), runview.WithStore(embedding))
+	if err := runstream.RequireBoundObservationSource(wrapped.StreamSource()); !errors.Is(err, store.ErrRunDataCapability) {
+		t.Fatalf("a wrapper embedding the Mongo store admitted: %v", err)
+	}
+}
+
 // T4: the socket origin against the native Mongo store and the production
 // resolved change-stream source. The upgrade carries a tenant, as every cloud
 // upgrade does. CI's mongo-conformance job supplies the URI.

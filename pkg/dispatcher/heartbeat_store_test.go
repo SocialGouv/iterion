@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -177,6 +178,20 @@ func TestHeartbeatStorePreservesTheUnderlyingContextIdentity(t *testing.T) {
 	got, err := store.ResolveStoreContextRef(t.Context(), newHeartbeatStore(base, func(string) {}))
 	if err != nil || got != want {
 		t.Fatalf("heartbeat wrapper changes the store identity: got %+v err=%v want %+v", got, err, want)
+	}
+}
+
+// The heartbeat wrapper is never the store a bound stream reads through, and
+// it does not endorse itself: the endorsement of the store it wraps is not
+// promoted through the interface it embeds, so a bound stream over it is
+// refused typed rather than admitted by default.
+func TestHeartbeatStoreDoesNotEndorseBoundObservation(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireBoundObservationStore(newHeartbeatStore(base, func(string) {})); !errors.Is(err, store.ErrRunDataCapability) {
+		t.Fatalf("heartbeat wrapper admitted for a bound stream: %v", err)
 	}
 }
 

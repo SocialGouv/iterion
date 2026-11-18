@@ -40,14 +40,16 @@ func RequireBoundObservationSource(actual Source) error {
 	return capable.CheckBoundObservationSource(actual)
 }
 
-// CheckBoundObservationSource admits this FileSource itself: its selections
-// are opened by the store under the subscription context.
+// CheckBoundObservationSource admits this FileSource itself, over a store that
+// endorses itself (store.RequireBoundObservationStore): its selections are
+// opened by the store under the subscription context. A store that may drop
+// that context is refused here, before any subscription.
 func (f *FileSource) CheckBoundObservationSource(actual Source) error {
 	receiver, ok := actual.(*FileSource)
 	if f == nil || !ok || receiver != f {
 		return fmt.Errorf("%w: stream source %T is not this file source", store.ErrRunDataCapability, actual)
 	}
-	return nil
+	return store.RequireBoundObservationStore(f.store)
 }
 
 // CheckBoundObservationSource admits this MongoSource only when it resolves its

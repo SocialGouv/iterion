@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -361,5 +362,94 @@ func TestStreamSourceBoundCapability(t *testing.T) {
 	}
 	if err := src.(runstream.BoundObservationSource).CheckBoundObservationSource(svc.StreamSource()); !errors.Is(err, store.ErrRunDataCapability) {
 		t.Fatalf("another handle endorsed: %v", err)
+	}
+}
+
+// ctxDiscardingRunStore decorates a store and drops the caller's context on
+// the core reads a stream replays through, so a binding the context carries
+// never reaches the store it wraps. Capability probes look through it
+// (Unwrap), as through any decorator. It counts those reads.
+type ctxDiscardingRunStore struct {
+	store.RunStore
+	reads atomic.Int32
+}
+
+func (s *ctxDiscardingRunStore) Unwrap() store.RunStore { return s.RunStore }
+
+func (s *ctxDiscardingRunStore) LoadRun(_ context.Context, id string) (*store.Run, error) {
+	s.reads.Add(1)
+	return s.RunStore.LoadRun(context.Background(), id)
+}
+
+func (s *ctxDiscardingRunStore) LoadEventsRange(_ context.Context, id string, from, to int64, limit int) ([]*store.Event, error) {
+	s.reads.Add(1)
+	return s.RunStore.LoadEventsRange(context.Background(), id, from, to, limit)
+}
+
+// inheritingNativeRunStore embeds the native filesystem store: it inherits
+// the store's endorsement while its event replay drops the caller's context.
+type inheritingNativeRunStore struct {
+	*store.FilesystemRunStore
+	reads atomic.Int32
+}
+
+func (s *inheritingNativeRunStore) LoadEventsRange(_ context.Context, id string, from, to int64, limit int) ([]*store.Event, error) {
+	s.reads.Add(1)
+	return s.FilesystemRunStore.LoadEventsRange(context.Background(), id, from, to, limit)
+}
+
+// W18: the service source admits a bound subscription only over a store that
+// endorses itself. The native store is admitted; a decorator that drops the
+// context, and one that inherits the native endorsement by embedding, are
+// refused typed by the capability check itself, before any store read.
+func TestStreamSourceRefusesStoreWithoutBoundCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		wrap  func(*store.FilesystemRunStore) (store.RunStore, func() int32)
+		admit bool
+	}{
+		{"native", func(n *store.FilesystemRunStore) (store.RunStore, func() int32) { return n, nil }, true},
+		{"ctx-discarding", func(n *store.FilesystemRunStore) (store.RunStore, func() int32) {
+			w := &ctxDiscardingRunStore{RunStore: n}
+			return w, w.reads.Load
+		}, false},
+		{"embedding", func(n *store.FilesystemRunStore) (store.RunStore, func() int32) {
+			w := &inheritingNativeRunStore{FilesystemRunStore: n}
+			return w, w.reads.Load
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			native, err := store.New(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, reads := tc.wrap(native)
+			svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithRecoveryPassive(), WithStore(st))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				svc.Stop(ctx)
+			})
+			err = runstream.RequireBoundObservationSource(svc.StreamSource())
+			if tc.admit {
+				if err != nil {
+					t.Fatalf("native store refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, store.ErrRunDataCapability) {
+				t.Fatalf("%T admitted for a bound subscription: %v", st, err)
+			}
+			if want := fmt.Sprintf("%T", st); !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal %q does not name the store %s", err, want)
+			}
+			if n := reads(); n != 0 {
+				t.Fatalf("the capability check read the store %d times", n)
+			}
+		})
 	}
 }

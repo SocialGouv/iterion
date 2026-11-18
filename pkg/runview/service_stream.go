@@ -49,10 +49,12 @@ type svcSource struct{ s *Service }
 // by the Service lifecycle, not by this handle.
 func (v *svcSource) Close() error { return nil }
 
-// CheckBoundObservationSource admits this handle itself: its store reads —
+// CheckBoundObservationSource admits this handle itself, over a store that
+// endorses itself (store.RequireBoundObservationStore): its store reads —
 // replay, terminal catch-up, log admission and persisted log ranges — run
 // under the subscription context, and their permanent refusals end the
-// subscription through Fail. On the native filesystem store, persisted
+// subscription through Fail. A store that may drop that context is refused
+// here, before any subscription. On the native filesystem store, persisted
 // events are read from the bound run's retained selection only; alerts, log
 // buffers and tailers, and the events of other stores after admission, stay
 // routed by run ID.
@@ -61,7 +63,7 @@ func (v *svcSource) CheckBoundObservationSource(actual runstream.Source) error {
 	if v == nil || v.s == nil || !ok || receiver != v {
 		return fmt.Errorf("%w: stream source %T is not this service source", store.ErrRunDataCapability, actual)
 	}
-	return nil
+	return store.RequireBoundObservationStore(v.s.store)
 }
 
 // SubscribeEvents delivers seq >= fromSeq. On the native filesystem store it

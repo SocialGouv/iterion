@@ -62,6 +62,22 @@ func (s *wsOriginStore) failure() error {
 	return s.hookErr
 }
 
+// endorseForwardingStore is the bound-observation endorsement of a test
+// double that embeds the native store and forwards every read it overrides
+// with the caller's context: it admits the double itself only, and only as
+// far as the native store admits itself. The method the embedding promotes
+// would refuse the double.
+func endorseForwardingStore[T comparable](double T, actual store.RunStore, native *store.FilesystemRunStore) error {
+	if receiver, ok := actual.(T); !ok || receiver != double {
+		return fmt.Errorf("%w: %T is not this test double", store.ErrRunDataCapability, actual)
+	}
+	return store.RequireBoundObservationStore(native)
+}
+
+func (s *wsOriginStore) CheckBoundObservationStore(actual store.RunStore) error {
+	return endorseForwardingStore(s, actual, s.FilesystemRunStore)
+}
+
 func (s *wsOriginStore) LoadEventsRange(ctx context.Context, id string, from, to int64, limit int) ([]*store.Event, error) {
 	s.runHook(&s.beforeEvents, &s.eventsHit)
 	return s.FilesystemRunStore.LoadEventsRange(ctx, id, from, to, limit)
@@ -600,6 +616,67 @@ func TestRunWSOriginRefusesSourceWithoutCapability(t *testing.T) {
 	}
 	if src.calls.Load() != 0 {
 		t.Fatalf("source reached %d times", src.calls.Load())
+	}
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "p"})
+	if env := readEnvelope(t, c); env.Type != wsTypePong {
+		t.Fatalf("a capability refusal closed the socket: %s", env.Type)
+	}
+}
+
+// wsContextDiscardingStore decorates the native store and drops the caller's
+// context on the core reads a snapshot and a replay go through: a binding
+// never reaches the native comparison. Capability probes look through it
+// (Unwrap), as through any decorator. It counts those reads.
+type wsContextDiscardingStore struct {
+	store.RunStore
+	reads atomic.Int32
+}
+
+func (s *wsContextDiscardingStore) Unwrap() store.RunStore { return s.RunStore }
+
+func (s *wsContextDiscardingStore) LoadRun(_ context.Context, id string) (*store.Run, error) {
+	s.reads.Add(1)
+	return s.RunStore.LoadRun(context.Background(), id)
+}
+
+func (s *wsContextDiscardingStore) LoadEventsRange(_ context.Context, id string, from, to int64, limit int) ([]*store.Event, error) {
+	s.reads.Add(1)
+	return s.RunStore.LoadEventsRange(context.Background(), id, from, to, limit)
+}
+
+// W18: the production local shape — the Service's own source, no injected
+// one — over a store that does not endorse itself. A bound socket is refused
+// typed at both subscribe kinds before any snapshot, replay or log tailer,
+// and the socket stays open.
+func TestRunWSOriginRefusesStoreWithoutCapability(t *testing.T) {
+	srv, hs := newTestServer(t)
+	native, err := store.New(srv.cfg.StoreDir)
+	mustWS(t, err)
+	mustWS(t, seedWSOriginRun(t.Context(), native, "r", "A", store.LegacyValueFormat, store.RunStatusFinished, 1))
+	discarding := &wsContextDiscardingStore{RunStore: native}
+	srv.runs.Stop(t.Context())
+	srv.runs = newTestRunviewService(t, srv.cfg.StoreDir, runview.WithRecoveryPassive(), runview.WithStore(discarding))
+	c := dialRunWS(t, hs, "r")
+	before := discarding.reads.Load()
+	if before == 0 {
+		t.Fatal("the upgrade did not read the run through the store under test")
+	}
+	for _, tc := range []struct{ kind, code string }{{wsTypeSubscribe, "event_stream_failed"}, {wsTypeSubscribeLogs, "log_stream_failed"}} {
+		writeJSONMessage(t, c, runWSEnvelope{Type: tc.kind, AckID: tc.kind})
+		env := readEnvelope(t, c)
+		if env.Type != wsTypeError || env.AckID != tc.kind {
+			t.Fatalf("%s answered %s %s", tc.kind, env.Type, env.Payload)
+		}
+		p := errorCodeOf(t, env)
+		if p.Code != tc.code || !strings.Contains(p.Message, "does not honor a bound run observation") || !strings.Contains(p.Message, "wsContextDiscardingStore") {
+			t.Fatalf("%s refusal = %+v", tc.kind, p)
+		}
+	}
+	if n := discarding.reads.Load(); n != before {
+		t.Fatalf("a refused subscription read the store %d times", n-before)
+	}
+	if srv.runs.GetLogBuffer("r") != nil {
+		t.Fatal("a refused log subscription stood up a log buffer")
 	}
 	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "p"})
 	if env := readEnvelope(t, c); env.Type != wsTypePong {

@@ -28,7 +28,8 @@ import (
 // gate tests read: a count of run loads, a one-shot hook run right after the
 // Nth load returns, and a count of merge-reconciliation writes. Every read is
 // forwarded unchanged with the caller's context, so the binding policy under
-// test stays in the native store.
+// test stays in the native store, and a bound stream over it is endorsed
+// (endorseForwardingStore).
 type gateStore struct {
 	*store.FilesystemRunStore
 	loads       atomic.Int32
@@ -62,6 +63,10 @@ func (s *gateStore) LoadRun(ctx context.Context, id string) (*store.Run, error) 
 func (s *gateStore) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
 	s.mergeWrites.Add(1)
 	return s.FilesystemRunStore.UpdateRunMergeIf(ctx, id, upd, expectedFrom)
+}
+
+func (s *gateStore) CheckBoundObservationStore(actual store.RunStore) error {
+	return endorseForwardingStore(s, actual, s.FilesystemRunStore)
 }
 
 // afterLoadN arms h to run once, right after the nth run load from now
