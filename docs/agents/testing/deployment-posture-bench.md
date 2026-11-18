@@ -102,8 +102,8 @@ refuse.
 
 Seven legs, each counted:
 
-1. **the posture** — and it is judged, not just printed: `LandlockABI > 0` and
-   `AllThreads`, or the bench exits non-zero;
+1. **the posture** — judged, not just printed: `LandlockABI > 0`, `AllThreads`
+   and `SocketsDenied`, or the bench exits non-zero;
 2. **a memory bomb** → `memory_exceeded`;
 3. **a native regex bomb** → `cpu_time_exceeded`;
 4. **a benign program** after them, which must still return its value;

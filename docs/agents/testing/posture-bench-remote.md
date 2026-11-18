@@ -81,6 +81,7 @@ and deleted after it:
 | **Landlock ABI** | **2** | 4 |
 | legs | 7/7 held | 7/7 held |
 | a compromised child's `connect`, before #3371 | **SUCCEEDED** | refused `EACCES` |
+| the same with #3371's `Confine` (leg 5, 2026-11-18, `node3`) | refused `EACCES`, and UDP + `io_uring` too | refused |
 
 **The one that matters is the ABI.** Landlock gained TCP rights in ABI 4, so on
 this kernel the domain cannot refuse a socket connection: leg 5 reported the

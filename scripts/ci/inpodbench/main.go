@@ -327,11 +327,19 @@ func main() {
 	case posture.Confinement.LandlockABI == 0:
 		// Reachable only with -allow-without-landlock: without it the child
 		// refuses and lands on exitPostureRefused above.
-		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem and " +
-			"unrestricted sockets. -allow-without-landlock accepted that; it is not a pass.")
+		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem. " +
+			"-allow-without-landlock accepted that; it is not a pass.")
 		os.Exit(verdict(exitUnconfined))
 	case !posture.Confinement.AllThreads:
 		fmt.Println("VERDICT: the bounds covered ONE thread, not the process. That is not what codemode promises.")
+		os.Exit(verdict(exitLegFailed))
+	case !posture.Confinement.SocketsDenied:
+		// The IMAGE's child, not this bench's: leg 5 below proves the bench's
+		// own Confine, which is HEAD. A deployed binary that predates the
+		// socket wall reports false here, and a posture leg that let it pass
+		// would call a child with an open network confined.
+		fmt.Println("VERDICT: the image's child does not deny itself socket creation (sockets_denied=false): " +
+			"it predates the network wall, so a compromised child of this deployment reaches the network.")
 		os.Exit(verdict(exitLegFailed))
 	}
 
