@@ -113,6 +113,7 @@ Against a `kind` cluster driven purely through `kubectl`:
 | a namespace-scoped credential that may read its namespace but not nodes | bench 7/7, then **exit 2** naming the RBAC refusal — the previous version exited **1, silently**, after the bench had held |
 | the same credential without even the namespace read | goes past the *Forbidden* read, same exit 2 — the previous version stopped on "does not exist" for a namespace that existed |
 | `--pull-policy Never` with the image absent from the node | exit 2 in 6 s naming `ErrImageNeverPull` — the previous version waited out the whole window |
+| a credential with every right but `pods/log` | **exit 2** naming the unreadable logs — the previous version exited 1 claiming the pod "carried NO seccomp filter": kubectl's error had become the posture log |
 
 ## What it does not earn, printed in every run
 

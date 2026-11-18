@@ -20,8 +20,10 @@ size**, and the biggest process in a runner pod is the runner.
 Two things, both started by the parent before the child can allocate:
 
 - **`oom_score_adj = 1000`** on the child, written by the parent so it lands
-  whichever interpreter the child runs. A refusal is reported on the child's
-  stderr, never swallowed: without the mark an OOM may take the runner.
+  whichever interpreter the child runs. A refusal goes to `Host.OnWarn` — the
+  node's log on the claw backend — on **every** outcome: written only to the
+  child's stderr, which is read only on the death path, it was lost on every
+  run that returned a value. Without the mark an OOM may take the runner.
 - **A probe of the child's charged memory**: `RssAnon + RssShmem` from
   `/proc/<pid>/status`, sampled every 20 ms. The parent kills the child's
   **process group** when that grows past the bound, measured from the first

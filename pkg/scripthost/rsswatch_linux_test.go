@@ -3,10 +3,13 @@
 package scripthost
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -169,5 +172,39 @@ func TestABlindProbeIsNamedOnAnUnexplainedKill(t *testing.T) {
 	}
 	if !strings.Contains(resp.Message, "never sampled") {
 		t.Errorf("a blind probe is not named: %s", resp.Message)
+	}
+}
+
+// A refused OOM mark must reach the caller on a SUCCESSFUL run. The child's
+// stderr is read only when it dies without a document, so a refusal written
+// only there was lost on every run that returned a value — and a deployment
+// that always refuses the write was never told.
+func TestARefusedOOMMarkIsReportedOnASuccessfulRun(t *testing.T) {
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		warns []string
+	)
+	h := testHost(t)
+	h.markVictim = func(int) error { return errors.New("permission denied") }
+	h.OnWarn = func(msg string) {
+		mu.Lock()
+		defer mu.Unlock()
+		warns = append(warns, msg)
+	}
+	resp, err := h.Run(context.Background(), "1+1", DefaultLimits())
+	if err != nil {
+		t.Fatalf("the run failed: %v", err)
+	}
+	if resp.Refusal != "" || resp.Value != "2" {
+		t.Fatalf("the run did not succeed, so this proves nothing about the success path: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(warns) != 1 {
+		t.Fatalf("got %d warnings, want exactly one: %q", len(warns), warns)
+	}
+	if !strings.Contains(warns[0], "permission denied") || !strings.Contains(warns[0], "OOM victim") {
+		t.Errorf("the warning does not carry the refusal and what it costs: %q", warns[0])
 	}
 }

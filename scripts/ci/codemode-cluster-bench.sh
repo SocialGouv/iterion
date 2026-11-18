@@ -276,8 +276,14 @@ if [ -n "${rc_startup:-}" ] || [ "${pending:-1}" -ne 0 ]; then
 fi
 
 for p in $PODS; do
-	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 || true
-	printf '%s\n' "$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')" > "$EVIDENCE/$p.exit"
+	# Both reads are guarded: an unreadable log fails every posture grep below,
+	# and an unreadable exit code became "reported no exit code" — each a red
+	# verdict about a runtime nobody had judged.
+	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 \
+		|| die "the logs of $p could not be read, so nothing can be judged: $EVIDENCE/$p.log"
+	code=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') \
+		|| die "the exit code of $p could not be read, so nothing can be judged"
+	printf '%s\n' "$code" > "$EVIDENCE/$p.exit"
 done
 exit_of() { cat "$EVIDENCE/$1.exit"; }
 

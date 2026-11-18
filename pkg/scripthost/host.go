@@ -80,6 +80,20 @@ type Host struct {
 	// lets a `.bot` ask for bounds: the hook is wired ahead of the slice that
 	// opens one, and until then its warning has never been printed.
 	OnClamp func(requested, applied Limits)
+
+	// OnWarn, when set, receives a deployment warning that does NOT change the
+	// verdict — today, a child the kernel would not let this parent mark as
+	// the OOM victim. It is called as soon as the fact is known, on every
+	// outcome: the child's stderr is read only when it dies without a
+	// document, so a refusal written only there was lost on every successful
+	// run, and a deployment that always refuses the mark was never told. Nil
+	// means the warning is unobserved — a gap stated, like OnClamp's.
+	OnWarn func(msg string)
+
+	// markVictim replaces markOOMVictim in tests, so the refusal path has a
+	// witness without mutating package state under parallel tests. Nil is the
+	// real thing.
+	markVictim func(pid int) error
 }
 
 // Run executes src in a confined child and returns its verdict.
@@ -173,7 +187,15 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	// can allocate: the kernel's preference for killing THIS process when a
 	// cgroup is exhausted, and a parent-side probe of its charged memory, since a
 	// MAP_SHARED or memfd mapping is not charged to RLIMIT_DATA.
-	oomAdjErr := markOOMVictim(cmd.Process.Pid)
+	mark := h.markVictim
+	if mark == nil {
+		mark = markOOMVictim
+	}
+	oomAdjErr := mark(cmd.Process.Pid)
+	if oomAdjErr != nil && h.OnWarn != nil {
+		h.OnWarn(fmt.Sprintf("codemode: the script host could not be marked as the OOM victim (%v): "+
+			"a pod-level out-of-memory may take the runner instead of the script", oomAdjErr))
+	}
 	probeStop := make(chan struct{})
 	probeDone := watchRSS(cmd, limits.Memory, rssSampleInterval, probeStop)
 
@@ -187,8 +209,8 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	close(probeStop)
 	probe := <-probeDone
 	if oomAdjErr != nil {
-		// Not fatal and not silent: without the mark a pod-level OOM picks by
-		// size and may take the runner that owns the run instead of the script.
+		// Kept beside OnWarn as death-path evidence: without the mark a
+		// pod-level OOM picks by size and may take the runner instead.
 		fmt.Fprintf(&stderr, "\nscripthost: marking the child as the OOM victim: %v", oomAdjErr)
 	}
 	serve := join()

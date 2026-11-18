@@ -1120,6 +1120,56 @@ func groupSet(m map[string]bool) []string {
 	return out
 }
 
+// checkGroups judges the `Groups:` field of /proc/self/status against the
+// posture asked for. It is a pure function of that field so both directions
+// have a witness that needs no process.
+//
+// With NOTHING declared, only a widening is refused: a group other than the
+// one the chart names (fsGroup = runAsUser). The ABSENCE of that group widens
+// nothing, and the first version of this check did not require it — docker's
+// `--user uid:gid` puts the gid there today (measured on 29.10: `Groups:
+// 1000`), but the docker arm must not start refusing its own posture on a
+// runtime that does not.
+//
+// With a set DECLARED, it is the deployment's real answer, named by the
+// operator for the case the chart does not decide: a container runtime adds
+// the IMAGE's supplementary groups (`devbox` is in `sudo` and `users` in the
+// runner image). Then the match is EXACT in both directions — a group beyond
+// the set is a widening nobody stated, and a declared group that is absent
+// means the declaration does not describe this pod.
+func checkGroups(groupsField string, wantUID int, declared []int) error {
+	want := map[string]bool{strconv.Itoa(wantUID): true}
+	if len(declared) > 0 {
+		want = map[string]bool{}
+		for _, g := range declared {
+			want[strconv.Itoa(g)] = true
+		}
+	}
+	observed := map[string]bool{}
+	for _, g := range strings.Fields(groupsField) {
+		observed[g] = true
+		if !want[g] {
+			return fmt.Errorf("supplementary group %s (Groups: %s), want only %v: the chart sets "+
+				"fsGroup to runAsUser and names no supplementalGroups, so a group beyond the "+
+				"declared set is a widening the deployment did not state",
+				g, groupsField, groupSet(want))
+		}
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+	// In SORTED order: ranging over the map named a random absent group when
+	// several were missing, and a message must not depend on map order.
+	for _, g := range groupSet(want) {
+		if !observed[g] {
+			return fmt.Errorf("declared supplementary group %s is ABSENT (Groups: %s, want %v): "+
+				"the declaration does not describe this pod, so the posture is not the one named",
+				g, groupsField, groupSet(want))
+		}
+	}
+	return nil
+}
+
 func requirePosture(wantUID int, declared []int) error {
 	// runAsNonRoot: true is the one field of the chart's pod securityContext
 	// that a plain container CAN honour, and it was the one this check did not
@@ -1177,40 +1227,8 @@ func requirePosture(wantUID int, declared []int) error {
 	// (values.yaml:891), so any other group is a widening of the boundary the
 	// pod IS.
 	//
-	// The set is EQUAL in both directions. An empty declaration keeps the
-	// chart's answer — only the group the chart itself names — so a caller who
-	// says nothing cannot widen anything by omission. A NON-empty one is the
-	// deployment's real answer, named by the operator, for the case the chart
-	// does not decide: a container runtime adds the IMAGE's supplementary
-	// groups (`devbox` is in `sudo` and `users` in the runner image), and a
-	// check that refused them forever would make that image unmeasurable in a
-	// cluster while the same binary measured clean under docker, where the
-	// groups are exactly the one passed to `--user`. Declaring them is what
-	// turns "unmeasurable" into a posture the verdict names — observed and
-	// declared must match exactly, so a NEW group still refuses.
-	want := map[string]bool{strconv.Itoa(wantUID): true}
-	if len(declared) > 0 {
-		want = map[string]bool{}
-		for _, g := range declared {
-			want[strconv.Itoa(g)] = true
-		}
-	}
-	observed := map[string]bool{}
-	for _, g := range strings.Fields(field("Groups")) {
-		observed[g] = true
-		if !want[g] {
-			return fmt.Errorf("supplementary group %s (Groups: %s), want only %v: the chart sets "+
-				"fsGroup to runAsUser and names no supplementalGroups, so a group beyond the "+
-				"declared set is a widening the deployment did not state",
-				g, field("Groups"), groupSet(want))
-		}
-	}
-	for g := range want {
-		if !observed[g] {
-			return fmt.Errorf("declared supplementary group %s is ABSENT (Groups: %s, want %v): "+
-				"the declaration does not describe this pod, so the posture is not the one named",
-				g, field("Groups"), groupSet(want))
-		}
+	if err := checkGroups(field("Groups"), wantUID, declared); err != nil {
+		return err
 	}
 	if got := field("NoNewPrivs"); got != "1" {
 		return fmt.Errorf("NoNewPrivs %q, want \"1\": privilege escalation is not blocked", got)

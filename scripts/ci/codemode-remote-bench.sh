@@ -320,7 +320,12 @@ done
 [ "$pending" -eq 0 ] || { say "the pods did not terminate within ${MAX_WAIT}s; refusing to judge a run that is still going. Evidence: $EVIDENCE"; exit 2; }
 
 for p in $ADMITTED; do
-	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 || say "no logs from $p"
+	# Unreadable logs are "nothing was tested", never a verdict: kubectl's own
+	# error text would land in the log and fail every posture grep below —
+	# a red about the cluster when the credential lacks `pods/log`, or when the
+	# kubelet refused the pod before its container started.
+	kube logs "$p" > "$EVIDENCE/$p.log" 2>&1 \
+		|| die "the logs of $p could not be read, so nothing can be judged: $EVIDENCE/$p.log"
 	code=$(kube get pod "$p" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') \
 		|| die "the exit code of $p could not be read, so nothing can be judged"
 	printf '%s\n' "$code" > "$EVIDENCE/$p.exit"
