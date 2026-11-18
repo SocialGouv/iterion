@@ -162,7 +162,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	// route returns inside dispatchInvocation without reaching the tail at
 	// all, and is refused there instead, because a card carries no seat for
 	// provenance.
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP, launchProvenance{}, nil)
 }
 
 // realWebhookPRForgePRResolver fetches the PR a command comment sits on, with

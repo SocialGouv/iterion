@@ -444,8 +444,11 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `feature_prompt` (issue title + body), `open_mr=true`, and
   `source_issue_ref` (the issue URL), so an implementer bot (featurly)
   implements the issue, opens a PR, and comments the PR URL back onto the
-  issue. Scope which label fires with **`label_allowlist`** (below);
-  re-applying the same label is an idempotent replay.
+  issue. Scope which label fires with **`label_allowlist`** (below).
+  Each (repository, issue, label) is a re-armable
+  [trigger lane](#issue-trigger-lanes): a redelivery of the same event is
+  an idempotent replay, and re-applying the label launches again once the
+  previous run for it has ended.
 - **`issues`** with action `opened` + **`auto_implement_on_open`** → the
   zero-touch lane, now **author-gated**: the issue AUTHOR must be
   trusted — on the static `author_allowlist`, OR
@@ -467,11 +470,14 @@ The label path (GitHub `issues` and GitLab `Issue Hook`) routes through
 the same dispatcher sink as the `/command` path, so when a tenant cloud
 board is wired it also **materialises a one-way tracking card** for the
 issue — a read-only mirror linked back to the source issue via
-`source_issue_ref` (idempotent per issue). GitHub/GitLab stay the source
-of truth; iterion only writes back to them (PR + back-link comment). With
-a board *coordinator* running, the card is the unit of work the dispatcher
-executes; without one, the card is a tracking record and the run launches
-directly ([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
+`source_issue_ref`. GitHub/GitLab stay the source of truth; iterion only
+writes back to them (PR + back-link comment). With a board *coordinator*
+running, the card is the unit of work the dispatcher executes — one card
+per claim of the issue's [trigger lane](#issue-trigger-lanes). Without
+one, the card is a tracking record, not a claim: the run launches directly,
+the lane's delivery rows decide every launch, and the tracking card is
+written once per `cmd:issue:<n>` subject label, as for a comment
+([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
 
 ### Forgejo / Gitea (`POST /api/webhooks/forgejo/{id}`)
 
@@ -1374,12 +1380,16 @@ across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 | `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+| `gh\|issue\|` | `(tenant, webhook, project_path, issue_number, label OR "opened")` | the first claim of a [trigger lane](#issue-trigger-lanes) |
+| `gl\|issue\|` | `(tenant, webhook, project_id, issue_iid, label)` | the first claim of a [trigger lane](#issue-trigger-lanes) |
 
 Rows recorded as terminal without ever being claimed — `invalid`, `filtered`,
 and the `launch_error` rows written as their own audit row rather than a
 claimed delivery — get a **random UUID** as their idempotency key, so they never
 collide with the real dedup key
 ([pkg/server/webhooks_common.go:recordTerminalWebhookDelivery](../pkg/server/webhooks_common.go)).
+The one terminal row keyed otherwise is a trigger lane's absorbed delivery,
+keyed on that delivery's own identity ([below](#issue-trigger-lanes)).
 A claimed launch failure with no run keeps the real key and becomes
 `launch_error`. Its saved target allows a bounded periodic sweep or a
 super-admin `POST /api/webhooks/deliveries/{id}/retry` to claim the same row.
@@ -1388,6 +1398,77 @@ A replay that already produced a run never launches again. Intake now answers
 launch continues on a bounded context detached from the connection.
 See [receipts and retry](webhooks/retry.md) for backoff, attempt limits,
 shutdown behavior and terminal refusals.
+
+### Issue trigger lanes
+
+An issue trigger — a label applied to an issue (GitHub `issues` `labeled`,
+GitLab `Issue Hook` label added) or GitHub's zero-touch `opened` — is a
+request a person can make again, so it is not claimed once for good like a
+comment. Each (repository, issue, trigger) is a **lane** whose claims form a
+sequence, decided before anything is metered
+([pkg/server/webhooks_trigger_lane.go](../pkg/server/webhooks_trigger_lane.go)):
+
+- **A redelivery is a duplicate.** An event is known by the forge's own
+  delivery id, which its redeliveries carry again — GitHub's
+  `X-GitHub-Delivery`, GitLab's `webhook-id` / `Idempotency-Key` (GitLab
+  17.4+, documented as kept across retries and *Resend request*, whose
+  bytes it does not promise; `X-Gitlab-Event-UUID` is not an event id) — and
+  by the SHA-256 of its body,
+  which an exact retransmission repeats and a fresh application of the label
+  never does (the issue's `updated_at` moves). A delivery row records the id
+  as `forge_delivery_id`. A claim made for an event answers its redeliveries
+  for as long as it exists, without touching the quota.
+- **A fresh trigger launches once the lane's latest claim has ended**: on the
+  direct lane, its run is terminal (`finished`, `failed`,
+  `failed_resumable`, `cancelled`) or gone, or its launch was exhausted; on
+  the board lane, its card sits in a terminal column (`done`, `blocked`). A
+  claim whose launch failed before any run existed is retried by the next
+  trigger, as a redelivery would.
+- **A fresh trigger while the latest claim still serves is absorbed** — a
+  `duplicate` (direct) or `carded` (board) answer that starts nothing,
+  recorded as a `duplicate` delivery row under its own identity, so its own
+  redelivery stays a duplicate after the claim has ended. A claim serves while
+  its run is not terminal, while its launch is in flight, when its launch is
+  uncertain or was stranded by a crash (a run may exist that no row names),
+  and while its card sits in any non-terminal column. Under
+  `overlap: supersede` a direct lane's fresh trigger replaces the serving run
+  instead, through the launch tail's supersede pass.
+- **The next claim is atomic.** The direct lane's n-th claim (n ≥ 1) is the
+  row under `sha256(<first key>|gen|n)` (the first is the table's key, so rows
+  written before lanes existed are the lanes' first claims); the board lane's
+  next card takes a `native:<uuid>` id derived from the lane and the cards it
+  already holds. Two fresh triggers racing for a free lane collide on that
+  key, and the loser answers as a duplicate.
+
+A lane card carries the subject label `cmd:issue:<n>`, its lane label
+`cmd:lane:<project>#issue:<n>#<trigger>` and the identity of the event it was
+carded for, `cmd:delivery:delivery:<forge id>` (or `cmd:delivery:sha256:<hash>`
+when the forge sends no id), all under the board-local `cmd:`
+namespace the forge label sync preserves. A card carded before lanes existed
+carries only the subject label: it serves every lane of its subject — of its
+own repository when its launch context names one — until it reaches a
+terminal column. So does a tracking card written without a coordinator: a
+deployment that enables a coordinator later finds it serving until an
+operator closes it.
+
+A board lane is named by the project's path, as the card's launch context
+is: a project renamed while one of its cards still serves starts a second
+lane under the new path (the direct lane, keyed by GitLab's project id, does
+not split).
+
+The cards are the board lane's memory of the events it carded. Deleting a
+lane card forgets its event: a redelivery of that event then cards again,
+and deleting a card still serving frees its lane — the operator's manual
+re-arm gesture, not a leak to guard against.
+
+A lane the server cannot read — the delivery store, the run store or the
+board failing to answer — refuses the delivery with `503` and a
+`launch_error` audit row under a random key, before anything is metered, so
+the forge's own retry or a redelivery can try again.
+
+Comment commands are unchanged: a comment (`comment:<id>`, `note:<id>`) is
+its own unique subject, claimed once by its key and, on the board, by its
+`cmd:<subject>` card.
 
 ## The path a delivery takes
 

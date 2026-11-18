@@ -686,6 +686,12 @@ type Delivery struct {
 	ClosesSubject bool   `bson:"closes_subject,omitempty" json:"-"`
 	SubjectSHA    string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
 	PayloadHash   string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ForgeDeliveryID is the forge's own id of the event this row answers,
+	// the one a redelivery of the event carries again (GitHub
+	// X-GitHub-Delivery, GitLab webhook-id / Idempotency-Key). Recorded by
+	// the lanes that read it — the issue trigger lanes, whose redeliveries
+	// are recognised by it or by PayloadHash.
+	ForgeDeliveryID string `bson:"forge_delivery_id,omitempty" json:"forge_delivery_id,omitempty"`
 
 	Status     string    `bson:"status" json:"status"`
 	BotID      string    `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
