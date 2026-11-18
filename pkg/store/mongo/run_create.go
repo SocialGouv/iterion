@@ -113,6 +113,9 @@ func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...optio
 	if err := store.CheckRunDataBinding(ctx, h); err != nil {
 		return store.Run{}, err
 	}
+	if err := checkRunDocumentTenant(ctx, raw); err != nil {
+		return store.Run{}, err
+	}
 
 	var r store.Run
 	if f == store.LegacyValueFormat {

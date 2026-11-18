@@ -24,6 +24,8 @@ func runDataHeaderProjection() bson.M {
 
 // ObserveRunDataHeader never decodes Inputs, correction state or other payload
 // fields. Header observation does not enable incarnation-scoped data storage.
+// A binding that observed a tenant is compared with the canonical tenant of
+// the same document after its header.
 func (s *Store) ObserveRunDataHeader(ctx context.Context, id string) (store.RunDataHeader, error) {
 	if ctx == nil {
 		return store.RunDataHeader{}, store.ErrInvalidRunDataIdentity
@@ -34,9 +36,14 @@ func (s *Store) ObserveRunDataHeader(ctx context.Context, id string) (store.RunD
 	if id == "" {
 		return store.RunDataHeader{}, store.ErrInvalidRunDataIdentity
 	}
+	observed := observesTenant(ctx)
+	projection := runDataHeaderProjection()
+	if observed {
+		projection["retained_tenant_headers"] = tenantHeaderEntries()
+	}
 	cursor, err := s.runs.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: withTenantFilter(ctx, bson.M{"_id": id})}},
-		{{Key: "$project", Value: runDataHeaderProjection()}},
+		{{Key: "$project", Value: projection}},
 	})
 	if err != nil {
 		return store.RunDataHeader{}, err
@@ -105,6 +112,15 @@ func (s *Store) ObserveRunDataHeader(ctx context.Context, id string) (store.RunD
 	h, err = store.ValidateRunDataObservation(ctx, id, h)
 	if err != nil {
 		return store.RunDataHeader{}, err
+	}
+	if observed {
+		tenant, err := retainedCanonicalTenant(raw)
+		if err != nil {
+			return store.RunDataHeader{}, err
+		}
+		if err := store.CheckRunObservedTenant(ctx, tenant); err != nil {
+			return store.RunDataHeader{}, err
+		}
 	}
 	if schemaVersion > SchemaVersion {
 		return store.RunDataHeader{}, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required: %w", id, schemaVersion, store.ErrRunMetadataUndecodable)

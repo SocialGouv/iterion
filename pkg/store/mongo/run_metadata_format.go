@@ -158,6 +158,12 @@ func (s *Store) readRunFormatMetadata(ctx context.Context, id string) (*store.Ru
 func (s *Store) readRunFormatObservation(ctx context.Context, id string, capture bool) (*store.Run, bson.Raw, error) {
 	return s.readRunFormatObservationPolicy(ctx, id, capture, false)
 }
+
+// readRunFormatObservationPolicy is the read every Mongo stream read, scan
+// batch and metadata read goes through. retained asks for the canonical tenant
+// (parent.TenantID). A binding that observed a tenant forces it too and is
+// compared with it after the header: another tenant under the same header
+// answers ErrRunDataIdentityChanged, whatever the tenant filter lets through.
 func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, capture, retained bool) (*store.Run, bson.Raw, error) {
 	if ctx == nil {
 		return nil, nil, store.ErrInvalidValueFormat
@@ -165,9 +171,11 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	observed := observesTenant(ctx)
+	retained = retained || observed
 	projection := runFormatMetadataProjection()
 	if retained {
-		projection["retained_tenant_headers"] = bson.M{"$filter": bson.M{"input": bson.M{"$objectToArray": "$$ROOT"}, "as": "header", "cond": bson.M{"$regexMatch": bson.M{"input": "$$header.k", "regex": "^[tT][eE][nN][aA][nN][tT]_[iIİ][dD]$"}}}}
+		projection["retained_tenant_headers"] = tenantHeaderEntries()
 	}
 	cursor, err := s.runs.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: withTenantFilter(ctx, bson.M{"_id": id})}},
@@ -193,10 +201,18 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 		}
 	}
 	parent, err := decodeRunFormatObservation(ctx, raw, capture)
-	if err == nil && retained {
+	if err != nil {
+		return parent, raw, err
+	}
+	if retained {
 		parent.TenantID = tenant
 	}
-	return parent, raw, err
+	if observed {
+		if err := store.CheckRunObservedTenant(ctx, tenant); err != nil {
+			return nil, raw, err
+		}
+	}
+	return parent, raw, nil
 }
 
 func (s *Store) readRunFormatParent(ctx context.Context, id string) (*store.Run, error) {

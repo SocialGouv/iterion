@@ -73,6 +73,182 @@ func TestSnapshotOriginNativeFS(t *testing.T) {
 				snapshotOriginMatrix(t, s, t.Context(), f, mode)
 			})
 		}
+		t.Run(fmt.Sprintf("f%d/tenant", f), func(t *testing.T) {
+			snapshotOriginTenantFS(t, f)
+		})
+	}
+	for _, forge := range []string{"duplicate", "alias"} {
+		t.Run("f1/lenient-tenant-"+forge, func(t *testing.T) {
+			snapshotOriginLenientTenantFS(t, forge)
+		})
+	}
+}
+
+// fsSnapshotRun creates run r in format f with one event marked "A" and
+// returns its store, root and canonical header.
+func fsSnapshotRun(t *testing.T, f store.ValueFormat) (*store.FilesystemRunStore, string, store.RunDataHeader) {
+	t.Helper()
+	root := t.TempDir()
+	s, err := store.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.CreateRunWithValueFormat(t.Context(), store.RunCreateSpec{ID: "r", WorkflowName: "wf", Format: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := store.BindRunValueFormat(t.Context(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AppendEvent(write, "r", store.Event{Data: map[string]any{"marker": "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := store.RunDataHeaderFromJSON(t.Context(), readFSRunJSON(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.BirthID == "" || h.BirthID != a.BirthID || h.Format != f {
+		t.Fatalf("fixture: canonical header %+v, created birth %q format %d", h, a.BirthID, f)
+	}
+	return s, root, h
+}
+
+func readFSRunJSON(t *testing.T, root string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "runs", "r", "run.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// fsCanonicalObservation reads run r's header and tenant through the
+// filesystem store's canonical parsers: its stream selection's observation.
+func fsCanonicalObservation(t *testing.T, s *store.FilesystemRunStore) (store.RunObservation, error) {
+	t.Helper()
+	sel, observed, err := s.OpenFilesystemStream(t.Context(), "r", store.FilesystemStreamOpenOptions{})
+	if err != nil {
+		return store.RunObservation{}, err
+	}
+	defer sel.Close()
+	o, ok, err := store.CaptureEventStreamObservation(sel)
+	if err != nil || !ok || !observed {
+		t.Fatalf("fixture: selection observation %t %t %v", ok, observed, err)
+	}
+	return o, nil
+}
+
+// retenantFSRun sets tenant_id in run r's run.json, every other member kept,
+// and asserts the canonical parsers read header h and tenant back.
+func retenantFSRun(t *testing.T, s *store.FilesystemRunStore, root, tenant string, h store.RunDataHeader) {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(readFSRunJSON(t, root), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if raw["tenant_id"], err = json.Marshal(tenant); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "runs", "r", "run.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, err := fsCanonicalObservation(t, s)
+	if err != nil || o.Header() != h || o.TenantID() != tenant {
+		t.Fatalf("fixture: canonical observation after the rewrite = %+v tenant %q, %v; want header %+v tenant %q", o.Header(), o.TenantID(), err, h, tenant)
+	}
+}
+
+// snapshotOriginTenantFS: A's run.json records tenant "T" (filesystem
+// creation records none, so it is seeded and read back canonically); as the
+// scan begins B rewrites only the tenant to "U", A's birth, format and
+// protocol kept. BuildSnapshot binds the loaded run's tenant, so the scan
+// refuses exactly ErrRunDataIdentityChanged before any event is folded.
+func snapshotOriginTenantFS(t *testing.T, f store.ValueFormat) {
+	s, root, h := fsSnapshotRun(t, f)
+	retenantFSRun(t, s, root, "T", h)
+	control := &snapshotOriginBarrier{RunStore: s}
+	if snap, err := BuildSnapshot(t.Context(), control, "r"); err != nil || snap == nil || control.scanned != 1 || control.seen != "A" {
+		t.Fatalf("control: tenant \"T\" snapshot=%v err=%v scanned=%d marker=%q", snap != nil, err, control.scanned, control.seen)
+	}
+	wrapped := &snapshotOriginBarrier{RunStore: s, beforeScan: func() { retenantFSRun(t, s, root, "U", h) }}
+	snap, err := BuildSnapshot(t.Context(), wrapped, "r")
+	if !errors.Is(err, store.ErrRunDataIdentityChanged) || snap != nil || wrapped.scanned != 0 {
+		t.Fatalf("tenant rewritten \"T\" -> \"U\" as the scan begins: snapshot=%v err=%v scanned=%d marker=%q, want ErrRunDataIdentityChanged and nothing scanned", snap != nil, err, wrapped.scanned, wrapped.seen)
+	}
+}
+
+// snapshotOriginLenientTenantFS: run.json carries a duplicated or case-alias
+// tenant_id, so the decoded Run.TenantID ("T") and the canonical parser
+// disagree. The observation BuildSnapshot and CaptureRunOriginIn capture
+// keeps the decoded tenant; every bound native read refuses the record
+// typed (ErrInvalidRunDataIdentity) and the run is never snapshotted.
+func snapshotOriginLenientTenantFS(t *testing.T, forge string) {
+	s, root, h := fsSnapshotRun(t, store.LegacyValueFormat)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(readFSRunJSON(t, root), &raw); err != nil {
+		t.Fatal(err)
+	}
+	delete(raw, "tenant_id")
+	body, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := body[1 : len(body)-1]
+	var forged []byte
+	switch forge {
+	case "duplicate":
+		forged = append(append([]byte(`{"tenant_id":"U",`), members...), []byte(`,"tenant_id":"T"}`)...)
+	case "alias":
+		forged = append(append([]byte(`{"Tenant_ID":"T",`), members...), '}')
+	}
+	if err = os.WriteFile(filepath.Join(root, "runs", "r", "run.json"), forged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.RunDataHeaderFromJSON(t.Context(), forged); err != nil || got != h {
+		t.Fatalf("fixture: forged header %+v, %v, want %+v", got, err, h)
+	}
+	if _, err := fsCanonicalObservation(t, s); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+		t.Fatalf("fixture: the canonical parser accepts the %s tenant_id: %v", forge, err)
+	}
+	if r, err := s.LoadRun(t.Context(), "r"); err != nil || r.TenantID != "T" {
+		t.Fatalf("fixture: the decoded tenant of a %s tenant_id = %v, %v, want \"T\"", forge, r, err)
+	}
+
+	wrapped := &snapshotOriginBarrier{RunStore: s}
+	snap, err := BuildSnapshot(t.Context(), wrapped, "r")
+	if !errors.Is(err, store.ErrInvalidRunDataIdentity) || snap != nil || wrapped.scanned != 0 {
+		t.Fatalf("BuildSnapshot of a %s tenant_id: snapshot=%v err=%v scanned=%d, want ErrInvalidRunDataIdentity and nothing scanned", forge, snap != nil, err, wrapped.scanned)
+	}
+	lenientCaptureRefusedOnBoundReads(t, s, "T", forge)
+}
+
+// lenientCaptureRefusedOnBoundReads: CaptureRunOriginIn keeps the decoded
+// tenant of a record whose canonical tenant is refused; reads bound to that
+// observation, team-blind, refuse ErrInvalidRunDataIdentity and deliver
+// nothing.
+func lenientCaptureRefusedOnBoundReads(t *testing.T, s store.RunStore, decoded, forge string) {
+	t.Helper()
+	blind := store.WithoutTenantFilter(t.Context())
+	o, err := CaptureRunOriginIn(blind, s, "r")
+	if err != nil || o.TenantID() != decoded {
+		t.Fatalf("CaptureRunOriginIn of a %s tenant_id = tenant %q, %v, want the decoded %q", forge, o.TenantID(), err, decoded)
+	}
+	bound, err := store.BindRunObservation(blind, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.LoadRun(bound, "r"); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+		t.Errorf("LoadRun bound to the lenient capture of a %s tenant_id: run %t, %v, want ErrInvalidRunDataIdentity", forge, r != nil, err)
+	}
+	visited := 0
+	if err := s.ScanEvents(bound, "r", func(*store.Event) bool { visited++; return true }); !errors.Is(err, store.ErrInvalidRunDataIdentity) || visited != 0 {
+		t.Errorf("ScanEvents bound to the lenient capture of a %s tenant_id: %d events, %v, want ErrInvalidRunDataIdentity", forge, visited, err)
 	}
 }
 

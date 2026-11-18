@@ -5,6 +5,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+// retainedCanonicalTenant parses the canonical tenant from the
+// retained_tenant_headers projection (tenantHeaderEntries).
 func retainedCanonicalTenant(raw bson.Raw) (string, error) {
 	a, ok := raw.Lookup("retained_tenant_headers").ArrayOK()
 	if !ok {
@@ -14,25 +16,19 @@ func retainedCanonicalTenant(raw bson.Raw) (string, error) {
 	if err != nil {
 		return "", store.ErrInvalidRunDataIdentity
 	}
-	if len(entries) == 0 {
-		return "", nil
+	headers := make([]tenantHeader, 0, len(entries))
+	for _, entry := range entries {
+		d, ok := entry.DocumentOK()
+		if !ok {
+			return "", store.ErrInvalidRunDataIdentity
+		}
+		key, ok := d.Lookup("k").StringValueOK()
+		if !ok {
+			return "", store.ErrInvalidRunDataIdentity
+		}
+		headers = append(headers, tenantHeader{key: key, value: d.Lookup("v")})
 	}
-	if len(entries) != 1 {
-		return "", store.ErrInvalidRunDataIdentity
-	}
-	d, ok := entries[0].DocumentOK()
-	if !ok {
-		return "", store.ErrInvalidRunDataIdentity
-	}
-	key, ok := d.Lookup("k").StringValueOK()
-	if !ok || key != "tenant_id" {
-		return "", store.ErrInvalidRunDataIdentity
-	}
-	tenant, ok := d.Lookup("v").StringValueOK()
-	if !ok {
-		return "", store.ErrInvalidRunDataIdentity
-	}
-	return tenant, nil
+	return canonicalTenant(headers)
 }
 func (n *StreamSelection) CheckEventObservationSelection(actual any) error {
 	if n == nil || actual != n {
