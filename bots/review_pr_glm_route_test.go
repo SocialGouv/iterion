@@ -47,7 +47,7 @@ func TestReviewPrClaudeSlotFallsBackToGlmOnASpentForfait(t *testing.T) {
 	// converge rides EVERY path: with no second server a capped forfait
 	// costs the whole review even when the reviewer was rescued, and unpinned
 	// its claude id goes to the z.ai facade.
-	assertAnthropicPinnedWithGlmRoute(t, "review-pr", "reviewer_claude", "reviewer_claude_glance", "converge")
+	assertAnthropicPinnedWithGlmRoute(t, "review-pr", "reviewer_alternate", "reviewer_alternate_glance", "converge")
 }
 
 // Revi's conversational sibling answers `/revi <question>` on the same claude

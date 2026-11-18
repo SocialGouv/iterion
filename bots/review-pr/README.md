@@ -52,8 +52,8 @@ reviewer, has its own route for the same reason the merge twin does.)
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
 diff_precheck -> topology (condition)
-  ├─ mono/claude -> reviewer_claude   claude_code + opus 5.5, read-only
-  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-6-astra, read-only tools
+  ├─ mono/claude -> reviewer_alternate   claude_code + opus 5.5, read-only
+  ├─ mono/gpt    -> reviewer      claw + openai/gpt-6-astra, read-only tools
   └─ dual        -> fan (fan_out_all) -> both reviewers
 reviewer_* -> merge_reviews (best_effort)
 merge_reviews -> converge_gpt   when mono_family == gpt   (claw + openai/gpt-6-sol)
@@ -369,7 +369,7 @@ mode, as it is in the default one.
 
 ## Read-only by construction
 
-No node mutates source. `reviewer_gpt` runs on `claw` and is given only
+No node mutates source. `reviewer` runs on `claw` and is given only
 read tools (`bash`, `read_file`, `glob`, `grep` — no
 `write_file`/`file_edit`), so it can run git and read the workspace but has
 no structured path to edit it.
@@ -499,7 +499,7 @@ z.ai key.
 
 Nothing about the degradation is silent. `_backend` and `_model` name what
 actually served; the published review's run table carries them
-(`ai_reviewer_claude_*`, or `ai_reviewer_claude_glance_*` on the glance tier);
+(`ai_reviewer_alternate_*`, or `ai_reviewer_alternate_glance_*` on the glance tier);
 and the **merge-gate status itself says so** — the gate reads the engine's
 `_fallback_used` stamp and writes a note naming the model that ran. Advisory,
 not fail-closed, and deliberately: the gate's three fail-closed branches are
@@ -557,7 +557,7 @@ See [main.bot](main.bot) for the full DSL.
 
 `mono_family` is the family of the WHOLE review, not only of the reviewer
 that judges. A launch carrying `mono_family=gpt` takes `topology ->
-reviewer_gpt`, `merge_reviews -> converge_gpt`, and the `pacer_gpt`
+reviewer`, `merge_reviews -> converge_gpt`, and the `pacer_gpt`
 supervisor; the claude reviewers, the claude merge step and the claude
 `pacer` are on no route such a run takes. **No deployment profile is needed
 for that** — not for the review, not for the merge, not for the pacer.
@@ -576,9 +576,9 @@ reading the usage-cap pre-flight folds
 
 | route | no `mono_family=gpt` | `mono_family=gpt` | its own dials |
 |---|---|---|---|
-| reviewer | `reviewer_claude` — `claude_code` + opus 5.5 + `anthropic` | `reviewer_gpt` — `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{CLAUDE,GPT}`, `ITERION_VIBE_PROVIDER_{CLAUDE,GPT}` |
+| reviewer | `reviewer_alternate` — `claude_code` + opus 5.5 + `anthropic` | `reviewer` — `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{CLAUDE,GPT}`, `ITERION_VIBE_PROVIDER_{CLAUDE,GPT}` |
 | merge | `converge` — `claude_code` + opus 5.5 + `anthropic`, with the GLM rescue route below it | `converge_gpt` — `claw` + `openai/gpt-6-sol`, no hint, no rescue route (claw reads none) | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT` / `…_EMIT_GPT` |
-| pacer supervisor | `pacer` — `anthropic/claude-opus-5-5`, watching `reviewer_claude` | `pacer_gpt` — `openai/gpt-6-sol`, watching `reviewer_gpt` | `ITERION_VIBE_MODEL_SUPERVISOR` / `…_SUPERVISOR_GPT`, or `ITERION_SUPERVISORS=off` |
+| pacer supervisor | `pacer` — `anthropic/claude-opus-5-5`, watching `reviewer_alternate` | `pacer_gpt` — `openai/gpt-6-sol`, watching `reviewer` | `ITERION_VIBE_MODEL_SUPERVISOR` / `…_SUPERVISOR_GPT`, or `ITERION_SUPERVISORS=off` |
 
 The column heading is the LAUNCH VAR, not the topology — and **a dual
 resolution the injection runs on carries no launch var at all**:

@@ -266,7 +266,7 @@ version: 0.9.25
 ## ITERION_VIBE_MODEL_GPT_GLANCE — they return when the pin lifts; the
 ## effort dials and ITERION_VIBE_MODEL_CLAUDE_FALLBACK stay live.
 ## 0.9.5 — the claude slot has somewhere to go. Both its nodes
-## (reviewer_claude and its glance twin) declare a GLM fallback route,
+## (reviewer_alternate and its glance twin) declare a GLM fallback route,
 ## so an instance whose Anthropic credential is spent, expired or unable
 ## to serve the model still gets a claude-family review instead of a
 ## failed node. The route is a `provider: "zai"` hint carrying its own
@@ -457,7 +457,7 @@ requires:
 ## PR review summary body — so a 0-finding review shows WHAT was checked
 ## and WHERE residual risk hides, never a bare "trust me, nothing".
 ## Questions never become findings, never reach the board, never gate.
-## 0.3.1 — reviewer_gpt backend env-overridable (ITERION_VIBE_BACKEND_GPT)
+## 0.3.1 — reviewer backend env-overridable (ITERION_VIBE_BACKEND_GPT)
 ## so a Claude-forfait-only instance runs the second reviewer on
 ## claude_code (cross-model diversity) when OpenAI quota is unavailable.
 description: |

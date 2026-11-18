@@ -10,8 +10,8 @@ mono asymptote as production-proven (needs provider-credential headroom).
 ## Context
 
 Five catalog bots run a **bi-model review loop**: a router alternates
-`reviewer_claude` (backend `claude_code`, a "claude"-family model) and
-`reviewer_gpt` (backend `claw`, a "gpt"-family model), each feeding its
+`reviewer_alternate` (backend `claude_code`, a "claude"-family model) and
+`reviewer` (backend `claw`, a "gpt"-family model), each feeding its
 same-family fixer, until a `streak_check` compute signals convergence.
 Two model *families* are the point — the loop's robustness comes from a
 second family catching the first's blind spots, and (in 4 of the 5 bots)

@@ -199,40 +199,40 @@ schema publish_input:
   ## never the dial the node was written with — a routing cell outranks the
   ## dial, a gateway's feed replaces a level its route does not take, and the
   ## harness may send another level, none, or a lower one on a recovery.
-  ai_reviewer_claude_model: json
-  ai_reviewer_claude_backend: json
-  ai_reviewer_claude_tokens: json
-  ai_reviewer_claude_fallback: json
-  ai_reviewer_claude_wire: json
-  ai_reviewer_claude_effort: json
-  ai_reviewer_claude_effort_source: json
-  ai_reviewer_claude_effort_requested: json
-  ai_reviewer_claude_effort_lowered: json
-  ai_reviewer_gpt_model: json
-  ai_reviewer_gpt_backend: json
-  ai_reviewer_gpt_tokens: json
-  ai_reviewer_gpt_wire: json
-  ai_reviewer_gpt_effort: json
-  ai_reviewer_gpt_effort_source: json
-  ai_reviewer_gpt_effort_requested: json
-  ai_reviewer_gpt_effort_lowered: json
-  ai_reviewer_claude_glance_model: json
-  ai_reviewer_claude_glance_backend: json
-  ai_reviewer_claude_glance_tokens: json
-  ai_reviewer_claude_glance_fallback: json
-  ai_reviewer_claude_glance_wire: json
-  ai_reviewer_claude_glance_effort: json
-  ai_reviewer_claude_glance_effort_source: json
-  ai_reviewer_claude_glance_effort_requested: json
-  ai_reviewer_claude_glance_effort_lowered: json
-  ai_reviewer_gpt_glance_model: json
-  ai_reviewer_gpt_glance_backend: json
-  ai_reviewer_gpt_glance_tokens: json
-  ai_reviewer_gpt_glance_wire: json
-  ai_reviewer_gpt_glance_effort: json
-  ai_reviewer_gpt_glance_effort_source: json
-  ai_reviewer_gpt_glance_effort_requested: json
-  ai_reviewer_gpt_glance_effort_lowered: json
+  ai_reviewer_alternate_model: json
+  ai_reviewer_alternate_backend: json
+  ai_reviewer_alternate_tokens: json
+  ai_reviewer_alternate_fallback: json
+  ai_reviewer_alternate_wire: json
+  ai_reviewer_alternate_effort: json
+  ai_reviewer_alternate_effort_source: json
+  ai_reviewer_alternate_effort_requested: json
+  ai_reviewer_alternate_effort_lowered: json
+  ai_reviewer_model: json
+  ai_reviewer_backend: json
+  ai_reviewer_tokens: json
+  ai_reviewer_wire: json
+  ai_reviewer_effort: json
+  ai_reviewer_effort_source: json
+  ai_reviewer_effort_requested: json
+  ai_reviewer_effort_lowered: json
+  ai_reviewer_alternate_glance_model: json
+  ai_reviewer_alternate_glance_backend: json
+  ai_reviewer_alternate_glance_tokens: json
+  ai_reviewer_alternate_glance_fallback: json
+  ai_reviewer_alternate_glance_wire: json
+  ai_reviewer_alternate_glance_effort: json
+  ai_reviewer_alternate_glance_effort_source: json
+  ai_reviewer_alternate_glance_effort_requested: json
+  ai_reviewer_alternate_glance_effort_lowered: json
+  ai_reviewer_glance_model: json
+  ai_reviewer_glance_backend: json
+  ai_reviewer_glance_tokens: json
+  ai_reviewer_glance_wire: json
+  ai_reviewer_glance_effort: json
+  ai_reviewer_glance_effort_source: json
+  ai_reviewer_glance_effort_requested: json
+  ai_reviewer_glance_effort_lowered: json
   ai_converge_model: json
   ai_converge_backend: json
   ai_converge_tokens: json

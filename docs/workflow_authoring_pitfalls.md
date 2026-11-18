@@ -436,7 +436,7 @@ a change MUST diff the working tree against the right base —
 `git diff HEAD` for uncommitted work, `git diff <run-base>` for a v2
 run's cumulative series — **never `git diff HEAD^...HEAD`** (the last
 *commit* = the base). The historical v1 bug: feature_dev's
-reviewer_gpt diffed `HEAD^...HEAD`, reported "feature not implemented"
+reviewer diffed `HEAD^...HEAD`, reported "feature not implemented"
 against work that was plainly present, split the cross-family verdict
 and oscillated forever. Same family of bug: `git diff HEAD` omits
 *untracked* files — new files must be marked or staged first (`git add -N -- ':/' $ITERION_TREE_NOISE`, `git add -A -- ':/' $ITERION_TREE_NOISE` — iterion's skills mirror left out)

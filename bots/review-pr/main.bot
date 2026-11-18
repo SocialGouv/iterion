@@ -19,14 +19,14 @@
 ##                     into severity_threshold / max_findings /
 ##                     post_to_board / effective_review_mode — #685)
 ##   topology (condition — ADR-052 + review tiers)
-##     ├─ mono, guard tier (DEFAULT) -> reviewer_claude / reviewer_gpt
-##     ├─ mono, glance tier          -> reviewer_claude_glance /
-##                                      reviewer_gpt_glance (cheaper
+##     ├─ mono, guard tier (DEFAULT) -> reviewer_alternate / reviewer
+##     ├─ mono, glance tier          -> reviewer_alternate_glance /
+##                                      reviewer_glance (cheaper
 ##                                      same-family model)
 ##     └─ dual (review_mode=dual, or audit tier which forces it)
 ##                       -> fan (fan_out_all)
-##                            ├─ reviewer_claude  (claude_code, read-only)
-##                            └─ reviewer_gpt     (claw + openai/gpt-6-astra)
+##                            ├─ reviewer_alternate  (claude_code, read-only)
+##                            └─ reviewer     (claw + openai/gpt-6-astra)
 ##   reviewer_* -> merge_reviews -> converge   (await: wait_all)
 ##                 board + markdown report
 ##   converge -> pr_gate   (deterministic: was a pr_url given?)
@@ -71,8 +71,8 @@
 ## files out, and `publish_review` strips findings anchored on them into a
 ## workspace-anomaly section of the report rather than against the PR.
 ##
-## Read-only safety: no node mutates source. reviewer_claude is
-## `readonly: true`; reviewer_gpt is given only read tools (bash,
+## Read-only safety: no node mutates source. reviewer_alternate is
+## `readonly: true`; reviewer is given only read tools (bash,
 ## read_file, glob, grep — no write_file/file_edit). The single
 ## downstream `emit` step writes exactly one file (the report) and
 ## creates board issues over MCP; it runs after the parallel reviewers
@@ -495,7 +495,7 @@ prompt pacer_policy:
 ## which is also what keeps the usage-cap pre-flight from parking the run
 ## for it (runner.preflightSupervisors).
 supervisor pacer:
-  watches: [reviewer_claude]
+  watches: [reviewer_alternate]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}"
   system: pacer_policy
   cooldown: "6m"
@@ -511,7 +511,7 @@ supervisor pacer:
 ## (`ITERION_VIBE_MODEL_SUPERVISOR` keeps dialling the claude one). The
 ## model is this bundle's OpenAI supervisor spec, the merge twin's.
 supervisor pacer_gpt:
-  watches: [reviewer_gpt]
+  watches: [reviewer]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}"
   system: pacer_policy
   cooldown: "6m"
@@ -594,30 +594,30 @@ workflow review_pr:
   ## rather than to an empty router.
   topology -> fan when "vars.review_mode == 'dual' || vars.review_tier == 'audit'"
 
-  topology -> reviewer_gpt_glance when "vars.review_tier == 'glance' && vars.mono_family == 'gpt'"
+  topology -> reviewer_glance when "vars.review_tier == 'glance' && vars.mono_family == 'gpt'"
 
-  topology -> reviewer_gpt when "vars.mono_family == 'gpt'"
+  topology -> reviewer when "vars.mono_family == 'gpt'"
 
-  topology -> reviewer_claude_glance when "vars.review_tier == 'glance'"
+  topology -> reviewer_alternate_glance when "vars.review_tier == 'glance'"
 
-  topology -> reviewer_claude
+  topology -> reviewer_alternate
 
   ## Fan out to both FULL-strength family reviewers (dual only — audit's
   ## defining spend never routes through the glance variants).
-  fan -> reviewer_claude
+  fan -> reviewer_alternate
 
-  fan -> reviewer_gpt
+  fan -> reviewer
 
   ## Converge on emit (await: wait_all). emit reads
   ## outputs.merge_reviews (normalised per family) directly, so the
   ## edges carry no data mapping.
-  reviewer_claude -> merge_reviews
+  reviewer_alternate -> merge_reviews
 
-  reviewer_gpt -> merge_reviews
+  reviewer -> merge_reviews
 
-  reviewer_claude_glance -> merge_reviews
+  reviewer_alternate_glance -> merge_reviews
 
-  reviewer_gpt_glance -> merge_reviews
+  reviewer_glance -> merge_reviews
 
   ## THE MERGE FAMILY follows `mono_family` (#2467): a mono-GPT run is
   ## resolved from credentials where claude is the preferred family
@@ -703,47 +703,47 @@ workflow review_pr:
     ## workspace anomaly rather than as PR content (#1666).
     workspace_anomaly: "{{outputs.diff_precheck.workspace_anomaly}}",
     ai_run_tokens: "{{run.tokens}}",
-    ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
-    ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
-    ai_reviewer_claude_tokens: "{{outputs.reviewer_claude._tokens}}",
+    ai_reviewer_alternate_model: "{{outputs.reviewer_alternate._model}}",
+    ai_reviewer_alternate_backend: "{{outputs.reviewer_alternate._backend}}",
+    ai_reviewer_alternate_tokens: "{{outputs.reviewer_alternate._tokens}}",
     ## The engine writes _fallback_used ONLY when the node was served by
     ## something other than its first choice, so its PRESENCE is the fact.
     ## The gate reads it instead of inferring degradation from whichever
     ## model name it happens to see.
-    ai_reviewer_claude_fallback: "{{outputs.reviewer_claude._fallback_used}}",
+    ai_reviewer_alternate_fallback: "{{outputs.reviewer_alternate._fallback_used}}",
     ## The session's routing label: a facade serves whatever model id it
     ## is sent (z.ai answers a claude id with GLM), so `_model` alone
     ## cannot tell the published table which family actually served.
-    ai_reviewer_claude_wire: "{{outputs.reviewer_claude._session_fingerprint}}",
-    ai_reviewer_claude_effort: "{{outputs.reviewer_claude._reasoning_effort_applied}}",
-    ai_reviewer_claude_effort_source: "{{outputs.reviewer_claude._reasoning_effort_source}}",
-    ai_reviewer_claude_effort_requested: "{{outputs.reviewer_claude._reasoning_effort_requested}}",
-    ai_reviewer_claude_effort_lowered: "{{outputs.reviewer_claude._reasoning_effort_lowered}}",
-    ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
-    ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
-    ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
-    ai_reviewer_gpt_wire: "{{outputs.reviewer_gpt._session_fingerprint}}",
-    ai_reviewer_gpt_effort: "{{outputs.reviewer_gpt._reasoning_effort_applied}}",
-    ai_reviewer_gpt_effort_source: "{{outputs.reviewer_gpt._reasoning_effort_source}}",
-    ai_reviewer_gpt_effort_requested: "{{outputs.reviewer_gpt._reasoning_effort_requested}}",
-    ai_reviewer_gpt_effort_lowered: "{{outputs.reviewer_gpt._reasoning_effort_lowered}}",
-    ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
-    ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
-    ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
-    ai_reviewer_claude_glance_fallback: "{{outputs.reviewer_claude_glance._fallback_used}}",
-    ai_reviewer_claude_glance_wire: "{{outputs.reviewer_claude_glance._session_fingerprint}}",
-    ai_reviewer_claude_glance_effort: "{{outputs.reviewer_claude_glance._reasoning_effort_applied}}",
-    ai_reviewer_claude_glance_effort_source: "{{outputs.reviewer_claude_glance._reasoning_effort_source}}",
-    ai_reviewer_claude_glance_effort_requested: "{{outputs.reviewer_claude_glance._reasoning_effort_requested}}",
-    ai_reviewer_claude_glance_effort_lowered: "{{outputs.reviewer_claude_glance._reasoning_effort_lowered}}",
-    ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
-    ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
-    ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
-    ai_reviewer_gpt_glance_wire: "{{outputs.reviewer_gpt_glance._session_fingerprint}}",
-    ai_reviewer_gpt_glance_effort: "{{outputs.reviewer_gpt_glance._reasoning_effort_applied}}",
-    ai_reviewer_gpt_glance_effort_source: "{{outputs.reviewer_gpt_glance._reasoning_effort_source}}",
-    ai_reviewer_gpt_glance_effort_requested: "{{outputs.reviewer_gpt_glance._reasoning_effort_requested}}",
-    ai_reviewer_gpt_glance_effort_lowered: "{{outputs.reviewer_gpt_glance._reasoning_effort_lowered}}",
+    ai_reviewer_alternate_wire: "{{outputs.reviewer_alternate._session_fingerprint}}",
+    ai_reviewer_alternate_effort: "{{outputs.reviewer_alternate._reasoning_effort_applied}}",
+    ai_reviewer_alternate_effort_source: "{{outputs.reviewer_alternate._reasoning_effort_source}}",
+    ai_reviewer_alternate_effort_requested: "{{outputs.reviewer_alternate._reasoning_effort_requested}}",
+    ai_reviewer_alternate_effort_lowered: "{{outputs.reviewer_alternate._reasoning_effort_lowered}}",
+    ai_reviewer_model: "{{outputs.reviewer._model}}",
+    ai_reviewer_backend: "{{outputs.reviewer._backend}}",
+    ai_reviewer_tokens: "{{outputs.reviewer._tokens}}",
+    ai_reviewer_wire: "{{outputs.reviewer._session_fingerprint}}",
+    ai_reviewer_effort: "{{outputs.reviewer._reasoning_effort_applied}}",
+    ai_reviewer_effort_source: "{{outputs.reviewer._reasoning_effort_source}}",
+    ai_reviewer_effort_requested: "{{outputs.reviewer._reasoning_effort_requested}}",
+    ai_reviewer_effort_lowered: "{{outputs.reviewer._reasoning_effort_lowered}}",
+    ai_reviewer_alternate_glance_model: "{{outputs.reviewer_alternate_glance._model}}",
+    ai_reviewer_alternate_glance_backend: "{{outputs.reviewer_alternate_glance._backend}}",
+    ai_reviewer_alternate_glance_tokens: "{{outputs.reviewer_alternate_glance._tokens}}",
+    ai_reviewer_alternate_glance_fallback: "{{outputs.reviewer_alternate_glance._fallback_used}}",
+    ai_reviewer_alternate_glance_wire: "{{outputs.reviewer_alternate_glance._session_fingerprint}}",
+    ai_reviewer_alternate_glance_effort: "{{outputs.reviewer_alternate_glance._reasoning_effort_applied}}",
+    ai_reviewer_alternate_glance_effort_source: "{{outputs.reviewer_alternate_glance._reasoning_effort_source}}",
+    ai_reviewer_alternate_glance_effort_requested: "{{outputs.reviewer_alternate_glance._reasoning_effort_requested}}",
+    ai_reviewer_alternate_glance_effort_lowered: "{{outputs.reviewer_alternate_glance._reasoning_effort_lowered}}",
+    ai_reviewer_glance_model: "{{outputs.reviewer_glance._model}}",
+    ai_reviewer_glance_backend: "{{outputs.reviewer_glance._backend}}",
+    ai_reviewer_glance_tokens: "{{outputs.reviewer_glance._tokens}}",
+    ai_reviewer_glance_wire: "{{outputs.reviewer_glance._session_fingerprint}}",
+    ai_reviewer_glance_effort: "{{outputs.reviewer_glance._reasoning_effort_applied}}",
+    ai_reviewer_glance_effort_source: "{{outputs.reviewer_glance._reasoning_effort_source}}",
+    ai_reviewer_glance_effort_requested: "{{outputs.reviewer_glance._reasoning_effort_requested}}",
+    ai_reviewer_glance_effort_lowered: "{{outputs.reviewer_glance._reasoning_effort_lowered}}",
     ## The merge step's telemetry comes through pr_gate, not from a twin:
     ## `mono_family` decides which of `converge` / `converge_gpt` ran, and
     ## the run table must name the one that did.

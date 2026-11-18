@@ -506,8 +506,8 @@ capped branch is on every execution):
 **The paths are this run's, not the graph's.** A launch that pins a family has
 already excluded branches the graph still carries, and a capped route on one
 of them can spend nothing: `review-pr` launched with `--var mono_family=gpt`
-takes `topology -> reviewer_gpt`, never the unconditional `topology ->
-reviewer_claude` beside it. So both walks read this run's topology through
+takes `topology -> reviewer`, never the unconditional `topology ->
+reviewer_alternate` beside it. So both walks read this run's topology through
 [`ir.Workflow.LaunchVarEdgeFilter`](../pkg/dsl/ir/launch_var_edges.go), over
 the run's effective vars — the workflow's declared defaults under the launch's
 own values, the two layers `resolveVars` stacks. An edge is dropped only where
@@ -572,19 +572,19 @@ prune decides, and the pacer supervisor by its WATCH set — a supervisor has
 no edge, and a coordinator arms only while one of its watched nodes is
 active:
 
-- the reviewer — `reviewer_gpt` on claw, behind
+- the reviewer — `reviewer` on claw, behind
   `vars.mono_family == 'gpt'`, pre-empting the unconditional claude edge;
-- its **glance twin** — `reviewer_gpt_glance`, behind that guard ANDed with
+- its **glance twin** — `reviewer_glance`, behind that guard ANDed with
   `vars.review_tier == 'glance'`: a route of its own, which is why the
   pre-flight's witness names all three claude NODES it prunes
-  (`reviewer_claude`, `reviewer_claude_glance`, `converge`) and not two;
+  (`reviewer_alternate`, `reviewer_alternate_glance`, `converge`) and not two;
 - the **merge step** — `converge_gpt`, claw + `openai/gpt-6-sol`, behind the
   same guard. On every path that reviews anything, which is why its claude
   twin used to park a mono-GPT run under a SOFT cap (a HARD one parks
   nothing there: the bot's empty-diff short-circuit reaches `done` without
   it, and the mid-run guard stops the call if the run goes that way);
 - the **pacer supervisor** — `pacer_gpt`, `openai/gpt-6-sol`, watching
-  `reviewer_gpt` alone, so the claude `pacer` beside it arms on no execution
+  `reviewer` alone, so the claude `pacer` beside it arms on no execution
   of this run and is not metered.
 
 A mono-GPT review therefore starts under a spent Anthropic window, soft cap

@@ -197,7 +197,7 @@ review_tier=glance` could retarget a model, but it could not carry the
 tier's effort floor with it, and a `backend:` spelled as a var stays
 UNDECIDED to the compiler, which disarms the C176/C177 screens that say what
 a node may DO (#1389: 92 refusals down to 23). The bot therefore declares
-two extra judge nodes, `reviewer_claude_glance` / `reviewer_gpt_glance`,
+two extra judge nodes, `reviewer_alternate_glance` / `reviewer_glance`,
 pinned to the cheaper defaults, and the EXISTING `topology` condition router
 (ADR-052) picks between the full-strength and glance variant per family —
 the pattern to imitate for any future tier/variant knob that moves more than

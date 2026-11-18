@@ -1096,7 +1096,7 @@ and no refusal.
 **They fold differently, and the rule is each field's own.** `overrides`
 folds **entry-wise per (selector, field) cell** — a team pinning
 `judge → backend: claw` and an integration pinning
-`reviewer_gpt → model: <gateway id>` both hold, each cell's provenance keyed
+`reviewer → model: <gateway id>` both hold, each cell's provenance keyed
 `overrides.<selector>.<field>`. `providers` is one list and **replaces** like
 `pair_order`, first setter wins (ADR-129 §2).
 

@@ -732,7 +732,7 @@ that drives it, and how hard it is asked to think.
   on *inherit* to keep the DSL default.
 - **CLI** — repeatable `--model` / `--backend` / `--effort-for`, each a
   `selector=value` (or a bare `value` for every LLM node). A selector matches
-  by exact node id (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or
+  by exact node id (`reviewer_alternate`), id glob (`reviewer_*`, `fix_*`), or
   node kind (`agent`|`judge`). Most specific match wins; resolution is
   per-field so the three compose:
 
@@ -1664,7 +1664,7 @@ or the launch's own `llm_routing` writes, leaving each site to the team's,
 org's and platform's cells. A launch's own row
 wins a cell on the same selector, and a launch `*` row overrides its fields
 in every node cell; a cell on a more specific node selector than a launch
-row other than `*` still wins the fields both pin (a `reviewer_claude` cell
+row other than `*` still wins the fields both pin (a `reviewer_alternate` cell
 beats a `reviewer_*` launch row).
 
 A cell reaches more than a node's own route
@@ -1721,7 +1721,7 @@ selector := [ <bot> "/" ] <target>
   and the cloud runner warns on the parent's run log, naming the pinned
   sites. Teaching the walk a child's sites is a follow-up.
 - `<node id>#<route>` names an authored `fallbacks:` route by the key the
-  walk records it under: its name (`reviewer_claude#glm`), or its index when
+  walk records it under: its name (`reviewer_alternate#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
   `provider`, which replace the route's own; `effort` is refused (a route
   runs at its node's). Its `provider` is one literal hint: dispatch sends a
@@ -1769,13 +1769,13 @@ on the forge integration (or the team's policy):
 {"overrides": [
   {"selector": "review-pr/converge",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "review-pr/converge_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_gpt_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "review-pr/converge#glm",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
-  {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_alternate_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "review-pr/supervisor:pacer",     "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
   {"selector": "revi-converse/converse_agent",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},

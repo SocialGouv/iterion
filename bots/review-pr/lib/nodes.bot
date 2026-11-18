@@ -71,7 +71,7 @@ agent converge:
   ## whichever backend its route resolves.
   backend: "${ITERION_VIBE_BACKEND_EMIT:-claude_code}"
   ## Same Anthropic-direct pin as the claude slot, for the same reason
-  ## (see reviewer_claude): unpinned, a capped forfait hands this node's
+  ## (see reviewer_alternate): unpinned, a capped forfait hands this node's
   ## claude id to the z.ai facade in silence. Its own dial, because this
   ## node's backend is one too: moving the slot to another backend's
   ## model needs this hint moved with it — a hint names the route to the
@@ -114,7 +114,7 @@ agent converge:
   await: wait_all
   fallbacks:
     ## The claude slot's GLM route, verbatim and on the same dial (see
-    ## reviewer_claude for every trigger and for why it carries no
+    ## reviewer_alternate for every trigger and for why it carries no
     ## `backend:`): this node is on every path the gpt guard does not take,
     ## so a merge step with no second server let a capped forfait cost the
     ## whole review even when the reviewer itself had been rescued.
@@ -205,7 +205,7 @@ agent converge_gpt:
   ## nowhere), and a deployment without a usable OpenAI route moves this
   ## slot's three dials instead.
 
-judge reviewer_claude:
+judge reviewer_alternate:
   ## No ambient MCP (#3283 S6): the platform's plugin servers ride every
   ## tooled node by doctrine, ~20k tokens of schemas per request that none
   ## of this node's steps ever calls (measured 2026-11-13: $0.19-0.44 a run,
@@ -309,7 +309,7 @@ judge reviewer_claude:
     ## published review's run table carries them.
     ##
     ## One dial for both tiers, because the rescue is deliberately the
-    ## same on both (see reviewer_claude_glance). An account entitled to
+    ## same on both (see reviewer_alternate_glance). An account entitled to
     ## a different GLM id — or one z.ai renames — repoints it without
     ## re-releasing the bot; element models are ${VAR:-default}-expanded
     ## at dispatch like the node's own.
@@ -319,7 +319,7 @@ judge reviewer_claude:
       on: [usage_window, auth, unavailable]
       metered: true
 
-judge reviewer_gpt:
+judge reviewer:
   ## No ambient MCP (#3283 S6), like the claude reviewer: on this node's
   ## default claw route the ambient splice would hang ~20k tokens of MCP
   ## schemas beside the four declared tools — none of them ever called.
@@ -338,7 +338,7 @@ judge reviewer_gpt:
   ##     ITERION_VIBE_MODEL_GPT and _GPT_GLANCE=claude-opus-5-5,
   ##     ITERION_VIBE_PROVIDER_GPT=anthropic (without the hint a z.ai key
   ##     holding the wire answers the claude id with GLM — see
-  ##     reviewer_claude);
+  ##     reviewer_alternate);
   ##   GLM: ITERION_VIBE_BACKEND_GPT and _GPT_GLANCE=claude_code,
   ##     ITERION_VIBE_MODEL_GPT and _GPT_GLANCE=glm-5.3,
   ##     ITERION_VIBE_PROVIDER_GPT=zai.
@@ -367,21 +367,21 @@ judge reviewer_gpt:
 ## Per-integration since ADR-129: an `overrides` cell's `effort` on the
 ## routing policy re-targets this tier's reasoning effort per forge
 ## integration, with no bot release and no process-environment dial.
-judge reviewer_claude_glance:
-  ## No ambient MCP, like reviewer_claude (#3283 S6): the glance reads
+judge reviewer_alternate_glance:
+  ## No ambient MCP, like reviewer_alternate (#3283 S6): the glance reads
   ## less than the full tier by design — it inherits no schema block
   ## either.
   mcp:
     inherit: false
   model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
   backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
-  ## Same Anthropic-direct pin and dial as reviewer_claude — the glance
+  ## Same Anthropic-direct pin and dial as reviewer_alternate — the glance
   ## tier must not resolve onto a facade key either.
   provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
   output: review_output
   system: review_system
   user: review_user_claude
-  ## Same surface as reviewer_claude (see there): on claw the empty
+  ## Same surface as reviewer_alternate (see there): on claw the empty
   ## default is no tools at all, and a glance that cannot read the diff
   ## fills the schema with a stub.
   tools: [bash, read_file, glob, grep]
@@ -390,22 +390,22 @@ judge reviewer_claude_glance:
   readonly: true
   fallbacks:
     ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
-    ## route reads the SAME dial as reviewer_claude's, because a smaller
+    ## route reads the SAME dial as reviewer_alternate's, because a smaller
     ## z.ai id is not one this repo has measured, and a rescue that
     ## guesses a model id fails on the spec instead of the credential.
-    ## See reviewer_claude for why the route carries no `backend:`.
+    ## See reviewer_alternate for why the route carries no `backend:`.
     glm:
       model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
       provider: "zai"
       on: [usage_window, auth, unavailable]
       metered: true
 
-judge reviewer_gpt_glance:
-  ## No ambient MCP, like reviewer_gpt (#3283 S6).
+judge reviewer_glance:
+  ## No ambient MCP, like reviewer (#3283 S6).
   mcp:
     inherit: false
   model: "${ITERION_VIBE_MODEL_GPT_GLANCE:-openai/gpt-6-luna}"
-  ## Same three dials as reviewer_gpt (see there); the provider one is
+  ## Same three dials as reviewer (see there); the provider one is
   ## shared, since it follows the family, not the tier.
   backend: "${ITERION_VIBE_BACKEND_GPT_GLANCE:-claw}"
   provider: "${ITERION_VIBE_PROVIDER_GPT:-}"
@@ -552,7 +552,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT={{input.ai_reviewer_claude_effort}} AI_REVIEWER_CLAUDE_EFFORT_SOURCE={{input.ai_reviewer_claude_effort_source}} AI_REVIEWER_CLAUDE_EFFORT_REQUESTED={{input.ai_reviewer_claude_effort_requested}} AI_REVIEWER_CLAUDE_EFFORT_LOWERED={{input.ai_reviewer_claude_effort_lowered}} AI_REVIEWER_GPT_EFFORT={{input.ai_reviewer_gpt_effort}} AI_REVIEWER_GPT_EFFORT_SOURCE={{input.ai_reviewer_gpt_effort_source}} AI_REVIEWER_GPT_EFFORT_REQUESTED={{input.ai_reviewer_gpt_effort_requested}} AI_REVIEWER_GPT_EFFORT_LOWERED={{input.ai_reviewer_gpt_effort_lowered}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT={{input.ai_reviewer_claude_glance_effort}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_claude_glance_effort_source}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_claude_glance_effort_requested}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_LOWERED={{input.ai_reviewer_claude_glance_effort_lowered}} AI_REVIEWER_GPT_GLANCE_EFFORT={{input.ai_reviewer_gpt_glance_effort}} AI_REVIEWER_GPT_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_gpt_glance_effort_source}} AI_REVIEWER_GPT_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_gpt_glance_effort_requested}} AI_REVIEWER_GPT_GLANCE_EFFORT_LOWERED={{input.ai_reviewer_gpt_glance_effort_lowered}} AI_CONVERGE_EFFORT={{input.ai_converge_effort}} AI_CONVERGE_EFFORT_SOURCE={{input.ai_converge_effort_source}} AI_CONVERGE_EFFORT_REQUESTED={{input.ai_converge_effort_requested}} AI_CONVERGE_EFFORT_LOWERED={{input.ai_converge_effort_lowered}} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} PUBLISH_MODE={{vars.publish_mode}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT={{input.ai_reviewer_alternate_effort}} AI_REVIEWER_CLAUDE_EFFORT_SOURCE={{input.ai_reviewer_alternate_effort_source}} AI_REVIEWER_CLAUDE_EFFORT_REQUESTED={{input.ai_reviewer_alternate_effort_requested}} AI_REVIEWER_CLAUDE_EFFORT_LOWERED={{input.ai_reviewer_alternate_effort_lowered}} AI_REVIEWER_GPT_EFFORT={{input.ai_reviewer_effort}} AI_REVIEWER_GPT_EFFORT_SOURCE={{input.ai_reviewer_effort_source}} AI_REVIEWER_GPT_EFFORT_REQUESTED={{input.ai_reviewer_effort_requested}} AI_REVIEWER_GPT_EFFORT_LOWERED={{input.ai_reviewer_effort_lowered}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT={{input.ai_reviewer_alternate_glance_effort}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_alternate_glance_effort_source}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_alternate_glance_effort_requested}} AI_REVIEWER_CLAUDE_GLANCE_EFFORT_LOWERED={{input.ai_reviewer_alternate_glance_effort_lowered}} AI_REVIEWER_GPT_GLANCE_EFFORT={{input.ai_reviewer_glance_effort}} AI_REVIEWER_GPT_GLANCE_EFFORT_SOURCE={{input.ai_reviewer_glance_effort_source}} AI_REVIEWER_GPT_GLANCE_EFFORT_REQUESTED={{input.ai_reviewer_glance_effort_requested}} AI_REVIEWER_GPT_GLANCE_EFFORT_LOWERED={{input.ai_reviewer_glance_effort_lowered}} AI_CONVERGE_EFFORT={{input.ai_converge_effort}} AI_CONVERGE_EFFORT_SOURCE={{input.ai_converge_effort_source}} AI_CONVERGE_EFFORT_REQUESTED={{input.ai_converge_effort_requested}} AI_CONVERGE_EFFORT_LOWERED={{input.ai_converge_effort_lowered}} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_alternate_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_alternate_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_alternate_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_alternate_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_alternate_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_alternate_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_alternate_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_alternate_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_alternate_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_alternate_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} PUBLISH_MODE={{vars.publish_mode}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -1641,19 +1641,19 @@ compute merge_reviews:
   ## failure in `_failed_branches` instead of failing the run.
   await: best_effort
   expr:
-    review_scope: "join(unique(concat(outputs.reviewer_claude.scanned_areas, outputs.reviewer_gpt.scanned_areas, outputs.reviewer_claude_glance.scanned_areas, outputs.reviewer_gpt_glance.scanned_areas)), ' ; ')"
-    claude_ran: "outputs.reviewer_claude.family == 'claude' || outputs.reviewer_claude_glance.family == 'claude'"
-    claude_summary: "if(outputs.reviewer_claude.summary, outputs.reviewer_claude.summary, if(outputs.reviewer_claude_glance.summary, outputs.reviewer_claude_glance.summary, '(this family did not run)'))"
-    claude_findings: "if(outputs.reviewer_claude.findings, outputs.reviewer_claude.findings, if(outputs.reviewer_claude_glance.findings, outputs.reviewer_claude_glance.findings, '[]'))"
-    claude_areas: "if(outputs.reviewer_claude.scanned_areas, outputs.reviewer_claude.scanned_areas, if(outputs.reviewer_claude_glance.scanned_areas, outputs.reviewer_claude_glance.scanned_areas, ''))"
-    claude_questions: "if(outputs.reviewer_claude.questions, outputs.reviewer_claude.questions, if(outputs.reviewer_claude_glance.questions, outputs.reviewer_claude_glance.questions, ''))"
-    claude_ticket_conformance: "if(outputs.reviewer_claude.ticket_conformance, outputs.reviewer_claude.ticket_conformance, if(outputs.reviewer_claude_glance.ticket_conformance, outputs.reviewer_claude_glance.ticket_conformance, ''))"
-    gpt_ran: "outputs.reviewer_gpt.family == 'gpt' || outputs.reviewer_gpt_glance.family == 'gpt'"
-    gpt_summary: "if(outputs.reviewer_gpt.summary, outputs.reviewer_gpt.summary, if(outputs.reviewer_gpt_glance.summary, outputs.reviewer_gpt_glance.summary, '(this family did not run)'))"
-    gpt_findings: "if(outputs.reviewer_gpt.findings, outputs.reviewer_gpt.findings, if(outputs.reviewer_gpt_glance.findings, outputs.reviewer_gpt_glance.findings, '[]'))"
-    gpt_areas: "if(outputs.reviewer_gpt.scanned_areas, outputs.reviewer_gpt.scanned_areas, if(outputs.reviewer_gpt_glance.scanned_areas, outputs.reviewer_gpt_glance.scanned_areas, ''))"
-    gpt_questions: "if(outputs.reviewer_gpt.questions, outputs.reviewer_gpt.questions, if(outputs.reviewer_gpt_glance.questions, outputs.reviewer_gpt_glance.questions, ''))"
-    gpt_ticket_conformance: "if(outputs.reviewer_gpt.ticket_conformance, outputs.reviewer_gpt.ticket_conformance, if(outputs.reviewer_gpt_glance.ticket_conformance, outputs.reviewer_gpt_glance.ticket_conformance, ''))"
+    review_scope: "join(unique(concat(outputs.reviewer_alternate.scanned_areas, outputs.reviewer.scanned_areas, outputs.reviewer_alternate_glance.scanned_areas, outputs.reviewer_glance.scanned_areas)), ' ; ')"
+    claude_ran: "outputs.reviewer_alternate.family == 'claude' || outputs.reviewer_alternate_glance.family == 'claude'"
+    claude_summary: "if(outputs.reviewer_alternate.summary, outputs.reviewer_alternate.summary, if(outputs.reviewer_alternate_glance.summary, outputs.reviewer_alternate_glance.summary, '(this family did not run)'))"
+    claude_findings: "if(outputs.reviewer_alternate.findings, outputs.reviewer_alternate.findings, if(outputs.reviewer_alternate_glance.findings, outputs.reviewer_alternate_glance.findings, '[]'))"
+    claude_areas: "if(outputs.reviewer_alternate.scanned_areas, outputs.reviewer_alternate.scanned_areas, if(outputs.reviewer_alternate_glance.scanned_areas, outputs.reviewer_alternate_glance.scanned_areas, ''))"
+    claude_questions: "if(outputs.reviewer_alternate.questions, outputs.reviewer_alternate.questions, if(outputs.reviewer_alternate_glance.questions, outputs.reviewer_alternate_glance.questions, ''))"
+    claude_ticket_conformance: "if(outputs.reviewer_alternate.ticket_conformance, outputs.reviewer_alternate.ticket_conformance, if(outputs.reviewer_alternate_glance.ticket_conformance, outputs.reviewer_alternate_glance.ticket_conformance, ''))"
+    gpt_ran: "outputs.reviewer.family == 'gpt' || outputs.reviewer_glance.family == 'gpt'"
+    gpt_summary: "if(outputs.reviewer.summary, outputs.reviewer.summary, if(outputs.reviewer_glance.summary, outputs.reviewer_glance.summary, '(this family did not run)'))"
+    gpt_findings: "if(outputs.reviewer.findings, outputs.reviewer.findings, if(outputs.reviewer_glance.findings, outputs.reviewer_glance.findings, '[]'))"
+    gpt_areas: "if(outputs.reviewer.scanned_areas, outputs.reviewer.scanned_areas, if(outputs.reviewer_glance.scanned_areas, outputs.reviewer_glance.scanned_areas, ''))"
+    gpt_questions: "if(outputs.reviewer.questions, outputs.reviewer.questions, if(outputs.reviewer_glance.questions, outputs.reviewer_glance.questions, ''))"
+    gpt_ticket_conformance: "if(outputs.reviewer.ticket_conformance, outputs.reviewer.ticket_conformance, if(outputs.reviewer_glance.ticket_conformance, outputs.reviewer_glance.ticket_conformance, ''))"
 
 ## ─── Forge PR review (v0.3.0) nodes ─────────────────────────────
 

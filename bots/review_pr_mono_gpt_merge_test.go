@@ -638,8 +638,8 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 	// report and files board issues through its three declared file tools,
 	// with no shell on either route.
 	holdsShell := map[string]bool{
-		"reviewer_claude": true, "reviewer_claude_glance": true,
-		"reviewer_gpt": true, "reviewer_gpt_glance": true,
+		"reviewer_alternate": true, "reviewer_alternate_glance": true,
+		"reviewer": true, "reviewer_glance": true,
 		"converge": false, "converge_gpt": false,
 	}
 	// Slots whose backend dial can take claw on some deployment: on claw the
@@ -650,8 +650,8 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 	// three file tools (#3283 S9): the gateway cells route converge itself
 	// to claw, so its list is what the claw dispatch serves.
 	wantsList := map[string]bool{
-		"reviewer_claude": true, "reviewer_claude_glance": true,
-		"reviewer_gpt": true, "reviewer_gpt_glance": true,
+		"reviewer_alternate": true, "reviewer_alternate_glance": true,
+		"reviewer": true, "reviewer_glance": true,
 		"converge": true,
 	}
 	shared := map[string]bool{"review_system": true, "emit_system": true}
