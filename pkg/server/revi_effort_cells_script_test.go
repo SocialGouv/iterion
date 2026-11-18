@@ -735,6 +735,11 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			{Selector: "review-pr/converge#glm", Backend: "claw", Provider: "openai_compatible", Model: gw},
 			{Selector: "review-pr/reviewer_claude#glm", Backend: "claw", Provider: "openai_compatible", Model: gw},
 			{Selector: "review-pr/supervisor:pacer", Model: gw},
+			// evolve renamed its reviewers too, with the slots the OTHER way
+			// round: its claude judge became `reviewer`, its claw one
+			// `reviewer_alternate` — review-pr's table must not apply.
+			{Selector: "evolve/review_claude", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "medium"},
+			{Selector: "evolve/review_gpt", Backend: "claw", Provider: "openai_compatible", Model: gw, Effort: "low"},
 		}}
 		in.write("t1", i1, retired)
 
@@ -765,7 +770,10 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 				t.Errorf("the migrated block does not carry %q: %v", want, got)
 			}
 		}
-		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_claude", "review-pr/reviewer_gpt_glance", "review-pr/converge_gpt", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
+		if e := blockEfforts(in.integ(i1).Routing); e["evolve/reviewer"] != "medium" || e["evolve/reviewer_alternate"] != "low" {
+			t.Errorf("evolve's cells were not renamed per evolve's own roles: efforts %v, want evolve/reviewer=medium (was review_claude) and evolve/reviewer_alternate=low (was review_gpt)", e)
+		}
+		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_claude", "review-pr/reviewer_gpt_glance", "review-pr/converge_gpt", "review-pr/converge#glm", "review-pr/reviewer_claude_glance", "evolve/review_claude", "evolve/review_gpt"} {
 			if slices.Contains(got, gone) {
 				t.Errorf("the migrated block still carries the retired %q: %v", gone, got)
 			}

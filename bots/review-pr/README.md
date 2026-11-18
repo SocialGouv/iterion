@@ -618,7 +618,10 @@ nothing rewrites them — the bot's guards read `paired` and see `dual`, so
 such a run resumes as a `single` review. Resuming it under the new vocabulary
 means launching a fresh run.
 
-The mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
+The table is per bot — `evolve` renamed its reviewers too, with its slots
+the other way round (`review_claude` → `reviewer`, `review_gpt` →
+`reviewer_alternate`), and the same command migrates its cells. For this
+bot, the mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
 `reviewer_claude` → `reviewer_alternate`, `reviewer_gpt_glance` →
 `reviewer_glance`, `converge_gpt` → `converge`. Two cells are dropped
 because no node takes them any more: `reviewer_claude_glance` (the glance

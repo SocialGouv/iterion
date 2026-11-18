@@ -60,9 +60,11 @@ not exposed, the request has no expected-version field).
 
 migrate-ids exists because a cell whose selector names no node decides
 nothing: the launch falls back on the bot's own literals, so the routing AND
-the effort the cell carried go inert without a word. It renames
-reviewer_gpt/reviewer_claude/converge_gpt (and their glance variants) to
-reviewer/reviewer_alternate/reviewer_glance/converge, drops the cells whose
+the effort the cell carried go inert without a word. It renames, per bot,
+review-pr's reviewer_gpt/reviewer_claude/converge_gpt (and their glance
+variants) to reviewer/reviewer_alternate/reviewer_glance/converge, and
+evolve's review_claude/review_gpt to reviewer/reviewer_alternate (its slots
+go the other way round), drops the cells whose
 node no longer exists (reviewer_claude_glance, and converge#glm — the merge
 runs on claw, which reads no provider hint). Two cells landing on one
 selector — a block that carried both `converge` and `converge_gpt` — leave
@@ -287,30 +289,42 @@ def read_backup(directory, integ):
         return json.load(f)
 
 
-# The retired node names of ADR-169, by role. A bot's review-pr nodes were
-# renamed from vendor words to roles; a cell still naming the old id decides
-# nothing, so the launch falls back on the bot's literals — silently, with the
-# routing and the effort both gone. Empty = the node no longer exists.
+# The retired node names of ADR-169, PER BOT. A bot's nodes were renamed
+# from vendor words to roles; a cell still naming the old id decides
+# nothing, so the launch falls back on the bot's literals — silently, with
+# the routing and the effort both gone. Empty = the node no longer exists.
 RETIRED_NODES = {
-    "reviewer_gpt": "reviewer",
-    "reviewer_gpt_glance": "reviewer_glance",
-    "reviewer_claude": "reviewer_alternate",
-    "reviewer_claude_glance": "",
-    "converge_gpt": "converge",
+    "review-pr": {
+        "reviewer_gpt": "reviewer",
+        "reviewer_gpt_glance": "reviewer_glance",
+        "reviewer_claude": "reviewer_alternate",
+        "reviewer_claude_glance": "",
+        "converge_gpt": "converge",
+    },
+    # evolve's slots go the OTHER way round: its tooled claude_code judge is
+    # the one every round runs, so it became `reviewer`. The table is keyed
+    # by bot for exactly this reason — one bot's mapping is not another's.
+    "evolve": {
+        "review_claude": "reviewer",
+        "review_gpt": "reviewer_alternate",
+    },
 }
 
-# Routes retired with their node: `converge` runs on claw, which reads no
-# provider hint, so it declares no `#glm` rescue any more. A retired route is
-# dropped whether it is spelled on the old node or the new one.
-RETIRED_ROUTES = {"converge#glm", "reviewer#glm", "reviewer_glance#glm"}
+# Routes retired with their node, per bot: review-pr's `converge` and its
+# claw reviewers read no provider hint, so they declare no `#glm` rescue any
+# more. A retired route is dropped whether it is spelled on the old node or
+# the new one.
+RETIRED_ROUTES = {
+    "review-pr": {"converge#glm", "reviewer#glm", "reviewer_glance#glm"},
+}
 
-# Targets whose RENAMED cell wins a collision with one the block already
-# carries. Only `converge` qualifies: the pre-rename claude merge cell
-# (claude_code + anthropic) describes a route the surviving node cannot take,
-# while `converge_gpt` names the route it does. Everywhere else the cell
-# already spelled with the role name is the CURRENT one — a partially
-# migrated block keeps it, and the leftover old spelling is dropped.
-RENAME_WINS = {"converge"}
+# (bot, target) pairs whose RENAMED cell wins a collision with one the block
+# already carries. Only review-pr's `converge` qualifies: the pre-rename
+# claude merge cell describes a route the surviving node cannot take, while
+# `converge_gpt` names the route it does. Everywhere else the cell already
+# spelled with the role name is the CURRENT one, and the leftover old
+# spelling is dropped.
+RENAME_WINS = {("review-pr", "converge")}
 
 
 def renamed_selector(selector):
@@ -320,16 +334,16 @@ def renamed_selector(selector):
     bot, slash, name = node.rpartition("/")
     if not slash:
         return selector, False
-    if name + sep + route in RETIRED_ROUTES:
+    routes = RETIRED_ROUTES.get(bot, set())
+    if name + sep + route in routes:
         return "", True
-    if name not in RETIRED_NODES:
+    nodes = RETIRED_NODES.get(bot, {})
+    if name not in nodes:
         return selector, False
-    new = RETIRED_NODES[name]
+    new = nodes[name]
     if not new:
         return "", True
-    # The route can be retired on the NEW name too: `converge_gpt#glm`
-    # renames onto `converge#glm`, which no node declares.
-    if new + sep + route in RETIRED_ROUTES:
+    if new + sep + route in routes:
         return "", True
     return bot + "/" + new + sep + route, True
 
@@ -360,7 +374,8 @@ def migrated_block(routing):
     final, changes = [], []
     for sel, o, renamed, origin in entries:
         if sel in collisions:
-            rename_wins = sel.rpartition("/")[2].partition("#")[0] in RENAME_WINS
+            bot, _, node = sel.partition("#")[0].rpartition("/")
+            rename_wins = (bot, node) in RENAME_WINS
             if renamed != rename_wins:
                 dropped.append(origin)
                 continue
