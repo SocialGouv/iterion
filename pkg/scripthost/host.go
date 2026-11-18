@@ -169,6 +169,14 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		return Response{}, fmt.Errorf("scripthost: starting %s %s: %w", binary, Subcommand, err)
 	}
 
+	// Two things the RLIMIT bound cannot reach, both started before the child
+	// can allocate: the kernel's preference for killing THIS process when a
+	// cgroup is exhausted, and a parent-side probe of its resident set, since a
+	// MAP_SHARED or memfd mapping is not charged to RLIMIT_DATA.
+	oomAdjErr := markOOMVictim(cmd.Process.Pid)
+	probeStop := make(chan struct{})
+	probeDone := watchRSS(cmd, limits.Memory, rssSampleInterval, probeStop)
+
 	join := func() serveVerdict { return serveVerdict{} }
 	if channel != nil {
 		channel.closeChildEnds()
@@ -176,6 +184,13 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	}
 
 	waitErr := cmd.Wait()
+	close(probeStop)
+	probe := <-probeDone
+	if oomAdjErr != nil {
+		// Not fatal and not silent: without the mark a pod-level OOM picks by
+		// size and may take the runner that owns the run instead of the script.
+		fmt.Fprintf(&stderr, "\nscripthost: marking the child as the OOM victim: %v", oomAdjErr)
+	}
 	serve := join()
 
 	// Inside the teardown window the primitive's own documentation requires:
@@ -227,6 +242,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		waitErr:    waitErr,
 		stderrText: stderr.String(),
 		stdoutCut:  outCap.cut,
+		probe:      probe,
 	})
 }
 
@@ -256,6 +272,7 @@ type deathEvidence struct {
 	waitErr    error
 	stderrText string
 	stdoutCut  bool
+	probe      probeResult
 }
 
 // deathToRefusal names the bound that killed a child that produced no
@@ -287,6 +304,21 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 			"the script outlived its %s wall bound and neither it nor the interpreter yielded. "+
 				"A native regex or a tight native call cannot be interrupted — bound it with CPU time instead. %s",
 			e.limits.Wall, evidence), nil
+	}
+
+	// (1b) The parent's own resident-set probe. It ACTED, so it is positive
+	// identification of the same rank as the runtime's own message below —
+	// and it is the only thing that can name this death at all: a payload
+	// growing through a mapping RLIMIT_DATA does not charge dies by a signal
+	// the kernel does not annotate, and (5) would call it "nothing names a
+	// bound".
+	if e.probe.killed {
+		return Refuse(RefusalMemory,
+			"the script host's resident set passed its %d-byte memory bound and the parent killed it "+
+				"at %d bytes. A mapping that RLIMIT_DATA does not charge (MAP_SHARED, memfd) grows the "+
+				"resident set without meeting the kernel bound, so the parent samples it every %s; "+
+				"the overshoot is at most one sample of the child's own allocator. %s",
+			e.limits.Memory, e.probe.peak, rssSampleInterval, evidence), nil
 	}
 
 	// (2) A memory death announces itself: the Go runtime prints before dying.
@@ -328,11 +360,23 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// CPU it burned is part of the report: a reader comparing it to the bound
 	// is how the ambiguity gets resolved by a human.
 	if e.signalled {
+		// A probe that never sampled is named here rather than left implicit:
+		// "the probe saw nothing" and "the probe could not look" are the same
+		// silence otherwise, and only one of them is a fact about the script.
+		blind := ""
+		if e.probe.samples == 0 {
+			why := e.probe.blind
+			if why == "" {
+				why = "no reason recorded"
+			}
+			blind = fmt.Sprintf(" The resident-set probe never sampled (%s), so a mapping outside "+
+				"RLIMIT_DATA was not ruled out.", why)
+		}
 		return Refuse(RefusalHostDied,
 			"the script host was killed by %v after burning %s of CPU against a %s bound, and nothing "+
-				"names a bound; a cgroup memory kill and an external signal are indistinguishable here. %s",
+				"names a bound; a cgroup memory kill and an external signal are indistinguishable here.%s %s",
 			e.signal, e.burned.Round(time.Millisecond),
-			time.Duration(e.limits.CPUSeconds())*time.Second, evidence), nil
+			time.Duration(e.limits.CPUSeconds())*time.Second, blind, evidence), nil
 	}
 
 	// (6) The child crashed inside the Go runtime. That is the script host

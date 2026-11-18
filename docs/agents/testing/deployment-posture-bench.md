@@ -189,14 +189,11 @@ to its default in silence. The first version of this note gave the opposite
 reason, "go-task would inherit it from the shell", and measurement refuted it:
 `UID` is not exported.
 
-**A native payload's real ceiling.** `RLIMIT_DATA` bounds the Go heap, and
-`Confine`'s own comment is explicit that *a `MAP_SHARED` or memfd mapping is
-not charged to it, so a native payload's real ceiling is the pod's memory
-cgroup*. That axis is the ground `oom_score_adj` and RSS probing were meant to
-cover in #3155, and neither mechanism exists in this codebase (zero production
-sites, every spelling). So those two legs cannot be written as specified — but
-the axis is **owed**, not covered: leg 6 bounds each bomb by its own
-`RLIMIT_DATA` and cannot observe an eviction.
+**A native payload's real ceiling.** Covered in the product, not by this bench:
+`RLIMIT_DATA` does not charge a `MAP_SHARED` or memfd mapping, so the parent
+samples the child's resident set and kills it ([native-ceiling.md](native-ceiling.md)).
+The in-pod leg is still owed — this bench wires no tool channel, so it cannot
+produce such a payload.
 
 **A floor on the memory bound.** Found by this bench: `Limits.Clamp` caps
 `Memory` and fills an unset value from the default but enforces no minimum, so
