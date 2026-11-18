@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -712,4 +713,73 @@ func TestReviEffortCellsScriptAgainstTheRealHandlers(t *testing.T) {
 			t.Fatalf("verify over a block whose every effort cell was re-routed exited %d:\n%s", code, out)
 		}
 	})
+
+	// ADR-169 renamed review-pr's nodes to roles. A stored block still naming
+	// reviewer_gpt/reviewer_claude/converge_gpt decides NOTHING: the launch
+	// falls back on the bot's literals, and the effort cells #3283 applied
+	// go inert with them — silently. migrate-ids rewrites the stored block,
+	// backs it up first, and reads it back.
+	t.Run("migrate-ids renames the retired node names and drops what no node takes", func(t *testing.T) {
+		reset()
+		retired := cloneBlock(t, &prod)
+		retired.Overrides = append(retired.Overrides,
+			llmroute.Override{Selector: "review-pr/reviewer_gpt", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash", Effort: "high"},
+			llmroute.Override{Selector: "review-pr/converge_gpt", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash", Effort: "low"},
+			llmroute.Override{Selector: "review-pr/converge#glm", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"},
+			llmroute.Override{Selector: "review-pr/reviewer_claude_glance", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"},
+		)
+		in.write("t1", i1, retired)
+
+		b := filepath.Join(dir, "migrate")
+		if out, code, sent := in.run("migrate-ids", "--dir", b, "--all", "--dry-run"); code != 0 || sent != 0 || !strings.Contains(out, "review-pr/reviewer_gpt -> review-pr/reviewer") {
+			t.Fatalf("a dry run exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		if !hasCell(in.integ(i1).Routing, "review-pr/reviewer_gpt") || !hasCell(in.integ(i1).Routing, "review-pr/converge_gpt") {
+			t.Fatal("the dry run wrote: the retired selectors are gone")
+		}
+
+		out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes")
+		if code != 0 || sent != 1 || !strings.Contains(out, "migrated group/api ("+i1+")") {
+			t.Fatalf("migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+		got := blockSelectors(in.integ(i1).Routing)
+		for _, want := range []string{"review-pr/reviewer_alternate", "review-pr/reviewer", "review-pr/reviewer_glance", "review-pr/converge", "review-pr/reviewer_alternate#glm"} {
+			if !slices.Contains(got, want) {
+				t.Errorf("the migrated block does not carry %q: %v", want, got)
+			}
+		}
+		for _, gone := range []string{"review-pr/reviewer_gpt", "review-pr/reviewer_claude", "review-pr/converge_gpt", "review-pr/converge#glm", "review-pr/reviewer_claude_glance"} {
+			if slices.Contains(got, gone) {
+				t.Errorf("the migrated block still carries the retired %q: %v", gone, got)
+			}
+		}
+		if n := len(got); n != len(slices.Compact(slices.Sorted(slices.Values(got)))) {
+			t.Errorf("the migrated block names a selector twice: %v", got)
+		}
+		// The effort each cell carried survives the rename.
+		if e := blockEfforts(in.integ(i1).Routing); e["review-pr/reviewer"] != "high" || e["review-pr/converge"] != "low" {
+			t.Errorf("the efforts moved with the rename: %v, want reviewer=high and converge=low", e)
+		}
+		// And the backup holds the block as it was, retired names included.
+		raw, err := os.ReadFile(filepath.Join(b, i1+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "review-pr/reviewer_gpt") {
+			t.Errorf("the backup does not hold the pre-migration block:\n%s", raw)
+		}
+		// A second run has nothing left to do.
+		if out, code, sent := in.run("migrate-ids", "--dir", b, "--only", i1, "--yes"); code != 0 || sent != 0 || !strings.Contains(out, "no retired selector") {
+			t.Fatalf("a second migrate-ids exited %d after %d PATCH(es):\n%s", code, sent, out)
+		}
+	})
+}
+
+// blockSelectors is a block's selectors in order.
+func blockSelectors(p *llmroute.Policy) []string {
+	out := []string{}
+	for _, o := range (p).Overrides {
+		out = append(out, o.Selector)
+	}
+	return out
 }

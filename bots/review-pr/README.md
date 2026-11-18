@@ -594,6 +594,29 @@ a review starts under a spent Anthropic window, soft cap or hard
 merge runs on claw (`TestReviewPRTier_GlanceRoutesToCheapReviewerGPT`,
 `e2e`).
 
+## Migrating an integration's routing block
+
+A routing cell names a node by id. The role rename (ADR-169) retired
+`reviewer_gpt`, `reviewer_claude`, `reviewer_gpt_glance`,
+`reviewer_claude_glance` and `converge_gpt`, so a block still carrying them
+decides **nothing**: the launch falls back on this bot's literals and the
+cell's effort goes with it — silently. `scripts/ops/revi-effort-cells.py
+migrate-ids` rewrites a stored block in place (backup first, read-back
+after), and `--dry-run` says what it would do:
+
+```
+iterion remote login                      # the operator's own session
+scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --dry-run
+scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --yes
+```
+
+The mapping is the table above, one way: `reviewer_gpt` → `reviewer`,
+`reviewer_claude` → `reviewer_alternate`, `reviewer_gpt_glance` →
+`reviewer_glance`, `converge_gpt` → `converge`. Two cells are dropped
+because no node takes them any more: `reviewer_claude_glance` (the glance
+tier runs `reviewer_glance`) and `converge#glm` (the merge runs on claw,
+which reads no provider hint).
+
 ## Layout — a bot in several files
 
 `main.bot` holds the header, the vars, the secrets, the supervisor and the workflow; the
