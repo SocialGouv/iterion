@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -35,6 +36,10 @@ type PoolPledgeInput struct {
 // needs the CURRENT terms (pause must not silently reset the ceilings a
 // donor set).
 type poolPledgeView struct {
+	// ID addresses THIS contribution: a donor lending two keys of one
+	// provider has two pledges that the (source, ref) pair cannot tell
+	// apart, and pause/withdraw must name one.
+	ID          string           `json:"id"`
 	Source      string           `json:"source"`
 	Ref         string           `json:"ref"`
 	KeyID       string           `json:"key_id,omitempty"`
@@ -72,28 +77,18 @@ func RemotePoolShare(ctx context.Context, c *RemoteClient, p *Printer, src, ref 
 // RemotePoolPause flips a contribution off WITHOUT discarding its terms:
 // it reads the stored pledge back and re-sends it with enabled=false, so
 // resuming later does not require the donor to retype their ceilings.
-func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, src, ref string, enabled bool) error {
+func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, src, ref, keyID string, enabled bool) error {
 	if err := validPoolCredential(src, ref); err != nil {
 		return err
 	}
-	raw, err := c.Call(ctx, "GET", "/api/me/pool", nil, nil)
+	current, err := myPledge(ctx, c, src, ref, keyID)
 	if err != nil {
 		return err
 	}
-	var body struct {
-		Pledges []poolPledgeView `json:"pledges"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return fmt.Errorf("decode pledges: %w", err)
-	}
-	var current *poolPledgeView
-	for i := range body.Pledges {
-		if body.Pledges[i].Source == src && body.Pledges[i].Ref == ref {
-			current = &body.Pledges[i]
-			break
-		}
-	}
 	if current == nil {
+		if keyID != "" {
+			return fmt.Errorf("you have no %s/%s contribution lending key %s", src, ref, keyID)
+		}
 		return fmt.Errorf("you have no %s/%s contribution to change", src, ref)
 	}
 	return RemotePoolShare(ctx, c, p, src, ref, PoolPledgeInput{
@@ -106,12 +101,59 @@ func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, src, ref 
 	})
 }
 
-// RemotePoolWithdraw removes a contribution entirely.
-func RemotePoolWithdraw(ctx context.Context, c *RemoteClient, p *Printer, src, ref string) error {
+// RemotePoolWithdraw removes one contribution entirely, addressed by its
+// pledge id — the only name that picks one of two keys of one provider.
+func RemotePoolWithdraw(ctx context.Context, c *RemoteClient, p *Printer, src, ref, keyID string) error {
 	if err := validPoolCredential(src, ref); err != nil {
 		return err
 	}
-	return RemoteSendPrint(ctx, c, p, "DELETE", "/api/me/pool/"+src+"/"+ref, nil)
+	current, err := myPledge(ctx, c, src, ref, keyID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		if keyID != "" {
+			return fmt.Errorf("you have no %s/%s contribution lending key %s", src, ref, keyID)
+		}
+		return fmt.Errorf("you have no %s/%s contribution to withdraw", src, ref)
+	}
+	return RemoteSendPrint(ctx, c, p, "DELETE", "/api/me/pool/entries/"+url.PathEscape(current.ID), nil)
+}
+
+// myPledge resolves the ONE stored contribution a (source, ref, key)
+// names. keyID empty selects every key of the provider: a single match is
+// that pledge, several are refused rather than guessed (the donor must say
+// which key they mean).
+func myPledge(ctx context.Context, c *RemoteClient, src, ref, keyID string) (*poolPledgeView, error) {
+	raw, err := c.Call(ctx, "GET", "/api/me/pool", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		Pledges []poolPledgeView `json:"pledges"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("decode pledges: %w", err)
+	}
+	matches := make([]*poolPledgeView, 0, 1)
+	for i := range body.Pledges {
+		pv := &body.Pledges[i]
+		if pv.Source != src || pv.Ref != ref {
+			continue
+		}
+		if keyID != "" && pv.KeyID != keyID {
+			continue
+		}
+		matches = append(matches, pv)
+	}
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, fmt.Errorf("you lend %d %s/%s keys — name the one you mean with --key-id", len(matches), src, ref)
+	}
 }
 
 // validPoolCredential rejects a malformed (source, ref) before it becomes a

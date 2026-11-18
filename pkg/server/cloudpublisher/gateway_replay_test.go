@@ -44,7 +44,7 @@ import (
 
 // gatewayEntryPledge is the attached fixture's gateway entry.
 func gatewayEntryPledge() string {
-	return credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible))
+	return credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible), "key-gw")
 }
 
 func limitGatewayEntry(t *testing.T, f *attachedFixture, l credpool.Limits) {

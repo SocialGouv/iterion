@@ -84,7 +84,7 @@ const donorFingerprint = "fp-donor-oauth"
 // donorPledgeID is the pledge the pool harness seeds: one donor lending
 // their Claude subscription.
 func donorPledgeID() string {
-	return credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+	return credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 }
 
 // credpoolLimitsForFine gives the donor a spend ceiling the tests can

@@ -13,11 +13,20 @@ import (
 // every token is on the donor's own invoice, not a slice of a plan they
 // already pay for. These pin the boundaries that keeps that safe.
 
+// donorKeyID is the key id donorKey gives (userID, provider).
+func donorKeyID(userID, provider string) string { return "key-" + userID + "-" + provider }
+
+// keyPledgeID is the id of the pledge donorKey seeds for (userID, provider):
+// an api_key pledge is identified by the key it lends.
+func keyPledgeID(userID, provider string) string {
+	return APIKeyPledgeID(userID, provider, donorKeyID(userID, provider))
+}
+
 // seedKey stores a sealed, user-scoped key for a donor and pledges it.
 func (h *harness) donorKey(t *testing.T, userID, provider string, lim Limits, mutate ...func(*Pledge)) (Pledge, string) {
 	t.Helper()
 	ctx := context.Background()
-	keyID := "key-" + userID + "-" + provider
+	keyID := donorKeyID(userID, provider)
 	sealed, err := secrets.SealAPIKey(h.sealer, keyID, []byte("sk-real-"+userID))
 	if err != nil {
 		t.Fatalf("seal key: %v", err)
@@ -32,7 +41,7 @@ func (h *harness) donorKey(t *testing.T, userID, provider string, lim Limits, mu
 		t.Fatalf("seed key: %v", err)
 	}
 	p := Pledge{
-		ID:         PledgeID(userID, SourceAPIKey, provider),
+		ID:         keyPledgeID(userID, provider),
 		PoolID:     "pool-1",
 		UserID:     userID,
 		Credential: Credential{Source: SourceAPIKey, Ref: provider, KeyID: keyID},
@@ -272,7 +281,7 @@ func TestAcquire_aLentAPIKeyCarriesItsOwnConcurrencyCap(t *testing.T) {
 		t.Fatalf("seed key: %v", err)
 	}
 	if err := h.pledges.Upsert(ctx, Pledge{
-		ID: PledgeID("carol", SourceAPIKey, "anthropic"), PoolID: "pool-1", UserID: "carol",
+		ID: keyPledgeID("carol", "anthropic"), PoolID: "pool-1", UserID: "carol",
 		Credential: Credential{Source: SourceAPIKey, Ref: "anthropic", KeyID: keyID},
 		Enabled:    true, Health: HealthOK, Limits: Limits{MaxUSDPerDay: 5},
 	}); err != nil {

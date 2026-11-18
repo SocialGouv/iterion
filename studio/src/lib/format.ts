@@ -22,6 +22,14 @@ export function formatCredentialFingerprint(fingerprint: string, length = 8): st
   return digest.slice(0, length);
 }
 
+// shortKeyID renders a key id compactly enough for a table cell, keeping
+// its TAIL: a key id is a uuid, and the tail is what tells two keys of one
+// lender apart at a glance. The full id belongs in the cell's title.
+export function shortKeyID(keyID?: string): string {
+  if (!keyID) return "";
+  return keyID.length <= 12 ? keyID : `…${keyID.slice(-8)}`;
+}
+
 // formatDurationBetween computes an ISO-string duration. Returns null
 // when the input is malformed; falls back to "now" when end is omitted
 // (live ticker case).

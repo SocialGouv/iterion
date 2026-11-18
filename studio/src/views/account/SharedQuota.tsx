@@ -9,7 +9,6 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Meter } from "@/components/ui/Meter";
-import { Select } from "@/components/ui/Select";
 import { TBody, THead, Table, Td, Th, Tr } from "@/components/ui/Table";
 import PanelLoading from "@/components/shared/PanelLoading";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -33,22 +32,26 @@ const SUBSCRIPTION_LABEL: Record<OAuthKind, string> = {
   codex: "ChatGPT (Codex)",
 };
 
-/** One credential the signed-in user could lend. */
+/**
+ * One credential the signed-in user could lend. A metered provider gets one
+ * card PER PERSONAL KEY: an api_key pledge is identified by the key it
+ * lends, so two keys of one provider are two contributions — each with its
+ * own ceilings and its own withdrawal, never one contribution that picks
+ * between them.
+ */
 interface Lendable {
   source: CredentialSource;
   ref: string;
+  /** The personal key this card lends — absent for a subscription. */
+  key_id?: string;
   label: string;
   /** Real money per token, rather than a slice of a plan already paid for. */
   metered: boolean;
-  /**
-   * For a metered provider, the personal keys that could back it. A pledge
-   * is identified by (source, ref), so there is exactly ONE per provider —
-   * the donor picks which of their keys it spends rather than getting a
-   * card per key, which would render duplicates all editing the same
-   * contribution.
-   */
-  keys?: { id: string; label: string }[];
 }
+
+/** A contribution's identity: (source, ref), plus the key for an api_key one. */
+const pledgeKey = (c: { source: string; ref: string; key_id?: string }) =>
+  `${c.source}/${c.ref}/${c.key_id ?? ""}`;
 
 // The same caveat the org-shared forfait already carries. Lending a
 // personal subscription to other people goes a step further than sharing
@@ -73,28 +76,21 @@ const STATUS_COPY: Record<PledgeStatus, { label: string; tone: "success" | "warn
 };
 
 /**
- * One lendable per PROVIDER, carrying that provider's personal keys as the
- * choices behind it. A team key is the team's to spend, and the server
- * refuses to pool one, so only user-scoped keys are offered.
+ * One lendable per PERSONAL key. A team key is the team's to spend, and the
+ * server refuses to pool one, so only user-scoped keys are offered; a
+ * gateway key is bound to its own endpoint, which a stranger's run never
+ * dials, so that one is refused too.
  */
-function groupKeysByProvider(keys: ApiKeyView[]): Lendable[] {
-  const byProvider = new Map<string, { id: string; label: string }[]>();
-  for (const k of keys) {
-    if (!k.scope_user_id) continue;
-    // A gateway key is bound to its own endpoint, which a stranger's run
-    // never dials; the server refuses to pool one, so it is not offered.
-    if (k.provider === "openai_compatible") continue;
-    const choices = byProvider.get(k.provider) ?? [];
-    choices.push({ id: k.id, label: `${k.name}${k.last4 ? ` (…${k.last4})` : ""}` });
-    byProvider.set(k.provider, choices);
-  }
-  return [...byProvider.entries()].map(([provider, choices]) => ({
-    source: "api_key" as CredentialSource,
-    ref: provider,
-    label: `${provider} key`,
-    metered: true,
-    keys: choices,
-  }));
+function keyLendables(keys: ApiKeyView[]): Lendable[] {
+  return keys
+    .filter((k) => k.scope_user_id && k.provider !== "openai_compatible")
+    .map((k) => ({
+      source: "api_key" as CredentialSource,
+      ref: k.provider,
+      key_id: k.id,
+      label: `${k.name}${k.last4 ? ` (…${k.last4})` : ""} — ${k.provider}`,
+      metered: true,
+    }));
 }
 
 /** Blank input = "no limit on this axis", which the API encodes as 0. */
@@ -130,8 +126,12 @@ export default function SharedQuota() {
       label: SUBSCRIPTION_LABEL[kind],
       metered: false,
     })),
-    ...groupKeysByProvider(keys.data ?? []),
+    ...keyLendables(keys.data ?? []),
   ];
+
+  // A pledge whose key no longer exists has no card to live on — and the
+  // donor must still be able to withdraw it, or it is stuck forever.
+  const orphans = pledges.filter((p) => !lendables.some((c) => pledgeKey(c) === pledgeKey(p)));
 
   const reload = () => {
     setErr(null);
@@ -179,10 +179,19 @@ export default function SharedQuota() {
         <div className="space-y-4">
           {lendables.map((c) => (
             <PledgeCard
-              key={`${c.source}/${c.ref}`}
+              key={pledgeKey(c)}
               lendable={c}
-              pledge={pledges.find((p) => p.source === c.source && p.ref === c.ref)}
+              pledge={pledges.find((p) => pledgeKey(p) === pledgeKey(c))}
               disabled={!poolAvailable}
+              onError={setErr}
+              onSaved={onSaved}
+              confirm={confirm}
+            />
+          ))}
+          {orphans.map((p) => (
+            <OrphanPledgeCard
+              key={p.id}
+              pledge={p}
               onError={setErr}
               onSaved={onSaved}
               confirm={confirm}
@@ -219,25 +228,20 @@ function PledgeCard({
 }) {
   const [limits, setLimits] = useState<PoolLimits>({});
   const [hours, setHours] = useState<{ start: string; end: string }>({ start: "", end: "" });
-  const [keyID, setKeyID] = useState<string>("");
   const [fallbackUse, setFallbackUse] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Re-seed the form whenever the server's view changes, so a save or a
-  // reload shows what is actually stored rather than stale local edits.
+  // reload shows what is actually stored rather than stale local edits. The
+  // card IS one key now, so nothing about which key is lent re-seeds here.
   useEffect(() => {
     setLimits(pledge?.limits ?? {});
     setHours({
       start: pledge?.window ? String(pledge.window.start_hour) : "",
       end: pledge?.window ? String(pledge.window.end_hour) : "",
     });
-    setKeyID(pledge?.key_id ?? lendable.keys?.[0]?.id ?? "");
     setFallbackUse(pledge?.fallback_use ?? false);
-    // Keyed on the FIRST key's id, not on `lendable`: the parent rebuilds
-    // that object on every render, so depending on it would re-seed — and
-    // wipe — the form under a donor who is still typing their ceilings.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pledge, lendable.keys?.[0]?.id]);
+  }, [pledge]);
 
   const status = pledge?.status;
   const copy = status ? STATUS_COPY[status] : null;
@@ -260,7 +264,7 @@ function PledgeCard({
             },
       bots: pledge?.bots,
       fallback_use: fallbackUse,
-      key_id: keyID,
+      key_id: lendable.key_id,
     };
   };
 
@@ -278,6 +282,7 @@ function PledgeCard({
   };
 
   const withdraw = async () => {
+    if (!pledge) return;
     const ok = await confirm({
       title: "Stop sharing?",
       message:
@@ -288,7 +293,8 @@ function PledgeCard({
     if (!ok) return;
     onError(null);
     try {
-      await withdrawPledge(lendable.source, lendable.ref);
+      // By id: another key of this provider is a different contribution.
+      await withdrawPledge(pledge.id);
       onSaved("Contribution withdrawn.");
     } catch (e) {
       onError(errorMessage(e));
@@ -356,21 +362,6 @@ function PledgeCard({
               Resting until {formatDateTime(pledge.cooldown_until)}
             </div>
           )}
-        </div>
-      )}
-
-      {(lendable.keys?.length ?? 0) > 1 && (
-        <div className="max-w-sm">
-          <FieldLabel help="You hold several keys for this provider. One contribution exists per provider — this is the key it spends.">
-            Key to lend
-          </FieldLabel>
-          <Select value={keyID} onChange={(e) => setKeyID(e.target.value)}>
-            {lendable.keys?.map((k) => (
-              <option key={k.id} value={k.id}>
-                {k.label}
-              </option>
-            ))}
-          </Select>
         </div>
       )}
 
@@ -483,6 +474,65 @@ function PledgeCard({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A contribution left behind by a key the donor has deleted. It can serve
+ * nobody, and no ordinary card exists for it — without this one the donor
+ * could never withdraw it.
+ */
+function OrphanPledgeCard({
+  pledge,
+  onError,
+  onSaved,
+  confirm,
+}: {
+  pledge: PledgeView;
+  onError: (msg: string | null) => void;
+  onSaved: (msg: string) => void;
+  confirm: ReturnType<typeof useConfirm>["confirm"];
+}) {
+  const [busy, setBusy] = useState(false);
+  const copy = STATUS_COPY[pledge.status];
+
+  const withdraw = async () => {
+    const ok = await confirm({
+      title: "Withdraw this contribution?",
+      message:
+        "The key it lends is no longer on your account, so it serves nobody. Withdrawing it removes the contribution for good.",
+      confirmLabel: "Withdraw",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await withdrawPledge(pledge.id);
+      onSaved("Contribution withdrawn.");
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-surface-1 border border-border-subtle rounded p-4 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="font-medium">{pledge.ref} key — that key is gone</h3>
+          <div className="text-xs text-fg-muted">
+            This contribution lends a key you have since deleted. It cannot serve anyone; it can
+            only be withdrawn from here.
+          </div>
+        </div>
+        {copy ? <Badge variant={copy.tone}>{copy.label}</Badge> : null}
+      </div>
+      <Button variant="danger" disabled={busy} onClick={() => void withdraw()}>
+        Withdraw
+      </Button>
     </div>
   );
 }

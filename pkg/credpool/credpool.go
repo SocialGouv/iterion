@@ -433,8 +433,9 @@ func (c Credential) String() string {
 }
 
 // Pledge is one donor's standing offer of one credential they hold.
-// Keyed by (UserID, Source, Ref), so a pledge can never point at a
-// credential that is not the donor's own.
+// Keyed by (UserID, Source, Ref, KeyID) — see PledgeID — so a pledge can
+// never point at a credential that is not the donor's own, and two keys of
+// one provider are two offers.
 type Pledge struct {
 	ID     string `bson:"_id" json:"id"`
 	PoolID string `bson:"pool_id" json:"pool_id"`
@@ -513,8 +514,35 @@ type Pledge struct {
 
 // PledgeID is the deterministic id for one donor's offer of one
 // credential.
-func PledgeID(userID string, src CredentialSource, ref string) string {
+//
+// An api_key pledge is identified by the KEY it lends: a donor may hold
+// several keys of one provider and lend two of them, and (lender, source,
+// ref) alone would put both offers on one _id — the second write would
+// silently replace the first, losing half the donation and leaving the
+// broker nothing to fail over to.
+//
+// Every other shape keeps the historical three segments, byte for byte: an
+// oauth pledge is one per connection kind, so its id needs no migration.
+//
+// The arity is fixed on purpose: a variadic keyID would let an api_key call
+// site keep compiling into the old, colliding id.
+func PledgeID(userID string, src CredentialSource, ref, keyID string) string {
+	if src == SourceAPIKey && keyID != "" {
+		return userID + "|" + string(src) + "|" + ref + "|" + keyID
+	}
 	return userID + "|" + string(src) + "|" + ref
+}
+
+// OAuthPledgeID is PledgeID for a subscription — the three-segment identity
+// an oauth pledge has always had.
+func OAuthPledgeID(userID, ref string) string {
+	return PledgeID(userID, SourceOAuth, ref, "")
+}
+
+// APIKeyPledgeID is PledgeID for a metered key: the key's own id is part of
+// the identity.
+func APIKeyPledgeID(userID, ref, keyID string) string {
+	return PledgeID(userID, SourceAPIKey, ref, keyID)
 }
 
 // Validate checks a donor-supplied pledge before it is stored.

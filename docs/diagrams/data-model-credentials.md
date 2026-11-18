@@ -133,7 +133,7 @@ erDiagram
     bool audience.all_teams
   }
   cred_pledges {
-    string _id PK "'<user_id>|<source>|<ref>'"
+    string _id PK "'<user_id>|<source>|<ref>' for oauth; '<user_id>|<source>|<ref>|<key_id>' for api_key (two keys of one provider, two rows)"
     string pool_id FK "cred_pools._id"
     string user_id FK "users._id"
     string source "oauth | api_key"
@@ -150,7 +150,7 @@ erDiagram
   cred_leases {
     string _id PK
     string run_id FK "runs._id"
-    string pledge_id FK "cred_pledges._id"
+    string pledge_id FK "cred_pledges._id - rewritten, closed leases included, when an api_key pledge's _id moves"
     string pool_id FK "cred_pools._id"
     string donor_id FK "users._id"
     string source "oauth | api_key"
@@ -167,7 +167,7 @@ erDiagram
     datetime acquired_at
   }
   cred_pool_usage {
-    string _id PK "'<pledge_id>|d|2026-08-03' or '<pledge_id>|w|2026-W31'"
+    string _id PK "'<pledge_id>|d|2026-08-03' or '<pledge_id>|w|2026-W31' - the prefix is rewritten when the pledge _id moves"
     int runs
     int64 cost_usd_millis "integer millis"
     datetime period_start

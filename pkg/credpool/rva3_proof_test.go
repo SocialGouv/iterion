@@ -131,13 +131,13 @@ func TestPoolReview3_F3_fineReportZeroesAnUnstampedSibling(t *testing.T) {
 		Provider: "anthropic", Name: "lent", SealedSecret: sealed}); err != nil {
 		t.Fatal(err)
 	}
-	pa := Pledge{ID: PledgeID("alice", SourceAPIKey, "anthropic"), PoolID: "pool-1", UserID: "alice",
+	pa := Pledge{ID: APIKeyPledgeID("alice", "anthropic", "key-alice-legacy"), PoolID: "pool-1", UserID: "alice",
 		Credential: Credential{Source: SourceAPIKey, Ref: "anthropic", KeyID: "key-alice-legacy"}, Enabled: true, Health: HealthOK, Limits: Limits{MaxUSDPerDay: 5}}
 	if err := h.pledges.Upsert(ctx, pa); err != nil {
 		t.Fatal(err)
 	}
 	h.donorKey(t, "bob", "openai", Limits{})
-	pb := PledgeID("bob", SourceAPIKey, "openai")
+	pb := keyPledgeID("bob", "openai")
 	_, attID, _ := attachForTest(t, h, Strategy{}, DrawLimits{})
 	day := h.now
 
@@ -204,8 +204,8 @@ func TestPoolReview3_F2b_coarseAuthFailedParksEveryInnocentKeyDonorFirst(t *test
 		h.now = h.now.Add(time.Minute)
 		_ = h.broker.ReportAttempt(ctx, "run-y", P, Outcome{CostUSD: 0.2, Condition: ConditionAuthFailed})
 		pa, _ := h.pledges.Get(ctx, alice.ID)
-		pb, _ := h.pledges.Get(ctx, PledgeID("bob", SourceAPIKey, "openai"))
-		pc, _ := h.pledges.Get(ctx, PledgeID("carol", SourceAPIKey, "openai"))
+		pb, _ := h.pledges.Get(ctx, keyPledgeID("bob", "openai"))
+		pc, _ := h.pledges.Get(ctx, keyPledgeID("carol", "openai"))
 		t.Logf("attempt %d (forfait=alice, key=%s) rejected: alice %d/%s  bob %d/%s  carol %d/%s",
 			i, key, pa.ConsecutiveAuthFailures, pa.Health, pb.ConsecutiveAuthFailures, pb.Health, pc.ConsecutiveAuthFailures, pc.Health)
 		h.now = h.now.Add(time.Minute)
@@ -245,6 +245,6 @@ func TestPoolReview3_F4_coarseSideBySideNeverChargesTheForfaitCeiling(t *testing
 			t.Fatal(err)
 		}
 		t.Logf("run %d served by forfait %s (allowance $%.2f) + key %s; ledger after: alice=$%.2f bob=$%.2f",
-			i, g1.DonorID, g1.RemainingUSD, g2.DonorID, rva2Spent(t, h, alice.ID, day), rva2Spent(t, h, PledgeID("bob", SourceAPIKey, "openai"), day))
+			i, g1.DonorID, g1.RemainingUSD, g2.DonorID, rva2Spent(t, h, alice.ID, day), rva2Spent(t, h, keyPledgeID("bob", "openai"), day))
 	}
 }

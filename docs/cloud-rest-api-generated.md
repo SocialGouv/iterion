@@ -306,6 +306,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/me/oauth/{kind}/refresh` | session | yes |
 | `POST` | `/api/me/password` | session | yes |
 | `GET` | `/api/me/pool` | session | yes |
+| `DELETE` | `/api/me/pool/entries/{pledge}` | session | yes |
 | `GET` | `/api/me/pool/history` | session | yes |
 | `DELETE` | `/api/me/pool/{source}/{ref}` | session | yes |
 | `PUT` | `/api/me/pool/{source}/{ref}` | session | yes |

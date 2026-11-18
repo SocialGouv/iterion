@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.12.0](https://github.com/SocialGouv/iterion/compare/v7.11.1...v7.12.0) (2026-11-18)
+
+### Features
+
+* **credpool:** an api_key pledge is identified by the key it lends — two keys of one lender can share a pool ([#3367](https://github.com/SocialGouv/iterion/issues/3367)) ([3395451](https://github.com/SocialGouv/iterion/commit/33954512d6d62c8d1c5f37b151e6a0b9a7a7c12e))
+
+    <details><summary>why</summary>
+
+    A pledge's identity is (lender, source, ref), so a donor lending two keys of one provider writes the second over the first: half the month's credits are lost and the broker has nothing to fail over to.
+
+    </details>
+
+## [7.11.1](https://github.com/SocialGouv/iterion/compare/v7.11.0...v7.11.1) (2026-11-18)
+
+### Bug Fixes
+
+* **test:** anchor the ingress ack test clock to the wall, not a fixed date ([#3365](https://github.com/SocialGouv/iterion/issues/3365)) ([c4d15dc](https://github.com/SocialGouv/iterion/commit/c4d15dc32d9b40ad7caa3487db38f13767cf8b98))
+
+    <details><summary>why</summary>
+
+    The test pinned at=2026-11-15T10:00Z with a 72h retention, so the intake store — which prunes rows whose expiry passed, judged against its own clock — dropped the row as soon as real time crossed at+72h. The suite went red on its own at 10:00Z today, on an untouched tree.
+
+    </details>
+
 ## [7.11.0](https://github.com/SocialGouv/iterion/compare/v7.10.0...v7.11.0) (2026-11-17)
 
 ### Features

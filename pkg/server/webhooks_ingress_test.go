@@ -409,10 +409,12 @@ func TestIngress_AChangedContractIsRefusedUntilReBound(t *testing.T) {
 func TestIngress_TheDeclaredAckAnswersWhileMatchingIsPending(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
 	f.s.cfg.ConnectorIntakeRetention = 72 * time.Hour
-	// A pinned clock the retention window has NOT left behind: a literal
-	// date here expires 72h after it is written, and the row it stored then
-	// disappears from the listing under a test that never changed.
-	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	// Anchored to the wall clock, not to a fixed date: the store prunes the
+	// rows whose expiry passed, judged against its own clock, so a literal
+	// instant becomes a bomb — the row is pruned the day real time crosses
+	// at+retention and the read below sees nothing. The server clock is
+	// pinned to the same instant so the retention assertion stays exact.
+	at := time.Now().UTC().Truncate(time.Second)
 	f.s.ingressClock = func() time.Time { return at }
 	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 	body := `{"sender":{"login":"alice"}}`
