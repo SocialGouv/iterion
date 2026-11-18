@@ -535,7 +535,7 @@ c283db61ddcbb00a4e1c4d2864dac117ebaf2f097cb0b83113fc58c43c389bb8 04fbc22482d6372
 bc0a53c63999934b46c07a87a0119f9a8e181ec4a8567ebb953a391d7c3b036d 2e3d3d68eefdb0dd58da7a2180bc155d1e484c92f5b14c52d780f184ee764536 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
 f48cb3bbd9f3bccf84cf93d59ccf5f1415eaa6fc765221ea7be583c25a293e0c 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
 9c3b759e16c4179d6f4847b89f6d30c7916f090fe2355d767ca00ec9274e1e03 758769e5d93f150e00d529ae11668ffc77975d66047dd7821f8759bb4c825803 ../../docs/adr/168-an-event-source-is-a-connector-package.md
-da80dec3727fe84f364937cf15c5ce65d01941730905309865f4f794be661762 53e8288e615c67c528aae2bcddb26241c1dfd75795e25b95a24979041a909c5a ../../docs/adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md
+7d31b24087358904b1b394ed636508d3080bc1fc36140e145b31217558d08a55 a4238c1c9c0541b5cda1424e528f10463297cbf61dca95b5ff79dcb235ba5ffb ../../docs/adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md
 a17c9535d41fa61121ddefea18644855dd61352d843fd147ae48faeb37632548 a738b0b5c122d30af5b9da1c63c5d590a31aeafa7de1723ee9b5e3a11c9def35 ../../docs/adr/README.md
 fbbbc44294a4c36f378d8eead10e4005362b9a0d50fc9fc7d1b004508fbd31cb 84e0c0eafaa95a34c293f278ac52e45ce537bab5e752a00e6959a13ae103b65a ../../docs/agents/README.md
 504db14aead0670eaaf4622e895ca6decc8af2e1a9772c33a5bc3735f2df06f1 e4bfa392b5fa6b1c53ed5721c3442aaf843219d3f8f58dfe2a231a318bcef500 ../../docs/agents/backends/README.md

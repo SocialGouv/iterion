@@ -10,11 +10,14 @@
 
 ## Context
 
-Twenty-nine catalogue bots read their routing from `${ITERION_VIBE_*}`
-expansions — 287 routing-field lines, 32 distinct dials at the last
-measurement (#2699) — and production pins those dials in the runner
+The catalogue reads its routing from `${ITERION_*}` expansions: 32 bots
+read 141 distinct names, on 287 routing-field lines at #2699's last
+count. Only 13 of those bots use the `ITERION_VIBE_*` family; the rest
+read per-bot families such as `ITERION_ASSESSMENT_*_MODEL`,
+`ITERION_COPILOT_*`, `ITERION_ADR_MODEL_CLAUDE`, `ITERION_MODERNIZE_*` and
+`ITERION_RGAA_MODEL_*`. Production pins some of those dials in the runner
 pods' environment (`ITERION_VIBE_*_GPT` plus `ITERION_BOT_VARS_ENV_PINS`
-in the deployment's production values). The same surface carries
+in the deployment's production values), and the same surface carries
 behaviour knobs such as `ITERION_MODERNIZE_EFFORT`.
 
 That single mechanism costs three things at once.
@@ -56,16 +59,22 @@ non-empty `providers:` list refuse its launches.
    backend, provider or effort is an `llmroute` override cell at the
    platform, org, team, binding or launch level — the seat ADR-129
    already defined and the preview already reads.
-3. **The retired names are `ITERION_VIBE_*` and `ITERION_MODERNIZE_EFFORT`.**
-   Both families go from the catalogue, from the deployment's pod env and
-   from `ITERION_BOT_VARS_ENV_PINS`. The bot-var overlay itself (ADR-093)
-   survives as the mechanism for the knobs not yet de-dialled (its
-   `ITERION_RGAA_*` family, #2699's later stage) and for engine-injected
+3. **Every `${ITERION_*}` dial in a catalogue routing field is retired**
+   — `model`, `backend`, `provider`, `reasoning_effort` and a fallback
+   route's own — whatever its family; `ITERION_RGAA_MODEL_*` is routing,
+   not a knob. `ITERION_VIBE_*` and `ITERION_MODERNIZE_EFFORT` go
+   **first**, because they are the ones the deployment pins today: they
+   leave the catalogue, the pod env and `ITERION_BOT_VARS_ENV_PINS` in the
+   first delivery, and the other families follow bot by bot under the same
+   rule. The bot-var overlay itself (ADR-093) survives for knobs that are
+   not routing — a threshold, a cap, a flag — and for engine-injected
    settings; it is simply no longer how routing is expressed.
-4. **The class is closed, not only its sites.** A guard refuses a new
-   `${ITERION_VIBE_*}` or `${ITERION_MODERNIZE_*}` expansion in a
-   catalogue bot's routing or knob field (warning first, then the
-   catalogue floor), so the surface cannot grow back one bot at a time.
+4. **The class is closed, not only its sites.** The guard is the one
+   ADR-132 §6 already names: C315 warns on any `${ITERION_*}` in a routing
+   field, and for a catalogue bot it becomes the floor once that bot is
+   de-dialled — so a de-dialled bot cannot grow a dial back, and no new
+   bot ships one. A family is not closed by retiring its sites while a
+   sibling family stays open.
 5. **The review topology names roles, not vendors.** `review_mode`
    becomes `auto | single | paired`; the nodes become `reviewer`,
    `reviewer_alternate` and `converge` (each tier's variants follow);
@@ -81,11 +90,14 @@ non-empty `providers:` list refuse its launches.
 - **One seat per setting.** An instance that needs another model writes
   one override cell; nothing shadows it in a pod env, and a roll is no
   longer the way to re-tune a bot.
-- **Production migrates in the same change, not after it.** The nine
-  routing pins of the deployment become team or binding override cells
-  (a routing policy per integration), then the env block and its
-  `ITERION_BOT_VARS_ENV_PINS` entries are removed. The operator
-  validates the result with a credential preview before the pins go.
+- **Production migrates before the de-dial, not after it.** The nine
+  routing pins of the deployment are first written as override cells
+  (platform, team or binding, per ADR-132 §7) and proved by a credential
+  preview while the env pins still say the same thing; only then is the
+  catalogue de-dialled, and the env block and its
+  `ITERION_BOT_VARS_ENV_PINS` entries are removed last. De-dialling first
+  would send a sovereign pool's spend to the authored literals — off its
+  gateway — for as long as the cells are missing.
 - **Revi's vocabulary leaves `claude` and `gpt`.** Integrations carrying
   `mono_family` are migrated in one pass; there is no compatibility
   shim, and an old value is refused rather than silently honoured.
