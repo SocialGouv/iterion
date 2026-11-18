@@ -26,30 +26,36 @@ func TestFoldSpendSumsThinkingAcrossAttempts(t *testing.T) {
 		return delegate.Result{Tokens: tokens, ThinkingTokens: thinking, ThinkingMs: ms,
 			Output: map[string]any{"_tokens": tokens}}
 	}
-	noUsage := delegate.Result{}
-	a, b := billed(5000, 400, 900), billed(2000, 150, 300)
+	// Each case builds its OWN attempts: the fold stamps the summed spend into
+	// the latest attempt's Output map, which the retry loop owns, so attempts
+	// shared across these parallel subtests were one map written by two
+	// goroutines at once (#3384).
+	a := func() delegate.Result { return billed(5000, 400, 900) }
+	b := func() delegate.Result { return billed(2000, 150, 300) }
+	noUsage := func() delegate.Result { return delegate.Result{} }
 	for _, tc := range []struct {
 		name     string
-		attempts []delegate.Result
+		attempts func() []delegate.Result
 	}{
-		{"the attempt without usage last", []delegate.Result{a, b, noUsage}},
-		{"the attempt without usage first", []delegate.Result{noUsage, b, a}},
-		{"the attempt without usage in the middle", []delegate.Result{b, noUsage, a}},
+		{"the attempt without usage last", func() []delegate.Result { return []delegate.Result{a(), b(), noUsage()} }},
+		{"the attempt without usage first", func() []delegate.Result { return []delegate.Result{noUsage(), b(), a()} }},
+		{"the attempt without usage in the middle", func() []delegate.Result { return []delegate.Result{b(), noUsage(), a()} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			e := newTestExecutorForRetry(len(tc.attempts))
+			attempts := tc.attempts()
+			e := newTestExecutorForRetry(len(attempts))
 			calls := 0
 			got, err := e.retryDelegateLoop(context.Background(), "reviewer", delegate.BackendClaudeCode, false,
 				func() (delegate.Result, error) {
-					r := tc.attempts[calls]
+					r := attempts[calls]
 					calls++
-					if calls < len(tc.attempts) {
+					if calls < len(attempts) {
 						return r, &delegate.ErrTransient{Reason: "stream closed"}
 					}
 					return r, nil
 				})
-			if err != nil || calls != len(tc.attempts) {
+			if err != nil || calls != len(attempts) {
 				t.Fatalf("want every attempt to run: err=%v calls=%d", err, calls)
 			}
 			if got.ThinkingTokens != 550 || got.ThinkingMs != 1200 {
