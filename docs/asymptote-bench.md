@@ -47,7 +47,7 @@ iterion bench asymptote \
 
 Required flags:
 
-- `--judge-node <node-id>`: the IR node whose verdict is read each iteration. Must be a real node ID from the workflow (commonly `reviewer_claude`, `judge`, `final_judge`, etc.).
+- `--judge-node <node-id>`: the IR node whose verdict is read each iteration. Must be a real node ID from the workflow (commonly `reviewer_alternate`, `judge`, `final_judge`, etc.).
 
 Common optional flags:
 

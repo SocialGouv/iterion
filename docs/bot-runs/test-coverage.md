@@ -100,7 +100,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
   boundary, `proc` iterion-binary locator, `dsl/types` enum→keyword `String()`),
   **skipped** trivial glue + Mongo-bound code (anti-façade), chose **unit** with
   mutation-test framing. act wrote 4 test files; **verify gate passed** first try;
-  reviewer_claude approved; reviewer_gpt found a blocker → `fix_gpt` → **FAILED**.
+  reviewer_alternate approved; reviewer found a blocker → `fix_gpt` → **FAILED**.
 - **`tail()` fix validated LIVE**: `streak_check` evaluated the capped accumulator
   twice with NO "unknown function" error — the engine resolves `tail()` correctly.
 - **Failure cause (corrected by Run D below — see also the CORRECTION):** `fix_gpt`
@@ -114,7 +114,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
   `done` (commit e3e0817 on its storage branch). The bot's scope-auto path is sound.
 - **CORRECTION of the run 019ef5d3 finding:** the `400 {"detail":"Unsupported content
   type"}` is a **TRANSIENT chatgpt-forfait endpoint flake, NOT a compaction bug.** In
-  019ef60f it hit `reviewer_gpt` on a `session: fresh` FIRST call (no compaction
+  019ef60f it hit `reviewer` on a `session: fresh` FIRST call (no compaction
   possible) and the executor's node-retry RECOVERED (2nd attempt approved → streak →
   commit → done). So run 019ef5d3 only died because the transient 400 coincided with a
   real `fix_gpt` overflow and the ~2 retries exhausted before a clean attempt.
@@ -122,7 +122,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
   `function_call_output` and shipped `dropOrphanedToolResults` (commit dadfc49b2) — that
   was WRONG (it can't even run for a `session: fresh` reviewer) and was **reverted**.
   LESSON: don't ship a fix to shared LLM-client code on an unreproduced hypothesis;
-  `reviewer_gpt` being `session: fresh` already ruled out compaction. (See
+  `reviewer` being `session: fresh` already ruled out compaction. (See
   [project_claw_gpt5_context_overflow_fix] memory.)
 - Residual (real but minor, NOT fixed): transient forfait 400s could get more retry
   attempts so they don't coincide-and-exhaust; and `fix_gpt` `session: inherit` overflow
@@ -156,7 +156,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
   (with honest exclusion of un-harnessed code) and explicit multi-type (unit+integration
   split matched to the repo's helpers). All 3 dogfoods (pkg/log, pkg/secrets, pkg/store)
   converged cross-family with the deterministic gate passing first try (no repair loop).
-  The OpenAI forfait held for both (reviewer_gpt ~$0.02 each).
+  The OpenAI forfait held for both (reviewer ~$0.02 each).
 - Findings:
   - **prepare_commit session-fork is consistently dropped** even on a fresh (non-resume)
     run: "parent session has no recorded provider fingerprint" → it starts a fresh session
@@ -185,13 +185,13 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
 - Versions: bot 0.1.0 · iterion (working tree on `main` @ e2cd45c + this work)
 - Method: `iterion run bots/test-coverage/main.bot --var target=pkg/log --var
   test_unit=true --merge-into none`; backends claude_code (opus-4-8) for
-  plan/act/simplify/reviewer_claude/prepare_commit, claw `openai/gpt-5.5` for
-  reviewer_gpt; sandbox `iterion-sandbox-full:edge`, `worktree: auto`,
+  plan/act/simplify/reviewer_alternate/prepare_commit, claw `openai/gpt-5.5` for
+  reviewer; sandbox `iterion-sandbox-full:edge`, `worktree: auto`,
   network open.
 - Result: **converged to `done`.** plan → act → simplify → **verify gate PASSED
   first try** (`passed=true, new_test_code=true`, 537 ms, no repair loop) →
-  reviewer_claude **approved (high, 0 blockers, 7 areas)** → [forfait 429,
-  resumed] → reviewer_gpt **approved (high, 0 blockers, family=gpt)** →
+  reviewer_alternate **approved (high, 0 blockers, 7 areas)** → [forfait 429,
+  resumed] → reviewer **approved (high, 0 blockers, family=gpt)** →
   streak_check **stop** (cross-family double approval) → prepare_commit picked
   **only `pkg/log/log_test.go`** (correctly excluded an unrelated catalog
   regen line) → commit_changes → done. Commit **aac2ab2** on storage branch
@@ -209,7 +209,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
     `safeByteCut` walk-back made TestSafeByteCut/TestTruncate/TestBlockPreview
     fail … restoring it passed. Proves the tests catch a real regression." The
     skill's mutation-test doctrine reached the implementer concretely.
-  - reviewer_claude applied the mutation lens and approved with high confidence
+  - reviewer_alternate applied the mutation lens and approved with high confidence
     + zero blockers — no façades to catch (the deterministic gate + plan kept
     quality high upstream).
   - The deterministic `verify_run_tests` gate passed first try
@@ -234,7 +234,7 @@ metric is meaningful tests that catch a real regression, NOT coverage %.
     start, adding a 1-line unrelated diff (sec-audit-deps `scope_notes`).
     Harmless — `prepare_commit` excludes non-test files by design.
 - Lessons for next run:
-  - reviewer_gpt/fix_gpt require a working non-Anthropic backend. The ChatGPT
+  - reviewer/fix_gpt require a working non-Anthropic backend. The ChatGPT
     **forfait** quota (`429 usage limit reached`) is a hard cap a retry can't
     clear — switching the Codex account (or setting `OPENAI_API_KEY`) + `iterion
     resume --run-id … --file … --force` picks up the new creds (the resumed

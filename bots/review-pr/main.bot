@@ -5,12 +5,17 @@
 ## findings — it never edits, fixes, or commits code. That mutation
 ## job belongs to the improve-loops (Billy = branch_improve_loop,
 ## Willy = whole_improve_loop). Revi is the PR reviewer: it reads the
-## diff, reasons about it with one reviewer (mono, the default) or two
-## independent reviewers from different model families (dual — opt-in via
-## `--var review_mode=dual`), then a single emit step
-## merges + de-duplicates their findings and writes them to the
-## iterion native kanban board (one issue per finding) plus a markdown
-## report.
+## diff, reasons about it with one reviewer (single, the default) or two
+## independent reviewers (paired — opt-in via `--var review_mode=paired`),
+## then a single emit step merges + de-duplicates their findings and writes
+## them to the iterion native kanban board (one issue per finding) plus a
+## markdown report.
+##
+## The nodes name ROLES, never vendors (ADR-169): `reviewer` is whoever
+## reviews, `reviewer_alternate` the second opinion paired adds, `converge`
+## the one merge step. Which backend and model serves each role is a routing
+## question — the node's own literals, and the llmroute override cells over
+## them — never a bot var.
 ##
 ## Shape (single pass — no loop, no convergence, nothing to converge
 ## ON since Revi changes nothing between iterations):
@@ -19,15 +24,13 @@
 ##                     into severity_threshold / max_findings /
 ##                     post_to_board / effective_review_mode — #685)
 ##   topology (condition — ADR-052 + review tiers)
-##     ├─ mono, guard tier (DEFAULT) -> reviewer_claude / reviewer_gpt
-##     ├─ mono, glance tier          -> reviewer_claude_glance /
-##                                      reviewer_gpt_glance (cheaper
-##                                      same-family model)
-##     └─ dual (review_mode=dual, or audit tier which forces it)
+##     ├─ single, guard tier (DEFAULT) -> reviewer
+##     ├─ single, glance tier          -> reviewer_glance (cheaper model)
+##     └─ paired (review_mode=paired, or audit tier which forces it)
 ##                       -> fan (fan_out_all)
-##                            ├─ reviewer_claude  (claude_code, read-only)
-##                            └─ reviewer_gpt     (claw + openai/gpt-6-astra)
-##   reviewer_* -> merge_reviews -> converge   (await: wait_all)
+##                            ├─ reviewer            (claw + openai/*, read-only)
+##                            └─ reviewer_alternate  (claude_code)
+##   reviewer* -> merge_reviews -> converge    (await: wait_all)
 ##                 board + markdown report
 ##   converge -> pr_gate   (deterministic: was a pr_url given?)
 ##     ├─ no  -> done
@@ -44,13 +47,13 @@
 ## contract — the tier is a preset, never a cage: any of the underlying
 ## vars stays individually overridable via its own --var.
 ##
-## Cross-family value (DUAL only): an issue flagged by BOTH families is
+## Cross-family value (PAIRED only): an issue flagged by BOTH reviewers is
 ## far more likely real than one flagged by a single reviewer. emit raises
 ## the confidence of cross-confirmed findings and labels them so the
 ## operator can triage agreement first. It is worth paying for on a
-## high-stakes diff, not on every routine push — hence mono by default
+## high-stakes diff, not on every routine push — hence single by default
 ## (and exactly the deliberate spend the "audit" tier opts into).
-## In mono every finding is still reported; only the cross-confirmation
+## In single every finding is still reported; only the cross-confirmation
 ## tag is absent.
 ##
 ## Scope discipline (matches the loop bots): reviewers diff the
@@ -71,8 +74,8 @@
 ## files out, and `publish_review` strips findings anchored on them into a
 ## workspace-anomaly section of the report rather than against the PR.
 ##
-## Read-only safety: no node mutates source. reviewer_claude is
-## `readonly: true`; reviewer_gpt is given only read tools (bash,
+## Read-only safety: no node mutates source. reviewer_alternate is
+## `readonly: true`; reviewer is given only read tools (bash,
 ## read_file, glob, grep — no write_file/file_edit). The single
 ## downstream `emit` step writes exactly one file (the report) and
 ## creates board issues over MCP; it runs after the parallel reviewers
@@ -157,7 +160,7 @@ vars:
   ## small PR is what the reviewer ingests before it reads a single diff
   ## line (native issue #685's cost-model comment), so glance's biggest
   ## lever is ingesting LESS, not merely capping the OUTPUT. "audit" is
-  ## premium: forces the cross-family dual fan-out regardless of
+  ## premium: forces the paired fan-out regardless of
   ## review_mode, a low drafting floor, and a raised finding cap — a
   ## deliberate spend for a high-stakes diff.
   ##
@@ -294,36 +297,36 @@ vars:
   ## auto-falls back to a summary-only review when the forge rejects
   ## the inline anchors, so "inline" is safe unattended.
   pr_review_mode: string [enum: "inline", "summary"] = "inline"
-  ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer; "dual"
-  ## runs both and cross-confirms. Dual costs a full reviewer pass per
-  ## family on EVERY review — and with the merge gate wired, every push
-  ## re-reviews — so "mono" is the DECLARED default and dual is a
-  ## deliberate opt-in (`--var review_mode=dual`, or the launch flag). That
-  ## default is read only where no injection runs (a cloud launch whose
-  ## sealed bundle resolved no family): every injecting lane resolves an
-  ## UNSET review_mode as "auto", at LAUNCH, by pkg/reviewtopology from the
-  ## host's detected credentials. "auto" lands on mono wherever a detected
-  ## family's slot has a servable route (two of them included — it prefers
-  ## claude) and only picks the family for you; a backed family whose slot
-  ## has no servable route (a z.ai key without the claude_code CLI) REFUSES
-  ## the launch (#1221). With NO participating family detected it resolves
-  ## DUAL instead — so a familyless host runs dual unless review_mode=mono
-  ## is passed — and an explicit mono_family pin is deleted with it.
+  ## REVIEW TOPOLOGY (ADR-052, ADR-169). "single" runs the one reviewer;
+  ## "paired" runs it and `reviewer_alternate`, then cross-confirms. Paired
+  ## costs a full reviewer pass on EVERY review — and with the merge gate
+  ## wired, every push re-reviews — so "single" is the DECLARED default and
+  ## paired is a deliberate opt-in (`--var review_mode=paired`, or the
+  ## launch flag). That default is read only where no injection runs: every
+  ## injecting lane resolves an UNSET review_mode as "auto", at LAUNCH, by
+  ## pkg/reviewtopology — and "auto" is single, on every host, because
+  ## cross-family confirmation is a deliberate spend and not something a
+  ## deployment opts into merely by holding two credentials.
   ##
-  ## Cross-family confirmation is worth paying for on a high-stakes diff,
-  ## not on every routine push: a finding either reviewer raises is still
-  ## reported, dual only adds the `cross-confirmed by both reviewers` tag.
+  ## Which MODEL serves each role is not decided here: it is the node's own
+  ## route plus the llmroute cells over it. A deployment whose only
+  ## credential is another family re-targets `reviewer` (and `converge`)
+  ## through those cells; the bot never learns a vendor name.
   ##
-  ## `review_tier: "audit"` forces the dual fan-out regardless of what this
-  ## resolves to: the `topology -> fan` edge guards on `vars.review_tier`
+  ## `review_tier: "audit"` forces the paired fan-out regardless of what
+  ## this resolves to: the `topology -> fan` edge guards on `vars.review_tier`
   ## itself, and `tier_expand`'s `effective_review_mode` only restates that
-  ## predicate for the report — dual IS audit's defining spend. An explicit `--var review_mode=dual` on any
-  ## tier also forces it, unchanged from before #685.
-  review_mode: string [enum: "auto", "mono", "dual"] = "mono"
-  ## Which family runs in mono. Overwritten by the launch-time resolver
-  ## when it detects only one usable family (e.g. an Anthropic-forfait
-  ## instance with no OpenAI quota resolves to "claude").
-  mono_family: string [enum: "claude", "gpt"] = "claude"
+  ## predicate for the report — paired IS audit's defining spend. An explicit
+  ## `--var review_mode=paired` on any tier also forces it.
+  review_mode: string [enum: "auto", "single", "paired"] = "single"
+  ## RETIRED (ADR-169) — decides nothing. The family of a review is a routing
+  ## question now (`reviewer` / `reviewer_alternate` and the cells over
+  ## them), so no edge reads this var. It stays DECLARED, and takes any
+  ## value, because a launch that still sends it would otherwise be refused
+  ## as an unknown input (#1757) before any injection could map it — and a
+  ## webhook pinned that way is a required check going dark. #2699 removes it
+  ## once the integrations' launch vars are migrated.
+  mono_family: string = ""
   ## MERGE GATE (v0.5.0). When pr_url is set, the deterministic publish
   ## step ALSO posts a commit status named "revi/review" on the PR head
   ## SHA: `success` when 0 findings meet `gate_severity`, else `failure`.
@@ -478,7 +481,7 @@ prompt pacer_policy:
 ## bounded by design: ≤12 evals per pacer on a 6m cooldown, on the model
 ## each declares — so ≤24 over the two coordinators on a cross-family
 ## review, where both watch sets arm (`review_tier: audit`, or `--var
-## review_mode=dual`). A window that still exists when spend nears the
+## review_mode=paired`). A window that still exists when spend nears the
 ## wall: with 4 evals on 5m the coordinator refused every wake ("eval
 ## budget exhausted") long before a $32 trigger could match on a review
 ## that runs 40-60 minutes.
@@ -488,14 +491,14 @@ prompt pacer_policy:
 ##
 ## ONE PACER PER FAMILY (#2467): a supervisor's `model:` is resolved per
 ## declaration, so a single pacer watching both reviewers has one route —
-## and on a mono-GPT run, which holds no Claude credential, that route was
+## and on a run whose reviewer is served by another family, that route was
 ## the Anthropic wire. Split, each pacer rides the family it watches, and a
 ## coordinator evaluates nothing unless one of ITS watched nodes is active
 ## (supervise.Coordinator.armed): the other family's pacer spends nothing,
 ## which is also what keeps the usage-cap pre-flight from parking the run
 ## for it (runner.preflightSupervisors).
 supervisor pacer:
-  watches: [reviewer_claude]
+  watches: [reviewer_alternate]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}"
   system: pacer_policy
   cooldown: "6m"
@@ -511,7 +514,7 @@ supervisor pacer:
 ## (`ITERION_VIBE_MODEL_SUPERVISOR` keeps dialling the claude one). The
 ## model is this bundle's OpenAI supervisor spec, the merge twin's.
 supervisor pacer_gpt:
-  watches: [reviewer_gpt]
+  watches: [reviewer]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}"
   system: pacer_policy
   cooldown: "6m"
@@ -587,60 +590,41 @@ workflow review_pr:
 
   ## TOPOLOGY (ADR-052 + review tiers). `effective_review_mode` (audit
   ## forces it regardless of review_mode) takes the fan-out and runs both
-  ## FULL-strength families; glance routes to the lighter, cheaper
-  ## same-family reviewer; guard/any other tier keeps the full-strength
-  ## reviewer. The claude edge is the unconditional fallback, so an
-  ## unset/unknown review_mode/review_tier degrades to the cheap path
-  ## rather than to an empty router.
-  topology -> fan when "vars.review_mode == 'dual' || vars.review_tier == 'audit'"
+  ## reviewers; glance routes to the lighter, cheaper reviewer; guard/any
+  ## other tier keeps the full-strength one. `reviewer` is the unconditional
+  ## fallback, so an unset/unknown review_mode/review_tier degrades to the
+  ## cheap path rather than to an empty router.
+  topology -> fan when "vars.review_mode == 'paired' || vars.review_tier == 'audit'"
 
-  topology -> reviewer_gpt_glance when "vars.review_tier == 'glance' && vars.mono_family == 'gpt'"
+  topology -> reviewer_glance when "vars.review_tier == 'glance'"
 
-  topology -> reviewer_gpt when "vars.mono_family == 'gpt'"
+  topology -> reviewer
 
-  topology -> reviewer_claude_glance when "vars.review_tier == 'glance'"
+  ## Fan out to both FULL-strength reviewers (paired only — audit's defining
+  ## spend never routes through the glance variant).
+  fan -> reviewer_alternate
 
-  topology -> reviewer_claude
+  fan -> reviewer
 
-  ## Fan out to both FULL-strength family reviewers (dual only — audit's
-  ## defining spend never routes through the glance variants).
-  fan -> reviewer_claude
-
-  fan -> reviewer_gpt
-
-  ## Converge on emit (await: wait_all). emit reads
-  ## outputs.merge_reviews (normalised per family) directly, so the
+  ## Converge on emit (await: wait_all). emit reads outputs.merge_reviews
+  ## (normalised per role, `claude_*` / `gpt_*` by family) directly, so the
   ## edges carry no data mapping.
-  reviewer_claude -> merge_reviews
+  reviewer_alternate -> merge_reviews
 
-  reviewer_gpt -> merge_reviews
+  reviewer -> merge_reviews
 
-  reviewer_claude_glance -> merge_reviews
+  reviewer_glance -> merge_reviews
 
-  reviewer_gpt_glance -> merge_reviews
-
-  ## THE MERGE FAMILY follows `mono_family` (#2467): a mono-GPT run is
-  ## resolved from credentials where claude is the preferred family
-  ## (reviewtopology.monoPreference), so it holds none — a merge on the
-  ## Anthropic wire would die after the reviewer had already spent, and the
-  ## run would never reach pr_gate to post a verdict. Same guard, same
-  ## prune: the unconditional `converge` edge is pre-empted when this one
-  ## holds (ir.LaunchVarEdgeFilter), which is what takes the Anthropic
-  ## merge step off a mono-gpt run's topology.
-  merge_reviews -> converge_gpt when "vars.mono_family == 'gpt'"
-
+  ## ONE merge step, on the trunk: the reviewers' collector settles first
+  ## (merge_reviews has both branches, and `converge` awaits it), so the
+  ## merge reads whatever ran — one reviewer or two.
   merge_reviews -> converge
 
   ## emit always runs (board + markdown report). Then pr_gate decides
   ## whether to ALSO publish to a forge PR — only when pr_url is set —
-  ## feeding emit's merged findings forward to the publish step.
-  ##
-  ## Both twins map the SAME keys onto pr_gate, their own output and
-  ## telemetry: pr_gate is the one node every path crosses, so nothing
-  ## downstream names a twin. Each edge is unconditional and is the only
-  ## one leaving its twin — exactly one twin runs per review, so exactly
-  ## one mapping fires, and pr_gate advances on it (it declares no
-  ## `await:`: the merge is on the trunk, past the reviewers' collector).
+  ## feeding emit's merged findings forward to the publish step. The edge
+  ## maps emit's output and its engine telemetry onto one set of names, so
+  ## nothing downstream of the merge step names it again.
   converge -> pr_gate with {
     pr_url: "{{vars.pr_url}}",
     findings: "{{outputs.converge.findings}}",
@@ -666,25 +650,6 @@ workflow review_pr:
     ai_converge_effort_lowered: "{{outputs.converge._reasoning_effort_lowered}}",
   }
 
-  converge_gpt -> pr_gate with {
-    pr_url: "{{vars.pr_url}}",
-    findings: "{{outputs.converge_gpt.findings}}",
-    questions: "{{outputs.converge_gpt.questions}}",
-    ticket_conformance: "{{outputs.converge_gpt.ticket_conformance}}",
-    total_findings: "{{outputs.converge_gpt.total_findings}}",
-    claude_findings: "{{outputs.merge_reviews.claude_findings}}",
-    gpt_findings: "{{outputs.merge_reviews.gpt_findings}}",
-    ai_converge_model: "{{outputs.converge_gpt._model}}",
-    ai_converge_backend: "{{outputs.converge_gpt._backend}}",
-    ai_converge_tokens: "{{outputs.converge_gpt._tokens}}",
-    ai_converge_fallback: "{{outputs.converge_gpt._fallback_used}}",
-    ai_converge_wire: "{{outputs.converge_gpt._session_fingerprint}}",
-    ai_converge_effort: "{{outputs.converge_gpt._reasoning_effort_applied}}",
-    ai_converge_effort_source: "{{outputs.converge_gpt._reasoning_effort_source}}",
-    ai_converge_effort_requested: "{{outputs.converge_gpt._reasoning_effort_requested}}",
-    ai_converge_effort_lowered: "{{outputs.converge_gpt._reasoning_effort_lowered}}",
-  }
-
   ## No PR target → finish after the board + report (the default,
   ## zero extra LLM cost). PR target → deterministic server-mediated
   ## forge publish (no LLM, no workspace credential).
@@ -703,50 +668,40 @@ workflow review_pr:
     ## workspace anomaly rather than as PR content (#1666).
     workspace_anomaly: "{{outputs.diff_precheck.workspace_anomaly}}",
     ai_run_tokens: "{{run.tokens}}",
-    ai_reviewer_claude_model: "{{outputs.reviewer_claude._model}}",
-    ai_reviewer_claude_backend: "{{outputs.reviewer_claude._backend}}",
-    ai_reviewer_claude_tokens: "{{outputs.reviewer_claude._tokens}}",
+    ai_reviewer_alternate_model: "{{outputs.reviewer_alternate._model}}",
+    ai_reviewer_alternate_backend: "{{outputs.reviewer_alternate._backend}}",
+    ai_reviewer_alternate_tokens: "{{outputs.reviewer_alternate._tokens}}",
     ## The engine writes _fallback_used ONLY when the node was served by
     ## something other than its first choice, so its PRESENCE is the fact.
     ## The gate reads it instead of inferring degradation from whichever
     ## model name it happens to see.
-    ai_reviewer_claude_fallback: "{{outputs.reviewer_claude._fallback_used}}",
+    ai_reviewer_alternate_fallback: "{{outputs.reviewer_alternate._fallback_used}}",
     ## The session's routing label: a facade serves whatever model id it
     ## is sent (z.ai answers a claude id with GLM), so `_model` alone
     ## cannot tell the published table which family actually served.
-    ai_reviewer_claude_wire: "{{outputs.reviewer_claude._session_fingerprint}}",
-    ai_reviewer_claude_effort: "{{outputs.reviewer_claude._reasoning_effort_applied}}",
-    ai_reviewer_claude_effort_source: "{{outputs.reviewer_claude._reasoning_effort_source}}",
-    ai_reviewer_claude_effort_requested: "{{outputs.reviewer_claude._reasoning_effort_requested}}",
-    ai_reviewer_claude_effort_lowered: "{{outputs.reviewer_claude._reasoning_effort_lowered}}",
-    ai_reviewer_gpt_model: "{{outputs.reviewer_gpt._model}}",
-    ai_reviewer_gpt_backend: "{{outputs.reviewer_gpt._backend}}",
-    ai_reviewer_gpt_tokens: "{{outputs.reviewer_gpt._tokens}}",
-    ai_reviewer_gpt_wire: "{{outputs.reviewer_gpt._session_fingerprint}}",
-    ai_reviewer_gpt_effort: "{{outputs.reviewer_gpt._reasoning_effort_applied}}",
-    ai_reviewer_gpt_effort_source: "{{outputs.reviewer_gpt._reasoning_effort_source}}",
-    ai_reviewer_gpt_effort_requested: "{{outputs.reviewer_gpt._reasoning_effort_requested}}",
-    ai_reviewer_gpt_effort_lowered: "{{outputs.reviewer_gpt._reasoning_effort_lowered}}",
-    ai_reviewer_claude_glance_model: "{{outputs.reviewer_claude_glance._model}}",
-    ai_reviewer_claude_glance_backend: "{{outputs.reviewer_claude_glance._backend}}",
-    ai_reviewer_claude_glance_tokens: "{{outputs.reviewer_claude_glance._tokens}}",
-    ai_reviewer_claude_glance_fallback: "{{outputs.reviewer_claude_glance._fallback_used}}",
-    ai_reviewer_claude_glance_wire: "{{outputs.reviewer_claude_glance._session_fingerprint}}",
-    ai_reviewer_claude_glance_effort: "{{outputs.reviewer_claude_glance._reasoning_effort_applied}}",
-    ai_reviewer_claude_glance_effort_source: "{{outputs.reviewer_claude_glance._reasoning_effort_source}}",
-    ai_reviewer_claude_glance_effort_requested: "{{outputs.reviewer_claude_glance._reasoning_effort_requested}}",
-    ai_reviewer_claude_glance_effort_lowered: "{{outputs.reviewer_claude_glance._reasoning_effort_lowered}}",
-    ai_reviewer_gpt_glance_model: "{{outputs.reviewer_gpt_glance._model}}",
-    ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
-    ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
-    ai_reviewer_gpt_glance_wire: "{{outputs.reviewer_gpt_glance._session_fingerprint}}",
-    ai_reviewer_gpt_glance_effort: "{{outputs.reviewer_gpt_glance._reasoning_effort_applied}}",
-    ai_reviewer_gpt_glance_effort_source: "{{outputs.reviewer_gpt_glance._reasoning_effort_source}}",
-    ai_reviewer_gpt_glance_effort_requested: "{{outputs.reviewer_gpt_glance._reasoning_effort_requested}}",
-    ai_reviewer_gpt_glance_effort_lowered: "{{outputs.reviewer_gpt_glance._reasoning_effort_lowered}}",
-    ## The merge step's telemetry comes through pr_gate, not from a twin:
-    ## `mono_family` decides which of `converge` / `converge_gpt` ran, and
-    ## the run table must name the one that did.
+    ai_reviewer_alternate_wire: "{{outputs.reviewer_alternate._session_fingerprint}}",
+    ai_reviewer_alternate_effort: "{{outputs.reviewer_alternate._reasoning_effort_applied}}",
+    ai_reviewer_alternate_effort_source: "{{outputs.reviewer_alternate._reasoning_effort_source}}",
+    ai_reviewer_alternate_effort_requested: "{{outputs.reviewer_alternate._reasoning_effort_requested}}",
+    ai_reviewer_alternate_effort_lowered: "{{outputs.reviewer_alternate._reasoning_effort_lowered}}",
+    ai_reviewer_model: "{{outputs.reviewer._model}}",
+    ai_reviewer_backend: "{{outputs.reviewer._backend}}",
+    ai_reviewer_tokens: "{{outputs.reviewer._tokens}}",
+    ai_reviewer_wire: "{{outputs.reviewer._session_fingerprint}}",
+    ai_reviewer_effort: "{{outputs.reviewer._reasoning_effort_applied}}",
+    ai_reviewer_effort_source: "{{outputs.reviewer._reasoning_effort_source}}",
+    ai_reviewer_effort_requested: "{{outputs.reviewer._reasoning_effort_requested}}",
+    ai_reviewer_effort_lowered: "{{outputs.reviewer._reasoning_effort_lowered}}",
+    ai_reviewer_glance_model: "{{outputs.reviewer_glance._model}}",
+    ai_reviewer_glance_backend: "{{outputs.reviewer_glance._backend}}",
+    ai_reviewer_glance_tokens: "{{outputs.reviewer_glance._tokens}}",
+    ai_reviewer_glance_wire: "{{outputs.reviewer_glance._session_fingerprint}}",
+    ai_reviewer_glance_effort: "{{outputs.reviewer_glance._reasoning_effort_applied}}",
+    ai_reviewer_glance_effort_source: "{{outputs.reviewer_glance._reasoning_effort_source}}",
+    ai_reviewer_glance_effort_requested: "{{outputs.reviewer_glance._reasoning_effort_requested}}",
+    ai_reviewer_glance_effort_lowered: "{{outputs.reviewer_glance._reasoning_effort_lowered}}",
+    ## The merge step's telemetry comes through pr_gate, not from `converge`
+    ## directly: one edge carries the output and the telemetry alike.
     ai_converge_model: "{{outputs.pr_gate.ai_converge_model}}",
     ai_converge_backend: "{{outputs.pr_gate.ai_converge_backend}}",
     ai_converge_tokens: "{{outputs.pr_gate.ai_converge_tokens}}",

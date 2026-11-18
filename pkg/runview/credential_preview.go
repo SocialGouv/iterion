@@ -51,11 +51,12 @@ type CredentialPreviewRequest struct {
 	// ADR-129 §4). The webhook lane resolves its vars from the config
 	// layers and the delivery payload, so it takes no caller values.
 	Vars map[string]string `json:"vars,omitempty"`
-	// ReviewMode is the run-level mono/dual review-topology override the
-	// caller is about to launch with — the launch request's dedicated
-	// field. A mono PIN is a credential demand, and an explicit dual
-	// suppresses it, so the preview cannot answer the launch's plan without
-	// it. Empty inherits the workflow's own value, as the launch does.
+	// ReviewMode is the run-level review-topology override
+	// (auto|single|paired) the caller is about to launch with — the launch
+	// request's dedicated field. `paired` puts the second reviewer on the
+	// run's topology, so the preview walks a different plan for it; empty
+	// inherits the workflow's own value, as the launch does. The retired
+	// mono/dual spellings resolve as single/paired.
 	ReviewMode string `json:"review_mode,omitempty"`
 }
 

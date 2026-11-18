@@ -10,34 +10,29 @@ or stale and the summary note lands, the complete finding and replacement remain
 readable in the summary; a missing summary is reported as degraded instead.
 Editorial brevity does not change severity thresholds, finding caps or gates.
 
-Read-only **code reviewer** with an optional cross-family dual mode. Revi
-reviews the changes on the current branch and *publishes* the findings — it
-never edits, fixes, or commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
+Read-only **code reviewer** with an optional paired mode. Revi reviews the
+changes on the current branch and *publishes* the findings — it never edits,
+fixes, or commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
 Billy, `whole_improve_loop` = Willy.)
 
-Revi runs **one reviewer by default** (`review_mode: mono`, Claude unless
-`mono_family` selects GPT). Set `review_mode: dual` to run independent Claude
-and GPT reviewers in parallel when cross-family confirmation is worth the
-extra provider call. One `converge` step normalises the one or two reviewer
-outputs, merges and de-duplicates findings, and raises the confidence of
-anything both families flagged ("cross-confirmed"). It then writes one issue
+Revi runs **one reviewer by default** (`review_mode: single`). Set
+`review_mode: paired` to run two independent reviewers in parallel when
+cross-family confirmation is worth the extra provider call. One `converge`
+step merges and de-duplicates the findings and raises the confidence of
+anything both reviewers flagged ("cross-confirmed"). It then writes one issue
 per finding to the iterion native kanban board (labelled `severity:*`,
-`type:*`, `source:revi`) plus a markdown report. `mono_family` picks the
-family of the WHOLE review: under `mono_family=gpt` the merge runs on
-`converge_gpt`, the same step on the GPT route, and the `pacer` supervisor is
-the GPT one — a mono-GPT review touches no Anthropic credential with no
-configuration at all.
+`type:*`, `source:revi`) plus a markdown report.
 
-**Every reviewer route is a `${ENV_VAR:-default}` dial**, so an instance
+**Every route is a `${ENV_VAR:-default}` dial for now**, so an instance
 points a slot at whatever its credentials serve without re-releasing the
-bot: the claude slot defaults to `claude-opus-5-5` on `claude_code` (both
-tiers — the catalog ships no other Anthropic default; glance's frugality is
-its reasoning effort and tier caps), the gpt slot to `openai/gpt-6-astra` (glance twin:
-`openai/gpt-6-luna`) on `claw`, the gpt merge twin to `openai/gpt-6-sol` on
-`claw`, and every claude node — both reviewers and
-the `converge` merge step — carries a GLM fallback route (`provider: "zai"`,
-dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`, default `glm-5.3`) for the day the
-Anthropic credential cannot serve. The published run table labels each row
+bot: `reviewer` defaults to `openai/gpt-6-astra` on `claw` (glance:
+`openai/gpt-6-luna`), `reviewer_alternate` to `claude-opus-5-5` on
+`claude_code` with an Anthropic-direct provider hint, `converge` to
+`openai/gpt-6-sol` on `claw`, and `reviewer_alternate` carries a GLM fallback
+route (`provider: "zai"`, dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`, default
+`glm-5.3`) for the day the Anthropic credential cannot serve. (ADR-169
+retires these dials in favour of literals plus routing cells; until then they
+are the live lever.) The published run table labels each row
 with the family that actually served — read from the session's routing label
 first (a z.ai facade is GLM, whatever id it was sent), then from the model —
 never from the slot's name: Revue Claude / Revue GPT / Revue GLM, and
@@ -52,15 +47,14 @@ reviewer, has its own route for the same reason the merge twin does.)
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
 diff_precheck -> topology (condition)
-  ├─ mono/claude -> reviewer_claude   claude_code + opus 5.5, read-only
-  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-6-astra, read-only tools
-  └─ dual        -> fan (fan_out_all) -> both reviewers
-reviewer_* -> merge_reviews (best_effort)
-merge_reviews -> converge_gpt   when mono_family == gpt   (claw + openai/gpt-6-sol)
-merge_reviews -> converge       otherwise (claude_code + opus 5.5; a routing
-                                cell may move it to claw — the merge declares
-                                its three file tools, so the route serves whole)
-                                merge + dedupe → board + report
+  ├─ single/glance -> reviewer_glance   claw + openai/gpt-6-luna, read-only
+  ├─ single        -> reviewer          claw + openai/gpt-6-astra, read-only
+  └─ paired (or audit tier)
+                   -> fan (fan_out_all) -> reviewer + reviewer_alternate
+reviewer* -> merge_reviews (best_effort)
+merge_reviews -> converge   (claw + openai/gpt-6-sol; the merge declares its
+                             three file tools, so a routing cell may move it)
+                             merge + dedupe → board + report
   Engine pairing: an engine carrying the claw inert-grant refusal (>= the
   release shipping #3283 S9) fails TERMINAL at a merge whose tool surface
   resolves empty beside a board/runs capability — review-pr <0.9.25 ships
@@ -100,8 +94,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
 | `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
-| `review_mode` | `mono` | Reviewer topology: `mono`, `dual`, or `auto`. `mono` is the DECLARED default, read only where no injection runs (a cloud launch whose sealed bundle resolved no family); every injecting lane resolves an UNSET `review_mode` as `auto`, which lands on mono wherever a detected family's slot has a servable route — a backed family with none (a z.ai key without the claude_code CLI) refuses the launch (#1221) — and on dual where no family is detected at all, so a familyless host runs dual unless `--var review_mode=mono` is passed. |
-| `mono_family` | `claude` | Family used in mono mode: `claude` or `gpt`. |
+| `review_mode` | `single` | Reviewer topology: `single`, `paired`, or `auto`. `single` is the DECLARED default, read only where no injection runs; every injecting lane resolves an UNSET `review_mode` as `auto`, which is `single` on every host — a `paired` review is a deliberate spend. The retired spellings `mono`/`dual` still read as `single`/`paired`. |
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
 | `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
@@ -369,7 +362,7 @@ mode, as it is in the default one.
 
 ## Read-only by construction
 
-No node mutates source. `reviewer_gpt` runs on `claw` and is given only
+No node mutates source. `reviewer` runs on `claw` and is given only
 read tools (`bash`, `read_file`, `glob`, `grep` — no
 `write_file`/`file_edit`), so it can run git and read the workspace but has
 no structured path to edit it.
@@ -389,15 +382,13 @@ the roster on `claude_code` too: a non-empty list installs
 run — and it is required anyway, because on `claw` an empty list is no
 tools at all (SocialGouv/iterion#2705: a listless reviewer reviewed
 nothing and greened the gate). The one downstream merge
-step — `converge`, or `converge_gpt` on the GPT family — writes only the
-report file and creates board issues over MCP. Both twins declare the same
-three file tools (`read_file` for the iterion-board skill, `write_file` for
-the report, `glob`); `converge_gpt` has carried them since 0.9.16 (it runs
-on `claw`, where a `tools:` list is the node's WHOLE surface and an empty
-one is no tools at all), and `converge` since 0.9.25 (#3283) — its gateway
-routing cells send it to claw too, and before the list was declared that
-dispatch merged with tool_count 0: no report, no board issue, the
-capability grant inert. The board operations ride either list as the
+step — `converge` — writes only the report file and creates board issues
+over MCP. It declares three file tools (`read_file` for the iterion-board
+skill, `write_file` for the report, `glob`); it has carried them since
+0.9.16 (it runs on `claw`, where a `tools:` list is the node's WHOLE surface
+and an empty one is no tools at all), and a dispatch that merged with
+tool_count 0 — no report, no board issue, the capability grant inert — is
+exactly the failure the list closes. The board operations ride either list as the
 `mcp__iterion_board__` names the prompts call, and the step is the same
 step on either route. (`iterion-board.md`, which both prompts name as
 pre-reading, is not shipped in this bundle — a workspace may carry it
@@ -429,11 +420,10 @@ sneaks back in (`TestReviewPrSystemPromptsCarryNoRunSpecificText`, `bots`).
 
 ## The Anthropic pin, and the z.ai route below it
 
-Every claude_code node on a claude id — both claude reviewers **and**
-`converge` — pins its provider to `anthropic`, through a dial
-(`ITERION_VIBE_PROVIDER_CLAUDE` for the claude slot, `ITERION_VIBE_PROVIDER_EMIT`
-for the merge step; the `converge_gpt` twin carries no hint, because on claw
-the model's `openai/` prefix is the route). The pin is **load-bearing**: the wire's credential order
+Every claude_code node on a claude id — `reviewer_alternate` — pins its
+provider to `anthropic`, through a dial (`ITERION_VIBE_PROVIDER_CLAUDE`;
+`converge` runs on claw, where the model's `openai/` prefix is the route and
+a hint is read nowhere). The pin is **load-bearing**: the wire's credential order
 (secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, so a
 z.ai key the run holds as a DEFAULT credential serves every unpinned node of
 the wire, the forfait beside it or not. The team's own z.ai key is always one
@@ -499,7 +489,7 @@ z.ai key.
 
 Nothing about the degradation is silent. `_backend` and `_model` name what
 actually served; the published review's run table carries them
-(`ai_reviewer_claude_*`, or `ai_reviewer_claude_glance_*` on the glance tier);
+(`ai_reviewer_alternate_*` for the alternate reviewer);
 and the **merge-gate status itself says so** — the gate reads the engine's
 `_fallback_used` stamp and writes a note naming the model that ran. Advisory,
 not fail-closed, and deliberately: the gate's three fail-closed branches are
@@ -535,11 +525,11 @@ edge, taken from `tier_expand`'s resolved values. If they cannot be read, the
 floor restores at every severity and without a cap: a posted finding can be
 dismissed, but a dropped one is never seen.
 
-The GPT nodes — both reviewer tiers and the `converge_gpt` merge twin — have
-no fallback route of their own: their backend, model and provider are dials
+The claw nodes — `reviewer`, `reviewer_glance` and `converge` — have no
+fallback route of their own: their backend, model and provider are dials
 (`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
 `ITERION_VIBE_PROVIDER_GPT`; `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`
-for the merge twin, which keeps its own trio because the merge model is not
+for the merge step, which keeps its own trio because the merge model is not
 the reviewer's), so an instance without a usable OpenAI route
 points them at a family it can serve — all three together, or the slot lands
 on a route nobody chose:
@@ -553,116 +543,44 @@ on a route nobody chose:
 
 See [main.bot](main.bot) for the full DSL.
 
-## Running mono-GPT: the family of the whole review
+## Roles, routes and the merge step
 
-`mono_family` is the family of the WHOLE review, not only of the reviewer
-that judges. A launch carrying `mono_family=gpt` takes `topology ->
-reviewer_gpt`, `merge_reviews -> converge_gpt`, and the `pacer_gpt`
-supervisor; the claude reviewers, the claude merge step and the claude
-`pacer` are on no route such a run takes. **No deployment profile is needed
-for that** — not for the review, not for the merge, not for the pacer.
+The nodes name ROLES (ADR-169), not vendors: `reviewer` reviews, and a
+`paired` launch adds `reviewer_alternate` beside it; `converge` merges
+whatever ran. Which backend and model serves each role is the node's own
+literal plus the `llmroute` cells over it, never a bot var — so a deployment
+whose credentials serve other families re-targets the role through a routing
+cell (or a `--model` / `--backend` override) instead of needing a launch
+pattern.
 
-That is not a convenience: `mono_family` is resolved from the run's own
-credentials and claude is the PREFERRED family
-(`reviewtopology.monoPreference`), so a run carrying `gpt` holds no Claude
-credential at all. A merge step pinned to the Anthropic wire there died
-AFTER the reviewer had already spent, and the run never reached `pr_gate` —
-the `revi/review` gate stayed dark on a pull request whose review had in
-fact run. A webhook launch needs no `--var` for any of it: `SubmitLaunch`
-resolves the family through `reviewtopology.InjectAll` into the run's launch
-vars before publishing it (`pkg/server/cloudpublisher`), which is the
-reading the usage-cap pre-flight folds
-([usage-caps.md](../../docs/usage-caps.md#what-a-cap-does-not-stop)).
-
-| route | no `mono_family=gpt` | `mono_family=gpt` | its own dials |
+| role | node | shipped default route | dials (until ADR-169's de-dial) |
 |---|---|---|---|
-| reviewer | `reviewer_claude` — `claude_code` + opus 5.5 + `anthropic` | `reviewer_gpt` — `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{CLAUDE,GPT}`, `ITERION_VIBE_PROVIDER_{CLAUDE,GPT}` |
-| merge | `converge` — `claude_code` + opus 5.5 + `anthropic`, with the GLM rescue route below it | `converge_gpt` — `claw` + `openai/gpt-6-sol`, no hint, no rescue route (claw reads none) | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT` / `…_EMIT_GPT` |
-| pacer supervisor | `pacer` — `anthropic/claude-opus-5-5`, watching `reviewer_claude` | `pacer_gpt` — `openai/gpt-6-sol`, watching `reviewer_gpt` | `ITERION_VIBE_MODEL_SUPERVISOR` / `…_SUPERVISOR_GPT`, or `ITERION_SUPERVISORS=off` |
+| reviewer | `reviewer` | `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{GPT}`, `ITERION_VIBE_PROVIDER_GPT` |
+| reviewer, glance tier | `reviewer_glance` | `claw` + `openai/gpt-6-luna` | `ITERION_VIBE_{MODEL,BACKEND}_GPT_GLANCE`, `ITERION_VIBE_PROVIDER_GPT` |
+| alternate (paired only) | `reviewer_alternate` | `claude_code` + opus 5.5 + `anthropic`, with a GLM rescue route | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_CLAUDE`, `…_MODEL_CLAUDE_FALLBACK` |
+| merge | `converge` | `claw` + `openai/gpt-6-sol`, no provider hint | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT` |
 
-The column heading is the LAUNCH VAR, not the topology — and **a dual
-resolution the injection runs on carries no launch var at all**:
-`InjectIfDeclaredFamilies` writes the resolved mode and *deletes*
-`mono_family`, which its own contract calls meaningless in dual. **The three
-in-process lanes inject unconditionally** (`pkg/cli/run.go`, `pkg/runview`'s
-in-process lane, `pkg/dispatcher`) — and the detached lane
-(`ITERION_RUNS_DETACHED=1`) injects in the `iterion run` child it spawns, off
-THAT process's own detection. So an explicit `--var review_mode=dual --var
-mono_family=gpt` loses the pin exactly like a resolved dual: the var falls
-back to its declared `claude` default and **the merge lands on `converge`**,
-on the Anthropic wire
-(`TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin`, `bots`). Nothing
-warns about the drop — the launch logs only `review topology: dual`, since
-`Injection.Summary()` names a family only when one survives; a C1xx on that
-deletion is #1828's open remedy.
+`review_mode` is `auto | single | paired`: `single` runs `reviewer` alone,
+`paired` fans both, and `auto` — what an unconfigured launch resolves to —
+is `single` on every host, because a second reviewer is a deliberate spend
+and not something a deployment opts into by holding a second credential. The
+retired spellings `mono`/`dual` are still read as `single`/`paired`, so an
+integration pinned before the rename keeps working until its launch vars are
+migrated (`#2699`).
 
-**One lane does not inject at all: a cloud launch whose sealed bundle
-resolved no participating family** (`pkg/server/cloudpublisher`, guarded on
-`len(creds.families.Families()) > 0`, the folded family set of the route
-inventory), because an empty set means the run rides the RUNNER's env
-fallback and the server cannot read it. That launch is queued with its vars
-verbatim and nothing re-judges them on the pod, so an explicit
-`--var review_mode=dual --var mono_family=gpt` keeps its pin there and **does
-merge on `converge_gpt`** while both reviewers fan
-(`TestSubmitLaunchKeepsAnExplicitPinWhenTheBundleResolvedNothing`,
-`pkg/server/cloudpublisher`). A dual resolution does not refuse an unservable
-pin either: `RefusePinnedFamily` is judged on the mono path only.
+**Nothing refuses a launch for a missing family any more.** With the family
+no longer a var, a role whose route no credential serves fails at its own
+first node, with that node's error — the ordinary fate of every literal route
+in the catalogue — instead of a launch-time judgement. The one thing that
+does move with the credentials is `plan_review`, unchanged.
 
-**`review_tier: audit` keeps the pin wherever a DETECTED family serves it**,
-while fanning both reviewers: `reviewtopology` never reads `review_tier`, so
-the mode resolves off the credentials alone — mono on the preferred detected
-family whose slot has a servable route, and the pin wins over that
-preference wherever the set serves it (`gpt` beside a claude credential).
-The fan is not that resolution: it is the `topology -> fan` edge's own guard
-on `vars.review_tier == 'audit'`, which `tier_expand` only restates as the
-`effective_review_mode` the report carries.
-
-The same gesture has three other outcomes, all decided by the FAMILY SET and
-none of them lane-dependent: a pin **no detected family serves refuses the
-launch** (`RefusePinnedFamily`, judged on the mono path — `gpt` asked for on
-a claude-only host); a detected family **whose slot has no servable route
-refuses it too** (#1221 — a z.ai key on a host without the claude_code CLI
-backs `claude` and nothing can run it), the pin named where there is one and
-the resolver's own choice judged where there is none, so `auto` never lands
-on mono there either; and a host where detection finds **no participating
-family at all** resolves `auto` to dual, which deletes the pin like any
-other dual and lands the merge back on `converge`, unwarned. That host is not
-hypothetical: `pkg/backend/detect` backs `claude` on an `ANTHROPIC_API_KEY`
-or claude_code's OAuth and `zai` on a `ZAI_API_KEY` or a z.ai/bigmodel base
-URL with its auth token, so a non-z.ai Anthropic-compatible gateway
-(`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) or a Moonshot/xAI-only key
-runs this bot while backing no family at all. The four outcomes are one
-witness, five arms (`TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin`,
-`bots`).
-
-On a GPT-only tenant
-`InjectAll` injects `gpt` itself, mono, and sending the merge back to the
-Anthropic wire there is the failure this release closes. The published run
-table names the merge model that actually ran (`ai_converge_model`, carried
-through `pr_gate`), so a cross-family review merged on gpt-6-sol says so.
-
-**The trade, named: Opus 5.5 is no longer the default merger of a mono-GPT
-review.** A deployment that wants it back dials the twin
-(`ITERION_VIBE_BACKEND_EMIT_GPT=claude_code` +
-`ITERION_VIBE_MODEL_EMIT_GPT=claude-opus-5-5` +
-`ITERION_VIBE_PROVIDER_EMIT_GPT=anthropic` — all three, or the slot lands on
-a route nobody chose), pins an integration override on the `converge_gpt`
-selector, or pins `--var mono_family=claude`. The `_EMIT` trio keeps dialling
-the claude twin, which the twin's defaults now make redundant. The
-pre-0.9.16 mono-GPT profile — the `_EMIT` backend dial pointed at claw, with
-an `openai/…` model and an `auto` hint — was **must-drop** while `converge`
-declared no `tools:` list: on claw a node's list is its whole surface, so
-that profile left the claude-family merge with no tool at all (no report
-under `report_path`, no board issue, its `capabilities:` grant inert). Since
-0.9.25 `converge` declares the same three file tools as its twin (#3283), the
-route serves the merge whole (`TestReviewPrTheEmitBackendDialServesEachBackendItNames`,
-`bots`), and a claw-bound `_EMIT` pin is merely redundant rather than
-breaking — an openai/… model on the claude-family merge is still a choice
-nobody documents, so a deployment that pointed the merge somewhere ELSE
-repeats that choice on the `_EMIT_GPT` trio instead. The one shape that
-still refuses loudly is a node that grants board or runs capabilities with
-no declared list: claw serves a grant only through the append on that list,
-so the dispatch refuses by type instead of merging with the grant inert.
+The merge step is ONE node on the trunk: it reads `outputs.merge_reviews`,
+the collector that folds whichever reviewers fired, so a single review and a
+paired one reach the same merge with no branching and the run's published
+table names one step. A deployment that wants the merge on another route
+moves the `_EMIT_GPT` trio together (backend, model, provider — a deployment
+that moves one of them alone lands the slot somewhere nobody chose), or
+re-targets the `converge` node with a routing cell.
 
 Each `ITERION_VIBE_*` dial repoints live through `bot-vars`, without
 re-releasing the bundle; `ITERION_SUPERVISORS` is the machine-wide kill
@@ -671,10 +589,60 @@ route on every execution only while one of the nodes it WATCHES is on the
 run's topology — a coordinator evaluates nothing until a watched node is
 active — which is what lets each family keep its own pacer without the other
 one parking the run (`runner.preflightSupervisors`). Pinned with no dial set,
-a mono-GPT review starts under a spent Anthropic window, soft cap or hard
-(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`), and the
+a review starts under a spent Anthropic window, soft cap or hard
+(`TestUsageCapPreflight_SingleReviewOnTheReviewPrBot`, `pkg/runner`), and the
 merge runs on claw (`TestReviewPRTier_GlanceRoutesToCheapReviewerGPT`,
 `e2e`).
+
+## Migrating an integration's routing block
+
+A routing cell names a node by id. The role rename (ADR-169) retired
+`reviewer_gpt`, `reviewer_claude`, `reviewer_gpt_glance`,
+`reviewer_claude_glance` and `converge_gpt`, so a block still carrying them
+decides **nothing**: the launch falls back on this bot's literals and the
+cell's effort goes with it — silently. `scripts/ops/revi-effort-cells.py
+migrate-ids` rewrites a stored block in place (backup first, read-back
+after), and `--dry-run` says what it would do:
+
+```
+iterion remote login                      # the operator's own session
+scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --dry-run
+scripts/ops/revi-effort-cells.py migrate-ids --dir backups/revi --all --yes
+```
+
+A **launch var** still carrying `mono_family` is admitted and ignored (the
+var stays declared for exactly that); a stored `review_mode=mono|dual` is
+resolved to `single|paired` at launch. One case is not covered: a run that
+was **frozen before the rename and is resumed** replays its own inputs, and
+nothing rewrites them — the bot's guards read `paired` and see `dual`, so
+such a run resumes as a `single` review. Resuming it under the new vocabulary
+means launching a fresh run.
+
+An integration with **no** `mono_family` launch var is ambiguous — the old
+engine resolved its family from the credentials at launch — so where the two
+readings migrate its block differently the command prints `AMBIGUOUS`,
+writes nothing, and waits for `--assume-family claude|gpt`. Otherwise the
+mapping is per bot **and per the topology the integration ran**, read from
+its own `launch_vars`: the node it ran as its reviewer becomes
+`reviewer`, the other becomes `reviewer_alternate`. The old default was
+mono-claude (`mono_family` unset), so on most integrations `reviewer_claude`
+→ `reviewer`, `reviewer_claude_glance` → `reviewer_glance` and `reviewer_gpt`
+→ `reviewer_alternate`; a `mono_family=gpt` integration maps the other way,
+and a paired one (`review_mode=dual`, or the audit tier) follows this bot's
+literal (`reviewer_gpt` → `reviewer`). The merge keeps the cell of the step
+that ran: `converge_gpt` → `converge` on mono-gpt only, dropped everywhere
+else (it never ran). Cells no node takes any more are dropped
+(`reviewer_<other>_glance`, the `#glm` routes of nodes on claw). `evolve`'s
+`review_claude`/`review_gpt` follow the same rule. A **glob** cell is reported,
+never rewritten (`review-pr/reviewer_*` no longer covers `reviewer`): the
+command prints a `GLOB` line and exits non-zero until the operator rewrites
+it. The block it overwrites is saved as `<id>.pre-migrate-ids.json`, never
+over the effort procedure's backup. And the engine stays compatible the
+other way: an integration still pinned to review-pr ≤ 0.9.25 is handed
+`mono`/`dual` — the spelling its own enum accepts — and, on a single run
+with no pin, the `mono_family` the old resolver would have picked from the
+credentials (claude when backed, else gpt), so a GPT-only tenant's old
+bundle does not fall onto nodes nothing serves.
 
 ## Layout — a bot in several files
 

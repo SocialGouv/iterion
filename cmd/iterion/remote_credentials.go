@@ -29,7 +29,7 @@ func init() {
 	remoteCredentialsPreviewCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 	remoteCredentialsPreviewCmd.Flags().StringVar(&remoteCredentialsBot, "bot", "", "Catalog bot id (required for a personal launch)")
 	remoteCredentialsPreviewCmd.Flags().StringVar(&remoteCredentialsWebhook, "webhook", "", "Preview this team's existing webhook and its real launch context")
-	remoteCredentialsPreviewCmd.Flags().StringVar(&remoteCredentialsReviewMode, "review-mode", "", "Run-level review topology (mono|dual) the preview answers for — a mono pin is a credential demand")
+	remoteCredentialsPreviewCmd.Flags().StringVar(&remoteCredentialsReviewMode, "review-mode", "", "Run-level review topology (auto|single|paired) the preview answers for")
 	remoteCredentialsCmd.AddCommand(remoteCredentialsPreviewCmd)
 	remoteCmd.AddCommand(remoteCredentialsCmd)
 }

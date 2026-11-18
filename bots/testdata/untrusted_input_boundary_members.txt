@@ -71,7 +71,7 @@ evolve/load_nexie_handoff	capability board.create
 evolve/load_nexie_handoff	capability board.label
 evolve/load_nexie_handoff	tools: bash
 evolve/propose_evolutions	tools: bash
-evolve/review_claude	tools: bash
+evolve/reviewer	tools: bash
 evolve/revise_vision	tools: bash
 evolve/survey	tools: bash
 evolve/synthesize_vision	tools: bash
@@ -128,13 +128,9 @@ review-env/deploy	no `tools:` list declared on claude_code, the full native tool
 review-pr/converge	capability board.create
 review-pr/converge	capability board.label
 review-pr/converge	tools: write_file
-review-pr/converge_gpt	capability board.create
-review-pr/converge_gpt	capability board.label
-review-pr/converge_gpt	tools: write_file
-review-pr/reviewer_claude	tools: bash
-review-pr/reviewer_claude_glance	tools: bash
-review-pr/reviewer_gpt	tools: bash
-review-pr/reviewer_gpt_glance	tools: bash
+review-pr/reviewer	tools: bash
+review-pr/reviewer_alternate	tools: bash
+review-pr/reviewer_glance	tools: bash
 rgaa-audit/adjudicate	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
 rgaa-audit/refute	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
 scripts/adhoc/whats-next-prompts-review:review_prompts	tools: bash

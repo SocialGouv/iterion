@@ -600,7 +600,7 @@ func init() {
 	remoteLaunchCodemodeFlags.register(remoteRunsLaunchCmd.Flags())
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchLoopBudgetGuard, "loop-budget-guard", "", "Loop back-edge affordability guard override (on|off): refuse a loop iteration the budget cannot fund so the run exits through its own tail")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPermission, "permission", "", "Permission gate override (off|ask|deny)")
-	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|mono|dual)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|single|paired)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchMergeInto, "merge-into", "", "Worktree finalization target (current|none|<branch>)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBranch, "branch", "", "Storage branch name override")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchMergeStrategy, "merge-strategy", "", "Merge strategy (squash|merge)")

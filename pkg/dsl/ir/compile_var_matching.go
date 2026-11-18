@@ -136,8 +136,8 @@ func endsAnchored(re *syntax.Regexp) bool {
 // this and C126/C161. A bad default poisons every run; a bad preset value
 // is read only by a run that selects that preset, and usually that run is
 // refused, precisely, by the launch gate. Only usually: an engine-resolved
-// var (reviewtopology's `review_mode`, `mono_family`, `plan_review`,
-// `llm_families`) is overwritten between the preset merge and the gate, so
+// var (reviewtopology's `review_mode`, `plan_review`, `llm_families`) is
+// overwritten between the preset merge and the gate, so
 // the value never reaches it — which is the second reason not to state the
 // refusal as a fact in the diagnostic's own text. Made an
 // error, this blocks a run that selects another preset or none at all, and

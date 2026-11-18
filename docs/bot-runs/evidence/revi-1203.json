@@ -27,13 +27,13 @@
           "backend": "claw",
           "declared_model": "openai/gpt-5.6-sol"
         },
-        "reviewer_gpt": {
+        "reviewer": {
           "backend": "claw",
           "declared_model": "openai/gpt-5.6-sol"
         }
       },
       "nodes": {
-        "reviewer_gpt": {
+        "reviewer": {
           "requests": 10,
           "request_models": [
             "gpt-5.6-sol"
@@ -189,13 +189,13 @@
           "backend": "claw",
           "declared_model": "openai/gpt-5.6-sol"
         },
-        "reviewer_gpt": {
+        "reviewer": {
           "backend": "claw",
           "declared_model": "openai/gpt-5.6-sol"
         }
       },
       "nodes": {
-        "reviewer_gpt": {
+        "reviewer": {
           "requests": 12,
           "request_models": [
             "gpt-5.6-sol"

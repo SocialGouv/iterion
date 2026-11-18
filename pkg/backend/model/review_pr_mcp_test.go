@@ -33,7 +33,7 @@ func reviewPrReviewerNodes(t *testing.T) (*ir.Workflow, []*ir.JudgeNode) {
 	}
 	var nodes []*ir.JudgeNode
 	for _, id := range []string{
-		"reviewer_claude", "reviewer_claude_glance", "reviewer_gpt", "reviewer_gpt_glance",
+		"reviewer_alternate", "reviewer", "reviewer_glance",
 	} {
 		n, ok := compiled.Workflow.Nodes[id].(*ir.JudgeNode)
 		if !ok {

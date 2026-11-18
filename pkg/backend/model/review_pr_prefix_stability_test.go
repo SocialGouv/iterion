@@ -17,7 +17,7 @@ import (
 // TestReviewPrAssembledRequestIsByteStableAcrossWorkspaces is review-pr's
 // S3 witness (#3283 S6): the request claw assembles for a reviewer node —
 // the SYSTEM blocks and the TOOL schemas — reads the same bytes for two runs
-// of reviewer_claude in two different checkouts, so a provider's prefix
+// of reviewer_alternate in two different checkouts, so a provider's prefix
 // cache serves the second run from the first's prefix. review_system carries
 // no template since 0.9.25 (the bots-package guard names one at its source);
 // the AGENTS.md ambient header is workspace-relative (the S3 engine half);
@@ -36,12 +36,12 @@ func TestReviewPrAssembledRequestIsByteStableAcrossWorkspaces(t *testing.T) {
 	wf, nodes := reviewPrReviewerNodes(t)
 	var node *ir.JudgeNode
 	for _, n := range nodes {
-		if n.ID == "reviewer_claude" {
+		if n.ID == "reviewer_alternate" {
 			node = n
 		}
 	}
 	if node == nil {
-		t.Fatal("reviewer_claude not found")
+		t.Fatal("reviewer_alternate not found")
 	}
 
 	build := func(t *testing.T, ws, home string) ([]string, []byte) {

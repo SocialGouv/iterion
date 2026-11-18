@@ -40,7 +40,7 @@ handoff issues to `adr-rechallenge` (re-challenge) and `feature-gap-fill`
 
 - Status: **validated (high value)** — authored ADRs 029-041.
 - Versions: bot adr-cartograph · iterion v0.16.0 (110ea1c33)
-- Method: `iterion run` (CLI, branch `dogfood/wave1`, live-tree docs/adr scope). survey + review on **glm-5.2 via z.ai**; when z.ai's 5h cap hit mid-review, `reviewer_claude` surfaced a graceful **`acknowledge_recovery` human-pause** → resumed → review/fix loop completed on **anthropic forfait** (gpt-5.5 reviewer + opus). 1233 events.
+- Method: `iterion run` (CLI, branch `dogfood/wave1`, live-tree docs/adr scope). survey + review on **glm-5.2 via z.ai**; when z.ai's 5h cap hit mid-review, `reviewer_alternate` surfaced a graceful **`acknowledge_recovery` human-pause** → resumed → review/fix loop completed on **anthropic forfait** (gpt-5.5 reviewer + opus). 1233 events.
 - Result: commit **`86eeb81f9`** "docs(adr): record ADRs 029-041 for sandbox, SSO, quota, and ultracode" — **13 ADRs, +683 lines**, on `dogfood/wave1` (atop current origin/main). Converged to `done`.
 - Value: captured the architecture decisions from the recent campaign wave (sandbox, per-org SSO, quotas, ultracode) into proper Nygard ADRs — the canonical "capture decisions after a code-mutating wave" use case.
 - Findings: (1) **glm-5.2 survey is very verbose** — `survey_code` ran ~900+ tool calls / ~20 min (many empty greps) before converging, vs opus's tighter surveys; thorough but slow-to-stop on open-ended exploration. (2) **graceful rate-limit recovery** (`acknowledge_recovery` pause) worked here — contrast Nexie's hard fail on the same 429; **inconsistent rate-limit handling across nodes** is the cross-cutting finding.
@@ -77,8 +77,8 @@ stop passing `gaps`/`total_gaps` into the reviewers' `review_input` entirely
 references — gaps now flow `build_manifest -> prepare_commit`'s handoff,
 never through the review loop. With the reviewers *structurally* blind to
 gaps (not just instructed to ignore them) and rule 6 calibrating ADR prose,
-an aligned tree has nothing to block on. **run6 result:** reviewer_claude
-approved → reviewer_gpt approved (cross-family, 0 blockers, **0 fixer runs**)
+an aligned tree has nothing to block on. **run6 result:** reviewer_alternate
+approved → reviewer approved (cross-family, 0 blockers, **0 fixer runs**)
 → streak_check stop → detect_changes → prepare_commit → commit_changes →
 done. First clean convergence. prepare_commit ($0.83) committed **no** ADR
 change (0 drift on the aligned tree — correct idempotent behaviour, the
@@ -106,8 +106,8 @@ Cost: 6 Adry runs this campaign; survey ~$3.58 + ~10 min each is the floor
 - **Versions:** bot 0.1.0 · iterion @ `f3289632` (worktree `worktree-adr-bot-suite`, unmerged)
 - **Method:** `iterion run bots/adr-cartograph/main.bot --var code_scope_globs='pkg/git/**'`,
   forfait forced (`ITERION_OPENAI_USE_OAUTH=1`, API keys unset), claude_code
-  opus-4-8 (scan/survey/reviewer_claude/fix_claude/prepare_commit) + claw
-  openai/gpt-5.5 (reviewer_gpt/fix_gpt). No sandbox, no worktree:auto (the
+  opus-4-8 (scan/survey/reviewer_alternate/fix_claude/prepare_commit) + claw
+  openai/gpt-5.5 (reviewer/fix_gpt). No sandbox, no worktree:auto (the
   repo-root sha-cache must persist across runs). Scoped to one decision-rich
   package to bound cost.
 - **Result:** **did not converge** — both the authoring run (019ec1f8) and a
@@ -135,7 +135,7 @@ Cost: 6 Adry runs this campaign; survey ~$3.58 + ~10 min each is the floor
 | 6 | Even with coverage=100% (aligned tree, 0 drift), the review loop **never reaches cross-family double-approval** — root cause: reviewers treated unfixable GAPS as blockers → oscillate to `review_loop(10/10)` → `fail` | real, **FIXED** | structural fix `09910359` (gaps bypass review_input); **run6 (019ec51f) CONVERGED** — see the 2026-06-14 section |
 | 2 | `fix_claude` (claude_code, output-schema+tools → two-pass) hit `StructuredOutput — No such tool available` in Pass 1 (it's a Pass-2 mechanism), then recovered | benign engine quirk, pre-existing (all fix-nodes; `claude_code.go:341`) | note only |
 | 3 | `enforce_fix_scope` `git checkout -- <p>` reverts ALL tracked changes outside `docs/adr/`, incl. pre-existing uncommitted WIP (it ate my own mid-run hot-fix of main.bot) | known loop-bot behavior (docs-refresh idem) | mitigation: commit fixes BEFORE resume (in HEAD = not "changed"); don't hot-edit tracked files during a run |
-| 4 | `reviewer_gpt` → 401 OpenAI "token is expired" mid-run (forfait `~/.codex` 10 days stale) | infra | operator re-authed codex → resumed on forfait. See workspace memory `project_openai_oauth_token_invalidation` |
+| 4 | `reviewer` → 401 OpenAI "token is expired" mid-run (forfait `~/.codex` 10 days stale) | infra | operator re-authed codex → resumed on forfait. See workspace memory `project_openai_oauth_token_invalidation` |
 
 ### Engine / bot hardening
 - `1bbca1c0` — shell-safe data passing in build_manifest (finding #1).

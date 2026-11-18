@@ -314,7 +314,7 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 	// claude + kimi host needs `plan_review: on` to get the review.
 	for _, route := range peer.GetFallbacks() {
 		if route.Model != "" || route.Backend != "" {
-			t.Errorf("feature-dev: plan_review's %q route re-pins model %q / backend %q — the page and TestFamiliesFromReportCountsOnlyParticipatingCredentials both rest on this peer having one credential and no alternative", route.Name, route.Model, route.Backend)
+			t.Errorf("feature-dev: plan_review's %q route re-pins model %q / backend %q — the page and TestFamiliesCountOnlyParticipatingCredentials both rest on this peer having one credential and no alternative", route.Name, route.Model, route.Backend)
 		}
 	}
 }

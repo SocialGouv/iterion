@@ -29,9 +29,9 @@ function ScopedCredentialPreview({ teamID }: { teamID: string }) {
     source: source === "webhook" ? { kind: source, id: webhookID } : { kind: source },
     ...(botID ? { bot_id: botID } : {}),
     // The run-level review topology the caller is about to launch with: a
-    // mono PIN is a credential demand, and an explicit dual suppresses it, so
-    // a preview without it answers a plan the launch never seals. The webhook
-    // lane fixes its own topology, so the field is only offered for mine.
+    // paired review spends a second reviewer, so a preview without it answers
+    // a plan the launch never seals. The webhook lane fixes its own topology,
+    // so the field is only offered for mine.
     ...(source === "personal" && reviewMode ? { review_mode: reviewMode } : {}),
   };
   const preview = useMutation({ mutationFn: (request: CredentialPreviewRequest) => previewCredentials(teamID, request) });
@@ -65,8 +65,8 @@ function ScopedCredentialPreview({ teamID }: { teamID: string }) {
       {source === "personal" && <label className="min-w-44 text-xs text-fg-muted">Review topology
         <Select aria-label="Credential preview review topology" value={reviewMode} onChange={(event) => setReviewMode(event.target.value)}>
           <option value="">The bot's own default</option>
-          <option value="mono">mono</option>
-          <option value="dual">dual</option>
+          <option value="single">single</option>
+          <option value="paired">paired</option>
         </Select>
       </label>}
       <label className="min-w-44 text-xs text-fg-muted">Bot

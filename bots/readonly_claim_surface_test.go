@@ -198,7 +198,7 @@ func TestNoReadonlyClaudeCodeNodeIsToldItHoldsNoWritePath(t *testing.T) {
 // non-mutating admission, both outside it. An OMITTED `tools:` list is the
 // full native roster there: 0 of the 10 corpus `readonly:` nodes that resolve
 // to one of those backends omits it today, and the nearest miss is
-// `bots/evolve` `review_gpt`, saved only by its declared-EMPTY `tools: []`.
+// `bots/evolve` `reviewer`, saved only by its declared-EMPTY `tools: []`.
 // And `auto_memory` on claw appends `read_file, write_file, glob` to any
 // NON-EMPTY list (pkg/backend/model/executor_build_task.go), switchable per
 // node, per workflow or deployment-wide (automemory.ModeEnv) — a writer that

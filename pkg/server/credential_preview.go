@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -69,10 +70,19 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	}
 	spec.Launch.Codemode = req.Codemode
 	spec.Launch.CodemodeBounds = codemodeBounds
-	// The review-mode knob rides the same way: a mono pin widens the
-	// credential wants (and an explicit dual suppresses it), so a preview
-	// without it would answer a plan the launch never seals.
+	// The review-mode knob rides the same way: `paired` puts the second
+	// reviewer on the run's topology, so a preview without it would walk a
+	// plan the launch never takes. It resolves through the SAME injection
+	// the launch applies (the retired spellings map there), and the concrete
+	// mode is written into the vars the walk reads — the topology lives on
+	// the vars, not on a field beside them.
 	spec.Launch.ReviewMode = strings.TrimSpace(req.ReviewMode)
+	if spec.Launch.Vars == nil {
+		spec.Launch.Vars = map[string]string{}
+	}
+	if spec.Launch.ReviewMode != "" {
+		spec.Launch.Vars["review_mode"] = reviewtopology.Resolve(spec.Launch.ReviewMode)
+	}
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer

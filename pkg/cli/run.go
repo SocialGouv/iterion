@@ -149,11 +149,11 @@ type RunOptions struct {
 	// --max-parallel-branches). Non-zero fields win over the DSL/recipe
 	// budget; zero fields inherit. See applyBudgetOverrides.
 	Budget BudgetOverrides
-	// ReviewMode is the run-level override for bi-model review-loop bots'
-	// mono/dual topology ("", "auto", "mono", "dual"). Only bots that
-	// declare a review_mode var are affected. "" / "auto" resolves from
-	// detected provider credentials at launch (pkg/reviewtopology);
-	// "mono"/"dual" force the topology. See docs on review topology.
+	// ReviewMode is the run-level override for review-loop bots'
+	// topology ("", "auto", "single", "paired"). Only bots that declare a
+	// review_mode var are affected. "" / "auto" resolves to single;
+	// "paired" adds the second reviewer. The retired "mono"/"dual"
+	// spellings still read as single/paired (pkg/reviewtopology).
 	ReviewMode string
 	// ModelFor / BackendFor are launch-time per-node/-group model+backend
 	// overrides (repeatable --model / --backend flags), each a
@@ -510,14 +510,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		}
 	}
 
-	// Resolve the credential-derived topology vars (review_mode +
-	// mono_family, plan_review, llm_families). No-op unless the workflow
-	// declares the matching var; then detect host provider credentials and
-	// inject the resolution (the --review-mode flag / a --var override wins
-	// over auto-detection). See pkg/reviewtopology.
-	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(ctx)), opts.ReviewMode); err != nil {
-		return fmt.Errorf("refusing to launch: %w", err)
-	} else if inj.Summary() != "" {
+	// Resolve the credential-derived topology vars (review_mode,
+	// plan_review, llm_families). No-op unless the workflow declares the
+	// matching var; then detect host provider credentials and inject the
+	// resolution (the --review-mode flag / a --var override wins over
+	// auto-detection). See pkg/reviewtopology.
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
 		logger.Info("%s", inj.Summary())
 	}
 

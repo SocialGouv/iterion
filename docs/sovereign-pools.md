@@ -229,20 +229,23 @@ dispatches as a vendor route, and the pool then leaks only if its pod holds
 a vendor credential (it holds none of the platform's; the team's own BYOK
 keys travel in the run bundle, see the residuals). So a pool block spells
 **every dial the bots it runs read**, not the three the incident named.
-For review-pr (its `lib/nodes.bot`): `ITERION_VIBE_MODEL_` and
-`ITERION_VIBE_BACKEND_` (`claw`: the one backend that serves a gateway
-route) for each of `CLAUDE`, `CLAUDE_GLANCE`, `GPT`, `GPT_GLANCE`, `EMIT`,
-`EMIT_GPT`; `ITERION_VIBE_PROVIDER_` (`openai_compatible`) for `CLAUDE`,
-`GPT`, `EMIT`, `EMIT_GPT` (a glance node reads its full slot's hint); the
-supervisors' `ITERION_VIBE_MODEL_SUPERVISOR` and `_SUPERVISOR_GPT`; and the
-rescue dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`. Two consequences the
-bot's own comments spell out:
+For review-pr (its `lib/nodes.bot`, since ADR-169 renamed the NODES but not
+their dials): `ITERION_VIBE_MODEL_` and `ITERION_VIBE_BACKEND_` (`claw`: the
+one backend that serves a gateway route) for each of `CLAUDE` (the
+`reviewer_alternate` slot), `GPT` (the primary `reviewer`), `GPT_GLANCE`
+and `EMIT_GPT` (the merge step `converge`); `ITERION_VIBE_PROVIDER_`
+(`openai_compatible`) for `CLAUDE`, `GPT`, `EMIT_GPT` (a glance node reads
+its full slot's hint); the supervisors' `ITERION_VIBE_MODEL_SUPERVISOR` and
+`_SUPERVISOR_GPT`; and the rescue dial
+`ITERION_VIBE_MODEL_CLAUDE_FALLBACK`. `_CLAUDE_GLANCE` and `_EMIT` are
+RETIRED with the nodes that read them (`reviewer_alternate_glance`, and the
+claude merge twin) — a block still setting them moves nothing. Two
+consequences the bot's own comments spell out:
 
-- `ITERION_VIBE_BACKEND_EMIT=claw` is required on a pool — the merge step
-  defaults to `claude_code`, which cannot serve a gateway model — and on
-  claw the merge node has no tools: it returns its merged findings (what
-  the publish step consumes) but writes no report file under
-  `report_path` and files no board issue.
+- the merge step now runs on claw BY DEFAULT, so a pool that only sets the
+  model dials still merges on the gateway; and on claw the merge node
+  writes no report file under `report_path` and files no board issue — it
+  returns its merged findings, which is what the publish step consumes.
 - The authored rescue routes (`glm`, `provider: zai`) are refused on a pool
   whatever the rescue dial says — a gateway id under a vendor hint — which
   is the design: a pool must fail rather than leak. A pool has no rescue

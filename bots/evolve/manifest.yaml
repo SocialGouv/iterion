@@ -1,7 +1,14 @@
 name: evolve
 display_name: Evoly
 icon: 🧬
-version: 0.1.5
+version: 0.2.0
+## 0.2.0 — the reviewer nodes name ROLES, not vendors (ADR-169): `reviewer`
+## (claude_code + a claude model, with tools — the one every round runs) and
+## `reviewer_alternate` (claw + an `openai/…` model with no tools, a
+## `paired` run only). `review_mode` is `auto | single | paired`;
+## `mono_family` is retired (declared, read by nothing), and the retired
+## `mono`/`dual` spellings are still read as `single`/`paired`.
+##
 ## 0.1.5 — a refine turn shows the steering the operator just typed:
 ## investigate renders `{{input.scope_notes}}`, which the refine edge maps
 ## from their answer, beside `{{vars.scope_notes}}` — the brief the launch
@@ -97,4 +104,6 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.225.0"
+  ## See review-pr's floor: below the release carrying ADR-169 the engine
+  ## resolver writes mono/dual into a bot whose enum accepts neither.
+  iterion: ">= next"
