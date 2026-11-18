@@ -30,6 +30,10 @@ func (s *Server) registerCredPoolRoutes() {
 	s.mux.Handle("GET /api/me/pool", s.requireAuth(http.HandlerFunc(s.handleGetMyPledges)))
 	s.mux.Handle("PUT /api/me/pool/{source}/{ref}", s.requireAuth(http.HandlerFunc(s.handlePutMyPledge)))
 	s.mux.Handle("DELETE /api/me/pool/{source}/{ref}", s.requireAuth(http.HandlerFunc(s.handleDeleteMyPledge)))
+	// A pledge is addressed by its own id here — the same opaque address the
+	// operator surface uses (DELETE /api/pools/{id}/entries/{pledge}). The
+	// (source, ref) path above cannot name one of two keys of one provider.
+	s.mux.Handle("DELETE /api/me/pool/entries/{pledge}", s.requireAuth(http.HandlerFunc(s.handleDeleteMyPledgeByID)))
 	s.mux.Handle("GET /api/me/pool/history", s.requireAuth(http.HandlerFunc(s.handleMyPoolHistory)))
 
 	s.mux.Handle("GET /api/teams/{id}/pool", s.requireAuth(http.HandlerFunc(s.handleGetTeamPool)))
@@ -43,6 +47,10 @@ func (s *Server) registerCredPoolRoutes() {
 // pledgeView is what a donor sees about their own contribution: the terms
 // they set, the live state, and what has been drawn today and this week.
 type pledgeView struct {
+	// ID is the pledge's opaque address: a donor addresses THIS contribution
+	// (DELETE /api/me/pool/entries/{id}) rather than a (source, ref) pair
+	// that names several of them once two keys of one provider are lent.
+	ID     string `json:"id"`
 	Source string `json:"source"`
 	Ref    string `json:"ref"`
 	KeyID  string `json:"key_id,omitempty"`
@@ -355,24 +363,92 @@ func enabledVerb(enabled bool) string {
 	return "paused sharing of"
 }
 
-func (s *Server) handleDeleteMyPledge(w http.ResponseWriter, r *http.Request) {
+// handleDeleteMyPledgeByID withdraws one contribution by its own id. It is
+// the address the donor's view now carries, and the only one that can name
+// one of two keys of a single provider.
+//
+// A pledge of somebody else answers 404, never 403: a distinguishable 403
+// would confirm that the id exists, which is exactly what a stranger
+// probing ids must not learn.
+func (s *Server) handleDeleteMyPledgeByID(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	src := credpool.CredentialSource(r.PathValue("source"))
-	ref := r.PathValue("ref")
-	// The (source, ref) pair IS an oauth pledge's identity. An api_key
-	// pledge is identified by the key it lends as well, so that one is
-	// addressed by its id — this route reaches a legacy row still stored
-	// under the inherited three-segment id.
-	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(id.UserID, src, ref, "")); err != nil {
+	pledgeID := r.PathValue("pledge")
+	p, err := s.credPoolPledges.Get(r.Context(), pledgeID)
+	if err != nil {
 		if errors.Is(err, credpool.ErrNotFound) {
-			w.WriteHeader(http.StatusNoContent)
+			notFoundPledge(w)
 			return
 		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.logger.Info("credential pool: %s withdrew their %s/%s contribution", id.UserID, src, ref)
+	if p.UserID != id.UserID {
+		notFoundPledge(w)
+		return
+	}
+	s.withdrawPledge(w, r, id.UserID, p.ID)
+}
+
+func notFoundPledge(w http.ResponseWriter) {
+	httpError(w, http.StatusNotFound, "no such contribution of yours")
+}
+
+// withdrawPledge deletes one of the caller's own pledges. A row already
+// gone is still a success: withdrawing twice is the same intention, and the
+// client's retry after a dropped response must not read as a failure.
+func (s *Server) withdrawPledge(w http.ResponseWriter, r *http.Request, userID, pledgeID string) {
+	if err := s.credPoolPledges.Delete(r.Context(), pledgeID); err != nil {
+		if !errors.Is(err, credpool.ErrNotFound) {
+			httpError(w, http.StatusInternalServerError, "%s", err.Error())
+			return
+		}
+	}
+	s.logger.Info("credential pool: %s withdrew contribution %s", userID, pledgeID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteMyPledge is the (source, ref) address, kept one release as a
+// shim for clients that have not moved to the pledge id.
+//
+// An oauth pledge is still identified by its pair — one connection per kind
+// — so that branch is exact. An api_key pledge is identified by its key as
+// well, so the pair is ambiguous the moment a donor lends two keys of one
+// provider: ?key_id= names one, and without it a single match is taken
+// while several refuse rather than guess which half of a donation to
+// withdraw.
+func (s *Server) handleDeleteMyPledge(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	src := credpool.CredentialSource(r.PathValue("source"))
+	ref := r.PathValue("ref")
+	if !src.Valid() {
+		httpError(w, http.StatusBadRequest, "unknown credential source %q (want oauth|api_key)", src)
+		return
+	}
+	keyID := strings.TrimSpace(r.URL.Query().Get("key_id"))
+	if src == credpool.SourceOAuth || keyID != "" {
+		s.withdrawPledge(w, r, id.UserID, credpool.PledgeID(id.UserID, src, ref, keyID))
+		return
+	}
+	pledges, err := s.credPoolPledges.ListByUser(r.Context(), id.UserID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	matches := make([]credpool.Pledge, 0, 1)
+	for _, p := range pledges {
+		if p.Source == src && p.Ref == ref {
+			matches = append(matches, p)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		w.WriteHeader(http.StatusNoContent)
+	case 1:
+		s.withdrawPledge(w, r, id.UserID, matches[0].ID)
+	default:
+		httpError(w, http.StatusBadRequest,
+			"you lend %d %s/%s keys — name the one to withdraw with ?key_id= (or address it by its pledge id)", len(matches), src, ref)
+	}
 }
 
 // handleMyPoolHistory answers "what did my quota actually run". Without
@@ -490,6 +566,7 @@ func (s *Server) stillHolds(r *http.Request, p credpool.Pledge, connectedOAuth m
 
 func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time, connected bool) pledgeView {
 	v := pledgeView{
+		ID:            p.ID,
 		Source:        string(p.Source),
 		Ref:           p.Ref,
 		KeyID:         p.KeyID,
