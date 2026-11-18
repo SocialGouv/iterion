@@ -409,7 +409,10 @@ func TestIngress_AChangedContractIsRefusedUntilReBound(t *testing.T) {
 func TestIngress_TheDeclaredAckAnswersWhileMatchingIsPending(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
 	f.s.cfg.ConnectorIntakeRetention = 72 * time.Hour
-	at := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	// A pinned clock the retention window has NOT left behind: a literal
+	// date here expires 72h after it is written, and the row it stored then
+	// disappears from the listing under a test that never changed.
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	f.s.ingressClock = func() time.Time { return at }
 	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 	body := `{"sender":{"login":"alice"}}`
