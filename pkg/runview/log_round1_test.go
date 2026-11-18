@@ -146,3 +146,23 @@ func TestReArmAddsNothingAfterAnAppliedEnd(t *testing.T) {
 		t.Fatalf("applies = %d, want none after the end was applied", m.applies)
 	}
 }
+
+// First-end-wins holds across sources and epochs: once an end is applied, the
+// settle's epoch-0 application is a no-op (round 3, F3-1).
+func TestApplyEndIsIdempotentOnceAnEndIsApplied(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	seedLogLaneRun(t, native, "r", store.RunStatusFinished)
+	m := &liveLogMerge{
+		l: svc.liveEvents, ctx: t.Context(), runID: "r", out: runstream.NewLogPipe(),
+		entry: &liveLogEntry{}, finalHint: make(chan struct{}, 1), dataWake: make(chan struct{}, 1),
+	}
+	if m.applyEnd(7, logEndTerminal, logEndByLane) {
+		t.Fatal("a terminal end stopped the merge before its last drain")
+	}
+	if m.applyEnd(0, logEndTerminal, logEndBySettle) {
+		t.Fatal("the settle stopped a stream whose end was already applied")
+	}
+	if m.applies != 1 || m.entry.endBy != logEndByLane {
+		t.Fatalf("applies = %d endBy = %q, want exactly the lane's single application", m.applies, m.entry.endBy)
+	}
+}

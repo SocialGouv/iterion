@@ -298,6 +298,14 @@ func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) (stop bool)
 	if end == logEndNone {
 		return false
 	}
+	if !m.endAt.IsZero() {
+		// The stream's end is already applied: first-end-wins across every
+		// source and every epoch, including the settle's epoch-0 application
+		// after a retained one. A PAUSE records no end, so the pause and the
+		// resume's epoch never wait on this guard; a PAUSE that does reach it
+		// (a lane of an older epoch still held) is a stream already over.
+		return false
+	}
 	if epoch != 0 && m.endedEpoch == epoch {
 		return false
 	}
