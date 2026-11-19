@@ -80,11 +80,12 @@ and deleted after it:
 | kernel | 6.1.0-54 | 6.8.0-149 |
 | **Landlock ABI** | **2** | 4 |
 | legs | 7/7 held | 7/7 held |
-| a compromised child's `connect` | **SUCCEEDED** | refused `EACCES` |
+| a compromised child's `connect`, before #3371 | **SUCCEEDED** | refused `EACCES` |
+| the same with #3371's `Confine` (leg 5, 2026-11-18, `node3`) | refused `EACCES`, and UDP + `io_uring` too | refused |
 
-**The one that matters is the ABI.** Landlock gained TCP rights in ABI 3, so on
-this kernel the domain cannot refuse a socket connection: leg 5 reports the
-attempt as **NOT covered**, and what the other legs prove — open and exec
+**The one that matters is the ABI.** Landlock gained TCP rights in ABI 4, so on
+this kernel the domain cannot refuse a socket connection: leg 5 reported the
+attempt as **NOT covered** — the gap #3371 closes with a seccomp filter — and what the other legs prove — open and exec
 refused, memory and CPU bombs killed, siblings surviving — is unchanged. A
 kind-hosted bench on a newer kernel would have reported a confinement the
 production node does not have on that axis. That is the class of answer this arm

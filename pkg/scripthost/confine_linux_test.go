@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -52,14 +53,14 @@ import (
 // unconfined thread — which is exactly how a mutant that dropped the Landlock
 // net rights appeared to re-enable exec.
 const (
-	escapeHelperEnv     = "ITERION_SCRIPTHOST_ESCAPE_HELPER"
-	escapeTargetEnv     = "ITERION_SCRIPTHOST_ESCAPE_TARGET"
-	escapeConnectEnv    = "ITERION_SCRIPTHOST_ESCAPE_CONNECT"
-	escapeWriteEnv      = "ITERION_SCRIPTHOST_ESCAPE_WRITE"
-	escapeLimitsEnv     = "ITERION_SCRIPTHOST_ESCAPE_LIMITS"
-	escapeHardDataEnv   = "ITERION_SCRIPTHOST_ESCAPE_HARD_DATA"
-	noLandlockEscape    = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK"
-	noLandlockNetEscape = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET"
+	escapeHelperEnv   = "ITERION_SCRIPTHOST_ESCAPE_HELPER"
+	escapeTargetEnv   = "ITERION_SCRIPTHOST_ESCAPE_TARGET"
+	escapeConnectEnv  = "ITERION_SCRIPTHOST_ESCAPE_CONNECT"
+	escapeWriteEnv    = "ITERION_SCRIPTHOST_ESCAPE_WRITE"
+	escapeLimitsEnv   = "ITERION_SCRIPTHOST_ESCAPE_LIMITS"
+	escapeHardDataEnv = "ITERION_SCRIPTHOST_ESCAPE_HARD_DATA"
+	escapeUDPEnv      = "ITERION_SCRIPTHOST_ESCAPE_UDP"
+	noLandlockEscape  = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK"
 
 	escapeReportBegin = "ESCAPE-REPORT-BEGIN"
 	escapeReportEnd   = "ESCAPE-REPORT-END"
@@ -85,9 +86,10 @@ func (a attempt) refused() bool { return a.Made && a.Permission }
 
 // escapeReport is what the confined helper tells the test.
 type escapeReport struct {
-	ConfineErr  string `json:"confine_err,omitempty"`
-	LandlockABI int    `json:"landlock_abi"`
-	AllThreads  bool   `json:"all_threads"`
+	ConfineErr    string `json:"confine_err,omitempty"`
+	LandlockABI   int    `json:"landlock_abi"`
+	AllThreads    bool   `json:"all_threads"`
+	SocketsDenied bool   `json:"sockets_denied"`
 
 	// The rights actually declared, read back from the same function Confine
 	// used. An escape suite has to be able to say WHAT it proved: "exec was
@@ -107,18 +109,34 @@ type escapeReport struct {
 	CouldReadBefore    bool `json:"could_read_before"`
 	CouldWriteBefore   bool `json:"could_write_before"`
 	CouldConnectBefore bool `json:"could_connect_before"`
+	CouldSendUDPBefore bool `json:"could_send_udp_before"`
+	CouldIOURingBefore bool `json:"could_io_uring_before"`
 	CouldExecBefore    bool `json:"could_exec_before"`
 
 	ReadFile  attempt `json:"read_file"`
 	WriteFile attempt `json:"write_file"`
 	ReadDir   attempt `json:"read_dir"`
 	Connect   attempt `json:"connect"`
+	SendUDP   attempt `json:"send_udp"`
+	IOURing   attempt `json:"io_uring"`
 	Exec      attempt `json:"exec"`
 
 	// SiblingRead is the same read attempted on an OS thread that existed
 	// BEFORE Confine. It is the witness for the all-threads path: a per-thread
 	// domain leaves this one open.
 	SiblingRead attempt `json:"sibling_read"`
+
+	// Borrow is each cross-process call aimed at the parent, by name, with the
+	// error it met. The filter answers EACCES before any permission check;
+	// Yama and Landlock answer EPERM, and a call that got through answers
+	// ESRCH or EFAULT. So EACCES, and only EACCES, says the seccomp wall
+	// refused — the one that holds when Landlock is absent.
+	Borrow map[string]string `json:"borrow"`
+
+	// SiblingSocket is a socket(2) on that same pre-existing thread: the
+	// witness that the seccomp filter was synchronised to every thread
+	// (TSYNC) and not only installed on the one that called it.
+	SiblingSocket attempt `json:"sibling_socket"`
 
 	// EnvCount is how many variables the helper process holds. The helper is
 	// launched by this test with its own markers, so this is not the assertion
@@ -157,6 +175,7 @@ func TestEscapeHelperProcess(t *testing.T) {
 	target := os.Getenv(escapeTargetEnv)
 	writeTo := os.Getenv(escapeWriteEnv)
 	connectTo := os.Getenv(escapeConnectEnv)
+	udpTo := os.Getenv(escapeUDPEnv)
 
 	// Lower our OWN hard RLIMIT_DATA on request, so the "Confine refuses a
 	// bound it cannot apply" arm runs on every host instead of skipping where
@@ -213,6 +232,10 @@ func TestEscapeHelperProcess(t *testing.T) {
 		}
 		report.CouldConnectBefore = err == nil
 	}
+	if udpTo != "" {
+		report.CouldSendUDPBefore = sendUDP(udpTo) == nil
+	}
+	report.CouldIOURingBefore = ioURingProbe() == nil
 	report.CouldExecBefore = execProbe() == nil
 
 	// Pin to the thread that confines, so every probe below runs on it.
@@ -227,6 +250,7 @@ func TestEscapeHelperProcess(t *testing.T) {
 	}
 	report.AllThreads = applied.AllThreads
 	report.LandlockABI = applied.LandlockABI
+	report.SocketsDenied = applied.SocketsDenied
 	report.AppliedCPUSeconds, report.AppliedMemoryBytes = applied.CPUSeconds, applied.MemoryBytes
 	if applied.LandlockABI > 0 {
 		fs, netRights, scoped, size := handledRights(applied.LandlockABI)
@@ -251,6 +275,11 @@ func TestEscapeHelperProcess(t *testing.T) {
 		}
 		report.Connect = try(err)
 	}
+	if udpTo != "" {
+		report.SendUDP = try(sendUDP(udpTo))
+	}
+	report.IOURing = try(ioURingProbe())
+	report.Borrow = borrowProbes(os.Getppid())
 
 	report.Exec = try(execProbe())
 
@@ -259,6 +288,11 @@ func TestEscapeHelperProcess(t *testing.T) {
 	siblingWork <- func() {
 		_, err := os.ReadFile(target)
 		report.SiblingRead = try(err)
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+		if err == nil {
+			unix.Close(fd)
+		}
+		report.SiblingSocket = try(err)
 		close(siblingDone)
 	}
 	<-siblingDone
@@ -268,6 +302,73 @@ func TestEscapeHelperProcess(t *testing.T) {
 	emitReport(report)
 	holdForParent(stdin)
 	os.Exit(0)
+}
+
+// sendUDP sends one datagram to addr. A UDP send needs no handshake, so
+// "sent" is all the helper can know; the parent's listener is what makes the
+// premise mean a reachable address rather than a dead one.
+func sendUDP(addr string) error {
+	c, err := net.Dial("udp", addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_, err = c.Write([]byte("escape"))
+	return err
+}
+
+// ioURingProbe asks for an io_uring instance and closes it. io_uring can
+// create a socket without socket(2) (IORING_OP_SOCKET), so the filter denies
+// the setup itself.
+func ioURingProbe() error {
+	var params [120]byte // struct io_uring_params
+	fd, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, 1, uintptr(unsafe.Pointer(&params[0])), 0)
+	if errno != 0 {
+		return errno
+	}
+	unix.Close(int(fd))
+	return nil
+}
+
+// borrowProbes aims the four cross-process calls at pid, each in a form that
+// does nothing even if it gets through: PEEKDATA on a process nobody traces
+// (ESRCH), a one-byte read and write at address 1 (EFAULT), and a duplicate
+// of the target's stdin, closed at once.
+func borrowProbes(pid int) map[string]string {
+	errText := func(errno syscall.Errno) string {
+		if errno == 0 {
+			return "ok"
+		}
+		return errno.Error()
+	}
+	out := map[string]string{}
+	_, _, errno := unix.Syscall6(unix.SYS_PTRACE, unix.PTRACE_PEEKDATA, uintptr(pid), 1, 0, 0, 0)
+	out["ptrace"] = errText(errno)
+
+	var buf [1]byte
+	local := unix.Iovec{Base: &buf[0], Len: 1}
+	// struct iovec {base, len} as two raw words: base 1 is never mapped, and
+	// a raw word keeps that address out of a Go pointer.
+	remote := [2]uintptr{1, 1}
+	_, _, errno = unix.Syscall6(unix.SYS_PROCESS_VM_READV, uintptr(pid),
+		uintptr(unsafe.Pointer(&local)), 1, uintptr(unsafe.Pointer(&remote[0])), 1, 0)
+	out["process_vm_readv"] = errText(errno)
+	_, _, errno = unix.Syscall6(unix.SYS_PROCESS_VM_WRITEV, uintptr(pid),
+		uintptr(unsafe.Pointer(&local)), 1, uintptr(unsafe.Pointer(&remote[0])), 1, 0)
+	out["process_vm_writev"] = errText(errno)
+
+	pidfd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(pid), 0, 0)
+	if errno != 0 {
+		out["pidfd_getfd"] = "pidfd_open: " + errno.Error()
+		return out
+	}
+	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_GETFD, pidfd, 0, 0)
+	if errno == 0 {
+		unix.Close(int(fd))
+	}
+	unix.Close(int(pidfd))
+	out["pidfd_getfd"] = errText(errno)
+	return out
 }
 
 // execProbe attempts an execve of a path proven to exist — this very binary.
@@ -358,6 +459,14 @@ func runEscapeHelper(t *testing.T, limits Limits, opts ...escapeOpts) escapeRepo
 		}
 	}()
 
+	// The UDP arm's target. Reading it is not the verdict either — the
+	// child's own report is — but it makes "sent" mean a live address.
+	udpListener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("the UDP probe needs a listener and this host refused one (%v)", err)
+	}
+	defer udpListener.Close()
+
 	encodedLimits, err := json.Marshal(limits)
 	if err != nil {
 		t.Fatalf("encoding the helper's limits: %v", err)
@@ -371,6 +480,7 @@ func runEscapeHelper(t *testing.T, limits Limits, opts ...escapeOpts) escapeRepo
 		escapeTargetEnv + "=" + target,
 		escapeWriteEnv + "=" + filepath.Join(dir, "escaped"),
 		escapeConnectEnv + "=" + listener.Addr().String(),
+		escapeUDPEnv + "=" + udpListener.LocalAddr().String(),
 		escapeLimitsEnv + "=" + string(encodedLimits),
 	}
 	if opt.hardDataMiB > 0 {
@@ -425,11 +535,14 @@ func runEscapeHelper(t *testing.T, limits Limits, opts ...escapeOpts) escapeRepo
 		report.procReadableBySibling = procEnvironReadable(t, report.PID)
 		t.Logf("escape report: landlock ABI %d allThreads=%v declared fs=%#x net=%#x scoped=%#x size=%d | "+
 			"premises read=%v write=%v connect=%v exec=%v | read=%+v write=%+v dir=%+v connect=%+v exec=%+v "+
-			"sibling=%+v | applied cpu=%ds mem=%d | env=%d pid=%d proc before=%v after=%v",
+			"sibling=%+v | sockets denied=%v udp before=%v after=%+v io_uring before=%v after=%+v sibling socket=%+v borrow=%v | "+
+			"applied cpu=%ds mem=%d | env=%d pid=%d proc before=%v after=%v",
 			report.LandlockABI, report.AllThreads, report.DeclaredFS, report.DeclaredNet,
 			report.DeclaredScoped, report.DeclaredSize,
 			report.CouldReadBefore, report.CouldWriteBefore, report.CouldConnectBefore, report.CouldExecBefore,
 			report.ReadFile, report.WriteFile, report.ReadDir, report.Connect, report.Exec, report.SiblingRead,
+			report.SocketsDenied, report.CouldSendUDPBefore, report.SendUDP, report.CouldIOURingBefore,
+			report.IOURing, report.SiblingSocket, report.Borrow,
 			report.AppliedCPUSeconds, report.AppliedMemoryBytes,
 			report.EnvCount, report.PID, report.procReadableBeforeConfine, report.procReadableBySibling)
 	}
@@ -588,38 +701,88 @@ func TestAConfinedChildCannotWriteAFile(t *testing.T) {
 	}
 }
 
-// The network arm needs Landlock ABI 4, where LANDLOCK_ACCESS_NET_CONNECT_TCP
-// arrived. Below that the ruleset governs the filesystem only — which is the
-// correction this suite records against the ADR's "Landlock is about files"
-// reasoning.
+// The network arms need NO Landlock right. They used to: the connect arm
+// required ABI 4 (kernel 6.7), so on this repo's ARC runners (ABI 1) and on the
+// production nodes (ABI 2) it could not conclude — and a confined child could
+// open a TCP connection there. The seccomp filter denies socket creation on
+// every kernel, so these arms prove on every lane and carry no escape hatch.
+
+func requireSocketWall(t *testing.T, report escapeReport) {
+	t.Helper()
+	if !report.SocketsDenied {
+		t.Fatalf("Confine succeeded without the socket wall (sockets_denied=false): every network arm " +
+			"below would be testing nothing")
+	}
+}
+
 func TestAConfinedChildCannotConnect(t *testing.T) {
 	t.Parallel()
 	report := escapeBaseline(t)
-	requireLandlock(t, report.LandlockABI)
-
-	// The network rights arrive at ABI 4 (kernel 6.7). Below that a confined
-	// script host CAN open a TCP connection, and the fallback that grants
-	// codemode only to a node already holding a class:shell tool is about
-	// FILESYSTEM reach and does not cover it. A lane on such a kernel must be
-	// ON RECORD rather than quietly green — measured on this repo's ARC
-	// runners 2026-11-11: ABI 1, so the filesystem, exec and every-thread
-	// bounds are proven there and this one is not.
-	switch landlockArmVerdict(report.LandlockABI, 4, os.Getenv(noLandlockNetEscape) == "1") {
-	case armSkipOnRecord:
-		t.Skipf("%s=1: Landlock ABI %d has no network rights, so this lane does not test whether a "+
-			"confined script host can open a TCP connection — and on this run it could (%+v)",
-			noLandlockNetEscape, report.LandlockABI, report.Connect)
-	case armFailLoud:
-		t.Fatalf("Landlock ABI %d has no network rights (they arrive at 4), so a script host on this "+
-			"kernel can open a TCP connection. Run this suite on a 6.7+ kernel, or set %s=1 in the lane "+
-			"to record that it proves the filesystem bounds and not the network one.",
-			report.LandlockABI, noLandlockNetEscape)
-	}
+	requireSocketWall(t, report)
 	if !report.CouldConnectBefore {
 		t.Fatal("the helper could not reach the listener BEFORE confining: this arm proves nothing")
 	}
 	if !report.Connect.refused() {
-		t.Errorf("a confined child opened a TCP connection: %+v", report.Connect)
+		t.Errorf("a confined child opened a TCP connection (Landlock ABI %d): %+v", report.LandlockABI, report.Connect)
+	}
+}
+
+// UDP is the protocol no Landlock right has ever covered: a datagram reached a
+// listener from a child confined on ABI 4, measured.
+func TestAConfinedChildCannotSendUDP(t *testing.T) {
+	t.Parallel()
+	report := escapeBaseline(t)
+	requireSocketWall(t, report)
+	if !report.CouldSendUDPBefore {
+		t.Fatal("the helper could not send a datagram BEFORE confining: this arm proves nothing")
+	}
+	if !report.SendUDP.refused() {
+		t.Errorf("a confined child sent a UDP datagram: %+v", report.SendUDP)
+	}
+}
+
+// The thread that existed before Confine: a filter installed without TSYNC
+// binds the calling thread only, and this one would still open sockets.
+func TestASiblingThreadCannotCreateASocket(t *testing.T) {
+	t.Parallel()
+	report := escapeBaseline(t)
+	requireSocketWall(t, report)
+	if !report.SiblingSocket.refused() {
+		t.Errorf("a socket opened on an OS thread that predates the confinement: %+v", report.SiblingSocket)
+	}
+}
+
+// io_uring can create a socket without socket(2). A runtime's own seccomp
+// profile may refuse it already (docker's and containerd's defaults do), so the
+// refusal is required either way and the attribution is logged: where the
+// premise held, the refusal is this filter's.
+func TestAConfinedChildCannotUseIOURing(t *testing.T) {
+	t.Parallel()
+	report := escapeBaseline(t)
+	requireSocketWall(t, report)
+	if !report.IOURing.refused() {
+		t.Fatalf("a confined child set up an io_uring: %+v", report.IOURing)
+	}
+	if !report.CouldIOURingBefore {
+		t.Logf("io_uring was already refused BEFORE confinement on this host (the runtime's profile), " +
+			"so this run does not attribute the refusal to the filter; TestTheSocketFilterProgram does")
+	}
+}
+
+// The four ways to use the parent's sockets without creating one. Landlock's
+// ptrace scoping covers them from ABI 1, so on such a host the call would be
+// refused anyway — with EPERM. The assertion is EACCES, the filter's own
+// answer: it is the wall that also holds on the ABI-0 posture, and removing
+// one row reddens here even where Landlock or Yama would still refuse.
+func TestAConfinedChildCannotBorrowFromAnotherProcess(t *testing.T) {
+	t.Parallel()
+	report := escapeBaseline(t)
+	requireSocketWall(t, report)
+	want := unix.EACCES.Error()
+	for _, call := range []string{"ptrace", "process_vm_readv", "process_vm_writev", "pidfd_getfd"} {
+		if got, ok := report.Borrow[call]; !ok || got != want {
+			t.Errorf("%s at the parent answered %q (present=%v), want the filter's %q", call, got, ok, want)
+		}
 	}
 }
 

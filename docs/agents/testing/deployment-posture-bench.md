@@ -102,19 +102,21 @@ refuse.
 
 Seven legs, each counted:
 
-1. **the posture** — and it is judged, not just printed: `LandlockABI > 0` and
-   `AllThreads`, or the bench exits non-zero;
+1. **the posture** — judged, not just printed: `LandlockABI > 0`, `AllThreads`
+   and `SocketsDenied`, or the bench exits non-zero;
 2. **a memory bomb** → `memory_exceeded`;
 3. **a native regex bomb** → `cpu_time_exceeded`;
 4. **a benign program** after them, which must still return its value;
-5. **a compromised child** that tries to `open`, `connect` and `exec` — the
+5. **a compromised child** that tries to `open`, `connect`, send UDP, set up
+   `io_uring` and `exec` — the
    leg that proves the domain *refuses*. Each attempt runs twice, before and
    after `Confine`, because one that fails on both sides proves nothing. And
    it must fail with **`EACCES`**, the errno Landlock refuses with on ABI 4
    (connect included, measured): a mutant that installed no domain and set
    `RLIMIT_NOFILE` to zero made all three fail with `EMFILE`, and a leg asking
-   only *whether* they failed printed "too many open files" and passed. Below
-   ABI 4 there are no TCP rights, so connect is reported **not covered**;
+   only *whether* they failed printed "too many open files" and passed. The
+   network attempts hold on every ABI — the wall is seccomp (`sockets_denied`),
+   not Landlock — and `io_uring` may already be refused by the runtime (`EPERM`);
 6. **three bombs beside three benign programs**, where all six must end the
    way their bounds promise *and* some 5 ms sample must have seen a bomb and a
    sibling alive **at the same instant**. Two weaker forms both died to a
@@ -178,7 +180,7 @@ arm's posture readback is a sibling pod**: the bench pod checks itself through
 `-require-uid`, which is what makes the arm sound.
 
 **The production node's confinements.** Measured 2026-11-18: containerd 2.3.6,
-kernel 6.1, **Landlock ABI 2 — `connect` is not confined there**
+kernel 6.1, **Landlock ABI 2 — its network wall is the seccomp filter (#3371)**
 ([detail](posture-bench-remote.md)).
 
 The production **runner image** is no longer owed: `iterion-runner-devbox`

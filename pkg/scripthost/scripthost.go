@@ -291,15 +291,21 @@ func (l Limits) CPUSeconds() uint64 {
 // a stricter bound is the operator's choice and tightening is always safe.
 type Applied struct {
 	// LandlockABI is the ruleset's ABI version, or 0 where the kernel offers
-	// no Landlock — in which case there is no filesystem and no socket bound.
+	// no Landlock — in which case there is no filesystem bound.
 	LandlockABI int `json:"landlock_abi"`
+
+	// SocketsDenied says the child cannot create a socket of any family — the
+	// seccomp filter of socketdeny_linux.go, installed on every thread. It
+	// does not depend on Landlock: it holds where the ABI is 0 as well.
+	SocketsDenied bool `json:"sockets_denied"`
 
 	// AllThreads says the per-thread bounds (no_new_privs and the Landlock
 	// domain) were applied to every OS thread of the process, which is the
 	// only form in which they bound the CHILD rather than one goroutine's
 	// carrier. False means a cgo-linked binary refused the all-threads path:
-	// the filesystem, socket and exec bounds then hold on one thread only,
-	// and that is not what codemode promises.
+	// the filesystem and exec bounds then hold on one thread only, and that is
+	// not what codemode promises. (The socket filter is synchronised by the
+	// kernel itself and holds on every thread either way.)
 	AllThreads bool `json:"all_threads"`
 
 	// MemoryBytes and CPUSeconds are the values the kernel accepted.
@@ -323,7 +329,9 @@ type Request struct {
 	Seed string `json:"seed,omitempty"`
 
 	// AllowWithoutLandlock lets a script run on a kernel that offers no
-	// Landlock — no filesystem bound and no socket bound. It travels HERE and
+	// Landlock — no filesystem bound; the socket wall (creating one, or
+	// borrowing one through ptrace, process_vm_* or pidfd_getfd) is seccomp
+	// and holds either way. It travels HERE and
 	// not in the environment because the child's environment is deliberately
 	// empty, so an env-var opt-in could never reach it. This is the greppable
 	// escape hatch philosophy 1 requires of a load-bearing limit.

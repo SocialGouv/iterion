@@ -22,7 +22,7 @@ at the end.
 | wall clock (soft) | `vm.Interrupt` | a preemptible loop yields a typed refusal from the child |
 | recursion | `SetMaxCallStackSize` | a self-calling function is refused with a cause |
 | filesystem | Landlock, deny-all | a file readable a moment earlier is refused |
-| network | Landlock ABI 4 | a TCP connect to a live listener is refused |
+| network | seccomp: no socket created or borrowed | TCP, UDP, `io_uring`, `pidfd_getfd`/`ptrace`/`process_vm_*` at the parent; any ABI, every thread |
 | exec | Landlock `FS_EXECUTE` | `execve` of an existing binary is refused at `fork/exec` |
 | **every thread** | `AllThreadsSyscall` | a sibling OS thread is refused too |
 | credentials | empty `cmd.Env` + `PR_SET_DUMPABLE` | a same-uid sibling cannot read the child's `/proc` |
@@ -85,11 +85,10 @@ request because the child's environment is empty by design.
   anonymous mapping and a memfd are not charged to it: 8× the bound, resident,
   no fork needed. The goja-heap claim holds; "the child is bounded at N bytes of
   memory" does not.
-- **The network bound is TCP.** UDP, AF_UNIX (pathname and abstract) and netlink
-  all cross a deny-all ruleset on ABI 4, verified by what arrived at a listener
-  outside the confinement. ABI 6's two scopes close the abstract socket and
-  signals, and are declared where the kernel offers them. Closing the rest needs
-  a netns or seccomp, which is not this slice.
+- **Landlock's network bound is TCP, from ABI 4.** UDP, AF_UNIX and netlink
+  crossed a deny-all ruleset on ABI 4, and TCP did too on the production kernel
+  (ABI 2). The child now denies itself socket creation (seccomp, TSYNC); a
+  netns per child is refused under `RuntimeDefault` (`EPERM`).
 - **A path-existence oracle survives.** `connect(AF_UNIX, path)` returns
   distinguishable errnos, so a confined child can tell a file from a missing
   path it can never open.
@@ -146,18 +145,12 @@ fails loudly unless the lane is on record, and the record is an environment
 variable set in the workflow beside a comment saying what that lane does not
 test.
 
-- **No Landlock at all** — the filesystem and network arms cannot run.
+- **No Landlock at all** — the filesystem arms cannot run.
   `ITERION_CODEMODE_ALLOW_NO_LANDLOCK=1`.
-- **Landlock below ABI 4** — the network rights arrive there, so a confined
-  child can open a TCP connection and the arm cannot conclude.
-  `ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET=1`. **This repo's ARC runners answer
-  ABI 1** (measured 2026-11-11), so the record is set at `tests.yml`'s workflow
-  level — four jobs run the Go suite there and a record on one of them is a
-  record on none. Both variables are consulted only BELOW the ABI an arm needs,
-  so a runner that offers the right proves it and ignores them.
+- The network arms need no Landlock right and run on every lane, the ARC
+  runners' ABI 1 included; their old record variable is gone.
 
-So on CI the memory, CPU, wall-clock, recursion, filesystem, exec, credential
-and every-thread bounds are proven, and the TCP one is not.
+So on CI every bound in the table above is proven.
 
 Two things the record used to get wrong about its own legs, both measured:
 

@@ -60,6 +60,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -326,11 +327,19 @@ func main() {
 	case posture.Confinement.LandlockABI == 0:
 		// Reachable only with -allow-without-landlock: without it the child
 		// refuses and lands on exitPostureRefused above.
-		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem and " +
-			"unrestricted sockets. -allow-without-landlock accepted that; it is not a pass.")
+		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem. " +
+			"-allow-without-landlock accepted that; it is not a pass.")
 		os.Exit(verdict(exitUnconfined))
 	case !posture.Confinement.AllThreads:
 		fmt.Println("VERDICT: the bounds covered ONE thread, not the process. That is not what codemode promises.")
+		os.Exit(verdict(exitLegFailed))
+	case !posture.Confinement.SocketsDenied:
+		// The IMAGE's child, not this bench's: leg 5 below proves the bench's
+		// own Confine, which is HEAD. A deployed binary that predates the
+		// socket wall reports false here, and a posture leg that let it pass
+		// would call a child with an open network confined.
+		fmt.Println("VERDICT: the image's child does not deny itself socket creation (sockets_denied=false): " +
+			"it predates the network wall, so a compromised child of this deployment reaches the network.")
 		os.Exit(verdict(exitLegFailed))
 	}
 
@@ -432,6 +441,7 @@ const (
 	escapeProbeEnv   = "INPODBENCH_ESCAPE_PROBE"
 	escapeFileEnv    = "INPODBENCH_ESCAPE_FILE"
 	escapeConnectEnv = "INPODBENCH_ESCAPE_CONNECT"
+	escapeUDPEnv     = "INPODBENCH_ESCAPE_UDP"
 	escapeExecEnv    = "INPODBENCH_ESCAPE_EXEC"
 )
 
@@ -489,8 +499,26 @@ type escapeReport struct {
 	Applied scripthost.Applied `json:"applied"`
 	Open    attempt            `json:"open"`
 	Connect attempt            `json:"connect"`
+	SendUDP attempt            `json:"send_udp"`
+	IOURing attempt            `json:"io_uring"`
 	Exec    attempt            `json:"exec"`
 	Fatal   string             `json:"fatal,omitempty"`
+}
+
+// refusedAfter is the weaker oracle for io_uring, and only for it: a runtime's
+// own seccomp profile may refuse io_uring_setup BEFORE the confinement (docker's
+// and containerd's defaults do, with EPERM), so the before/after pair cannot be
+// required. What is required is that the confined child cannot have it — by
+// the child's filter (EACCES) or by the runtime's (EPERM).
+func (a attempt) refusedAfter(what string) error {
+	switch {
+	case a.After == "":
+		return fmt.Errorf("%s SUCCEEDED inside the confinement", what)
+	case a.AfterErrno != int(syscall.EACCES) && a.AfterErrno != int(syscall.EPERM):
+		return fmt.Errorf("%s failed inside the confinement with errno %d (%s), not a permission "+
+			"refusal: something else stopped it, so this is not a witness", what, a.AfterErrno, a.After)
+	}
+	return nil
 }
 
 func aCompromisedChildCannotEscape(host scripthost.Host) error {
@@ -530,6 +558,14 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 		}
 	}()
 
+	// The UDP target: no Landlock right has ever covered UDP, so this is the
+	// attempt that tells the socket wall from the TCP one on every ABI.
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("%s: cannot listen for the UDP attempt: %w", name, err)
+	}
+	defer func() { _ = udp.Close() }()
+
 	// Something executable that exists in THIS image. A missing one would make
 	// the exec attempt fail on both sides and prove nothing, which heldBy
 	// refuses rather than passes.
@@ -550,6 +586,7 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 		escapeProbeEnv+"=1",
 		escapeFileEnv+"="+target,
 		escapeConnectEnv+"="+ln.Addr().String(),
+		escapeUDPEnv+"="+udp.LocalAddr().String(),
 		escapeExecEnv+"="+execTarget,
 	)
 	out, err := cmd.Output()
@@ -565,32 +602,34 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 			name, rep.Fatal)
 	}
 
-	fmt.Printf("LEG %-50s abi=%d all_threads=%t open=%s connect=%s exec=%s\n",
-		name, rep.Applied.LandlockABI, rep.Applied.AllThreads,
-		shortErrno(rep.Open), shortErrno(rep.Connect), shortErrno(rep.Exec))
+	fmt.Printf("LEG %-50s abi=%d all_threads=%t sockets_denied=%t open=%s connect=%s udp=%s io_uring=%s exec=%s\n",
+		name, rep.Applied.LandlockABI, rep.Applied.AllThreads, rep.Applied.SocketsDenied,
+		shortErrno(rep.Open), shortErrno(rep.Connect), shortErrno(rep.SendUDP), shortErrno(rep.IOURing),
+		shortErrno(rep.Exec))
 
+	// The network attempts are required on EVERY ABI. They used to be exempt
+	// below ABI 4, where Landlock has no TCP right — and on the production
+	// nodes (ABI 2) a compromised child's connect SUCCEEDED. The socket wall
+	// (scripthost's seccomp filter) does not depend on Landlock.
 	var problems []string
+	if !rep.Applied.SocketsDenied {
+		problems = append(problems, "the confinement reports no socket wall (sockets_denied=false)")
+	}
 	for _, c := range []struct {
 		what string
 		a    attempt
-		// netOnly: Landlock gained TCP rights at ABI 4. Below it the domain
-		// does not claim to refuse a connect, so requiring one would be
-		// asserting a guarantee the kernel never offered — and passing
-		// silently would be worse.
-		netOnly bool
 	}{
-		{"open", rep.Open, false},
-		{"exec", rep.Exec, false},
-		{"connect", rep.Connect, true},
+		{"open", rep.Open},
+		{"exec", rep.Exec},
+		{"connect", rep.Connect},
+		{"a UDP send", rep.SendUDP},
 	} {
-		if c.netOnly && rep.Applied.LandlockABI < 4 {
-			fmt.Printf("  NOTE %s: Landlock ABI %d has no TCP rights, so the connect attempt is NOT covered here\n",
-				name, rep.Applied.LandlockABI)
-			continue
-		}
 		if err := c.a.heldBy(c.what); err != nil {
 			problems = append(problems, err.Error())
 		}
+	}
+	if err := rep.IOURing.refusedAfter("io_uring_setup"); err != nil {
+		problems = append(problems, err.Error())
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%s: %s", name, strings.Join(problems, "; "))
@@ -604,6 +643,7 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 func beTheEscapeProbe() {
 	rep := escapeReport{}
 	target, addr, execTarget := os.Getenv(escapeFileEnv), os.Getenv(escapeConnectEnv), os.Getenv(escapeExecEnv)
+	udpAddr := os.Getenv(escapeUDPEnv)
 
 	tryOpen := func() error {
 		f, err := os.Open(target)
@@ -619,10 +659,31 @@ func beTheEscapeProbe() {
 		}
 		return err
 	}
+	trySendUDP := func() error {
+		c, err := net.Dial("udp", udpAddr)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = c.Close() }()
+		_, err = c.Write([]byte("escape"))
+		return err
+	}
+	// io_uring can create a socket without socket(2) (IORING_OP_SOCKET).
+	tryIOURing := func() error {
+		var params [120]byte // struct io_uring_params
+		fd, _, errno := syscall.Syscall(unix.SYS_IO_URING_SETUP, 1, uintptr(unsafe.Pointer(&params[0])), 0)
+		if errno != 0 {
+			return errno
+		}
+		_ = syscall.Close(int(fd))
+		return nil
+	}
 	tryExec := func() error { return exec.Command(execTarget, "-c", ":").Run() }
 
 	rep.Open.Before, rep.Open.BeforeErrno = describe(tryOpen())
 	rep.Connect.Before, rep.Connect.BeforeErrno = describe(tryConnect())
+	rep.SendUDP.Before, rep.SendUDP.BeforeErrno = describe(trySendUDP())
+	rep.IOURing.Before, rep.IOURing.BeforeErrno = describe(tryIOURing())
 	rep.Exec.Before, rep.Exec.BeforeErrno = describe(tryExec())
 
 	applied, err := scripthost.Confine(scripthost.Limits{
@@ -639,6 +700,8 @@ func beTheEscapeProbe() {
 
 	rep.Open.After, rep.Open.AfterErrno = describe(tryOpen())
 	rep.Connect.After, rep.Connect.AfterErrno = describe(tryConnect())
+	rep.SendUDP.After, rep.SendUDP.AfterErrno = describe(trySendUDP())
+	rep.IOURing.After, rep.IOURing.AfterErrno = describe(tryIOURing())
 	rep.Exec.After, rep.Exec.AfterErrno = describe(tryExec())
 	emit(rep)
 }

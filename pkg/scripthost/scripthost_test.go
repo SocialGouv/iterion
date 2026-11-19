@@ -424,11 +424,11 @@ func TestTheEvidenceInARefusalIsBoundedInBytes(t *testing.T) {
 	}
 }
 
-// The posture verdict is ONE place, and both of its refusing branches are
-// unreachable through the real syscalls on a healthy kernel and build — which
-// is exactly why they are a function with a witness.
-func TestTheConfinementVerdictRefusesBothWeakPostures(t *testing.T) {
-	healthy := Applied{LandlockABI: 4, AllThreads: true, CPUSeconds: 10, MemoryBytes: 1 << 20}
+// The posture verdict is ONE place, and its refusing branches are unreachable
+// through the real syscalls on a healthy kernel and build — which is exactly
+// why they are a function with a witness.
+func TestTheConfinementVerdictRefusesEveryWeakPosture(t *testing.T) {
+	healthy := Applied{LandlockABI: 4, SocketsDenied: true, AllThreads: true, CPUSeconds: 10, MemoryBytes: 1 << 20}
 
 	if got := confinementVerdict(healthy, Request{}); got != nil {
 		t.Errorf("a healthy posture was refused: %+v", got)
@@ -458,6 +458,24 @@ func TestTheConfinementVerdictRefusesBothWeakPostures(t *testing.T) {
 	}
 	if confinementVerdict(oneThread, Request{AllowSingleThreadConfinement: true}) != nil {
 		t.Error("the explicit allowance did not take")
+	}
+
+	// No socket wall has NO allowance: neither escape hatch the other two
+	// postures offer may admit it, alone or together.
+	open := healthy
+	open.SocketsDenied = false
+	for _, req := range []Request{{}, {AllowWithoutLandlock: true, AllowSingleThreadConfinement: true}} {
+		got = confinementVerdict(open, req)
+		if got == nil || got.Refusal != RefusalUnavailable {
+			t.Fatalf("a posture with the network open was accepted under %+v: %+v", req, got)
+		}
+	}
+	// And a kernel with no Landlock still runs with the wall: the allowance
+	// is about the filesystem only.
+	noLandlockWalled := healthy
+	noLandlockWalled.LandlockABI = 0
+	if confinementVerdict(noLandlockWalled, Request{AllowWithoutLandlock: true}) != nil {
+		t.Error("allow_without_landlock no longer admits a kernel without Landlock that still denies sockets")
 	}
 }
 

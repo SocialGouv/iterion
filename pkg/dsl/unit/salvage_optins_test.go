@@ -829,6 +829,8 @@ var unsafeFiles = map[string]string{
 	"cmd/iterion-desktop/prgname_linux.go":            "the C string handed to g_set_prgname",
 	"cmd/iterion-desktop/window_icon_linux.go":        "the GTK window handle the icon is set on",
 	"pkg/scripthost/confine_linux.go":                 "the landlock_ruleset_attr handed to landlock_create_ruleset(2), which takes a struct pointer and its size",
+	"pkg/scripthost/socketdeny_linux.go":              "the sock_fprog handed to seccomp(2) to install the child's socket-denial filter",
+	"scripts/ci/inpodbench/main.go":                   "the io_uring_params buffer handed to io_uring_setup(2), the escape probe's attempt to get a ring",
 }
 
 // reflectPointerFiles are the production files that turn a reflect.Value
