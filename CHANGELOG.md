@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.18.1](https://github.com/SocialGouv/iterion/compare/v7.18.0...v7.18.1) (2026-11-19)
+
+### Bug Fixes
+
+* **connector:** a loop guard and a handshake condition are read as conditions ([#3360](https://github.com/SocialGouv/iterion/issues/3360)) ([#3399](https://github.com/SocialGouv/iterion/issues/3399)) ([5abb0b9](https://github.com/SocialGouv/iterion/commit/5abb0b98d43fac5edc1a6c05c025644f8c4baecf))
+
+    <details><summary>why</summary>
+
+    The ingress lane dropped a delivery only when `ignore` rendered the boolean true, and answered a handshake only when `handshake.when` did. The natural guard `payload.event.bot_id` renders the id, so it never dropped anything: a package shipped with it passed validation and its own sample, and looped.
+
+    </details>
+* **lease:** a campaign stopped while its acquire is in flight serves no term ([#3400](https://github.com/SocialGouv/iterion/issues/3400)) ([#3401](https://github.com/SocialGouv/iterion/issues/3401)) ([5b24e32](https://github.com/SocialGouv/iterion/commit/5b24e327caf6259304eac3d8a3e2d7ee41902ff4)), references [#3397](https://github.com/SocialGouv/iterion/issues/3397)
+
+    <details><summary>why</summary>
+
+    A store's answer can arrive after its caller's stop: the write landed while the context was still live. Run and TryRun then went straight to serveTerm, and fn started on a context already cancelled. A net whose loop acts before it reads its context did one pass on a replica that was stopping.
+
+    </details>
+
 ## [7.18.0](https://github.com/SocialGouv/iterion/compare/v7.17.0...v7.18.0) (2026-11-19)
 
 ### Features
