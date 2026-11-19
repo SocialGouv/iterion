@@ -29,7 +29,21 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
-	if err := s.runs.DeleteRunCtx(r.Context(), id); err != nil {
+	// A request the gate admitted on its expected birth deletes that run
+	// only: the load and the store's delete are bound to it. When another
+	// delete of the admitted run lands between the two, the answer is the
+	// store's: the filesystem store refuses (ErrRunDeleted, answered 409
+	// run_origin_lost), the Mongo store, whose tombstone keeps the birth,
+	// answers the idempotent success.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if err := s.runs.DeleteRunCtx(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		// A lifecycle refusal (the run exists and is ALIVE) is a 409 —
 		// answering 404 told the API/MCP caller the exact opposite of the
 		// refusal's own reason. LoadRun-not-found (gone or outside the

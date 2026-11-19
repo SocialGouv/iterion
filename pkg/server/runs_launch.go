@@ -1106,6 +1106,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// A failure of a resume the gate admitted on its expected birth answers
+	// run_origin_lost when the run behind the ID is no longer that birth
+	// (writeActionFailure), whichever step refused it.
+	origin := s.admittedAction(r, id)
 	var (
 		gateMeta    *store.Run
 		gateMetaErr = errors.New("run service unavailable")
@@ -1163,6 +1167,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// one, and its TenantID scopes the resume's Mongo queries (see below).
 	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		span.SetStatus(codes.Error, "run not found")
 		return
@@ -1246,8 +1254,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			resumeLB.stampResumeBundle(&pfSpec)
 		}
 		if pfErr := s.runs.PreflightResume(ctx, pfSpec); pfErr != nil {
-			s.writeResumeError(w, r, pfErr)
 			span.RecordError(pfErr)
+			if s.writeActionFailure(w, r, origin, pfErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.writeResumeError(w, r, pfErr)
 			span.SetStatus(codes.Error, "resume preflight failed")
 			return
 		}
@@ -1257,8 +1269,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
 		if promoteErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.RecordError(promoteErr)
+			if s.writeActionFailure(w, r, origin, promoteErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.SetStatus(codes.Error, "attach upload failed")
 			return
 		}
@@ -1281,8 +1297,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.RecordError(historyErr)
+		if s.writeActionFailure(w, r, origin, historyErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.SetStatus(codes.Error, "chat history projection failed")
 		return
 	}
@@ -1304,6 +1324,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// routine and must not meter the studio's own chat.
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
+		}
+		if s.writeActionFailure(w, r, origin, err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "run origin lost")
+			return
 		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)

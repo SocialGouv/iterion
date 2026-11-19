@@ -1519,13 +1519,23 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	if req.CooldownSeconds != nil {
 		requestedCooldown = *req.CooldownSeconds
 	}
+	// A failure answers run_origin_lost only when the TARGET — the run the
+	// gate admitted — is gone or replaced; the assistant run's absence is
+	// its own 404 (writeActionFailure reads the target again).
+	origin := s.admittedAction(r, targetID)
 	target, err := c.runs.LoadRunCtx(r.Context(), targetID)
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "target run not found")
 		return
 	}
 	assistant, err := c.runs.LoadRunCtx(r.Context(), req.AssistantRunID)
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "assistant run not found")
 		return
 	}
@@ -1597,6 +1607,9 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 		snapshot = c.runs.SnapshotWithoutReconcileCtx
 	}
 	if snap, snapErr := snapshot(r.Context(), target.ID); snapErr != nil {
+		if s.writeActionFailure(w, r, origin, snapErr) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "read target event cursor: %v", snapErr)
 		return
 	} else if snap != nil {

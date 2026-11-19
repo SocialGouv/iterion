@@ -32,13 +32,14 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 	// the mongo tenant filter rejects cross-tenant reads, and the store's
 	// path-component sanitiser rejects a traversal-shaped id, before any
 	// log bytes are read for it. A request whose expected birth the gate
-	// admitted reads under that origin (boundRunRead): every store read
+	// admitted reads under that origin (actionOrigin.bind): every store read
 	// below refuses a successor with 409.
-	ctx, bound, err := boundRunRead(r, id)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "bind the admitted run: %v", err)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
 		return
 	}
+	bound := a.checked
 	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
 		if s.writeBoundReadFailure(w, r, id, bound, err) {
 			return
@@ -63,8 +64,7 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 	// log, read under the binding.
 	buf := s.runs.GetLogBuffer(id)
 	if bound {
-		admitted, _ := admittedOrigin(r.Context(), id)
-		buf = s.runs.GetLogBufferOf(id, admitted.Header().BirthID)
+		buf = s.runs.GetLogBufferOf(id, a.origin.Header().BirthID)
 	}
 	if buf != nil {
 		snapOffset, data, total := buf.Snapshot(from)

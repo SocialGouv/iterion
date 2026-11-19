@@ -154,22 +154,6 @@ func admittedOrigin(ctx context.Context, runID string) (store.RunObservation, bo
 	return a.origin, true
 }
 
-// boundRunRead returns the request context bound to the origin the gate
-// admitted (store.BindRunObservation), so every store read of the handler is
-// refused for a successor recreated after the admission. Without a checked
-// expectation it returns the request context unchanged and bound=false.
-func boundRunRead(r *http.Request, runID string) (ctx context.Context, bound bool, err error) {
-	o, ok := admittedOrigin(r.Context(), runID)
-	if !ok {
-		return r.Context(), false, nil
-	}
-	ctx, err = store.BindRunObservation(r.Context(), o)
-	if err != nil {
-		return nil, false, err
-	}
-	return ctx, true, nil
-}
-
 // runOriginGate is the choke point (see the file comment).
 func (s *Server) runOriginGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

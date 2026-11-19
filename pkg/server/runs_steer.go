@@ -52,12 +52,22 @@ func (s *Server) handleBumpLoop(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	res, err := s.runs.BumpLoopCtx(r.Context(), id, runview.BumpLoopRequest{
+	// Under an admitted expectation the service's loads are the bound
+	// pre-checks of the ID-keyed steering signal.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.BumpLoopCtx(ctx, id, runview.BumpLoopRequest{
 		LoopName: req.LoopName,
 		Delta:    req.Delta,
 		IssuedBy: steerIssuer(r.Context()),
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}
@@ -73,7 +83,12 @@ func (s *Server) handleRaiseBudget(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	res, err := s.runs.RaiseBudgetCtx(r.Context(), id, runview.RaiseBudgetRequest{
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.RaiseBudgetCtx(ctx, id, runview.RaiseBudgetRequest{
 		Budget: ir.BudgetOverrides{
 			MaxCostUSD:    req.Budget.MaxCostUSD,
 			MaxTokens:     req.Budget.MaxTokens,
@@ -83,6 +98,9 @@ func (s *Server) handleRaiseBudget(w http.ResponseWriter, r *http.Request) {
 		IssuedBy: steerIssuer(r.Context()),
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}

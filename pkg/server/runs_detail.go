@@ -77,13 +77,14 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A request whose expected birth runOriginGate admitted reads under that
-	// origin (boundRunRead): a successor recreated after the admission is
-	// refused 409, never served as the snapshot of the run the caller meant.
-	ctx, bound, err := boundRunRead(r, id)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "bind the admitted run: %v", err)
+	// origin (actionOrigin.bind): a successor recreated after the admission
+	// is refused 409, never served as the snapshot of the run the caller meant.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
 		return
 	}
+	bound := a.checked
 	// A request the gate admitted on its expected birth only reads: it skips
 	// the merge reconciliation write (SnapshotWithoutReconcileCtx).
 	snapshot := s.runs.SnapshotCtx
@@ -166,14 +167,14 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	// Bound to the admitted origin like handleGetRun: a successor's events
 	// never answer a request that expected its predecessor.
-	ctx, bound, err := boundRunRead(r, id)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "bind the admitted run: %v", err)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
 		return
 	}
 	events, err := s.runs.LoadEventsCtx(ctx, id, from, to)
 	if err != nil {
-		if s.writeBoundReadFailure(w, r, id, bound, err) {
+		if s.writeBoundReadFailure(w, r, id, a.checked, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "load events: %v", err)

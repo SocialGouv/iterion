@@ -38,10 +38,16 @@ type gateStore struct {
 	afterLoadAt int32
 	afterLoad   func() error
 	hookErr     error
+	// probe records the store accesses the action witnesses read
+	// (run_origin_action_test.go).
+	probe actionProbe
 }
 
 func (s *gateStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	n := s.loads.Add(1)
+	if err := s.probe.observe(ctx, "LoadRun", id); err != nil {
+		return nil, err
+	}
 	r, err := s.FilesystemRunStore.LoadRun(ctx, id)
 	s.mu.Lock()
 	h := s.afterLoad
@@ -62,7 +68,12 @@ func (s *gateStore) LoadRun(ctx context.Context, id string) (*store.Run, error) 
 
 func (s *gateStore) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
 	s.mergeWrites.Add(1)
-	return s.FilesystemRunStore.UpdateRunMergeIf(ctx, id, upd, expectedFrom)
+	if err := s.probe.observe(ctx, "UpdateRunMergeIf", id); err != nil {
+		return false, err
+	}
+	changed, err := s.FilesystemRunStore.UpdateRunMergeIf(ctx, id, upd, expectedFrom)
+	s.probe.land("UpdateRunMergeIf", err, changed)
+	return changed, err
 }
 
 func (s *gateStore) CheckBoundObservationStore(actual store.RunStore) error {
