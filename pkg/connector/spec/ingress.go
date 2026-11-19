@@ -556,7 +556,7 @@ func checkExtraction(id string, t Trigger, ctx *expr.Context) error {
 		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: ignore fails on the sample: %w", id, t.ID, err)
 		}
-		if v == true {
+		if expr.Truthy(v) {
 			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show an event the trigger keeps", id, t.ID)
 		}
 	}

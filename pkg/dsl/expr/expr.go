@@ -480,6 +480,16 @@ func joinPath(p []string) string {
 	return out
 }
 
+// Truthy is the language's reading of a value as a condition, the one
+// EvalBool applies: nil, false, zero, an empty string, list or map, and the
+// strings "false", "no" and "0" do not hold; anything else does. A guard
+// written as `payload.event.bot_id` holds when the field is set.
+//
+// A site whose truthy misreading would be the dangerous verdict asks for a
+// boolean instead — an operation's success predicate, where `body.error`, a
+// message on failure, would read as success.
+func Truthy(v any) bool { return truthy(v) }
+
 func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:

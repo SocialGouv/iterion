@@ -140,7 +140,7 @@ func Read(req Request) (Delivery, error) {
 		if err != nil {
 			return Delivery{}, fmt.Errorf("%w: handshake.when: %v", ErrMalformed, err)
 		}
-		if when == true {
+		if expr.Truthy(when) {
 			respond, err := spec.EvalDelivery(h.Respond, ctx)
 			if err != nil || respond == nil {
 				return Delivery{}, fmt.Errorf("%w: handshake.respond: %v", ErrMalformed, err)
@@ -196,7 +196,7 @@ func extract(trig spec.Trigger, event map[string]any, headers map[string]string,
 		if err != nil {
 			return nil, "", fmt.Errorf("%w: %s.ignore: %v", ErrMalformed, trig.ID, err)
 		}
-		if drop == true {
+		if expr.Truthy(drop) {
 			return nil, fmt.Sprintf("trigger %s's loop guard dropped it", trig.ID), nil
 		}
 	}

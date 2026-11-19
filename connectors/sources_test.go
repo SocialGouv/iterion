@@ -57,6 +57,11 @@ type vendorDouble struct {
 	// handshake is the body a vendor sends to verify its endpoint, and the
 	// value the package must answer with. Nil for a vendor that has none.
 	handshake func() (payload map[string]any, want string)
+	// echo marks a recorded delivery as the app's own, the way the vendor
+	// marks it — Slack's bot id on the event, the account a Forgejo comment
+	// is posted from. It is the delivery a package's loop guard exists to
+	// drop. Nil for a vendor whose package declares no guard.
+	echo func(payload map[string]any)
 }
 
 // vendorDoubles holds one double per shipped source, registered from the
@@ -155,21 +160,27 @@ func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 							t.Fatalf("%q accepted a delivery %s old, outside its %s window: %v", id, 2*tolerance, w.Tolerance, err)
 						}
 					}
-					// The loop guard must DECIDE. The lane drops only on a
-					// true, so an expression that renders a value (an id, a
-					// name) never drops anything and the package ships a
-					// guard that guards nothing.
+					// The loop guard keeps the sample (read above) and DROPS
+					// the app's own echo — the delivery it exists for, marked
+					// by the double the way the vendor marks it. A guard that
+					// reads a field the vendor does not send, or that the lane
+					// cannot read as a condition, guards nothing.
 					if trig.Ignore != "" {
-						var payload map[string]any
-						if err := json.Unmarshal(body, &payload); err != nil {
-							t.Fatalf("%q: the delivery body is not an object: %v", id, err)
+						echo := vendorDoubles[id].echo
+						if echo == nil {
+							t.Fatalf("%q: trigger %s declares a loop guard, and its vendor double marks no echo for it to drop", id, trig.ID)
 						}
-						v, err := spec.EvalDelivery(trig.Ignore, spec.NewDeliveryContext(payload, header, p.Ingress.Headers))
+						body, header, now := signSampleAs(t, id, p, trig, echo)
+						got, err := ingress.Read(ingress.Request{
+							Ingress: p.Ingress, Triggers: p.Triggers, Secret: []byte(witnessSecret),
+							Installation: vendorDoubles[id].installation,
+							Body:         body, Header: header, Now: now,
+						})
 						if err != nil {
-							t.Fatalf("%q: trigger %s's loop guard fails on its own sample: %v", id, trig.ID, err)
+							t.Fatalf("read the app's own echo: %v", err)
 						}
-						if _, ok := v.(bool); !ok {
-							t.Errorf("%q: trigger %s's loop guard renders %T, not a verdict — the lane drops only on a true", id, trig.ID, v)
+						if got.Filtered == "" {
+							t.Errorf("%q: trigger %s's loop guard %q kept the app's own echo: a bot would answer itself", id, trig.ID, trig.Ignore)
 						}
 					}
 					// The credential never reaches the event a run sees.
@@ -303,12 +314,22 @@ const witnessSecret = "s3cr3t-witness"
 // signs it with the vendor's recipe.
 func signSample(t *testing.T, id string, p *spec.Package, trig spec.Trigger) (body []byte, header http.Header, now time.Time) {
 	t.Helper()
+	return signSampleAs(t, id, p, trig, nil)
+}
+
+// signSampleAs is signSample with the payload edited before it is signed —
+// the vendor's own delivery, reshaped as the vendor would send a variant.
+func signSampleAs(t *testing.T, id string, p *spec.Package, trig spec.Trigger, edit func(map[string]any)) (body []byte, header http.Header, now time.Time) {
+	t.Helper()
 	var s spec.SampleDelivery
 	if err := json.Unmarshal(trig.SampleBody, &s); err != nil {
 		t.Fatalf("%s sample %q: %v", id, trig.Sample, err)
 	}
 	if s.Payload == nil {
 		t.Fatalf("%s sample %q has no payload", id, trig.Sample)
+	}
+	if edit != nil {
+		edit(s.Payload)
 	}
 	body, err := json.Marshal(s.Payload)
 	if err != nil {
