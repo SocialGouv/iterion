@@ -62,6 +62,13 @@ func (a *App) GetServerURL() string {
 // just navigate with relative links" so the worst case is the old
 // same-daemon behaviour, not a hard error.
 func (a *App) GetDaemonURLForStore(storePath string) (string, error) {
+	// Daemons opted out (ITERION_DESKTOP_ATTACH_DAEMON=0): neither attach to
+	// one nor spawn one; the embedded server is the only one to point at.
+	if !attachDaemonEnabled() {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		return a.serverURL, nil
+	}
 	if url, ok := findDaemonForStorePath(storePath); ok {
 		return url, nil
 	}

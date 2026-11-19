@@ -21,6 +21,23 @@ import {
   WORKSPACE_UNREAD_COUNT,
 } from "@/lib/workspacePaneVisibility";
 
+// errorMessage reads a Wails rejection, which arrives as a string, an Error
+// or a plain object, as text a person can read.
+function errorMessage(err: unknown): string {
+  let text: string | undefined;
+  if (err instanceof Error) text = err.message;
+  else if (typeof err === "string") text = err;
+  else if (err && typeof err === "object" && "message" in err && typeof err.message === "string") text = err.message;
+  else {
+    try {
+      text = JSON.stringify(err); // undefined for undefined, functions, symbols
+    } catch {
+      text = String(err); // a circular object
+    }
+  }
+  return text || "unknown error";
+}
+
 const CloudConnectModal = lazy(() => import("@/views/ProjectSwitcher/CloudConnectModal"));
 const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
 const Welcome = lazy(() => import("@/views/Welcome"));
@@ -53,6 +70,12 @@ export default function WorkspaceShell() {
   const [reloginConnId, setReloginConnId] = useState<string | null>(null);
   // firstRunPending: null = not yet probed, true = show onboarding, false = go.
   const [firstRunPending, setFirstRunPending] = useState<boolean | null>(null);
+  // openingIds: connections whose backend is starting (a local daemon can take
+  // seconds); openError: why an open failed, shown until dismissed or until
+  // that same connection opens.
+  const [openingIds, setOpeningIds] = useState<string[]>([]);
+  const [openError, setOpenError] = useState<{ id: string; message: string } | null>(null);
+  const openingRef = useRef(new Map<string, Promise<boolean>>());
   const bootstrapped = useRef(false);
   // Live refs read by the native-event handlers (which subscribe once) so a
   // menu forward / focus always targets the CURRENT active pane iframe.
@@ -79,23 +102,42 @@ export default function WorkspaceShell() {
   }, []);
 
   // openPane activates the backend (spawn local daemon / hydrate cloud jar)
-  // BEFORE mounting the iframe, so /x/<id>/ resolves in the demux proxy.
-  const openPane = useCallback(async (id: string): Promise<boolean> => {
-    try {
-      await desktop.openConnection(id);
-    } catch (err) {
-      console.error("[workspace] openConnection failed", err);
-      return false;
-    }
-    setOpenIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    activeIdRef.current = id;
-    setActiveId(id);
-    setMenuOpen(false);
-    return true;
+  // BEFORE mounting the iframe, so /x/<id>/ resolves in the demux proxy. A
+  // second open of a connection still opening (a double click, a pane's
+  // switch request racing the bootstrap) shares the first one's outcome
+  // instead of starting another daemon for the same project.
+  const openPane = useCallback((id: string): Promise<boolean> => {
+    const inFlight = openingRef.current.get(id);
+    if (inFlight) return inFlight;
+    // The body starts on the next microtask, after the entry below is in the
+    // map: its `finally` must never run before the `set` it undoes.
+    const opening = Promise.resolve().then(async () => {
+      setOpeningIds((prev) => [...prev, id]);
+      try {
+        await desktop.openConnection(id);
+      } catch (err) {
+        console.error("[workspace] openConnection failed", err);
+        setOpenError({ id, message: errorMessage(err) });
+        return false;
+      } finally {
+        openingRef.current.delete(id);
+        setOpeningIds((prev) => prev.filter((x) => x !== id));
+      }
+      setOpenError((prev) => (prev?.id === id ? null : prev));
+      setOpenIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      activeIdRef.current = id;
+      setActiveId(id);
+      setMenuOpen(false);
+      return true;
+    });
+    openingRef.current.set(id, opening);
+    return opening;
   }, []);
 
   const onAddLocal = useCallback(async () => {
     setMenuOpen(false);
+    // A new attempt supersedes the previous add's failure.
+    setOpenError((prev) => (prev?.id === "" ? null : prev));
     try {
       const dir = await desktop.pickProjectDirectory();
       if (!dir) return;
@@ -104,6 +146,7 @@ export default function WorkspaceShell() {
       await openPane(project.id);
     } catch (err) {
       console.error("[workspace] add local project failed", err);
+      setOpenError({ id: "", message: errorMessage(err) });
     }
   }, [loadConnections, openPane]);
 
@@ -479,11 +522,13 @@ export default function WorkspaceShell() {
                 <button
                   key={p.id}
                   type="button"
-                  className="w-full text-left px-3 py-1.5 hover:bg-surface-2 flex items-center gap-2"
+                  className="w-full text-left px-3 py-1.5 hover:bg-surface-2 flex items-center gap-2 disabled:opacity-60"
+                  disabled={openingIds.includes(p.id)}
                   onClick={() => void openPane(p.id)}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${isCloudConnection(p) ? "bg-accent" : "bg-fg-subtle"}`} />
                   <span className="truncate flex-1">{p.name}</span>
+                  {openingIds.includes(p.id) && <span className="text-caption text-fg-subtle">Opening…</span>}
                   {isCloudConnection(p) && <span className="text-caption uppercase text-fg-subtle">cloud</span>}
                 </button>
               ))}
@@ -526,6 +571,24 @@ export default function WorkspaceShell() {
             {splitId ? "Unsplit" : "Split"}
           </button>
         )}
+        </div>
+      )}
+
+      {openError && (
+        <div
+          role="alert"
+          data-testid="workspace-open-error"
+          className="flex items-start gap-2 px-3 py-2 border-b border-danger bg-danger-soft text-danger-fg text-xs shrink-0"
+        >
+          <span className="flex-1 break-words">Could not open the connection: {openError.message}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className="w-4 h-4 flex items-center justify-center rounded hover:bg-surface-2"
+            onClick={() => setOpenError(null)}
+          >
+            ×
+          </button>
         </div>
       )}
 

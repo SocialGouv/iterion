@@ -33,6 +33,11 @@ type App struct {
 	// must NOT stop the server on shutdown and must NOT mutate the
 	// daemon's desktop.json discovery file — both belong to the daemon.
 	usingDaemon bool
+	// embeddedProjectID / embeddedURL name the project the in-process
+	// server serves and where, set each time it (re)starts. serverURL can
+	// point elsewhere (a cloud connection); these never do.
+	embeddedProjectID string
+	embeddedURL       string
 
 	mu       sync.RWMutex
 	config   *Config
@@ -373,6 +378,10 @@ func (a *App) desktopAlertSink() alert.Sink {
 func (a *App) startServerForCurrentProject(ctx context.Context) error {
 	a.mu.Lock()
 	dir, storeDir := a.currentProjectServerDirsLocked()
+	var projectID string
+	if p := a.config.CurrentProject(); p != nil {
+		projectID = p.ID
+	}
 	a.mu.Unlock()
 
 	addr, err := a.server.Start(ctx, dir, storeDir)
@@ -381,6 +390,7 @@ func (a *App) startServerForCurrentProject(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	a.serverURL = "http://" + addr + "/"
+	a.embeddedProjectID, a.embeddedURL = projectID, a.serverURL
 	url := a.serverURL
 	a.mu.Unlock()
 	writeDesktopURLFile(url)
@@ -447,12 +457,20 @@ func (a *App) restartServerForCurrentProject(ctx context.Context) (*Project, err
 	}
 
 	a.server.Stop()
+	// The stopped server serves nothing until Start succeeds below.
+	a.mu.Lock()
+	a.embeddedProjectID, a.embeddedURL = "", ""
+	a.mu.Unlock()
 	addr, err := a.server.Start(ctx, dir, storeDir)
 	if err != nil {
 		return nil, err
 	}
 	a.mu.Lock()
 	a.serverURL = "http://" + addr + "/"
+	a.embeddedProjectID, a.embeddedURL = "", a.serverURL
+	if current != nil {
+		a.embeddedProjectID = current.ID
+	}
 	url := a.serverURL
 	a.mu.Unlock()
 	writeDesktopURLFile(url)
