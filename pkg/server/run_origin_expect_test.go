@@ -129,10 +129,22 @@ func emptyCheckpoint(node, interaction string, questions map[string]any) *store.
 // seedCancelledAtDone: cancelled on a checkpoint, what an operator resume
 // re-enters in-process.
 func seedCancelledAtDone(ctx context.Context, fx *expectFixture, marker string) error {
-	if err := fx.createExpectRun(ctx, actionRunID, marker, "resume", func(r *store.Run) { r.Status = store.RunStatusCancelled }); err != nil {
-		return err
+	return cancelledAtDoneSeed(nil)(ctx, fx, marker)
+}
+
+// cancelledAtDoneSeed is seedCancelledAtDone with edit shaping the run too.
+func cancelledAtDoneSeed(edit func(*store.Run)) func(ctx context.Context, fx *expectFixture, marker string) error {
+	return func(ctx context.Context, fx *expectFixture, marker string) error {
+		if err := fx.createExpectRun(ctx, actionRunID, marker, "resume", func(r *store.Run) {
+			r.Status = store.RunStatusCancelled
+			if edit != nil {
+				edit(r)
+			}
+		}); err != nil {
+			return err
+		}
+		return fx.native.SaveCheckpoint(ctx, actionRunID, &store.Checkpoint{NodeID: "done"})
 	}
-	return fx.native.SaveCheckpoint(ctx, actionRunID, &store.Checkpoint{NodeID: "done"})
 }
 
 // seedRunningOrphan: running with no execution in this process — the
@@ -143,14 +155,21 @@ func seedRunningOrphan(ctx context.Context, fx *expectFixture, marker string) er
 
 // seedHumanPaused: paused on a human gate with its interaction.
 func seedHumanPaused(ctx context.Context, fx *expectFixture, marker string) error {
-	if err := fx.createExpectRun(ctx, actionRunID, marker, "human", nil); err != nil {
-		return err
+	return humanPausedSeed(nil)(ctx, fx, marker)
+}
+
+// humanPausedSeed is seedHumanPaused with edit shaping the run first.
+func humanPausedSeed(edit func(*store.Run)) func(ctx context.Context, fx *expectFixture, marker string) error {
+	return func(ctx context.Context, fx *expectFixture, marker string) error {
+		if err := fx.createExpectRun(ctx, actionRunID, marker, "human", edit); err != nil {
+			return err
+		}
+		iid := actionRunID + "_ask"
+		if err := fx.native.WriteInteraction(ctx, &store.Interaction{ID: iid, RunID: actionRunID, NodeID: "ask", RequestedAt: time.Now().UTC(), Questions: map[string]any{}}); err != nil {
+			return err
+		}
+		return fx.native.PauseRun(ctx, actionRunID, emptyCheckpoint("ask", iid, map[string]any{}))
 	}
-	iid := actionRunID + "_ask"
-	if err := fx.native.WriteInteraction(ctx, &store.Interaction{ID: iid, RunID: actionRunID, NodeID: "ask", RequestedAt: time.Now().UTC(), Questions: map[string]any{}}); err != nil {
-		return err
-	}
-	return fx.native.PauseRun(ctx, actionRunID, emptyCheckpoint("ask", iid, map[string]any{}))
 }
 
 // seedAsyncPending: paused on the human gate with one pending async
@@ -395,6 +414,107 @@ func TestExpectedMutationsRefuseASuccessor(t *testing.T) {
 			if ent != pic.entities {
 				t.Fatalf("the action created something beside the successor:\nbefore:\n%s\nafter:\n%s", pic.entities, ent)
 			}
+		})
+	}
+}
+
+// atEngineLoad replaces the run on entry of the engine's own load of it:
+// after the run service's last check, the one under the spawn lock.
+func atEngineLoad(fx *expectFixture, replace func() error) {
+	fx.store.beforeLoadFrom(engineResumeLoad, replace)
+}
+
+// assertSuccessorUnresumed requires that the replacement ran and that the
+// successor's run directory is as the replacement left it: nothing of the
+// refused resume reached it.
+func (fx *expectFixture) assertSuccessorUnresumed(t *testing.T, pic *expectPicture) {
+	t.Helper()
+	mustWS(t, fx.store.failure())
+	pic.mu.Lock()
+	defer pic.mu.Unlock()
+	if pic.birth == "" || pic.birth == fx.birth {
+		t.Fatalf("the replacement did not run: successor birth %q, original %q", pic.birth, fx.birth)
+	}
+	if d := diffDigests(pic.run, mustTreeDigest(t, filepath.Join(fx.srv.cfg.StoreDir, "runs", actionRunID))); len(d) != 0 {
+		t.Fatalf("the successor's run directory changed:\n%s", strings.Join(d, "\n"))
+	}
+}
+
+// afterServiceCheck replaces the run right after the run service's resume
+// loaded it for the check at its top: before anything of the resume touches
+// the run's directory.
+func afterServiceCheck(fx *expectFixture, replace func() error) {
+	fx.store.afterLoadFrom(serviceResumeLoad, replace)
+}
+
+// W7e: a resume admitted on A's birth — the answer-human and resume routes —
+// with A replaced by an actionable B inside the run service's resume. (i)
+// Right after the check at its top: the resume verifies the run again before
+// its first effect on the run's directory, so B gains no entry of it — no
+// run.log, files directory or lock file. (ii) After the check under the spawn
+// lock, on entry of the engine's own load: the engine checks the run it loads
+// against the admitted origin. Both answer 409 run_origin_lost, and B's run
+// directory is as the replacement left it (the WS answer's twins are in W11).
+func TestExpectedResumeRefusesASuccessorInsideTheService(t *testing.T) {
+	for _, at := range []struct {
+		name string
+		arm  func(fx *expectFixture, replace func() error)
+	}{
+		{"i-after-the-service-check", afterServiceCheck},
+		{"ii-at-the-engine-load", atEngineLoad},
+	} {
+		for _, name := range []string{"answer-human", "resume"} {
+			t.Run(at.name+"/"+name, func(t *testing.T) {
+				row := expectRowByName(t, name)
+				row.arm = at.arm
+				fx := newExpectFixture(t, row)
+				pic := fx.armExpectReplacement(t)
+				got := expectDo(t, fx.hs.URL, row, fx.birth)
+				fx.settle(t)
+				fx.assertSuccessorUnresumed(t, pic)
+				wantOriginLost(t, name+" replaced "+at.name, got, actionRunID)
+			})
+		}
+	}
+}
+
+// W7f: a resume admitted on A's birth, A replaced by a B the handler refuses
+// before any resume — B's source does not resolve, or B is a fork run the
+// launch gate denies — right after the gate's read (the WS answer: after the
+// act rung's two). The refusal judged B, so the failure rule answers it: the
+// resume route 409 run_origin_lost, the WS answer run_origin_lost then
+// scope_lost. B is as the replacement left it.
+func TestExpectedResumeRefusalsOfASuccessorAnswerTheLoss(t *testing.T) {
+	for _, sc := range []struct {
+		name string
+		edit func(*store.Run)
+	}{
+		{"source-empty", func(r *store.Run) { r.FilePath, r.WorkflowSource = "", "" }},
+		{"source-outside-the-roots", func(r *store.Run) { r.FilePath, r.WorkflowSource = "/etc/not-a-workflow.bot", "" }},
+		{"gate-denies-a-fork-run", func(r *store.Run) { r.Trust = store.RunTrustFork }},
+	} {
+		t.Run("resume/"+sc.name, func(t *testing.T) {
+			row := expectRowByName(t, "resume")
+			row.successor = cancelledAtDoneSeed(sc.edit)
+			row.arm = afterLoad(1)
+			fx := newExpectFixture(t, row)
+			pic := fx.armExpectReplacement(t)
+			got := expectDo(t, fx.hs.URL, row, fx.birth)
+			fx.settle(t)
+			fx.assertSuccessorUnresumed(t, pic)
+			wantOriginLost(t, "resume of a run replaced by a refused successor ("+sc.name+")", got, actionRunID)
+		})
+		t.Run("ws-answer/"+sc.name, func(t *testing.T) {
+			row := expectRowByName(t, "answer-human")
+			row.successor = humanPausedSeed(sc.edit)
+			fx := newExpectFixture(t, row)
+			c := dialGate(t, fx.hs, wsRunPath(fx.birth))
+			fx.row.arm = afterLoad(wsActRungLoads)
+			pic := fx.armExpectReplacement(t)
+			writeJSONMessage(t, c, wsAnswerEnvelope("a1"))
+			expectOriginLostClose(t, c, wsErrRunOriginLost)
+			fx.settle(t)
+			fx.assertSuccessorUnresumed(t, pic)
 		})
 	}
 }

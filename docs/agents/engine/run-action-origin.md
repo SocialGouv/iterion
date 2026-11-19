@@ -23,8 +23,13 @@ envelope by `TestEveryRunMutationHasACarrier`:
   carries `runview.ActionOrigin`: `Verify` compares a loaded run with it
   (header and stored tenant), `Bind` binds a named store-only write of that
   run; the execution never inherits the binding. Resume verifies its load
-  before its admission and orphan reconcile, binds its budget writes and
-  `spawnRun`'s budget replay, and verifies again under the spawn lock.
+  before its admission and orphan reconcile; binds its artifact pass (reads
+  and violation event) and its budget writes, a write refused on a lost
+  origin refusing the resume in every local mode; verifies again before its
+  first effect on the run's directory (log, files, lock file) and under the
+  spawn lock; binds `spawnRun`'s budget replay; and hands its engine the
+  check (`runtime.WithResumeRunCheck`): the engine verifies the run it
+  loads, the one its claim is anchored to.
   Answer-human and host events resume with it; an interaction answer's loads,
   record, queue and pending re-check run bound and its auto-resume carries it.
   Rewind verifies after its load, fork verifies its source (the child is
@@ -50,7 +55,12 @@ with a Warn log naming the route, the admitted birth and what holds the ID now;
 otherwise the handler's own mapping answers. A birth never returns once
 replaced, so the verdict is read from the run itself: another run's absence (a
 body-carried run, an assistant run, a projection's source) never marks the
-addressed run lost. A run store that may drop the context
+addressed run lost. A resume's or answer's refusals before it resumes — the
+launch gate's denial, a source that does not resolve — follow the rule: they
+judged the run behind the ID now. A delete that fails past its store's bound
+check (part-way, its tombstone written) answers its own error: the run read
+gone is this request's deletion, and only another birth is a loss.
+A run store that may drop the context
 (`store.RequireBoundObservationStore`) is refused before the action: 503
 `scope_unavailable`.
 
@@ -80,8 +90,10 @@ rollback after the claim keep the unbound context. A checked cancel calls
 `Service.CancelCtx` with its bound context detached from the request
 (`context.WithoutCancel`): `CancelRunWithReason` keeps the binding through
 `store.WithoutTenantFilter`, so its load and status flip refuse a successor,
-and its NATS cancel follows only a flip that changed the run. An unchecked
-cancel is `Cancel`, on `context.Background`.
+and its NATS cancel follows only a flip that changed the run. After a flip
+that changed nothing its bound re-read's refusal is the answer, never the
+no-op of a settled run. An unchecked cancel is `Cancel`, on
+`context.Background`.
 
 ## The run socket
 
@@ -89,8 +101,9 @@ On a socket admitted on an expected birth, with `ITERION_RUN_BIRTH_CHECK` not
 `0` when the envelope arrives: `queue_message` and `cancel_queued_message` run
 bound, `cancel` follows the HTTP cancel, `pause`, `bump_loop` and
 `raise_budget` are pre-checked, and `answer`'s resume carries the origin while
-its load and chat-history read stay unbound. A failure follows the rule above,
-then closes the socket `scope_lost`. Any other socket makes the unbound calls;
+its load and chat-history read stay unbound. A failure follows the rule above
+— its Warn names the envelope and the admitted birth, not what holds the ID
+now — then closes the socket `scope_lost`. Any other socket makes the unbound calls;
 the bound load of [run-ws-origin.md](run-ws-origin.md) still precedes each
 mutating envelope. No header, field, error code, close token, queue or NATS
 message is added: older studios, runners and CLIs see the same wire.
@@ -101,9 +114,17 @@ message is added: older studios, runners and CLIs see the same wire.
   cancel, the steering channel and NATS steer, the async-answer wake, browser
   attach, the NATS cancel subject — are pre-checked, not bound: a run deleted,
   recreated and launched between the pre-check and the signal receives it.
-- Rewind's writes after its `Verify` are check-then-act. A resume its `Verify`
-  refuses under the spawn lock still runs `FireForRun` and `emitRunOutcome` for
-  its run ID, whichever run holds it.
+- Rewind's writes after its `Verify` are check-then-act. A resume refused
+  under the spawn lock or by its engine still runs `FireForRun` and
+  `emitRunOutcome` for its run ID, whichever run holds it.
+- Runners and subprocesses re-read the run by ID, unchecked: the cloud
+  runner's `Engine.Resume` and a detached `iterion resume` get no
+  `WithResumeRunCheck` — only the in-process engine does. A detached checked
+  resume that raises no budget spawns its subprocess with no verification
+  after the one at the top of `Resume`.
+- A checked resume's run log, files directory and lock file are created after
+  its last verification before them, check-then-act: a successor recreated in
+  that window gains those entries, and the lines the refused resume logs.
 - A merge's forge token (`forgeTokenForRun`) is opened for the record the bound
   load returned, under no birth condition. Mongo's delete releases
   credential-slot holders by run ID across tenants (`credSlots.UpdateMany`, by

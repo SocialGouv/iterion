@@ -104,6 +104,22 @@ func (s *Server) actionExpectation(w http.ResponseWriter, r *http.Request, a act
 // own mapping answers. It reports whether it answered; an unchecked action,
 // or a confirm read that fails otherwise, leaves the answer to the caller.
 func (s *Server) writeActionFailure(w http.ResponseWriter, r *http.Request, a actionOrigin, err error) bool {
+	return s.answerActionFailure(w, r, a, err, true)
+}
+
+// writeDeleteFailure is writeActionFailure for a delete. A delete the store
+// refused on a lost origin (another birth, a deletion before it, an absence)
+// answers by the rule. Any other failure came past the store's bound check:
+// the delete may have removed the admitted run part-way, so a re-read that
+// finds the run gone reads this request's own deletion — only another birth
+// is then a lost origin, and the store's error is the answer otherwise.
+func (s *Server) writeDeleteFailure(w http.ResponseWriter, r *http.Request, a actionOrigin, err error) bool {
+	return s.answerActionFailure(w, r, a, err, runOriginLost(err))
+}
+
+// answerActionFailure is the failure rule; goneIsLost says whether a re-read
+// finding the run gone is a lost origin.
+func (s *Server) answerActionFailure(w http.ResponseWriter, r *http.Request, a actionOrigin, err error, goneIsLost bool) bool {
 	if !a.checked || err == nil || s.runs == nil {
 		return false
 	}
@@ -115,8 +131,10 @@ func (s *Server) writeActionFailure(w http.ResponseWriter, r *http.Request, a ac
 		return false
 	case rerr == nil:
 		now = "birth " + quoteBirth(current.Header().BirthID)
-	case runOriginLost(rerr):
+	case runOriginLost(rerr) && goneIsLost:
 		now = "gone (" + rerr.Error() + ")"
+	case runOriginLost(rerr):
+		return false
 	default:
 		s.logWarn("server: %s %s: run %s failed (%v) and its origin could not be read again: %v", r.Method, r.URL.Path, a.runID, err, rerr)
 		return false

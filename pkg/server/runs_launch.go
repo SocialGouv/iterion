@@ -1136,6 +1136,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)
 	if d != nil {
+		// The subject was read from the run behind the ID now: on a lost
+		// origin the denial judged another run, and the loss is the answer.
+		if s.writeActionFailure(w, r, origin, d.err()) {
+			return
+		}
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -1203,6 +1208,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta,
 	)
 	if pathErr != nil {
+		// Resolved from the run read above: on a lost origin, another run's.
+		if s.writeActionFailure(w, r, origin, pathErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpSourcePathError(w, r, pathErr, "%v")
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return

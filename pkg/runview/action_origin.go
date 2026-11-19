@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -52,6 +53,26 @@ func (a ActionOrigin) Verify(r *store.Run) error {
 			r.ID, r.BirthID, a.origin.Header().BirthID, store.ErrRunDataIdentityChanged)
 	}
 	return nil
+}
+
+// originRefused reports whether err is a bound access refusing the run behind
+// the ID as no longer the admitted origin: a successor's header, a deletion,
+// an absence.
+func originRefused(err error) bool {
+	return errors.Is(err, store.ErrRunDataIdentityChanged) || errors.Is(err, store.ErrRunDeleted) || errors.Is(err, store.ErrRunNotFound)
+}
+
+// verifyOrigin loads runID and verifies it against a checked origin. An
+// unchecked origin reads nothing.
+func (s *Service) verifyOrigin(ctx context.Context, runID string, origin ActionOrigin) error {
+	if !origin.Checked() {
+		return nil
+	}
+	_, r, err := store.LoadRunWithValueFormat(ctx, s.store, runID)
+	if err != nil {
+		return err
+	}
+	return origin.Verify(r)
 }
 
 // Bind returns ctx bound to the admitted origin (store.BindRunObservation),

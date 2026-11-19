@@ -213,6 +213,9 @@ type Engine struct {
 	parallelSaveWindow time.Duration
 	forceResume        bool // when true, skip workflow hash check on resume
 	acceptScratchLoss  bool // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	// resumeRunCheck judges the run Resume loads by ID before any step of
+	// the resume acts on it (WithResumeRunCheck); nil checks nothing.
+	resumeRunCheck func(*store.Run) error
 	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106). Each

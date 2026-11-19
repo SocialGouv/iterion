@@ -4705,8 +4705,14 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 	if !changed {
 		// Status raced from under us — re-read and decide if this is
 		// an actual no-op (already terminal) or a transient state we
-		// should surface for the operator to retry.
-		r2, _ := p.store.LoadRun(ctx, runID)
+		// should surface for the operator to retry. A checked caller's
+		// re-read is bound: its refusal says the run behind the ID is no
+		// longer the admitted one, and is the answer — not the no-op of a
+		// run that settled.
+		r2, rerr := p.store.LoadRun(ctx, runID)
+		if _, bound := store.RunDataBindingFrom(ctx); bound && rerr != nil {
+			return fmt.Errorf("cloudpublisher: re-read run %s after a flip that changed nothing: %w", runID, rerr)
+		}
 		if r2 != nil {
 			if !r2.Status.CanBeCancelled() || r2.FailureCode == store.FailureAmbiguousEffect {
 				return nil

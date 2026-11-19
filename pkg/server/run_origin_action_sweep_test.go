@@ -86,17 +86,19 @@ var runWSReadOnlyTypes = map[string]string{
 // mutationSweep is what the inventory is compared with: the non-GET
 // run-wildcard routes as "METHOD pattern", the ladder actions, the
 // envelope types the act rung guards and the envelope types the socket's
-// dispatch handles (parsed from its source).
+// dispatch handles (parsed from its source), with the method each case calls.
 type mutationSweep struct {
 	routes   []string
 	ladder   map[string]bool
 	envelope map[string]bool
 	dispatch []string
+	handlers map[string]string
 }
 
 // gaps lists every action without a carrier, every dispatch case neither
-// guarded nor read-only, every guarded type no case handles, and every
-// inventory entry nothing matches any more.
+// guarded nor read-only, every read-only case calling the method of a
+// guarded one, every guarded type no case handles, and every inventory entry
+// nothing matches any more.
 func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -130,6 +132,12 @@ func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 		}
 		if _, ok := runWSReadOnlyTypes[typ]; !ok {
 			out = append(out, "dispatch case neither guarded nor read-only: "+typ)
+			continue
+		}
+		for guarded, mutating := range sw.envelope {
+			if h := sw.handlers[typ]; mutating && h != "" && h == sw.handlers[guarded] {
+				out = append(out, "read-only case calls a guarded handler: "+typ+" → "+h)
+			}
 		}
 	}
 	for typ, mutating := range sw.envelope {
@@ -146,13 +154,15 @@ func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 	return out
 }
 
-// dispatchCases returns the envelope types the switch on env.Type in
+// dispatchSwitch returns the envelope types the switch on env.Type in
 // (*runConn).dispatch names in its cases, in src (a source file of this
-// package), each constant resolved against consts.
-func dispatchCases(src []byte, consts map[string]string) ([]string, error) {
+// package), each constant resolved against consts, and the method of the
+// connection each case calls. It refuses a dispatch whose shape the sweep
+// cannot read whole (dispatchShape).
+func dispatchSwitch(src []byte, consts map[string]string) ([]string, map[string]string, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), "runs_ws.go", src, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var fn *ast.FuncDecl
 	for _, d := range f.Decls {
@@ -167,49 +177,169 @@ func dispatchCases(src []byte, consts map[string]string) ([]string, error) {
 		}
 	}
 	if fn == nil {
-		return nil, fmt.Errorf("no (*runConn).dispatch in the source")
+		return nil, nil, fmt.Errorf("no (*runConn).dispatch in the source")
+	}
+	sw, err := dispatchShape(fn.Body)
+	if err != nil {
+		return nil, nil, err
 	}
 	var cases, bad []string
-	switches := 0
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		sw, ok := n.(*ast.SwitchStmt)
-		if !ok {
-			return true
-		}
-		tag, ok := sw.Tag.(*ast.SelectorExpr)
-		if !ok || tag.Sel.Name != "Type" {
-			return true
-		}
-		switches++
-		for _, stmt := range sw.Body.List {
-			for _, e := range stmt.(*ast.CaseClause).List {
-				switch v := e.(type) {
-				case *ast.Ident:
-					if s, ok := consts[v.Name]; ok {
-						cases = append(cases, s)
-					} else {
-						bad = append(bad, v.Name)
-					}
-				case *ast.BasicLit:
-					if s, err := strconv.Unquote(v.Value); err == nil && v.Kind == token.STRING {
-						cases = append(cases, s)
-					} else {
-						bad = append(bad, v.Value)
-					}
-				default:
-					bad = append(bad, fmt.Sprintf("%T", e))
+	handlers := map[string]string{}
+	for _, stmt := range sw.Body.List {
+		cc := stmt.(*ast.CaseClause)
+		method := connMethod(cc.Body[0])
+		for _, e := range cc.List {
+			typ := ""
+			switch v := e.(type) {
+			case *ast.Ident:
+				if s, ok := consts[v.Name]; ok {
+					typ = s
+				} else {
+					bad = append(bad, v.Name)
 				}
+			case *ast.BasicLit:
+				if s, err := strconv.Unquote(v.Value); err == nil && v.Kind == token.STRING {
+					typ = s
+				} else {
+					bad = append(bad, v.Value)
+				}
+			default:
+				bad = append(bad, fmt.Sprintf("%T", e))
+			}
+			if typ != "" {
+				cases = append(cases, typ)
+				handlers[typ] = method
 			}
 		}
-		return false
-	})
-	if switches != 1 {
-		return nil, fmt.Errorf("dispatch holds %d switches on the envelope type, want 1", switches)
 	}
 	if len(bad) != 0 {
-		return nil, fmt.Errorf("dispatch cases the sweep cannot resolve: %v", bad)
+		return nil, nil, fmt.Errorf("dispatch cases the sweep cannot resolve: %v", bad)
 	}
-	return cases, nil
+	return cases, handlers, nil
+}
+
+// dispatchShape requires the one shape of dispatch the sweep reads whole and
+// returns its switch: the act rung's guard — `if runWSMutatingTypes[env.Type]
+// { if !c.mutationAllowed(env) { return } }` — then one switch on env.Type,
+// nothing else; each case one call of a connection method, the default only
+// the unknown_type answer; and env.Type read nowhere but in the guard, the
+// switch's tag and that answer. A statement beside them, a second or nested
+// switch, a comparison of env.Type or a case body that branches could route
+// an envelope past the guard or the carrier inventory.
+func dispatchShape(body *ast.BlockStmt) (*ast.SwitchStmt, error) {
+	if len(body.List) != 2 {
+		return nil, fmt.Errorf("dispatch holds %d statements, want the act rung's guard and one switch on env.Type", len(body.List))
+	}
+	if guard, ok := body.List[0].(*ast.IfStmt); !ok || !isActRungGuard(guard) {
+		return nil, fmt.Errorf("dispatch does not open on the act rung's guard")
+	}
+	sw, ok := body.List[1].(*ast.SwitchStmt)
+	if !ok || sw.Init != nil || !isEnvType(sw.Tag) {
+		return nil, fmt.Errorf("dispatch's second statement is not a switch on env.Type")
+	}
+	defaults := 0
+	for _, stmt := range sw.Body.List {
+		cc := stmt.(*ast.CaseClause)
+		if len(cc.Body) != 1 || connMethod(cc.Body[0]) == "" {
+			return nil, fmt.Errorf("a dispatch case holds %d statements, want one call of a connection method", len(cc.Body))
+		}
+		if cc.List == nil {
+			defaults++
+			if !isUnknownTypeAnswer(cc.Body[0]) {
+				return nil, fmt.Errorf("dispatch's default does more than answer unknown_type")
+			}
+		}
+	}
+	if defaults != 1 {
+		return nil, fmt.Errorf("dispatch's switch holds %d defaults, want the unknown_type answer", defaults)
+	}
+	reads := 0
+	ast.Inspect(body, func(n ast.Node) bool {
+		if cc, ok := n.(*ast.CaseClause); ok && cc.List == nil {
+			return false // the unknown_type answer names the type it refuses
+		}
+		if e, ok := n.(ast.Expr); ok && isEnvType(e) {
+			reads++
+		}
+		return true
+	})
+	if reads != 2 {
+		return nil, fmt.Errorf("dispatch reads env.Type %d times outside its default, want the guard's and the switch's", reads)
+	}
+	return sw, nil
+}
+
+// isEnvType reports whether e is env.Type.
+func isEnvType(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Type" {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "env"
+}
+
+// isActRungGuard reports whether s is `if runWSMutatingTypes[env.Type] { if
+// !c.mutationAllowed(env) { return } }`.
+func isActRungGuard(s *ast.IfStmt) bool {
+	idx, ok := s.Cond.(*ast.IndexExpr)
+	if !ok || s.Init != nil || s.Else != nil || !isEnvType(idx.Index) || len(s.Body.List) != 1 {
+		return false
+	}
+	if id, ok := idx.X.(*ast.Ident); !ok || id.Name != "runWSMutatingTypes" {
+		return false
+	}
+	inner, ok := s.Body.List[0].(*ast.IfStmt)
+	if !ok || inner.Init != nil || inner.Else != nil || len(inner.Body.List) != 1 {
+		return false
+	}
+	not, ok := inner.Cond.(*ast.UnaryExpr)
+	if !ok || not.Op != token.NOT {
+		return false
+	}
+	call, ok := not.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	if sel, ok := call.Fun.(*ast.SelectorExpr); !ok || sel.Sel.Name != "mutationAllowed" {
+		return false
+	}
+	ret, ok := inner.Body.List[0].(*ast.ReturnStmt)
+	return ok && len(ret.Results) == 0
+}
+
+// connMethod returns the method of the connection s calls, when s is one
+// call `c.<method>(…)`; "" otherwise.
+func connMethod(s ast.Stmt) string {
+	es, ok := s.(*ast.ExprStmt)
+	if !ok {
+		return ""
+	}
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "c" {
+		return ""
+	}
+	return sel.Sel.Name
+}
+
+// isUnknownTypeAnswer reports whether s is `c.sendError("unknown_type", …)`.
+func isUnknownTypeAnswer(s ast.Stmt) bool {
+	if connMethod(s) != "sendError" {
+		return false
+	}
+	call := s.(*ast.ExprStmt).X.(*ast.CallExpr)
+	if len(call.Args) == 0 {
+		return false
+	}
+	lit, ok := call.Args[0].(*ast.BasicLit)
+	return ok && lit.Kind == token.STRING && lit.Value == `"unknown_type"`
 }
 
 // packageStringConsts maps every string constant declared in the package's
@@ -255,15 +385,23 @@ func packageStringConsts() (map[string]string, error) {
 // sweptDispatchCases parses src as this package's runs_ws.go.
 func sweptDispatchCases(t *testing.T, src []byte) []string {
 	t.Helper()
+	cases, _ := sweptDispatch(t, src)
+	return cases
+}
+
+// sweptDispatch parses src as this package's runs_ws.go: the cases and the
+// method each calls.
+func sweptDispatch(t *testing.T, src []byte) ([]string, map[string]string) {
+	t.Helper()
 	consts, err := packageStringConsts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases, err := dispatchCases(src, consts)
+	cases, handlers, err := dispatchSwitch(src, consts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cases
+	return cases, handlers
 }
 
 // readRunsWS reads this package's runs_ws.go. RUN_MUTATION_SWEEP_OVERLAY
@@ -331,11 +469,13 @@ func nonGETRunRoutes(srv *Server) []string {
 
 func productionMutationSweep(t *testing.T, srv *Server) mutationSweep {
 	t.Helper()
+	cases, handlers := sweptDispatch(t, readRunsWS(t))
 	return mutationSweep{
 		routes:   nonGETRunRoutes(srv),
 		ladder:   runScopeLadderRoutes,
 		envelope: runWSMutatingTypes,
-		dispatch: sweptDispatchCases(t, readRunsWS(t)),
+		dispatch: cases,
+		handlers: handlers,
 	}
 }
 
@@ -404,4 +544,70 @@ func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
 	if gaps := base.gaps(stale); len(gaps) != 1 || gaps[0] != "stale carrier entry: POST /api/runs/{id}/gone" {
 		t.Fatalf("a stale entry was not reported alone: %v", gaps)
 	}
+}
+
+// The dispatch shapes that route an envelope past the act rung's guard and
+// the carrier inventory without a new case — each planted in a copy of
+// runs_ws.go — are refused by the sweep's reading of dispatch: a branch in
+// the default, a comparison before the switch, a switch nested in the
+// default, a branch in a read-only case's body, a second switch on a copy of
+// the type. A read-only case calling a guarded case's method is reported.
+// (A planted case of its own is M7c above.)
+func TestRunMutationSweepRefusesDispatchShapes(t *testing.T) {
+	src := string(readRunsWS(t))
+	const (
+		bypass     = "\t\tif env.Type == \"cancel_run\" {\n\t\t\tc.handleCancel(env)\n\t\t\treturn\n\t\t}\n"
+		dflt       = "\tdefault:\n\t\tc.sendError(\"unknown_type\""
+		switchHead = "\tswitch env.Type {\n\tcase wsTypeSubscribe:\n"
+		pong       = "\t\tc.sendEnvelope(wsTypePong,"
+		subscribe  = "\tcase wsTypeSubscribe:\n\t\tc.handleSubscribe(env)\n"
+		dfltLine   = "\tdefault:\n\t\tc.sendError(\"unknown_type\", \"unknown message type: \"+env.Type, env.AckID)\n"
+	)
+	for _, anchor := range []string{dflt, switchHead, pong, subscribe, dfltLine} {
+		if strings.Count(src, anchor) != 1 {
+			t.Fatalf("fixture: dispatch moved; the anchor %q is not found once", anchor)
+		}
+	}
+	plant := func(anchor, replacement string) []byte {
+		return []byte(strings.Replace(src, anchor, replacement, 1))
+	}
+	consts, err := packageStringConsts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		src  []byte
+		want string
+	}{
+		{"default-branch", plant(dflt, "\tdefault:\n"+bypass+"\t\tc.sendError(\"unknown_type\""), "a dispatch case holds 2 statements"},
+		{"comparison-before-the-switch", plant(switchHead, strings.ReplaceAll(bypass, "\t\t", "\t")+switchHead), "dispatch holds 3 statements"},
+		{"switch-nested-in-the-default", plant(dflt, "\tdefault:\n\t\tswitch env.Type {\n\t\tcase \"cancel_run\":\n\t\t\tc.handleCancel(env)\n\t\t\treturn\n\t\t}\n\t\tc.sendError(\"unknown_type\""), "a dispatch case holds 2 statements"},
+		{"branch-in-a-read-only-case", plant(pong, "\t\tif string(env.Payload) == `{\"cancel\":true}` {\n\t\t\tc.handleCancel(env)\n\t\t\treturn\n\t\t}\n"+pong), "a dispatch case holds 2 statements"},
+		{"second-switch-on-a-copy", plant(switchHead, "\tswitch t := env.Type; t {\n\tcase \"cancel_run\":\n\t\tc.handleCancel(env)\n\t\treturn\n\t}\n"+switchHead), "dispatch holds 3 statements"},
+		{"default-calling-another-method", []byte(strings.Replace(src, dfltLine, "\tdefault:\n\t\tc.handleCancel(env)\n", 1)), "dispatch's default does more than answer unknown_type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := dispatchSwitch(tc.src, consts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("planted dispatch shape: %v, want a refusal naming %q", err, tc.want)
+			}
+		})
+	}
+	t.Run("read-only-case-calling-a-guarded-method", func(t *testing.T) {
+		cases, handlers := sweptDispatch(t, plant(subscribe, "\tcase wsTypeSubscribe:\n\t\tc.handleCancel(env)\n"))
+		sw := mutationSweep{ladder: runScopeLadderRoutes, envelope: runWSMutatingTypes, dispatch: cases, handlers: handlers}
+		want := "read-only case calls a guarded handler: " + wsTypeSubscribe + " → handleCancel"
+		found := false
+		for _, g := range sw.gaps(mutationCarriers) {
+			if g == want {
+				found = true
+			} else if !strings.HasPrefix(g, "stale carrier entry: ") {
+				t.Fatalf("planted read-only case: unexpected gap %q", g)
+			}
+		}
+		if !found {
+			t.Fatalf("a read-only case calling handleCancel was not reported (want %q)", want)
+		}
+	})
 }

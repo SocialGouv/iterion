@@ -34,14 +34,16 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 	// delete of the admitted run lands between the two, the answer is the
 	// store's: the filesystem store refuses (ErrRunDeleted, answered 409
 	// run_origin_lost), the Mongo store, whose tombstone keeps the birth,
-	// answers the idempotent success.
+	// answers the idempotent success. A delete that fails part-way after its
+	// bound check leaves the admitted run deleted by this request: its own
+	// failure is the answer (writeDeleteFailure).
 	a := s.admittedAction(r, id)
 	ctx, ok := s.actionContext(w, r, a)
 	if !ok {
 		return
 	}
 	if err := s.runs.DeleteRunCtx(ctx, id); err != nil {
-		if s.writeActionFailure(w, r, a, err) {
+		if s.writeDeleteFailure(w, r, a, err) {
 			return
 		}
 		// A lifecycle refusal (the run exists and is ALIVE) is a 409 —

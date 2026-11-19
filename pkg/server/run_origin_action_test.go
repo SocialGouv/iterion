@@ -39,14 +39,22 @@ type storeCall struct {
 
 // actionProbe records the accesses of the store methods a test double
 // overrides (gateStore here, gateMongoStore on Mongo), the writes that
-// landed, and can fail one named method once. It sees the overridden
-// methods only: a store method no double overrides is not recorded.
+// landed, and can fail one named method once — or fail one method once
+// right after another one failed. It sees the overridden methods only: a
+// store method no double overrides is not recorded.
 type actionProbe struct {
 	mu     sync.Mutex
 	calls  []storeCall
 	landed []string
 	fail   map[string]error
+	then   map[string]chainedFailure
 	after  atomic.Bool
+}
+
+// chainedFailure fails method once with err.
+type chainedFailure struct {
+	method string
+	err    error
 }
 
 func (p *actionProbe) observe(ctx context.Context, method, id string) error {
@@ -56,9 +64,25 @@ func (p *actionProbe) observe(ctx context.Context, method, id string) error {
 	p.calls = append(p.calls, storeCall{method: method, runID: id, bound: bound, after: p.after.Load()})
 	if err, ok := p.fail[method]; ok {
 		delete(p.fail, method)
+		if next, ok := p.then[method]; ok {
+			delete(p.then, method)
+			p.fail[next.method] = next.err
+		}
 		return err
 	}
 	return nil
+}
+
+// failThen fails first once with err, then the next call to next once with
+// nextErr.
+func (p *actionProbe) failThen(first string, err error, next string, nextErr error) {
+	p.failOnce(first, err)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.then == nil {
+		p.then = map[string]chainedFailure{}
+	}
+	p.then[first] = chainedFailure{method: next, err: nextErr}
 }
 
 // land records a write that changed the store.
@@ -73,7 +97,7 @@ func (p *actionProbe) land(method string, err error, changed bool) {
 
 func (p *actionProbe) reset() {
 	p.mu.Lock()
-	p.calls, p.landed, p.fail = nil, nil, nil
+	p.calls, p.landed, p.fail, p.then = nil, nil, nil, nil
 	p.mu.Unlock()
 	p.after.Store(false)
 }
@@ -824,6 +848,24 @@ func TestActionOriginLostOnlyForTheAddressedRun(t *testing.T) {
 			}
 		})
 	}
+	// (iv) the failure rule's confirm read itself fails (not a loss): no
+	// verdict on the run, so the row's own mapping answers, never the loss.
+	t.Run("iv-tags-failing-with-an-unreadable-confirm-read", func(t *testing.T) {
+		row := actionRowByName(t, "tags")
+		fx := newActionFixture(t, row)
+		fx.store.probe.failThen("SetRunTags", errors.New("store unavailable"), "LoadRun", errors.New("store unavailable on the confirm read"))
+		got := actionDo(t, fx.hs.URL, row, fx.birth)
+		if got.status != http.StatusInternalServerError || got.code == wsErrRunOriginLost {
+			t.Fatalf("a failed write whose confirm read failed answered %d %s, want HEAD's 500 and no run_origin_lost", got.status, got.body)
+		}
+		calls, _ := fx.store.probe.recorded()
+		if last := calls[len(calls)-1]; last.method != "LoadRun" || last.bound {
+			t.Fatalf("fixture: the last access is %+v, want the confirm read (unbound LoadRun)", last)
+		}
+		if birthOf(t, fx.native, actionRunID) != fx.birth {
+			t.Fatal("fixture: the addressed run changed")
+		}
+	})
 	t.Run("iii-resume-preflight-refuses-the-successor", func(t *testing.T) {
 		fx := newGateFixture(t, true)
 		ctx := t.Context()
@@ -844,6 +886,40 @@ func TestActionOriginLostOnlyForTheAddressedRun(t *testing.T) {
 			t.Fatalf("the successor changed: birth %q status %s", b.BirthID, b.Status)
 		}
 	})
+}
+
+// W2c: a delete whose store delete fails part-way — past its bound check,
+// its tombstone written and run.json removed, a run entry it cannot remove
+// (the store removes the entries in name order: "workspace" after
+// "run.json") — deleted the run it expected: the re-read finds that run
+// deleted by this very request, not replaced, so a checked delete answers
+// the store's error exactly as an unchecked one does (404 naming the
+// failure), never run_origin_lost.
+func TestDeleteFailingPartWayAnswersTheStoreError(t *testing.T) {
+	for _, checked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("checked=%t", checked), func(t *testing.T) {
+			fx := newGateFixture(t, true)
+			ctx := t.Context()
+			mustWS(t, seedWSOriginRun(ctx, fx.native, actionRunID, "A", store.LegacyValueFormat, store.RunStatusFinished, 0))
+			pinned := filepath.Join(fx.native.Root(), "runs", actionRunID, "workspace")
+			mustWS(t, os.MkdirAll(pinned, 0o755))
+			mustWS(t, os.WriteFile(filepath.Join(pinned, "f"), []byte("x"), 0o644))
+			mustWS(t, os.Chmod(pinned, 0o500))
+			t.Cleanup(func() { _ = os.Chmod(pinned, 0o755) })
+			birth := ""
+			if checked {
+				birth = birthOf(t, fx.native, actionRunID)
+			}
+			got := actionDo(t, fx.hs.URL, actionRow{name: "delete", method: http.MethodDelete}, birth)
+			_, loadErr := fx.native.LoadRun(ctx, actionRunID)
+			if !errors.Is(loadErr, store.ErrRunDeleted) {
+				t.Fatalf("fixture: the run reads %v after its partial delete (answer %d %s), want ErrRunDeleted", loadErr, got.status, got.body)
+			}
+			if got.status != http.StatusNotFound || got.code != "" || !strings.Contains(got.body, "delete run:") {
+				t.Fatalf("a delete failing part-way answered %d %s, want the store's error (404 \"delete run: …\")", got.status, got.body)
+			}
+		})
+	}
 }
 
 // seedResumableRun persists a run an operator resume reaches in-process: a

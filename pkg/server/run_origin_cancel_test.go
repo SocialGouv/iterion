@@ -18,35 +18,52 @@ import (
 )
 
 // outcomeHookStore is the gate store as the cloud publisher holds it, with a
-// one-shot hook run on ENTRY of UpdateRunOutcome, before it delegates: a
-// successor recreated after the publisher's load, inside its flip. Every
-// call is forwarded with the caller's context.
+// one-shot hook run on ENTRY of UpdateRunOutcome, before it delegates — a
+// successor recreated after the publisher's load, inside its flip — and one
+// run right after it returns. Every call is forwarded with the caller's
+// context.
 type outcomeHookStore struct {
 	*gateStore
 	mu      sync.Mutex
 	before  func() error
+	after   func() error
 	hookErr error
 }
 
 func (s *outcomeHookStore) UpdateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
 	s.mu.Lock()
-	h := s.before
-	s.before = nil
+	before, after := s.before, s.after
+	s.before, s.after = nil, nil
 	s.mu.Unlock()
-	if h != nil {
-		if err := h(); err != nil {
-			s.mu.Lock()
-			s.hookErr = errors.Join(s.hookErr, err)
-			s.mu.Unlock()
-		}
+	s.run(before)
+	changed, err := s.gateStore.UpdateRunOutcome(ctx, id, status, runErr, meta, expectedFrom)
+	s.run(after)
+	return changed, err
+}
+
+func (s *outcomeHookStore) run(h func() error) {
+	if h == nil {
+		return
 	}
-	return s.gateStore.UpdateRunOutcome(ctx, id, status, runErr, meta, expectedFrom)
+	if err := h(); err != nil {
+		s.mu.Lock()
+		s.hookErr = errors.Join(s.hookErr, err)
+		s.mu.Unlock()
+	}
 }
 
 func (s *outcomeHookStore) armFlip(h func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.before = h
+}
+
+// armAroundFlip runs before on entry of the next flip and after right after
+// it returns.
+func (s *outcomeHookStore) armAroundFlip(before, after func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.before, s.after = before, after
 }
 
 func (s *outcomeHookStore) failure() error {
@@ -193,6 +210,20 @@ func TestCancelBindsTheFlip(t *testing.T) {
 			fx.assertSuccessorKept(t, rp)
 		})
 	}
+	// (iii) A flip that changes nothing — A finished inside it — then A
+	// replaced before the publisher reads the run again: the bound re-read
+	// refuses B, and that refusal is the answer (409 run_origin_lost), never
+	// the 202 "cancelling" of a cancel that changed nothing.
+	t.Run("cloud-http-iii-replaced-after-a-flip-that-changed-nothing", func(t *testing.T) {
+		fx := newCancelFixture(t, true, store.RunStatusRunning)
+		rp := &cancelReplacement{}
+		fx.flips.armAroundFlip(func() error {
+			return fx.native.UpdateRunStatus(context.Background(), actionRunID, store.RunStatusFinished, "")
+		}, fx.replace(rp))
+		got := actionDo(t, fx.hs.URL, cancelRow, fx.birth)
+		wantOriginLost(t, "cloud cancel whose re-read meets a successor", got, actionRunID)
+		fx.assertSuccessorKept(t, rp)
+	})
 	t.Run("cloud-http-control-the-admitted-run", func(t *testing.T) {
 		fx := newCancelFixture(t, true, store.RunStatusRunning)
 		got := actionDo(t, fx.hs.URL, cancelRow, fx.birth)

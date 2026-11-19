@@ -159,13 +159,59 @@ func TestRunWSOriginMutationBoundToTheOrigin(t *testing.T) {
 	}
 }
 
+// W10h: on a socket admitted on the run's current birth, an envelope whose
+// action fails on the healthy run — the pause, the loop bump and the budget
+// raise of a run no execution of this process holds — answers its own
+// refusal (not_active), never run_origin_lost, and the socket stays open: the
+// failure rule reads the run again and finds the admitted birth.
+func TestRunWSFailureOnTheAdmittedRunKeepsTheSocket(t *testing.T) {
+	for _, row := range wsActionRows() {
+		if row.answer == "" {
+			continue
+		}
+		t.Run(row.typ, func(t *testing.T) {
+			fx := newActionFixture(t, actionRowByName(t, row.row))
+			c := dialGate(t, fx.hs, wsRunPath(fx.birth))
+			writeJSONMessage(t, c, row.envelope("m"))
+			wantReply(t, row.typ+" on the admitted run", readReply(t, c, "m"), row.answer)
+			wantSocketOpen(t, c, row.typ+" on the admitted run")
+			if got := birthOf(t, fx.native, actionRunID); got != fx.birth {
+				t.Fatalf("fixture: the run's birth moved to %q", got)
+			}
+		})
+	}
+}
+
 // W11: the answer envelope on a socket admitted on A's birth, A replaced by
 // B — paused on the same human gate — right after the envelope's own load
 // (after the act rung's two). The resume carries the socket's origin, so the
 // run service refuses B: run_origin_lost, then scope_lost; B's run directory
-// is as the replacement left it and nothing was resumed. A deleted after the
-// act rung and before the envelope's load answers the same loss.
+// is as the replacement left it and nothing was resumed. Replaced later —
+// right after the run service's check at the top of its resume, or on entry
+// of the engine's own load after the check under the spawn lock — the run
+// service's check before its first effect on the run's directory, then the
+// engine, refuse B the same way, and B's directory gains no entry. A deleted
+// after the act rung and before the envelope's load answers the same loss.
 func TestRunWSAnswerCarriesTheOrigin(t *testing.T) {
+	for _, at := range []struct {
+		name string
+		arm  func(fx *expectFixture, replace func() error)
+	}{
+		{"replaced-after-the-service-check", afterServiceCheck},
+		{"replaced-at-the-engine-load", atEngineLoad},
+	} {
+		t.Run(at.name, func(t *testing.T) {
+			row := expectRowByName(t, "answer-human")
+			row.arm = at.arm
+			fx := newExpectFixture(t, row)
+			c := dialGate(t, fx.hs, wsRunPath(fx.birth))
+			pic := fx.armExpectReplacement(t)
+			writeJSONMessage(t, c, wsAnswerEnvelope("a1"))
+			expectOriginLostClose(t, c, wsErrRunOriginLost)
+			fx.settle(t)
+			fx.assertSuccessorUnresumed(t, pic)
+		})
+	}
 	t.Run("replaced-after-the-envelope-load", func(t *testing.T) {
 		row := expectRowByName(t, "answer-human")
 		fx := newExpectFixture(t, row)

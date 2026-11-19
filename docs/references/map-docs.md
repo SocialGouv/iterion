@@ -206,7 +206,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/bots/toolchain-devbox.md`](../agents/bots/toolchain-devbox.md) | A bot's toolchain is its `devbox.json` | Read it when a bot needs a binary the sandbox does not carry. | — |
 | [`docs/agents/bots/universality.md`](../agents/bots/universality.md) | Repo-agnostic and stack-agnostic — the universality rules | Read it when touching a catalog bot's vars, prompts or scanners; enforced by the catalog tests. | — |
 | [`docs/agents/bots/untrusted-input.md`](../agents/bots/untrusted-input.md) | The UNTRUSTED INPUT BOUNDARY | Read it when a node's prompt can carry repo- or issue-derived text and the node acts: shells out, writes, files issues. | — |
-| [`docs/agents/engine/README.md`](../agents/engine/README.md) | Engine — the domain | Ownership: `iterion map find\|neighbours\|impact\|path` and | — |
+| [`docs/agents/engine/README.md`](../agents/engine/README.md) | Engine — the domain | Ownership: `iterion map` and | — |
 | [`docs/agents/engine/account-erasure.md`](../agents/engine/account-erasure.md) | Account erasure — by anonymization | An account is erased by anonymization, never hard-deleted | — |
 | [`docs/agents/engine/automation-surfaces.md`](../agents/engine/automation-surfaces.md) | Automation surfaces — what launches a run without a human typing | The four trigger families and the spine they converge on: the dispatcher's | — |
 | [`docs/agents/engine/bot-catalog-regeneration.md`](../agents/engine/bot-catalog-regeneration.md) | Which runs regenerate the bot catalogue | Nexie's routing table, `<bundle>/skills/iterion-bot-catalog.md`, is generated | — |

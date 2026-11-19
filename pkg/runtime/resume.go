@@ -99,6 +99,15 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// Every step below acts on this document, and the claim is anchored to
+	// it: the check a surface handed over (WithResumeRunCheck) judges it
+	// here, so a successor recreated under the ID is refused before
+	// anything of the resume touches it.
+	if e.resumeRunCheck != nil {
+		if err := e.resumeRunCheck(r); err != nil {
+			return fmt.Errorf("runtime: resume of run %s refused: %w", runID, err)
+		}
+	}
 
 	// Registered first so it runs last: a throw-away test workdir belongs to
 	// this whole call, not to the helpers that prepare it and return early.

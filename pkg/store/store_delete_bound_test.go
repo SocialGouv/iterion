@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,166 @@ import (
 	"testing"
 	"time"
 )
+
+// rewriteRunJSON applies edit to id's run.json as a JSON object.
+func rewriteRunJSON(t *testing.T, s *FilesystemRunStore, id string, edit func(m map[string]json.RawMessage)) {
+	t.Helper()
+	raw, err := os.ReadFile(s.runJSONPath(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	edit(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.runJSONPath(id), out, filePerm); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBoundDeleteRemovesTheRunItObserved: a delete bound to the run its
+// caller observed removes it and leaves its tombstone, whatever the run's
+// legitimate shape — a tenant's run, an exact-format run, a historical run
+// (no birth, or an explicit empty one), a run.json a failed cleanup retained
+// beside its marker.
+func TestBoundDeleteRemovesTheRunItObserved(t *testing.T) {
+	t.Parallel()
+	create := func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		tenant string
+		shape  func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string)
+	}{
+		{name: "legacy", shape: create},
+		{name: "tenant", tenant: "team-a", shape: func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+			create(t, s, ctx, id)
+			rewriteRunJSON(t, s, id, func(m map[string]json.RawMessage) { m["tenant_id"] = json.RawMessage(`"team-a"`) })
+		}},
+		{name: "exact", shape: func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+			if _, err := s.CreateRunWithValueFormat(ctx, RunCreateSpec{ID: id, WorkflowName: "wf", Format: ExactValueFormat}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "historical", shape: func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+			create(t, s, ctx, id)
+			rewriteRunJSON(t, s, id, func(m map[string]json.RawMessage) { delete(m, "birth_id") })
+		}},
+		{name: "explicit-empty-birth", shape: func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+			create(t, s, ctx, id)
+			rewriteRunJSON(t, s, id, func(m map[string]json.RawMessage) { m["birth_id"] = json.RawMessage(`""`) })
+		}},
+		{name: "run-json-retained-beside-marker", shape: func(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) {
+			create(t, s, ctx, id)
+			if err := os.WriteFile(filepath.Join(s.runDir(id), deletionMarkerName), []byte("interrupted\n"), filePerm); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			if tc.tenant != "" {
+				ctx = WithIdentity(ctx, tc.tenant, "user")
+			}
+			const id = "r"
+			tc.shape(t, s, ctx, id)
+			// A load refuses a tombstoned run: the observation is the raw
+			// header and stored tenant the caller read before the marker.
+			raw, err := os.ReadFile(s.runJSONPath(id))
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, err := RunDataHeaderFromJSON(ctx, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored struct {
+				TenantID string `json:"tenant_id"`
+			}
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.TenantID != tc.tenant {
+				t.Fatalf("fixture: stored tenant %q, want %q", stored.TenantID, tc.tenant)
+			}
+			o, err := CaptureRunObservation(header, stored.TenantID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound, err := BindRunObservation(ctx, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DeleteRun(bound, id); err != nil {
+				t.Fatalf("bound delete of the run it observed (%s) = %v, want nil", tc.name, err)
+			}
+			if _, err := os.Stat(s.runJSONPath(id)); !os.IsNotExist(err) {
+				t.Fatalf("run.json survived a bound delete of the run it observed: %v", err)
+			}
+			if !s.runDeleted(id) {
+				t.Fatal("a bound delete of the run it observed left no tombstone")
+			}
+		})
+	}
+}
+
+// TestBoundDeleteComparesTheStoredTenant: the tenant half of the bound
+// delete's comparison, alone. A record under the same header as the observed
+// run — historical, so no birth tells them apart — but another stored tenant
+// is refused ErrRunDataIdentityChanged, its run.json left as it was.
+func TestBoundDeleteComparesTheStoredTenant(t *testing.T) {
+	t.Parallel()
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithIdentity(t.Context(), "team-a", "user")
+	const id = "r"
+	if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	rewriteRunJSON(t, s, id, func(m map[string]json.RawMessage) {
+		delete(m, "birth_id")
+		m["tenant_id"] = json.RawMessage(`"team-a"`)
+	})
+	bound := bindFilesystemRun(t, s, ctx, id)
+	b, _ := RunDataBindingFrom(bound)
+	if b.Header().BirthID != "" {
+		t.Fatalf("fixture: the observed run has birth %q, want a historical one", b.Header().BirthID)
+	}
+	if tenant, observed := b.TenantID(); !observed || tenant != "team-a" {
+		t.Fatalf("fixture: observed tenant (%q, %t), want (team-a, true)", tenant, observed)
+	}
+	rewriteRunJSON(t, s, id, func(m map[string]json.RawMessage) { m["tenant_id"] = json.RawMessage(`"team-b"`) })
+	before, err := os.ReadFile(s.runJSONPath(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.DeleteRun(bound, id)
+	if after, rerr := os.ReadFile(s.runJSONPath(id)); rerr != nil || !bytes.Equal(before, after) {
+		t.Fatalf("a bound delete changed another tenant's run.json (read: %v)", rerr)
+	}
+	if s.runDeleted(id) {
+		t.Fatal("a bound delete tombstoned another tenant's run")
+	}
+	if !errors.Is(err, ErrRunDataIdentityChanged) {
+		t.Fatalf("delete bound to team-a on a team-b record of the same header = %v, want ErrRunDataIdentityChanged", err)
+	}
+}
 
 // bindFilesystemRun binds ctx to the observation of the run id holds now.
 func bindFilesystemRun(t *testing.T, s *FilesystemRunStore, ctx context.Context, id string) context.Context {

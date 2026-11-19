@@ -671,6 +671,17 @@ func WithAcceptScratchLoss(accept bool) EngineOption {
 	return func(e *Engine) { e.acceptScratchLoss = accept }
 }
 
+// WithResumeRunCheck hands Resume the check the run it loads by ID must pass
+// before any step of the resume acts on it. A surface that admitted the
+// resume on the run's birth passes its comparison (runview.ActionOrigin's
+// Verify): the run lock is a file of the admitted run's directory, so a
+// successor recreated under the ID after that surface's last check would
+// otherwise be the run this engine claims and executes. Nil, the default,
+// checks nothing: the CLI, a detached `iterion resume`, the cloud runner.
+func WithResumeRunCheck(check func(*store.Run) error) EngineOption {
+	return func(e *Engine) { e.resumeRunCheck = check }
+}
+
 // WithOnResumeClaimed calls fn once, the moment a resume claims the run:
 // past every refusal the engine makes before its claim, before anything of
 // the run executes. A caller that hands the resume to a goroutine reads it

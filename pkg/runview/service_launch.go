@@ -1274,8 +1274,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		validateArtifacts = runtime.ValidateResumeArtifacts
 	}
 	// A legacy digest waives the revision the run's artifacts were published
-	// under, exactly as --force would: nothing else changed.
-	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
+	// under, exactly as --force would: nothing else changed. A checked
+	// resume's pass reads and reports on the run it verified: bound to its
+	// origin, a successor recreated under the ID since refuses its reads and
+	// the violation event it reports.
+	artifactCtx, err := spec.ExpectOrigin.Bind(parent, s.store)
+	if err != nil {
+		return nil, err
+	}
+	artifactPreflight, err := validateArtifacts(artifactCtx, s.store, r, wf, hash, spec.Force || legacy)
 	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
 		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
 	}
@@ -1330,21 +1337,34 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// copy loaded at the top of this method would revert any transition
 	// that landed since (a cancel, a finish). Best-effort: a store blip
 	// here does not fail the resume. A checked resume writes the run it
-	// verified: both writes are bound to its origin, so a successor
-	// recreated under the ID since refuses them (and the spawn below
-	// refuses the resume).
+	// verified: both writes are bound to its origin, and a write refused
+	// because the run behind the ID is no longer that origin refuses the
+	// resume — in every local mode, before a detached subprocess that would
+	// re-read the run by ID is spawned.
 	if raised {
 		bctx, berr := spec.ExpectOrigin.Bind(parent, s.store)
 		if berr != nil {
 			return nil, berr
 		}
+		failed := func(what string, err error) error {
+			if err == nil {
+				return nil
+			}
+			if spec.ExpectOrigin.Checked() && originRefused(err) {
+				return fmt.Errorf("runview: resume: %s on %s: %w", what, spec.RunID, err)
+			}
+			if s.logger != nil {
+				s.logger.Warn("runview: resume: %s on %s: %v", what, spec.RunID, err)
+			}
+			return nil
+		}
 		merged := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
-		if perr := s.store.SetRunBudgetOverrides(bctx, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
-			s.logger.Warn("runview: resume: persist merged budget ask on %s: %v", spec.RunID, perr)
+		if err := failed("persist merged budget ask", s.store.SetRunBudgetOverrides(bctx, spec.RunID, runtime.RunBudgetOverridesOf(merged))); err != nil {
+			return nil, err
 		}
 		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
-			if serr := s.store.SetRunBudgetSnapshot(bctx, spec.RunID, snap); serr != nil && s.logger != nil {
-				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			if err := failed("refresh budget snapshot", s.store.SetRunBudgetSnapshot(bctx, spec.RunID, snap)); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1364,6 +1384,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return s.resumeDetached(parent, spec, r.PermissionOverride, r)
 	}
 
+	// The steps below are the first to touch the run's directory: the log
+	// opened for append, the files directory, the lock file. A checked
+	// resume verifies the run behind the ID again right before them, so a
+	// successor recreated since the check at the top gains no entry of a
+	// resume refused later (the check under the spawn lock, the engine's).
+	if err := s.verifyOrigin(parent, spec.RunID, spec.ExpectOrigin); err != nil {
+		return nil, err
+	}
 	runLog, runLogger := s.prepareRunLog(parent, spec.RunID)
 	// Armed until spawnRun hands the run over: an error before that releases
 	// the bail and classifies the run (a failed resume of a paused run keeps
@@ -1944,6 +1972,14 @@ func (s *Service) spawnRun(
 	if ex.acceptScratchLoss {
 		opts = append(opts, runtime.WithAcceptScratchLoss(true))
 	}
+	// A checked resume's engine checks the run it loads against the origin
+	// its surface admitted: the run lock does not hold a successor off, so
+	// one recreated after the check under it is refused by the engine,
+	// before its claim. The check reads the document; it binds nothing the
+	// execution keeps.
+	if ex.expectOrigin.Checked() {
+		opts = append(opts, runtime.WithResumeRunCheck(ex.expectOrigin.Verify))
+	}
 	if ex.onResumeAdmitted != nil {
 		opts = append(opts, runtime.WithOnResumeAdmitted(ex.onResumeAdmitted))
 	}
@@ -2206,7 +2242,8 @@ type launchExtras struct {
 	acceptScratchLoss bool
 	// expectOrigin is a checked resume's admitted origin
 	// (ResumeSpec.ExpectOrigin): the write spawnRun makes before the
-	// execution starts is bound to it. Zero on every launch.
+	// execution starts is bound to it, and the engine checks the run it
+	// loads against it (runtime.WithResumeRunCheck). Zero on every launch.
 	expectOrigin ActionOrigin
 	// compiled is what the launch's compile read — the unit's files — so
 	// the run records them from the same read as its identity: a studio

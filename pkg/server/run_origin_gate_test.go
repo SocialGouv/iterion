@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +27,8 @@ import (
 
 // gateStore is the native filesystem store with the probes the run-origin
 // gate tests read: a count of run loads, a one-shot hook run right after the
-// Nth load returns, and a count of merge-reconciliation writes. Every read is
+// Nth load returns, a one-shot hook run on entry of the first load a named
+// function makes, and a count of merge-reconciliation writes. Every read is
 // forwarded unchanged with the caller's context, so the binding policy under
 // test stays in the native store, and a bound stream over it is endorsed
 // (endorseForwardingStore).
@@ -37,18 +39,53 @@ type gateStore struct {
 	mu          sync.Mutex
 	afterLoadAt int32
 	afterLoad   func() error
+	fromHook    loadFromHook
 	hookErr     error
 	// probe records the store accesses the action witnesses read
 	// (run_origin_action_test.go).
 	probe actionProbe
 }
 
+// loadFromHook is a hook armed on the first run load a frame of fn makes: on
+// its entry, or right after it returns.
+type loadFromHook struct {
+	fn    string
+	after bool
+	h     func() error
+}
+
+// takeFromHook returns the armed load hook, disarmed, when this load is the
+// one it waits for at this point (entry or return); nil otherwise.
+func (s *gateStore) takeFromHook(after bool) func() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hk := s.fromHook
+	if hk.h == nil || hk.after != after || !calledFrom(hk.fn) {
+		return nil
+	}
+	s.fromHook = loadFromHook{}
+	return hk.h
+}
+
+func (s *gateStore) runHook(h func() error) {
+	if h == nil {
+		return
+	}
+	if herr := h(); herr != nil {
+		s.mu.Lock()
+		s.hookErr = errors.Join(s.hookErr, herr)
+		s.mu.Unlock()
+	}
+}
+
 func (s *gateStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	s.runHook(s.takeFromHook(false))
 	n := s.loads.Add(1)
 	if err := s.probe.observe(ctx, "LoadRun", id); err != nil {
 		return nil, err
 	}
 	r, err := s.FilesystemRunStore.LoadRun(ctx, id)
+	s.runHook(s.takeFromHook(true))
 	s.mu.Lock()
 	h := s.afterLoad
 	fire := h != nil && n == s.afterLoadAt
@@ -87,6 +124,47 @@ func (s *gateStore) afterLoadN(n int32, h func() error) {
 	defer s.mu.Unlock()
 	s.afterLoadAt = s.loads.Load() + n
 	s.afterLoad = h
+}
+
+// beforeLoadFrom arms h to run once, on entry of the first run load a frame
+// of fn makes (fn is a function's qualified name as the runtime spells it,
+// matched as a suffix): a hook on THAT load, wherever it falls in the count.
+func (s *gateStore) beforeLoadFrom(fn string, h func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fromHook = loadFromHook{fn: fn, h: h}
+}
+
+// afterLoadFrom arms h to run once, right after the first run load a frame of
+// fn makes returns.
+func (s *gateStore) afterLoadFrom(fn string, h func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fromHook = loadFromHook{fn: fn, after: true, h: h}
+}
+
+// engineResumeLoad names the frame of the engine's own load of the run it
+// resumes (runtime.Engine.ResumeWithHostInputs): the load after the run
+// service's checks under the spawn lock. serviceResumeLoad names the run
+// service's resume, whose first load is the check at its top.
+const (
+	engineResumeLoad  = "pkg/runtime.(*Engine).ResumeWithHostInputs"
+	serviceResumeLoad = "pkg/runview.(*Service).Resume"
+)
+
+// calledFrom reports whether a frame of fn is on the caller's stack.
+func calledFrom(fn string) bool {
+	pcs := make([]uintptr, 64)
+	frames := goruntime.CallersFrames(pcs[:goruntime.Callers(2, pcs)])
+	for {
+		f, more := frames.Next()
+		if strings.HasSuffix(f.Function, fn) {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
 }
 
 func (s *gateStore) failure() error {

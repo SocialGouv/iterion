@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,16 +27,47 @@ type originCall struct {
 
 // originStore is the filesystem store with the probes of the carrier-E
 // witnesses: a one-shot hook run on ENTRY of a named method, before it
-// delegates, and a record of the accesses of the methods it overrides. It
-// forwards every call with the caller's context, so the binding policy under
-// test stays in the native store, and it endorses itself as that store.
+// delegates — of its next call, or of its next call a named function makes —
+// and a record of the accesses of the methods it overrides. It forwards
+// every call with the caller's context, so the binding policy under test
+// stays in the native store, and it endorses itself as that store.
 type originStore struct {
 	*store.FilesystemRunStore
 	mu      sync.Mutex
-	before  map[string]func() error
+	before  map[string]originHook
 	hookErr error
 	locked  bool
 	calls   []originCall
+}
+
+// originHook is an armed hook: h, for a call a frame of caller makes ("" for
+// any call).
+type originHook struct {
+	caller string
+	h      func() error
+}
+
+// engineResumeLoad names the frame of the engine's own load of the run it
+// resumes, and engineClaimLoad the claim's fresh read after it.
+const (
+	engineResumeLoad = "pkg/runtime.(*Engine).ResumeWithHostInputs"
+	engineClaimLoad  = "pkg/runtime.(*Engine).acquireResumeEntry"
+)
+
+// calledFrom reports whether a frame of fn (a qualified function name as the
+// runtime spells it, matched as a suffix) is on the caller's stack.
+func calledFrom(fn string) bool {
+	pcs := make([]uintptr, 64)
+	frames := goruntime.CallersFrames(pcs[:goruntime.Callers(2, pcs)])
+	for {
+		f, more := frames.Next()
+		if strings.HasSuffix(f.Function, fn) {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
 }
 
 func (s *originStore) CheckBoundObservationStore(actual store.RunStore) error {
@@ -46,19 +79,29 @@ func (s *originStore) CheckBoundObservationStore(actual store.RunStore) error {
 
 // arm runs h once, on entry of the next call to method.
 func (s *originStore) arm(method string, h func() error) {
+	s.armFrom(method, "", h)
+}
+
+// armFrom runs h once, on entry of the next call to method a frame of caller
+// makes.
+func (s *originStore) armFrom(method, caller string, h func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.before == nil {
-		s.before = map[string]func() error{}
+		s.before = map[string]originHook{}
 	}
-	s.before[method] = h
+	s.before[method] = originHook{caller: caller, h: h}
 }
 
 func (s *originStore) enter(ctx context.Context, method string) {
 	_, bound := store.RunDataBindingFrom(ctx)
 	s.mu.Lock()
-	h := s.before[method]
-	delete(s.before, method)
+	hook, ok := s.before[method]
+	var h func() error
+	if ok && (hook.caller == "" || calledFrom(hook.caller)) {
+		h = hook.h
+		delete(s.before, method)
+	}
 	s.calls = append(s.calls, originCall{method: method, bound: bound, afterRun: s.locked})
 	s.mu.Unlock()
 	if h == nil {
@@ -130,6 +173,11 @@ func (s *originStore) SetRunBudgetSnapshot(ctx context.Context, id string, b *st
 func (s *originStore) PatchRunBudgetOverrides(ctx context.Context, id string, o *store.RunBudgetOverrides) error {
 	s.enter(ctx, "PatchRunBudgetOverrides")
 	return s.FilesystemRunStore.PatchRunBudgetOverrides(ctx, id, o)
+}
+
+func (s *originStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	s.enter(ctx, "LoadArtifact")
+	return s.FilesystemRunStore.LoadArtifact(ctx, runID, nodeID, version)
 }
 
 // originFixture is an in-process service over the origin store with one
@@ -256,11 +304,17 @@ func (fx *originFixture) picture(t *testing.T) runPicture {
 // armReplacement replaces the run on entry of the next call to method and
 // pictures the successor at the end of the hook.
 func (fx *originFixture) armReplacement(method string) func() runPicture {
+	return fx.armReplacementFrom(method, "")
+}
+
+// armReplacementFrom is armReplacement on the next call to method a frame of
+// caller makes.
+func (fx *originFixture) armReplacementFrom(method, caller string) func() runPicture {
 	var (
 		mu  sync.Mutex
 		pic runPicture
 	)
-	fx.st.arm(method, func() error {
+	fx.st.armFrom(method, caller, func() error {
 		if err := fx.replace(); err != nil {
 			return err
 		}
@@ -374,11 +428,58 @@ func TestResumeExpectOriginUnderTheSpawnLock(t *testing.T) {
 	}
 }
 
+// W8e: a checked resume whose run is replaced after the spawn lock's check —
+// on entry of the engine's own load — is refused by the engine, which checks
+// the run it loads against the origin: ErrRunDataIdentityChanged, and the
+// successor's status, checkpoint and events are as it was seeded. Replaced
+// on entry of the claim's read instead, after the engine's load, the claim
+// anchored to the run the engine loaded refuses it. Control: the zero
+// ActionOrigin resumes the successor replaced at the engine's load.
+func TestResumeExpectOriginAtTheEngineLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, caller string
+		checked      bool
+	}{
+		{"engine-load", engineResumeLoad, true},
+		{"claim-read", engineClaimLoad, true},
+		{"engine-load-unchecked", engineResumeLoad, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newOriginFixture(t)
+			successor := fx.armReplacementFrom("LoadRun", tc.caller)
+			spec := ResumeSpec{}
+			if tc.checked {
+				spec.ExpectOrigin = ExpectRunOrigin(fx.origin)
+			}
+			err := fx.resume(context.Background(), spec)
+			if herr := fx.st.failure(); herr != nil {
+				t.Fatalf("the replacement failed: %v", herr)
+			}
+			before := successor()
+			if before.birth == "" || before.birth == fx.origin.Header().BirthID {
+				t.Fatalf("the replacement did not run: successor birth %q", before.birth)
+			}
+			after := fx.picture(t)
+			if !tc.checked {
+				if err != nil || after.status == before.status {
+					t.Fatalf("unchecked resume of the successor: err=%v, status %s → %s, want it resumed", err, before.status, after.status)
+				}
+				return
+			}
+			if err == nil || tc.caller == engineResumeLoad && !errors.Is(err, store.ErrRunDataIdentityChanged) {
+				t.Fatalf("checked resume of a run replaced at %s: %v, want a refusal", tc.name, err)
+			}
+			if after != before {
+				t.Fatalf("the checked resume of the admitted run changed the successor:\nbefore %+v\nafter  %+v", before, after)
+			}
+		})
+	}
+}
+
 // W7b: a checked resume that raises the budget writes the run it verified.
-// The run is replaced right before the first budget write: both of Resume's
-// writes and the spawn's replay write are refused (they are bound), the
-// resume with them, and the successor's budget fields, status and events are
-// as seeded.
+// The run is replaced right before the first budget write: the write is
+// refused (it is bound), the resume with it, every budget write it made was
+// bound, and the successor's budget fields, status and events are as seeded.
 func TestResumeBudgetWritesBoundToTheAdmittedRun(t *testing.T) {
 	fx := newOriginFixture(t)
 	successor := fx.armReplacement("SetRunBudgetOverrides")
@@ -406,6 +507,44 @@ func TestResumeBudgetWritesBoundToTheAdmittedRun(t *testing.T) {
 	}
 }
 
+// W7d: in detached mode a checked resume that raises the budget, its run
+// replaced on entry of either budget write, returns the refusal of that bound
+// write: ErrRunDataIdentityChanged, and no `iterion resume` subprocess is
+// spawned to re-read the run by ID — the successor is as it was seeded.
+func TestDetachedResumeRefusedByItsBoundBudgetWrite(t *testing.T) {
+	for _, method := range []string{"SetRunBudgetOverrides", "SetRunBudgetSnapshot"} {
+		t.Run(method, func(t *testing.T) {
+			fx := newOriginFixture(t)
+			t.Setenv(envDetached, "1")
+			dir := t.TempDir()
+			argv := filepath.Join(dir, "argv")
+			bin := filepath.Join(dir, "iterion")
+			if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$@\" > "+argv+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("ITERION_BIN", bin)
+			successor := fx.armReplacement(method)
+			err := fx.resume(context.Background(), ResumeSpec{ExpectOrigin: ExpectRunOrigin(fx.origin), Budget: &ir.BudgetOverrides{MaxTokens: 1000}})
+			if herr := fx.st.failure(); herr != nil {
+				t.Fatalf("the replacement failed: %v", herr)
+			}
+			before := successor()
+			if before.birth == "" || before.birth == fx.origin.Header().BirthID {
+				t.Fatalf("the replacement did not run: successor birth %q", before.birth)
+			}
+			if !errors.Is(err, store.ErrRunDataIdentityChanged) {
+				t.Fatalf("detached checked resume whose run was replaced at %s: %v, want ErrRunDataIdentityChanged", method, err)
+			}
+			if raw, rerr := os.ReadFile(argv); !errors.Is(rerr, os.ErrNotExist) {
+				t.Fatalf("a resume subprocess was spawned for the successor: %q (%v)", raw, rerr)
+			}
+			if after := fx.picture(t); after != before {
+				t.Fatalf("the successor changed:\nbefore %+v\nafter  %+v", before, after)
+			}
+		})
+	}
+}
+
 // W9: a checked resume of the run it was admitted on executes unbound: no
 // store access the execution makes after the spawn takes the run lock
 // carries a run data binding (the value-format intent its loads carry is
@@ -430,5 +569,116 @@ func TestExpectedMutationExecutionStaysUnbound(t *testing.T) {
 	}
 	if got := fx.picture(t); got.status == store.RunStatusCancelled || got.birth != fx.origin.Header().BirthID {
 		t.Fatalf("the admitted run was not resumed: %+v", got)
+	}
+}
+
+// seedReport re-creates the run as a report-mode run named marker whose
+// checkpoint names an artifact revision that does not exist: the in-process
+// resume's artifact pass reports it with an artifact_contract_violation
+// event on the run ID.
+func (fx *originFixture) seedReport(ctx context.Context, marker string) error {
+	if err := fx.native.DeleteRun(ctx, originRunID); err != nil {
+		return err
+	}
+	if _, err := fx.native.PruneDeletionMarkers(ctx, time.Now().Add(time.Hour)); err != nil {
+		return err
+	}
+	if err := fx.seed(ctx, marker); err != nil {
+		return err
+	}
+	r, err := fx.native.LoadRun(ctx, originRunID)
+	if err != nil {
+		return err
+	}
+	r.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport}
+	if err := fx.native.SaveRun(ctx, r); err != nil {
+		return err
+	}
+	return fx.native.SaveCheckpoint(ctx, originRunID, &store.Checkpoint{NodeID: "done",
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{"x": {NodeID: "ghost", Version: 0}}})
+}
+
+// violationEvents counts the artifact_contract_violation events of the run
+// the ID holds now, and returns its birth.
+func (fx *originFixture) violationEvents(t *testing.T) (int, string) {
+	t.Helper()
+	ctx := context.Background()
+	evs, err := fx.native.LoadEvents(ctx, originRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range evs {
+		if e.Type == store.EventArtifactContractViolation {
+			n++
+		}
+	}
+	r, err := fx.native.LoadRun(ctx, originRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n, r.BirthID
+}
+
+// W7r: a checked in-process resume of a report-mode run, the run replaced by
+// a report-mode successor while the resume's artifact pass reads the run's
+// artifacts. The pass is bound to the admitted origin: the violation event it
+// reports never lands on the successor, and the resume is refused. Control:
+// on the admitted run the pass reports the violation once.
+func TestResumeArtifactPassBoundToTheAdmittedRun(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replaced=%t", replace), func(t *testing.T) {
+			fx := newOriginFixture(t)
+			ctx := context.Background()
+			if err := fx.seedReport(ctx, "A"); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if fx.origin, err = CaptureRunOriginIn(ctx, fx.native, originRunID); err != nil {
+				t.Fatal(err)
+			}
+			var (
+				mu        sync.Mutex
+				successor string
+			)
+			if replace {
+				fx.st.arm("LoadArtifact", func() error {
+					if err := fx.seedReport(ctx, "B"); err != nil {
+						return err
+					}
+					b, err := fx.native.LoadRun(ctx, originRunID)
+					if err != nil {
+						return err
+					}
+					mu.Lock()
+					successor = b.BirthID
+					mu.Unlock()
+					return nil
+				})
+			}
+			rerr := fx.resume(ctx, ResumeSpec{ExpectOrigin: ExpectRunOrigin(fx.origin)})
+			if herr := fx.st.failure(); herr != nil {
+				t.Fatalf("the replacement failed: %v", herr)
+			}
+			n, birth := fx.violationEvents(t)
+			if !replace {
+				if rerr != nil || n != 1 {
+					t.Fatalf("control: resume err=%v, %d violation events on the admitted run, want one", rerr, n)
+				}
+				return
+			}
+			mu.Lock()
+			b := successor
+			mu.Unlock()
+			if b == "" || birth != b || b == fx.origin.Header().BirthID {
+				t.Fatalf("the replacement did not run: the run holds %q, successor %q", birth, b)
+			}
+			if n != 0 {
+				t.Fatalf("the refused resume of the admitted run reported %d artifact_contract_violation event(s) on the successor", n)
+			}
+			if !errors.Is(rerr, store.ErrRunDataIdentityChanged) {
+				t.Fatalf("checked resume of a run replaced during its artifact pass: %v, want ErrRunDataIdentityChanged", rerr)
+			}
+		})
 	}
 }

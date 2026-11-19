@@ -91,7 +91,8 @@ func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, e
 // document, its events, seq counter, interactions, queued user-messages
 // (Mongo), and every artifact + attachment blob. Tenant-scoped when the
 // ctx carries a tenant, so a tenant can only delete its own runs.
-// Idempotent — a gone run is a no-op.
+// Idempotent — a gone run is a no-op. A delete bound to a run no document
+// holds any more is refused instead (boundDeletionAbsence).
 //
 // Order: retain the original format, write its pending tombstone, sweep only
 // its namespaces, then remove child metadata and mark cleanup complete under

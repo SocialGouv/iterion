@@ -16,6 +16,21 @@ type valueDeletion struct {
 
 const valueCleanupPendingField = "value_cleanup_pending"
 
+// boundDeletionAbsence answers a delete bound to a run whose ID no document
+// holds what a bound load of a run that is not stored answers:
+// store.ErrRunNotFound. The run it observed was deleted and reaped since, and
+// nothing is written: a tombstone planted here would hold a free ID against
+// the next birth. An unbound delete gets nil: tombstoning an absent ID is the
+// idempotent no-op of a gone run. It is judged on the transaction's read, the
+// one every path to that tombstone crosses, so a run reaped after the
+// delete's earlier reads is refused as one reaped before them.
+func boundDeletionAbsence(ctx context.Context, id string) error {
+	if _, bound := store.RunDataBindingFrom(ctx); bound {
+		return fmt.Errorf("store/mongo: delete run %s: %w", id, store.ErrRunNotFound)
+	}
+	return nil
+}
+
 // The original format and deleted_at identify this cleanup. Pending tombstones
 // cannot be pruned. An old tombstone with no pending field already completed
 // the historical cleanup-before-tombstone protocol.
@@ -49,6 +64,9 @@ func (s *Store) beginValueDeletion(ctx context.Context, id string) (valueDeletio
 		pending = false
 		r, raw, err := s.readRunFormatMetadata(sc, id)
 		if err == nil && r == nil {
+			if e := boundDeletionAbsence(sc, id); e != nil {
+				return nil, e
+			}
 			if originalFormat.Format != store.LegacyValueFormat {
 				return nil, store.ErrValueFormatChanged
 			}

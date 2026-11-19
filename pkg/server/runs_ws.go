@@ -512,6 +512,17 @@ func (c *runConn) writeActionFailure(env runWSEnvelope, err error) bool {
 	return true
 }
 
+// refuseChecked answers an envelope's refusal: on a checked envelope by the
+// failure rule first (writeActionFailure — the refusal may have judged the
+// run that holds the ID now, not the socket's origin), otherwise, or when
+// the origin holds, with code and msg.
+func (c *runConn) refuseChecked(env runWSEnvelope, checked bool, cause error, code, msg string) {
+	if checked && c.writeActionFailure(env, cause) {
+		return
+	}
+	c.sendError(code, msg, env.AckID)
+}
+
 // requireBoundSource refuses, before any subscription, a stream source that
 // cannot honor the bound context of a connection with an origin: stripping
 // the binding would serve whatever run holds the ID now.
@@ -1183,7 +1194,9 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)
 	if d != nil {
-		c.sendError(d.reason, d.detail, env.AckID)
+		// The subject was read from the run behind the ID now: on a lost
+		// origin the denial judged another run, and the loss is the answer.
+		c.refuseChecked(env, expect.Checked(), d.err(), d.reason, d.detail)
 		return
 	}
 	// The gate's run-quota increment IS the metering, so the returns between
@@ -1223,7 +1236,8 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	if filePath == "" {
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
-			c.sendError("file_path_required", "run has no persisted FilePath; supply file_path or source in payload", env.AckID)
+			const msg = "run has no persisted FilePath; supply file_path or source in payload"
+			c.refuseChecked(env, expect.Checked(), errors.New(msg), "file_path_required", msg)
 			return
 		}
 	}
@@ -1233,7 +1247,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		if errors.Is(err, bundle.ErrAuthorDocument) {
 			code = "author_document"
 		}
-		c.sendError(code, err.Error(), env.AckID)
+		c.refuseChecked(env, expect.Checked(), err, code, err.Error())
 		return
 	}
 	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)
