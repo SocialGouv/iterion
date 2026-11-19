@@ -60,7 +60,7 @@ func (s *FilesystemRunStore) LoadInteraction(_ context.Context, runID, interacti
 
 // AnswerInteractionCAS implements InteractionAnswerCAS: the load →
 // check-unanswered → write sequence runs under an exclusive per-run
-// interaction lock (flock on Unix, PID-lock on Windows), so of two
+// interaction lock (flock on Unix, LockFileEx on Windows), so of two
 // concurrent answerers — REST racing CLI, a double-submit — exactly one
 // wins and the other gets ErrInteractionAlreadyAnswered. The critical
 // section is a few ms; contention waits (bounded) instead of erroring.
