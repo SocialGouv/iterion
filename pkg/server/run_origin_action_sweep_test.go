@@ -249,6 +249,9 @@ func dispatchShape(body *ast.BlockStmt) (*ast.SwitchStmt, error) {
 		if len(cc.Body) != 1 || connMethod(cc.Body[0]) == "" {
 			return nil, fmt.Errorf("a dispatch case holds %d statements, want one call of a connection method", len(cc.Body))
 		}
+		if argsEvaluate(cc.Body[0]) {
+			return nil, fmt.Errorf("a dispatch case's call evaluates a call or a closure in its arguments")
+		}
 		if cc.List == nil {
 			defaults++
 			if !isUnknownTypeAnswer(cc.Body[0]) {
@@ -308,6 +311,11 @@ func isActRungGuard(s *ast.IfStmt) bool {
 		return false
 	}
 	if sel, ok := call.Fun.(*ast.SelectorExpr); !ok || sel.Sel.Name != "mutationAllowed" {
+		return false
+	} else if recv, ok := sel.X.(*ast.Ident); !ok || recv.Name != "c" {
+		return false
+	}
+	if arg, ok := call.Args[0].(*ast.Ident); !ok || arg.Name != "env" {
 		return false
 	}
 	ret, ok := inner.Body.List[0].(*ast.ReturnStmt)
@@ -618,4 +626,24 @@ func TestRunMutationSweepRefusesDispatchShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// argsEvaluate reports whether the arguments of the case's one call hold a
+// call, a closure or a receive: code the sweep does not read.
+func argsEvaluate(s ast.Stmt) bool {
+	found := false
+	for _, a := range s.(*ast.ExprStmt).X.(*ast.CallExpr).Args {
+		ast.Inspect(a, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.CallExpr, *ast.FuncLit:
+				found = true
+			case *ast.UnaryExpr:
+				if v.Op == token.ARROW {
+					found = true
+				}
+			}
+			return !found
+		})
+	}
+	return found
 }
