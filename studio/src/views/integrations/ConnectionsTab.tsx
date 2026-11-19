@@ -34,8 +34,9 @@ const STATUS_VARIANT: Record<string, "success" | "warning" | "neutral" | "danger
 
 // The capability set the server admits (pkg/connection.CapabilityNames). `action`
 // is the default server-side; `agent` lets a model choose calls through the MCP
-// facade; `trigger` is stored but inert until the webhook ingress lands — the
-// server's `warnings` say so on every row that grants it.
+// facade; `trigger` lets the connection feed a source — a connector ingress
+// believes a delivery on it, and a subscription to its package's triggers
+// (pushed or polled) requires it.
 const CAPABILITIES = ["action", "agent", "trigger"] as const;
 
 // ConnectionsTab is the tenant's connector connections (ADR-098, #2759): the

@@ -1168,6 +1168,11 @@ a delivery whose issue carries a hold label is filtered, not launched.
 
 ## <a name="connector-ingress"></a>A connector ingress: `POST /api/webhooks/c/{id}`
 
+A connector trigger is delivered through an ingress or read by a poller: a
+polled trigger (an RSS feed, a Jira JQL) needs no ingress and no webhook
+configuration — see [event sources](event-sources.md#running-pollers). This
+section is the delivered half.
+
 A webhook with `provider: connector` is a connector package's **ingress**
 ([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §6): the
 vendor is the bound connection's, and the package's `ingress:` block in

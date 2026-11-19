@@ -4,10 +4,11 @@ import { ChevronRight } from "lucide-react";
 // TriggerFamiliesExplainer is the collapsed "what can fire a bot?" panel on
 // the Automations tab. The intro copy enumerates the event families; this
 // panel explains each one and — crucially — WHICH surface owns it, because
-// only two of the five (board, run-completion) are created on this page:
+// only two of the six (board, run-completion) are created on this page:
 // forge webhooks are provisioned by the repo binding (Integrations →
-// Repositories), schedules live on the sibling tab, and inbound iwh_ tokens
-// live in Integrations → Webhooks.
+// Repositories), schedules live on the sibling tab, connector sources are
+// plugged from the Sources catalogue, and inbound iwh_ tokens live in
+// Integrations → Webhooks.
 export default function TriggerFamiliesExplainer({
   onOpenSchedules,
   onNewTrigger,
@@ -39,7 +40,7 @@ export default function TriggerFamiliesExplainer({
         />
         What can fire a bot?
         <span className="font-normal text-fg-subtle">
-          — the five automation families and where each is managed
+          — the six automation families and where each is managed
         </span>
       </summary>
       <dl className="space-y-3 border-t border-border-subtle px-3 py-3">
@@ -85,6 +86,20 @@ export default function TriggerFamiliesExplainer({
           A PR/MR opens or a <code>/revi</code> note lands on your forge.
           Provisioned automatically when you connect a repository and enable
           bots on it — managed per repo, not created on this page.
+        </Family>
+        <Family
+          name="Connector source"
+          where={
+            <Link href="/sources" className="text-accent-text hover:underline">
+              Sources catalogue
+            </Link>
+          }
+        >
+          A vendor event or a polled item — a Slack message, a Jira issue, a
+          Sentry alert, a new feed entry — launches the bot through a
+          connection. Plugged from the Sources catalogue: pick the account,
+          the event and the bot; the editor shows a bot's sources on its start
+          node.
         </Family>
         <Family
           name="Custom integration"

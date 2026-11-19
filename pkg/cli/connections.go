@@ -262,12 +262,12 @@ func addConnection(opts ConnectionAddOptions, out io.Writer, cat connection.Cata
 	// tell an operator whether their PAT rides a header or a query string.
 	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
-	// A grant nothing performs is said at the moment it is MADE. `agent` and
-	// `trigger` are accepted (each is a settled decision, and the operator's
-	// choice is not silently narrowed); `agent` is performed — the MCP facade
-	// reads it (#2758) — while `trigger` is still inert, so the one surface
-	// that could tell them must: the alternative is a warning about a grant
-	// that works, or silence about one that does not.
+	// A grant nothing performs is said at the moment it is MADE: the one
+	// surface that could tell a working grant from an inert one must, or it
+	// warns about a grant that works or keeps silent about one that does not.
+	// Today every grant is performed — `agent` by the MCP facade (#2758),
+	// `trigger` by the connector ingress and the pollers — so GrantAdvice
+	// answers "" until a new capability lands ahead of what reads it.
 	if advice := connection.GrantAdvice(caps); advice != "" {
 		fmt.Fprintf(out, "  warning: %s\n", advice)
 	}

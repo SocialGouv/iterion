@@ -155,7 +155,8 @@ export default function TriggersView() {
     <div className="flex flex-col gap-3">
       <p className="text-xs text-fg-muted">
         Event-driven triggers fire a bot when something happens — a board card moves, a run finishes,
-        a cron tick, a forge event, or a custom integration. Managed by repo and by bot on one spine.
+        a cron tick, a forge event, a connector source, or a custom integration. Managed by repo and by
+        bot on one spine.
       </p>
 
       <TriggerFamiliesExplainer
