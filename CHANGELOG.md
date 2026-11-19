@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.18.3](https://github.com/SocialGouv/iterion/compare/v7.18.2...v7.18.3) (2026-11-19)
+
+### Bug Fixes
+
+* **ci:** remove PID publication and chart scratch races ([#3403](https://github.com/SocialGouv/iterion/issues/3403)) ([5d4bc65](https://github.com/SocialGouv/iterion/commit/5d4bc652cc00b2fbb2395a46f3635a0732a1ea29)), closes [#3263](https://github.com/SocialGouv/iterion/issues/3263) [#3210](https://github.com/SocialGouv/iterion/issues/3210)
+
+    <details><summary>why</summary>
+
+    Wait for a valid positive fixture PID instead of treating file creation as publication. Keep rendered chart copies in TMPDIR (or /tmp) so repository sweeps cannot walk a tree another test is about to remove.
+
+    </details>
+
 ## [7.18.2](https://github.com/SocialGouv/iterion/compare/v7.18.1...v7.18.2) (2026-11-19)
 
 ### Bug Fixes
