@@ -45,11 +45,11 @@ func newDeadLetterWorld(t *testing.T) *deadLetterWorld {
 		TriggerID: "chat.message.posted", DedupKey: "d2", ReceivedAt: at, Event: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
-	refused := intake.Pair{TenantID: "t1", IntakeID: in.ID, SubscriptionID: "s-match", ReceivedAt: at, CreatedAt: at,
-		State: intake.PairRefused, Reason: "expression past its budget"}
-	gone := refused
-	gone.SubscriptionID = "s-gone"
-	live := intake.Pair{TenantID: "t1", IntakeID: in.ID, SubscriptionID: "s-dead", ReceivedAt: at, CreatedAt: at, State: intake.PairPending}
+	refused := intake.PairFor(in, "s-match", at)
+	refused.State, refused.Reason = intake.PairRefused, "expression past its budget"
+	gone := intake.PairFor(in, "s-gone", at)
+	gone.State, gone.Reason = refused.State, refused.Reason
+	live := intake.PairFor(in, "s-dead", at)
 	if err := store.WritePairs(ctx, []intake.Pair{refused, gone, live}); err != nil {
 		t.Fatal(err)
 	}

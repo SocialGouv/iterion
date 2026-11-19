@@ -151,7 +151,8 @@ func IntakeID(tenantID, source, dedupKey string) string {
 	return "in-" + digest(tenantID, source, dedupKey)
 }
 
-// Pair is what one intake owes one candidate subscription.
+// Pair is what one intake owes one candidate subscription. A pair a store
+// writes comes from PairFor, which reads the pair's identity off its intake.
 type Pair struct {
 	ID             string `json:"id" bson:"_id"`
 	TenantID       string `json:"tenant_id" bson:"tenant_id"`
@@ -177,6 +178,12 @@ type Pair struct {
 	Epoch int `json:"epoch" bson:"epoch"`
 	// RunID is the run of the acknowledged submission.
 	RunID string `json:"run_id,omitempty" bson:"run_id,omitempty"`
+	// ItemKey names a polled intake's item at its version (PolledItemKey):
+	// the same on every poller of the connection and trigger that accepts
+	// that revision. A pair of a subscription already launched with the
+	// same item key is not launched again (Store.LaunchedPair). Empty on a
+	// webhook pair.
+	ItemKey string `json:"item_key,omitempty" bson:"item_key,omitempty"`
 
 	Attempts   int       `json:"attempts" bson:"attempts"`
 	Owner      string    `json:"owner,omitempty" bson:"owner,omitempty"`
@@ -187,11 +194,47 @@ type Pair struct {
 	LaunchedAt *time.Time `json:"launched_at,omitempty" bson:"launched_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at" bson:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at" bson:"updated_at"`
+
+	// identity is what PairFor read off the intake, never stored: WritePairs
+	// refuses a pair whose fields no longer say it.
+	identity pairIdentity
+}
+
+// pairIdentity is what PairFor read off a pair's intake.
+type pairIdentity struct {
+	intakeID, tenantID, itemKey string
+}
+
+// PairFor is the pair in owes subscriptionID: pending, created at
+// createdAt, listed and expiring with its intake, and carrying a polled
+// intake's item key. It is the one constructor of a pair a store writes —
+// WritePairs refuses a pair that does not come from it — so no writer can
+// leave a polled pair without the key its launch is judged on.
+func PairFor(in Intake, subscriptionID string, createdAt time.Time) Pair {
+	var itemKey string
+	if in.PollerID != "" {
+		itemKey = PolledItemKey(in.TenantID, in.ConnectionID, in.TriggerID, in.DedupKey)
+	}
+	return Pair{
+		TenantID: in.TenantID, IntakeID: in.ID, SubscriptionID: subscriptionID,
+		ReceivedAt: in.ReceivedAt, ExpiresAt: in.ExpiresAt, ItemKey: itemKey,
+		State: PairPending, CreatedAt: createdAt,
+		identity: pairIdentity{intakeID: in.ID, tenantID: in.TenantID, itemKey: itemKey},
+	}
 }
 
 // PairID derives a pair's id: one pair per (intake, subscription).
 func PairID(intakeID, subscriptionID string) string {
 	return "pr-" + digest(intakeID, subscriptionID)
+}
+
+// PolledItemKey names a polled item at its version within a tenant's
+// connection and trigger — dedupKey is the intake's (item id, item
+// version) — whatever poller accepted it: a subscription moved to another
+// query joins another poller, and both pollers' intakes of one revision
+// carry the same key.
+func PolledItemKey(tenantID, connectionID, triggerID, dedupKey string) string {
+	return "it-" + digest(tenantID, connectionID, triggerID, dedupKey)
 }
 
 // SubmissionKey is the key the pair's current epoch submits its launch under
@@ -257,12 +300,21 @@ type Store interface {
 
 	// WritePairs inserts pairs that do not exist yet; an existing pair is
 	// left untouched whatever state it reached, so a matcher repeating its
-	// work after a lost claim adds nothing. Ids are derived (PairID).
+	// work after a lost claim adds nothing. Ids are derived (PairID). A pair
+	// that does not come from PairFor, or whose intake, tenant or item key
+	// no longer say what PairFor read, is refused (ErrInvalid).
 	WritePairs(ctx context.Context, pairs []Pair) error
 	GetPair(ctx context.Context, tenantID, id string) (Pair, error)
 	// ListPairs lists a tenant's pairs, newest intake first, then by intake
 	// and subscription id, at most limit (0 = no bound).
 	ListPairs(ctx context.Context, tenantID string, q PairQuery, limit int) ([]Pair, error)
+	// LaunchedPair finds a launched pair of subscriptionID carrying
+	// itemKey — the item revision already delivered to that subscription,
+	// through whatever poller — and, among several, the earliest launched
+	// (then the lowest id). Only a launched pair counts: one pending,
+	// refused or dead delivered nothing. ErrInvalid for an empty item key,
+	// which a webhook pair carries and which names no item.
+	LaunchedPair(ctx context.Context, tenantID, subscriptionID, itemKey string) (Pair, bool, error)
 	// ClaimPairs is ClaimIntakes for pending pairs.
 	ClaimPairs(ctx context.Context, owner string, now time.Time, ttl time.Duration, limit int) ([]Pair, error)
 	MarkPairLaunched(ctx context.Context, id string, generation int64, runID string, at time.Time) error
@@ -356,6 +408,11 @@ func preparePair(p Pair) (Pair, error) {
 	case p.CreatedAt.IsZero():
 		return Pair{}, fmt.Errorf("%w: pair without a creation instant", ErrInvalid)
 	}
+	// A pair not built by PairFor holds no identity, and so names an intake
+	// it was not read off.
+	if id := p.identity; id.intakeID != p.IntakeID || id.tenantID != p.TenantID || id.itemKey != p.ItemKey {
+		return Pair{}, fmt.Errorf("%w: pair of subscription %s names intake %s of tenant %q with item key %q, and PairFor read intake %q of tenant %q with item key %q: a written pair is built by PairFor from its intake", ErrInvalid, p.SubscriptionID, p.IntakeID, p.TenantID, p.ItemKey, id.intakeID, id.tenantID, id.itemKey)
+	}
 	switch p.State {
 	case PairPending, PairNotMatched, PairRefused:
 	default:
@@ -365,6 +422,7 @@ func preparePair(p Pair) (Pair, error) {
 		return Pair{}, fmt.Errorf("%w: a %s pair says why", ErrInvalid, p.State)
 	}
 	p.ID = PairID(p.IntakeID, p.SubscriptionID)
+	p.identity = pairIdentity{}
 	p.MatchRefusal = p.State == PairRefused
 	p.ReceivedAt = stamp(p.ReceivedAt)
 	p.ExpiresAt = stampPtr(p.ExpiresAt)
@@ -379,6 +437,14 @@ func preparePair(p Pair) (Pair, error) {
 	p.LastError = ""
 	p.LaunchedAt = nil
 	return p, nil
+}
+
+// checkItemKey refuses a LaunchedPair read that names no item.
+func checkItemKey(subscriptionID, itemKey string) error {
+	if itemKey == "" {
+		return fmt.Errorf("%w: a launched-pair read for subscription %s names no item key", ErrInvalid, subscriptionID)
+	}
+	return nil
 }
 
 // digest hashes length-prefixed fields.

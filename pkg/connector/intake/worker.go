@@ -242,15 +242,12 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 func PairsOf(in Intake, verdicts []Verdict, now time.Time) []Pair {
 	pairs := make([]Pair, 0, len(verdicts))
 	for _, v := range verdicts {
-		p := Pair{
-			TenantID: in.TenantID, IntakeID: in.ID, SubscriptionID: v.SubscriptionID,
-			ReceivedAt: in.ReceivedAt, ExpiresAt: in.ExpiresAt, CreatedAt: now,
-		}
+		p := PairFor(in, v.SubscriptionID, now)
 		switch {
 		case v.Refusal != "":
 			p.State, p.Reason = PairRefused, v.Refusal
 		case v.Matched:
-			p.State = PairPending
+			// PairFor's pending is the matched verdict.
 		default:
 			p.State, p.Reason = PairNotMatched, v.Reason
 			if p.Reason == "" {
@@ -336,17 +333,30 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 	// window is judged again before the launch, never handed a spent one.
 	rctx, rcancel := context.WithTimeout(ctx, deadline.Sub(w.now()))
 	in, err := w.Store.GetIntake(rctx, p.TenantID, p.IntakeID)
-	rcancel()
 	if errors.Is(err, ErrNotFound) {
+		rcancel()
 		w.refusePair(ctx, p, "its intake is gone (expired or removed)")
 		return
 	}
+	if err != nil {
+		err = fmt.Errorf("read intake %s: %w", p.IntakeID, err)
+	}
+	var delivered Pair
+	var already bool
+	if err == nil {
+		delivered, already, err = w.delivered(rctx, p)
+	}
+	rcancel()
 	if !w.now().Before(deadline) {
 		release()
 		return
 	}
 	if err != nil {
-		w.failPair(ctx, p, fmt.Errorf("read intake %s: %w", p.IntakeID, err))
+		w.failPair(ctx, p, err)
+		return
+	}
+	if already {
+		w.refusePair(ctx, p, fmt.Sprintf("already delivered to this subscription: pair %s launched run %s for the same item revision", delivered.ID, delivered.RunID))
 		return
 	}
 	// The remaining share of the window, as a duration: the worker's clock
@@ -383,6 +393,23 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 	default:
 		w.failPair(ctx, p, err)
 	}
+}
+
+// delivered finds the launched pair that already delivered a polled pair's
+// item revision to its subscription, through this pair's poller or another
+// one of the connection (Store.LaunchedPair). It is read under the claim,
+// just before the submission: a pair the launch path refused, or one still
+// owed, delivered nothing, and this one launches. A webhook pair names no
+// item and is never judged so.
+func (w *Worker) delivered(ctx context.Context, p Pair) (Pair, bool, error) {
+	if p.ItemKey == "" {
+		return Pair{}, false, nil
+	}
+	prior, found, err := w.Store.LaunchedPair(ctx, p.TenantID, p.SubscriptionID, p.ItemKey)
+	if err != nil {
+		return Pair{}, false, fmt.Errorf("read the pair that may have delivered item %s to subscription %s: %w", p.ItemKey, p.SubscriptionID, err)
+	}
+	return prior, found, nil
 }
 
 func (w *Worker) failPair(ctx context.Context, p Pair, cause error) {
