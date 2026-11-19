@@ -316,7 +316,8 @@ func TestTasksMissingArg(t *testing.T) {
 }
 
 func TestMemoryCommand(t *testing.T) {
-	// Pin TestMain's isolation before the command can read the inherited HOME.
+	// /memory is the command that reads HOME; never let it read the operator's.
+	t.Setenv("HOME", t.TempDir())
 	hometest.RequireNoOperatorProfile(t, os.Getenv("HOME"))
 	t.Chdir(t.TempDir())
 
