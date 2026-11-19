@@ -286,7 +286,7 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 			return
 		}
 		event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "watch_id": m.WatchID, "actions": m.Policy.Actions, "expires_at": m.Policy.ExpiresAt, "max_actions": m.Policy.MaxActions}
-		if err := c.server.deliverHostEventWithService(mctx, c.runs, assistant.ID, m.Activation.Kind, event, false, m.Activation.ID); err != nil {
+		if err := c.server.deliverHostEventWithService(mctx, c.runs, assistant.ID, m.Activation.Kind, event, false, m.Activation.ID, runview.ActionOrigin{}); err != nil {
 			if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
 				m.Activation.State, m.Activation.Error, m.Activation.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
 				m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("activate the assistant", until)
@@ -554,7 +554,7 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			}
 			r = &m.Receipts[idx]
 			event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "action": r.Action, "action_receipt_id": r.ID, "state": r.State, "error": r.Error, "event_seq": r.EventSeq}
-			if err := c.server.deliverHostEventWithService(ctx, c.runs, assistant.ID, r.ResultDelivery.Kind, event, false, r.ResultDelivery.ID); err != nil {
+			if err := c.server.deliverHostEventWithService(ctx, c.runs, assistant.ID, r.ResultDelivery.Kind, event, false, r.ResultDelivery.ID, runview.ActionOrigin{}); err != nil {
 				if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
 					r.ResultDelivery.State, r.ResultDelivery.Error, r.ResultDelivery.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
 					m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("deliver the action result", until)
@@ -776,8 +776,18 @@ func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Req
 		s.writeCarriedBirthFailure(w, r, err)
 		return
 	}
+	// Under an admitted expectation the mission is created for the target
+	// the gate admitted, or not at all: the target is verified right after
+	// its load, and a failure answers run_origin_lost only for a lost target.
+	origin := s.admittedAction(r, r.PathValue("id"))
 	target, err := s.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
+	if err == nil {
+		err = origin.expect().Verify(target)
+	}
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "target run not found")
 		return
 	}

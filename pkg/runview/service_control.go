@@ -21,6 +21,17 @@ import (
 // run is not held by this process — cross-process cancel is not
 // supported in the current design.
 func (s *Service) Cancel(runID string) error {
+	return s.CancelCtx(context.Background(), runID)
+}
+
+// CancelCtx is Cancel under ctx. A checked caller passes a context bound to
+// the run it admitted (store.BindRunObservation), detached from its request
+// (context.WithoutCancel: the flip is the cancel's record and outlives the
+// client). In cloud mode the publisher's load and status flip then refuse a
+// successor recreated under the ID, and its NATS cancel follows only a flip
+// that landed on the admitted run. In process the manager's cancel is keyed
+// by run ID: the caller's bound load is its pre-check.
+func (s *Service) CancelCtx(ctx context.Context, runID string) error {
 	if s.publisher != nil {
 		// Cloud-mode: the runner pool owns the lifecycle. The
 		// publisher flips the Mongo doc to cancelled so the
@@ -29,7 +40,7 @@ func (s *Service) Cancel(runID string) error {
 		// is currently holding the lease, the cancel subject
 		// `iterion.cancel.<run_id>` unwinds engine.Run via
 		// handleContextDoneWithCheckpoint.
-		return s.publisher.CancelRun(context.Background(), runID)
+		return s.publisher.CancelRun(ctx, runID)
 	}
 	return s.manager.Cancel(runID)
 }

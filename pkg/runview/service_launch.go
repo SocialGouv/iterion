@@ -1159,6 +1159,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
+	// A checked resume re-enters the run its surface admitted or nothing:
+	// compared before the admission and the reconcile below, which would
+	// otherwise judge and move a successor recreated under the ID.
+	if err := spec.ExpectOrigin.Verify(r); err != nil {
+		return nil, err
+	}
 	// The one choke point every resume surface crosses, judged on the
 	// document this resume re-enters before anything is reconciled, compiled,
 	// spawned or published: an untrusted run resumes only on an admission
@@ -1323,14 +1329,21 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// granular on purpose: a whole-doc SaveRun from the
 	// copy loaded at the top of this method would revert any transition
 	// that landed since (a cancel, a finish). Best-effort: a store blip
-	// here does not fail the resume.
+	// here does not fail the resume. A checked resume writes the run it
+	// verified: both writes are bound to its origin, so a successor
+	// recreated under the ID since refuses them (and the spawn below
+	// refuses the resume).
 	if raised {
+		bctx, berr := spec.ExpectOrigin.Bind(parent, s.store)
+		if berr != nil {
+			return nil, berr
+		}
 		merged := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
-		if perr := s.store.SetRunBudgetOverrides(parent, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
+		if perr := s.store.SetRunBudgetOverrides(bctx, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
 			s.logger.Warn("runview: resume: persist merged budget ask on %s: %v", spec.RunID, perr)
 		}
 		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
-			if serr := s.store.SetRunBudgetSnapshot(parent, spec.RunID, snap); serr != nil && s.logger != nil {
+			if serr := s.store.SetRunBudgetSnapshot(bctx, spec.RunID, snap); serr != nil && s.logger != nil {
 				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
 			}
 		}
@@ -1439,6 +1452,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			expectedResumeStatus: spec.ExpectedStatus, resumeReceiptID: spec.ReceiptID,
 			artifactResumePreflight: artifactPreflight,
 			budgetOverrides:         RunBudgetOverrides(rawBudget),
+			expectOrigin:            spec.ExpectOrigin,
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
 			// The codemode launch choice replays from the run doc, and a
@@ -1467,6 +1481,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			// panics, and nothing recovers in the run goroutine.
 			_, r2, err := store.LoadRunWithValueFormat(sctx, s.store, spec.RunID)
 			if err != nil {
+				return err
+			}
+			if err := spec.ExpectOrigin.Verify(r2); err != nil {
 				return err
 			}
 			if spec.ExpectedStatus != "" && r2.Status != spec.ExpectedStatus {
@@ -1871,18 +1888,25 @@ func (s *Service) spawnRun(
 	// activation would enforce correctly for one turn and then disappear on the
 	// next HTTP/WS/watch-driven resume. SaveRun is a full-document replacement,
 	// hence doing it here rather than in the HTTP handler is the race-safe seam.
+	// A checked resume's write is bound to the origin its surface admitted:
+	// a successor recreated under the ID since its check refuses it, and the
+	// resume with it, before anything executes.
 	if ex.budgetOverrides != nil {
 		var saveErr error
-		if patcher := store.AsRunBudgetOverridesPatcher(s.store); patcher != nil {
-			saveErr = patcher.PatchRunBudgetOverrides(sctx, runID, ex.budgetOverrides)
-		} else {
-			_, r, loadErr := store.LoadRunWithValueFormat(sctx, s.store, runID)
+		pctx, bindErr := ex.expectOrigin.Bind(sctx, s.store)
+		switch patcher := store.AsRunBudgetOverridesPatcher(s.store); {
+		case bindErr != nil:
+			saveErr = bindErr
+		case patcher != nil:
+			saveErr = patcher.PatchRunBudgetOverrides(pctx, runID, ex.budgetOverrides)
+		default:
+			_, r, loadErr := store.LoadRunWithValueFormat(pctx, s.store, runID)
 			if loadErr != nil {
 				saveErr = loadErr
 			} else {
 				copy := *ex.budgetOverrides
 				r.BudgetOverrides = &copy
-				saveErr = s.store.SaveRun(sctx, r)
+				saveErr = s.store.SaveRun(pctx, r)
 			}
 		}
 		if saveErr != nil {
@@ -2180,6 +2204,10 @@ type launchExtras struct {
 	// acceptScratchLoss is a resume's consent to go on although the run's
 	// scratch does not travel (ResumeSpec.AcceptScratchLoss).
 	acceptScratchLoss bool
+	// expectOrigin is a checked resume's admitted origin
+	// (ResumeSpec.ExpectOrigin): the write spawnRun makes before the
+	// execution starts is bound to it. Zero on every launch.
+	expectOrigin ActionOrigin
 	// compiled is what the launch's compile read — the unit's files — so
 	// the run records them from the same read as its identity: a studio
 	// run's FilePath is the store's copy of its main, beside which no

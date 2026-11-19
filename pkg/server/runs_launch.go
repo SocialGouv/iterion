@@ -1108,8 +1108,15 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// A failure of a resume the gate admitted on its expected birth answers
 	// run_origin_lost when the run behind the ID is no longer that birth
-	// (writeActionFailure), whichever step refused it.
+	// (writeActionFailure), whichever step refused it. Its load below stays
+	// unbound (the subject and the source are resolved from it); Resume
+	// verifies the run it re-enters against expect, and the upload promotion
+	// is bound to the admitted run.
 	origin := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, origin)
+	if !ok {
+		return
+	}
 	var (
 		gateMeta    *store.Run
 		gateMetaErr = errors.New("run service unavailable")
@@ -1267,7 +1274,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		if runMeta.Checkpoint != nil {
 			pausedNode = runMeta.Checkpoint.PausedNodeID()
 		}
-		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
+		promoteCtx, ok := s.bindAction(w, r, origin, ctx)
+		if !ok {
+			span.SetStatus(codes.Error, "scope unavailable")
+			return
+		}
+		promoted, promoteErr := s.promoteAnswerUploads(promoteCtx, id, pausedNode, answers, req.Attachments)
 		if promoteErr != nil {
 			span.RecordError(promoteErr)
 			if s.writeActionFailure(w, r, origin, promoteErr) {
@@ -1293,7 +1305,8 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// What the gate above judged on the run it read: the run service
 		// refuses the resume when the document it re-enters names another
 		// trust or another fork author subject.
-		Admitted: gateAdmitted(subj, adm),
+		Admitted:     gateAdmitted(subj, adm),
+		ExpectOrigin: expect,
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {

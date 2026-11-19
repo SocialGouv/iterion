@@ -57,7 +57,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: cancel run %q via HTTP from %s", id, s.clientIP(r))
 	}
-	if err := s.runs.Cancel(id); err != nil {
+	if err := s.cancelAdmitted(ctx, a); err != nil {
 		// If the run is not currently active in this process, the
 		// operator's "cancel" intent depends on the persisted status:
 		//   - dispatcher-spawned + running: the runview Manager only
@@ -109,6 +109,20 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
+}
+
+// cancelAdmitted signals the cancel of the run a cancels. A checked cancel
+// hands its bound context, detached from the request (the flip is the
+// cancel's record and outlives the client), to the run service: in cloud
+// mode the publisher's load and status flip refuse a successor recreated
+// under the ID, and its NATS cancel follows only a flip that landed. An
+// unchecked one is Cancel, on context.Background, as every caller without an
+// expectation cancels.
+func (s *Server) cancelAdmitted(bound context.Context, a actionOrigin) error {
+	if !a.checked {
+		return s.runs.Cancel(a.runID)
+	}
+	return s.runs.CancelCtx(context.WithoutCancel(bound), a.runID)
 }
 
 // watchResponse is the body of the watch endpoints — the run's full
@@ -275,15 +289,26 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: fork run %q at node %q from %s", id, req.NodeID, s.clientIP(r))
 	}
+	// Under an admitted expectation the fork verifies its source; the child
+	// it creates is another run, created unbound.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	result, err := s.runs.Fork(r.Context(), runview.ForkSpec{
-		RunID:      id,
-		NodeID:     req.NodeID,
-		TurnIndex:  req.TurnIndex,
-		RewindCode: req.RewindCode,
-		ForkName:   req.ForkName,
-		NewInputs:  req.NewInputs,
+		RunID:              id,
+		NodeID:             req.NodeID,
+		TurnIndex:          req.TurnIndex,
+		RewindCode:         req.RewindCode,
+		ForkName:           req.ForkName,
+		NewInputs:          req.NewInputs,
+		SourceExpectOrigin: expect,
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		// A node with no turn checkpoint is a caller mistake, not a server
 		// fault: only agent/judge nodes that completed at least one LLM
 		// turn are forkable (tool/compute nodes never checkpoint turns).
@@ -371,8 +396,19 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Under an admitted expectation Rewind verifies the run it loads; this
+	// load stays unbound (it resolves the source), and a failure answers
+	// run_origin_lost only for a lost run (writeActionFailure).
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -450,8 +486,12 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		RestoreScope:      restoreScope,
 		SourcePath:        sourcePath,
 		CurrentSourcePath: currentPath,
+		ExpectOrigin:      expect,
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, runview.ErrRewindNotRewindable), errors.Is(err, store.ErrRunConflict):
 			// 409: the run is running or terminal — a state conflict the

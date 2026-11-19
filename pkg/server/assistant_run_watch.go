@@ -1521,9 +1521,14 @@ func (s *Server) handleCreateAssistantWatch(w http.ResponseWriter, r *http.Reque
 	}
 	// A failure answers run_origin_lost only when the TARGET — the run the
 	// gate admitted — is gone or replaced; the assistant run's absence is
-	// its own 404 (writeActionFailure reads the target again).
+	// its own 404 (writeActionFailure reads the target again). Under an
+	// admitted expectation the watch is armed on the target the gate
+	// admitted, or not at all: the target is verified right after its load.
 	origin := s.admittedAction(r, targetID)
 	target, err := c.runs.LoadRunCtx(r.Context(), targetID)
+	if err == nil {
+		err = origin.expect().Verify(target)
+	}
 	if err != nil {
 		if s.writeActionFailure(w, r, origin, err) {
 			return

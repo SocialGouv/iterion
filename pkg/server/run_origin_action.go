@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -56,13 +57,41 @@ func (a actionOrigin) bind(ctx context.Context) (context.Context, error) {
 // actionContext is bind on the request context; a refusal answers 503
 // scope_unavailable and the action does not run.
 func (s *Server) actionContext(w http.ResponseWriter, r *http.Request, a actionOrigin) (context.Context, bool) {
-	ctx, err := a.bind(r.Context())
+	return s.bindAction(w, r, a, r.Context())
+}
+
+// bindAction is bind on ctx, a context the handler derived from its request
+// (detached, tenant-stamped); a refusal answers 503 scope_unavailable and the
+// action does not run.
+func (s *Server) bindAction(w http.ResponseWriter, r *http.Request, a actionOrigin, ctx context.Context) (context.Context, bool) {
+	bound, err := a.bind(ctx)
 	if err != nil {
 		s.httpErrorCode(w, r, http.StatusServiceUnavailable, errCodeScopeUnavailable,
 			"run %s cannot be bound to the birth this request expected: %v", a.runID, err)
 		return nil, false
 	}
-	return ctx, true
+	return bound, true
+}
+
+// expect is the admitted origin as a run service carries it when the action
+// continues an execution or reads other runs (runview.ActionOrigin): the
+// service verifies the run it loads and binds only its named store-only
+// writes. An unchecked action carries the zero value.
+func (a actionOrigin) expect() runview.ActionOrigin {
+	if !a.checked {
+		return runview.ActionOrigin{}
+	}
+	return runview.ExpectRunOrigin(a.origin)
+}
+
+// actionExpectation is expect for a handler whose service binds writes of
+// the addressed run to it: a store that may drop the context is refused
+// before the action runs, 503 scope_unavailable, as actionContext refuses it.
+func (s *Server) actionExpectation(w http.ResponseWriter, r *http.Request, a actionOrigin) (runview.ActionOrigin, bool) {
+	if _, ok := s.actionContext(w, r, a); !ok {
+		return runview.ActionOrigin{}, false
+	}
+	return a.expect(), true
 }
 
 // writeActionFailure answers a checked action that failed, whatever the

@@ -551,6 +551,14 @@ func NewForTesting(cfg Config, publish func(context.Context, *queue.RunMessage) 
 	return p
 }
 
+// SetCancelForTesting hands the NATS cancel subject (iterion.cancel.<run_id>)
+// of a NewForTesting publisher to cancel, for the witnesses of other packages
+// that must see whether the real cancel path signalled a run, and which.
+// Production wiring goes through New.
+func (p *Publisher) SetCancelForTesting(cancel func(runID string, admitted store.LeaseIdentity) error) {
+	p.cancelRun = cancel
+}
+
 // newPublisher maps cfg onto a Publisher, the queue transport left to the
 // caller.
 func newPublisher(cfg Config) *Publisher {
@@ -4655,6 +4663,11 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 	// so bypass the filter explicitly here rather than crashing — exactly the
 	// seam store.WithoutTenantFilter exists for. Without this, cancelling any
 	// cloud run 502s (panic: "tenant-scoped query without tenant in ctx").
+	//
+	// A checked caller (runview.Service.CancelCtx) hands a context bound to
+	// the run it admitted; the bypass keeps that binding, so the load and
+	// the flip below refuse a successor recreated under the ID — and the
+	// NATS cancel, keyed by run ID, follows only a flip that landed.
 	ctx = store.WithoutTenantFilter(ctx)
 	r, err := p.store.LoadRun(ctx, runID)
 	if err != nil {
@@ -4753,6 +4766,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if loadErr != nil {
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
+	// A checked resume republishes the run its surface admitted: the run
+	// service verified its own earlier read, and the document is read again
+	// here, so it is compared again — a successor recreated under the ID
+	// in the same status would otherwise be claimed below.
+	if err := spec.ExpectOrigin.Verify(prior); err != nil {
+		return fmt.Errorf("cloudpublisher: %w", err)
+	}
 	priorStatus := prior.Status
 	if spec.ExpectedStatus != "" && priorStatus != spec.ExpectedStatus {
 		return fmt.Errorf("cloudpublisher: run %s status changed: got %s, expected %s", spec.RunID, priorStatus, spec.ExpectedStatus)
@@ -4791,15 +4811,23 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// credential-pool lease or publish. Transitioning to queued also stamps
 	// QueuedAt, the durable attempt marker used to reject stale deliveries —
 	// and the flip hands back what it replaced, read in the same write, for
-	// the rollback below.
+	// the rollback below. A checked resume's claim is bound to the origin it
+	// verified: the flip compares the birth in its own write (the FS lock,
+	// Mongo's bound metadata predicate), so a successor recreated since the
+	// check is refused, not queued. Everything after the claim — credentials,
+	// stamps, the publication, the rollback — keeps the unbound ctx.
+	claimCtx, bindErr := spec.ExpectOrigin.Bind(ctx, p.store)
+	if bindErr != nil {
+		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, bindErr)
+	}
 	flipper := store.AsQueuedFlipper(p.store)
 	var flip store.QueuedFlip
 	var claimed bool
 	var claimErr error
 	if flipper != nil {
-		flip, claimed, claimErr = flipper.FlipToQueued(ctx, spec.RunID, priorStatus, time.Now())
+		flip, claimed, claimErr = flipper.FlipToQueued(claimCtx, spec.RunID, priorStatus, time.Now())
 	} else {
-		claimed, claimErr = p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+		claimed, claimErr = p.store.UpdateRunStatusIf(claimCtx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
 	}
 	if claimErr != nil {
 		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)

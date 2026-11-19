@@ -132,8 +132,18 @@ func (s *Server) handleAnswerInteraction(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "answer is required")
 		return
 	}
-	res, err := s.runs.AnswerInteractionCtx(r.Context(), id, iid, req.Answer)
+	// Under an admitted expectation the record and the delivery are bound to
+	// the admitted run and the auto-resume carries it.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.AnswerInteractionExpecting(r.Context(), id, iid, req.Answer, expect)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, runview.ErrInteractionNotFound):
 			s.httpErrorFor(w, r, http.StatusNotFound, "%s", err.Error())
@@ -181,9 +191,18 @@ func (s *Server) handleAnswerHuman(w http.ResponseWriter, r *http.Request) {
 	// Detach the resumed run from the HTTP request lifecycle: returning the
 	// 202 cancels r.Context, but the engine goroutine must keep running. Keep
 	// the request values so tenant/auth scoping still reaches the run store.
+	// Under an admitted expectation the resume carries it.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	ctx := context.WithoutCancel(r.Context())
-	res, err := s.runs.AnswerHumanCtx(ctx, id, req.Answers)
+	res, err := s.runs.AnswerHumanExpecting(ctx, id, req.Answers, expect)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.writeSteerError(w, r, err)
 		return
 	}

@@ -568,6 +568,14 @@ type ResumeSpec struct {
 	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
 	// mismatched admission.
 	Admitted *GateAdmission
+	// ExpectOrigin is the origin a checked surface admitted for RunID.
+	// Resume verifies the run it loads against it before anything is
+	// reconciled, written, published or spawned, binds its budget writes to
+	// it, and verifies the run again under the spawn lock; the cloud
+	// publisher verifies the document it republishes from and binds its
+	// queued claim to it. The resumed execution never inherits the binding.
+	// The zero value is unchecked.
+	ExpectOrigin ActionOrigin
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
