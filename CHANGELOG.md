@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.18.0](https://github.com/SocialGouv/iterion/compare/v7.17.0...v7.18.0) (2026-11-19)
+
+### Features
+
+* **scripthost:** the child denies itself socket creation — the network wall is seccomp, not Landlock ([#3371](https://github.com/SocialGouv/iterion/issues/3371)) ([#3374](https://github.com/SocialGouv/iterion/issues/3374)) ([7988f9f](https://github.com/SocialGouv/iterion/commit/7988f9fa8fb224b70fff18e84f52a872f29eeab7)), references [#3299](https://github.com/SocialGouv/iterion/issues/3299) [#3376](https://github.com/SocialGouv/iterion/issues/3376)
+
+    <details><summary>why</summary>
+
+    Landlock has exactly two network rights, BIND_TCP and CONNECT_TCP, from ABI 4. Measured with the real Confine (host, docker, and kind/containerd under RuntimeDefault with the chart's securityContext): a confined child sent UDP on every kernel, set up io_uring where the runtime allowed it, and on the production nodes (kernel 6.1, ABI 2, #3299) opened TCP as well. codemode-confinement.md already recorded the UDP residual as "not this slice"; the production kernel made it the whole network.
+
+    </details>
+* **studio:** the editor shows a bot's sources on its start node, and the docs say what shipped (L6, [#3275](https://github.com/SocialGouv/iterion/issues/3275)) ([#3397](https://github.com/SocialGouv/iterion/issues/3397)) ([bfb3fc6](https://github.com/SocialGouv/iterion/commit/bfb3fc67cde248cd3c03fce83bdcab2f64f0a426)), references [#3269](https://github.com/SocialGouv/iterion/issues/3269)
+
+    <details><summary>why</summary>
+
+    The last lot of the event-sources epic (#3269).
+
+    </details>
+
 ## [7.17.0](https://github.com/SocialGouv/iterion/compare/v7.16.0...v7.17.0) (2026-11-19)
 
 ### Features
