@@ -474,6 +474,59 @@ func TestMongoBoundReadsIgnoreANewlineSuffixedTenantKey(t *testing.T) {
 	}
 }
 
+// TestMongoBoundReadsRefuseANonStringTenant: the run keeps its birth but its
+// tenant_id is not a string. Every bound read answers the typed
+// ErrInvalidRunDataIdentity — a permanent refusal for a bound stream — and
+// none surfaces the struct decoder's untyped error, which a stream would
+// retry forever.
+func TestMongoBoundReadsRefuseANonStringTenant(t *testing.T) {
+	for name, value := range map[string]any{
+		"int32":    int32(7),
+		"bool":     true,
+		"document": bson.D{{Key: "t", Value: "T"}},
+		"array":    bson.A{"T"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			const id = "r"
+			s, h, blind, bound := mongoObservedTenantRun(t, store.LegacyValueFormat, id, 1)
+			rewriteMongoRun(t, s, id, func(doc bson.D) bson.D {
+				out := bson.D{}
+				for _, e := range doc {
+					if e.Key == "tenant_id" {
+						e.Value = value
+					}
+					out = append(out, e)
+				}
+				return out
+			})
+			if got, err := s.ObserveRunDataHeader(blind, id); err != nil || got != h {
+				t.Fatalf("fixture: header %+v, %v, want the original %+v", got, err, h)
+			}
+			if got := storedTenantKeys(t, s, id); fmt.Sprint(got) != "[tenant_id]" {
+				t.Fatalf("fixture: stored tenant keys %q", got)
+			}
+			if r, err := s.LoadRun(bound, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+				t.Errorf("LoadRun: tenant %q, %v, want ErrInvalidRunDataIdentity", mongoLoadedTenant(r), err)
+			}
+			if got, err := s.LoadEvents(bound, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) || got != nil {
+				t.Errorf("LoadEvents: %d events, %v, want ErrInvalidRunDataIdentity", len(got), err)
+			}
+			if n, err := mongoScanCount(bound, s, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) || n != 0 {
+				t.Errorf("ScanEvents: %d events, %v, want 0 and ErrInvalidRunDataIdentity", n, err)
+			}
+			if got, err := s.ReadRunLogRange(bound, id, 0, 0); !errors.Is(err, store.ErrInvalidRunDataIdentity) || got != nil {
+				t.Errorf("run.log: %q, %v, want ErrInvalidRunDataIdentity", got, err)
+			}
+			if got, err := s.ObserveRunDataHeader(bound, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+				t.Errorf("ObserveRunDataHeader: %+v, %v, want ErrInvalidRunDataIdentity", got, err)
+			}
+			if sel, err := s.ResolveStreamSelection(bound, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) || sel != nil {
+				t.Errorf("ResolveStreamSelection: selection %t, %v, want ErrInvalidRunDataIdentity", sel != nil, err)
+			}
+		})
+	}
+}
+
 // TestMongoBoundReadsRefuseASuccessorWithAnInvalidTenant: B replaces A with a
 // new birth and a tenant the strict parser refuses (canonical plus case
 // alias). Under A's binding every bound read answers what any successor

@@ -180,6 +180,11 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 	retained = retained || observed
 	projection := runFormatMetadataProjection()
 	if retained {
+		// The canonical tenant replaces the decoded one, so the plain field is
+		// not projected: a tenant_id of another BSON type is judged by the
+		// strict parser alone (ErrInvalidRunDataIdentity), never by the
+		// struct decoder's untyped error.
+		delete(projection, "tenant_id")
 		projection["retained_tenant_headers"] = tenantHeaderEntries()
 	}
 	cursor, err := s.runs.Aggregate(ctx, mongo.Pipeline{
