@@ -258,12 +258,22 @@ func (c *runConn) handleBumpLoop(env runWSEnvelope) {
 		c.sendError("bad_payload", err.Error(), env.AckID)
 		return
 	}
-	res, err := c.server.runs.BumpLoopCtx(c.authCtx(), c.runID, runview.BumpLoopRequest{
+	// On a socket admitted on an expected birth the service's loads are the
+	// bound pre-checks of the ID-keyed steering signal.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	res, err := c.server.runs.BumpLoopCtx(ctx, c.runID, runview.BumpLoopRequest{
 		LoopName: req.LoopName,
 		Delta:    req.Delta,
 		IssuedBy: c.identity.UserID,
 	})
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError(steerWSCode(err), err.Error(), env.AckID)
 		return
 	}
@@ -280,7 +290,12 @@ func (c *runConn) handleRaiseBudget(env runWSEnvelope) {
 		c.sendError("bad_payload", err.Error(), env.AckID)
 		return
 	}
-	res, err := c.server.runs.RaiseBudgetCtx(c.authCtx(), c.runID, runview.RaiseBudgetRequest{
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	res, err := c.server.runs.RaiseBudgetCtx(ctx, c.runID, runview.RaiseBudgetRequest{
 		Budget: ir.BudgetOverrides{
 			MaxCostUSD:    req.MaxCostUSD,
 			MaxTokens:     req.MaxTokens,
@@ -290,6 +305,9 @@ func (c *runConn) handleRaiseBudget(env runWSEnvelope) {
 		IssuedBy: c.identity.UserID,
 	})
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError(steerWSCode(err), err.Error(), env.AckID)
 		return
 	}

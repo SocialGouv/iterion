@@ -401,10 +401,11 @@ func (c *runConn) authCtx() context.Context {
 // streamCtx is authCtx bound to the run the upgrade authorized
 // (store.BindRunObservation): the parent of every event and log reservation,
 // so a snapshot, replay or log read of any (re)subscription reads that run
-// and is refused for a successor recreated under the same ID. It is never
-// the context of a mutating action — authCtx stays unbound so a resume or a
-// child run does not inherit the binding. A connection with no observed
-// origin (a cross-store run absent at the upgrade) stays unbound.
+// and is refused for a successor recreated under the same ID. On a socket
+// admitted on an expected birth it is also the context of the mutating
+// actions that only touch the store (actionContext); a resume or a child run
+// never inherits it. A connection with no observed origin (a cross-store run
+// absent at the upgrade) stays unbound.
 func (c *runConn) streamCtx() (context.Context, error) {
 	ctx := c.authCtx()
 	if !c.origin.Observed() {
@@ -461,6 +462,26 @@ func (c *runConn) actionContext() (ctx context.Context, checked bool, err error)
 		return nil, false, err
 	}
 	return ctx, true, nil
+}
+
+// actionExpectation is what an envelope that resumes the run carries into
+// the run service instead of a bound context (runview.ActionOrigin): the
+// socket's origin, checked on the sockets actionContext checks — the service
+// verifies the run it re-enters and the execution keeps no binding — and the
+// zero value on every other socket. A store that may drop the context is
+// refused as actionContext refuses it.
+func (c *runConn) actionExpectation() (runview.ActionOrigin, error) {
+	_, checked, err := c.actionContext()
+	if err != nil || !checked {
+		return runview.ActionOrigin{}, err
+	}
+	return runview.ExpectRunOrigin(c.origin), nil
+}
+
+// sendScopeUnavailable answers an envelope whose action could not be bound
+// to the socket's origin (actionContext): the action does not run.
+func (c *runConn) sendScopeUnavailable(env runWSEnvelope, err error) {
+	c.sendError(errCodeScopeUnavailable, "the run this socket watches cannot be bound to its origin: "+err.Error(), env.AckID)
 }
 
 // writeActionFailure answers a checked envelope's failure by the rule of the
@@ -823,8 +844,10 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 // another. A read that did not complete refuses THAT envelope only.
 //
 // This is an admission check, not an atomic guarantee: the run can still be
-// replaced between the check and the action. The action itself keeps the
-// unbound authCtx, so a resume or a child run never inherits the binding.
+// replaced between the check and the action. On a socket admitted on an
+// expected birth the action itself runs bound or carries the origin
+// (actionContext, actionExpectation); on any other socket it keeps the
+// unbound authCtx. A resume or a child run never inherits the binding.
 func (c *runConn) originHolds(env runWSEnvelope) bool {
 	if c.xStore != nil || !c.origin.Observed() {
 		return true
@@ -1030,7 +1053,7 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 	// refusal on a lost origin is run_origin_lost, never an ack.
 	ctx, checked, cerr := c.actionContext()
 	if cerr != nil {
-		c.sendError("scope_unavailable", "the run this socket watches cannot be bound to its origin: "+cerr.Error(), env.AckID)
+		c.sendScopeUnavailable(env, cerr)
 		return
 	}
 	var err error
@@ -1080,7 +1103,18 @@ func (c *runConn) handlePause(env runWSEnvelope) {
 	if c.server.logger != nil {
 		c.server.logger.Info("server: pause run %q via WS from %s", c.runID, c.clientIP)
 	}
+	// The pause is an ID-keyed signal: originHolds' bound load is its
+	// pre-check. On a socket admitted on an expected birth a refusal on a
+	// lost origin is run_origin_lost, as over HTTP.
+	_, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
 	if err := c.server.runs.Pause(c.runID); err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		if errors.Is(err, runview.ErrRunNotActive) {
 			// The run isn't held in this process — either terminal or
 			// running cross-process (cloud). Studio hides the Pause
@@ -1125,6 +1159,17 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// never a later read the gate did not judge. What the gate admitted
 	// rides the ResumeSpec, and the run service refuses a resume whose
 	// document names another trust.
+	//
+	// On a socket admitted on an expected birth the resume carries the
+	// socket's origin (ResumeSpec.ExpectOrigin): the run service verifies the
+	// run it re-enters, so a successor recreated under the ID is refused,
+	// and every failure on a lost origin is run_origin_lost. That load and
+	// the chat-history read stay unbound, as the HTTP resume's do.
+	expect, eerr := c.actionExpectation()
+	if eerr != nil {
+		c.sendScopeUnavailable(env, eerr)
+		return
+	}
 	var (
 		runMeta *store.Run
 		loadErr = errors.New("run service unavailable")
@@ -1164,6 +1209,9 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		return
 	}
 	if loadErr != nil || runMeta == nil {
+		if expect.Checked() && c.writeActionFailure(env, loadErr) {
+			return
+		}
 		msg := "run not found"
 		if loadErr != nil {
 			msg = loadErr.Error()
@@ -1190,6 +1238,9 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)
 	if err != nil {
+		if expect.Checked() && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError("chat_history_failed", err.Error(), env.AckID)
 		return
 	}
@@ -1198,18 +1249,22 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// tenant_id filter still applies on writes.
 	runMayExist = true
 	if _, err := c.server.runs.Resume(c.authCtx(), runview.ResumeSpec{
-		RunID:      c.runID,
-		FilePath:   absPath,
-		Source:     req.Source,
-		Answers:    req.Answers,
-		HostInputs: hostInputs,
-		Admitted:   gateAdmitted(subj, adm),
+		RunID:        c.runID,
+		FilePath:     absPath,
+		Source:       req.Source,
+		Answers:      req.Answers,
+		HostInputs:   hostInputs,
+		Admitted:     gateAdmitted(subj, adm),
+		ExpectOrigin: expect,
 	}); err != nil {
 		// The callee reports whether anything durable happened — see
 		// handleLaunchRun. ErrRunNotResumable carries no marker, so the
 		// routine lost race below gives its unit back.
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
+		}
+		if expect.Checked() && c.writeActionFailure(env, err) {
+			return
 		}
 		// A parked gate has two legitimate resumers — the operator and the
 		// assistant-watch coordinator delivering an event. The loser of that
@@ -1256,8 +1311,18 @@ func (c *runConn) handleQueueMessage(env runWSEnvelope) {
 	if len(req.Skills) > 0 {
 		qopts = append(qopts, runview.WithMessageSkills(req.Skills))
 	}
-	msg, err := c.server.runs.QueueMessage(c.authCtx(), c.runID, req.Text, qopts...)
+	// On a socket admitted on an expected birth the load and the append are
+	// bound to the socket's origin.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	msg, err := c.server.runs.QueueMessage(ctx, c.runID, req.Text, qopts...)
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError("queue_failed", err.Error(), env.AckID)
 		return
 	}
@@ -1278,7 +1343,17 @@ func (c *runConn) handleCancelQueuedMessage(env runWSEnvelope) {
 		c.sendError("missing_message_id", "message_id is required", env.AckID)
 		return
 	}
-	if err := c.server.runs.CancelQueuedMessage(c.authCtx(), c.runID, req.MessageID); err != nil {
+	// On a socket admitted on an expected birth the inbox CAS is bound to the
+	// socket's origin.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	if err := c.server.runs.CancelQueuedMessage(ctx, c.runID, req.MessageID); err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, store.ErrQueuedMessageNotFound):
 			c.sendError("not_found", err.Error(), env.AckID)

@@ -1,8 +1,16 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -63,17 +71,32 @@ var mutationCarriers = map[string]carrierEntry{
 	"ws " + wsTypeRaiseBudget:         {"P", "the service's loads are the pre-checks (D5)"},
 }
 
+// runWSReadOnlyTypes are the cases of (*runConn).dispatch that change
+// nothing: the act rung does not guard them and they need no carrier. A new
+// case is either guarded (runWSMutatingTypes, then a carrier) or listed here
+// with its reason.
+var runWSReadOnlyTypes = map[string]string{
+	wsTypeSubscribe:      "opens the event stream under the socket's binding",
+	wsTypeUnsubscribe:    "closes the event stream",
+	wsTypeSubscribeLogs:  "opens the log stream under the socket's binding",
+	wsTypeUnsubscribeLog: "closes the log stream",
+	wsTypePing:           "answers pong",
+}
+
 // mutationSweep is what the inventory is compared with: the non-GET
-// run-wildcard routes as "METHOD pattern", the ladder actions and the
-// envelope types the act rung guards.
+// run-wildcard routes as "METHOD pattern", the ladder actions, the
+// envelope types the act rung guards and the envelope types the socket's
+// dispatch handles (parsed from its source).
 type mutationSweep struct {
 	routes   []string
 	ladder   map[string]bool
 	envelope map[string]bool
+	dispatch []string
 }
 
-// gaps lists every action without a carrier and every inventory entry
-// nothing matches any more.
+// gaps lists every action without a carrier, every dispatch case neither
+// guarded nor read-only, every guarded type no case handles, and every
+// inventory entry nothing matches any more.
 func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -99,7 +122,188 @@ func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 			out = append(out, "stale carrier entry: "+key)
 		}
 	}
+	handled := map[string]bool{}
+	for _, typ := range sw.dispatch {
+		handled[typ] = true
+		if sw.envelope[typ] {
+			continue
+		}
+		if _, ok := runWSReadOnlyTypes[typ]; !ok {
+			out = append(out, "dispatch case neither guarded nor read-only: "+typ)
+		}
+	}
+	for typ, mutating := range sw.envelope {
+		if mutating && !handled[typ] {
+			out = append(out, "guarded envelope no dispatch case handles: "+typ)
+		}
+	}
+	for typ := range runWSReadOnlyTypes {
+		if !handled[typ] {
+			out = append(out, "stale read-only envelope: "+typ)
+		}
+	}
 	sort.Strings(out)
+	return out
+}
+
+// dispatchCases returns the envelope types the switch on env.Type in
+// (*runConn).dispatch names in its cases, in src (a source file of this
+// package), each constant resolved against consts.
+func dispatchCases(src []byte, consts map[string]string) ([]string, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), "runs_ws.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "dispatch" || fd.Recv == nil || len(fd.Recv.List) != 1 {
+			continue
+		}
+		if star, ok := fd.Recv.List[0].Type.(*ast.StarExpr); ok {
+			if id, ok := star.X.(*ast.Ident); ok && id.Name == "runConn" {
+				fn = fd
+			}
+		}
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("no (*runConn).dispatch in the source")
+	}
+	var cases, bad []string
+	switches := 0
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		sw, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		tag, ok := sw.Tag.(*ast.SelectorExpr)
+		if !ok || tag.Sel.Name != "Type" {
+			return true
+		}
+		switches++
+		for _, stmt := range sw.Body.List {
+			for _, e := range stmt.(*ast.CaseClause).List {
+				switch v := e.(type) {
+				case *ast.Ident:
+					if s, ok := consts[v.Name]; ok {
+						cases = append(cases, s)
+					} else {
+						bad = append(bad, v.Name)
+					}
+				case *ast.BasicLit:
+					if s, err := strconv.Unquote(v.Value); err == nil && v.Kind == token.STRING {
+						cases = append(cases, s)
+					} else {
+						bad = append(bad, v.Value)
+					}
+				default:
+					bad = append(bad, fmt.Sprintf("%T", e))
+				}
+			}
+		}
+		return false
+	})
+	if switches != 1 {
+		return nil, fmt.Errorf("dispatch holds %d switches on the envelope type, want 1", switches)
+	}
+	if len(bad) != 0 {
+		return nil, fmt.Errorf("dispatch cases the sweep cannot resolve: %v", bad)
+	}
+	return cases, nil
+}
+
+// packageStringConsts maps every string constant declared in the package's
+// non-test files to its value.
+func packageStringConsts() (map[string]string, error) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs := spec.(*ast.ValueSpec)
+				for i, id := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if s, err := strconv.Unquote(lit.Value); err == nil {
+							out[id.Name] = s
+						}
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// sweptDispatchCases parses src as this package's runs_ws.go.
+func sweptDispatchCases(t *testing.T, src []byte) []string {
+	t.Helper()
+	consts, err := packageStringConsts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases, err := dispatchCases(src, consts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cases
+}
+
+// readRunsWS reads this package's runs_ws.go. RUN_MUTATION_SWEEP_OVERLAY
+// names the `go test -overlay` file a mutant run compiles with: the sweep
+// then parses the replacement it maps runs_ws.go to, as the compiler does —
+// a plain read of the file would not see the mutant.
+func readRunsWS(t *testing.T) []byte {
+	t.Helper()
+	path := "runs_ws.go"
+	if overlay := os.Getenv("RUN_MUTATION_SWEEP_OVERLAY"); overlay != "" {
+		raw, err := os.ReadFile(overlay)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var o struct{ Replace map[string]string }
+		if err := json.Unmarshal(raw, &o); err != nil {
+			t.Fatalf("RUN_MUTATION_SWEEP_OVERLAY %s: %v", overlay, err)
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replacement, ok := o.Replace[abs]; ok {
+			path = replacement
+		}
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return src
+}
+
+func without(list []string, drop string) []string {
+	var out []string
+	for _, s := range list {
+		if s != drop {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 
@@ -125,19 +329,26 @@ func nonGETRunRoutes(srv *Server) []string {
 	return out
 }
 
-func productionMutationSweep(srv *Server) mutationSweep {
-	return mutationSweep{routes: nonGETRunRoutes(srv), ladder: runScopeLadderRoutes, envelope: runWSMutatingTypes}
+func productionMutationSweep(t *testing.T, srv *Server) mutationSweep {
+	t.Helper()
+	return mutationSweep{
+		routes:   nonGETRunRoutes(srv),
+		ladder:   runScopeLadderRoutes,
+		envelope: runWSMutatingTypes,
+		dispatch: sweptDispatchCases(t, readRunsWS(t)),
+	}
 }
 
 // W6: every action that reaches one run — the non-GET run-wildcard routes
 // of the mux, the ladder's GET actions, the envelopes the act rung guards —
-// has a carrier in the frozen inventory, and the inventory names nothing
-// that no longer exists.
+// has a carrier in the frozen inventory; every case the socket's dispatch
+// handles (parsed from its source) is guarded or named read-only; and the
+// inventory names nothing that no longer exists.
 func TestEveryRunMutationHasACarrier(t *testing.T) {
 	fx := newGateFixture(t, true)
-	sw := productionMutationSweep(fx.srv)
-	if len(sw.routes) < 30 || len(sw.envelope) < 7 {
-		t.Fatalf("the sweep found %d routes and %d envelopes: it does not see the server", len(sw.routes), len(sw.envelope))
+	sw := productionMutationSweep(t, fx.srv)
+	if len(sw.routes) < 30 || len(sw.envelope) < 7 || len(sw.dispatch) < 12 {
+		t.Fatalf("the sweep found %d routes, %d envelopes and %d dispatch cases: it does not see the server", len(sw.routes), len(sw.envelope), len(sw.dispatch))
 	}
 	if gaps := sw.gaps(mutationCarriers); len(gaps) != 0 {
 		t.Fatalf("run mutation inventory:\n%s", strings.Join(gaps, "\n"))
@@ -145,9 +356,11 @@ func TestEveryRunMutationHasACarrier(t *testing.T) {
 }
 
 // The sweep can fail: a planted mutating route on the mux, a planted ladder
-// action, a planted guarded envelope and a stale entry are each reported.
+// action, a planted guarded envelope, a planted dispatch case the act rung
+// does not guard (M7c, parsed from a copy of runs_ws.go), a guarded type no
+// case handles and a stale entry are each reported.
 func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
-	base := productionMutationSweep(newGateFixture(t, true).srv)
+	base := productionMutationSweep(t, newGateFixture(t, true).srv)
 	fx := newGateFixture(t, true)
 	fx.srv.mux.HandleFunc("POST /api/runs/{id}/rva-mutation-probe", func(http.ResponseWriter, *http.Request) {})
 	ladder := map[string]bool{"rva-ladder-probe": true}
@@ -158,14 +371,24 @@ func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
 	for k, v := range runWSMutatingTypes {
 		envelope[k] = v
 	}
+	// A case added to dispatch without its entry in runWSMutatingTypes would
+	// bypass the act rung and the carrier inventory both.
+	src := string(readRunsWS(t))
+	const anchor = "\tcase wsTypePing:\n"
+	if strings.Count(src, anchor) != 1 {
+		t.Fatal("fixture: the ping case of dispatch moved; plant the probe case elsewhere")
+	}
+	planted := strings.Replace(src, anchor, "\tcase \"rva_probe\":\n\t\tc.handleCancel(env)\n"+anchor, 1)
 	for _, tc := range []struct {
 		name string
 		sw   mutationSweep
 		want string
 	}{
-		{"M7a-route", productionMutationSweep(fx.srv), "no carrier: POST /api/runs/{id}/rva-mutation-probe"},
-		{"M7b-ladder", mutationSweep{routes: base.routes, ladder: ladder, envelope: base.envelope}, "no carrier: ladder rva-ladder-probe"},
-		{"M7w-envelope", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: envelope}, "no carrier: ws rva_probe"},
+		{"M7a-route", productionMutationSweep(t, fx.srv), "no carrier: POST /api/runs/{id}/rva-mutation-probe"},
+		{"M7b-ladder", mutationSweep{routes: base.routes, ladder: ladder, envelope: base.envelope, dispatch: base.dispatch}, "no carrier: ladder rva-ladder-probe"},
+		{"M7w-envelope", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: envelope, dispatch: append(append([]string(nil), base.dispatch...), "rva_probe")}, "no carrier: ws rva_probe"},
+		{"M7c-dispatch-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: sweptDispatchCases(t, []byte(planted))}, "dispatch case neither guarded nor read-only: rva_probe"},
+		{"guarded-type-without-a-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: without(base.dispatch, wsTypePause)}, "guarded envelope no dispatch case handles: " + wsTypePause},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gaps := tc.sw.gaps(mutationCarriers)
