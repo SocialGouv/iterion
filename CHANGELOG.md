@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.19.0](https://github.com/SocialGouv/iterion/compare/v7.18.3...v7.19.0) (2026-11-19)
+
+### Features
+
+* **connector:** a poll declares its answer's order, so a page-bound scan reads on ([#3396](https://github.com/SocialGouv/iterion/issues/3396)) ([#3406](https://github.com/SocialGouv/iterion/issues/3406)) ([8e5a2d9](https://github.com/SocialGouv/iterion/commit/8e5a2d96b4080be7cb562fe262bc02af413c2aeb))
+
+    <details><summary>why</summary>
+
+    A polled scan longer than its operation's page bound never completed: an incomplete scan never moved the checkpoint, so the poller re-read the same pages on every tick, and a first scan that large never primed. An opaque cursor took the last item's token and so assumed an oldest-first answer, which nothing checked.
+
+    </details>
+
 ## [7.18.3](https://github.com/SocialGouv/iterion/compare/v7.18.2...v7.18.3) (2026-11-19)
 
 ### Bug Fixes
