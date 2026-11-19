@@ -505,6 +505,12 @@ func (t *tick) scan(ctx context.Context, trig spec.Trigger) (scanned, error) {
 		return scanned{}, errors.New("no resolver for the poller's tenant")
 	}
 	r.Trust = connection.TrustOfTenantConfiguration()
+	// What a poller reads is believed on the connection's word, as a
+	// delivery an ingress takes is: the trigger grant the save checked is
+	// checked again, so a grant the operator withdrew feeds nothing more.
+	if conn, err := r.Store.Get(ctx, p.TenantID, p.ConnectionID); err == nil && !conn.Has(connection.CapTrigger) {
+		return scanned{}, fmt.Errorf("connection %q no longer holds the trigger grant: nothing it feeds is believed", conn.Alias)
+	}
 	pkg, op, cred, baseURL, err := r.ResolveActionByConnection(ctx, trig.Poll.Operation, p.ConnectionID)
 	if err != nil {
 		return scanned{}, err

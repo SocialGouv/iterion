@@ -23,6 +23,7 @@ import {
 import { SELECTED_BORDER, SELECTED_GLOW, softColor } from "@/lib/constants";
 import { NodeIcon } from "@/components/icons/NodeIcon";
 import { SIDES, POS_MAP } from "./handlePositions";
+import { StartSourcesChip } from "./StartSourcesChip";
 
 interface WorkflowNodeData extends Record<string, unknown> {
   label: string;
@@ -209,6 +210,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
         <NodeIcon kind={kind} size={20} />
       </div>
       <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
+      {isStart && !external && <StartSourcesChip />}
       {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}
       {isLLMNode && modelLabel && (
         <div

@@ -200,7 +200,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟠 | 19 | isolation and the permission gate |
 | 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
 | 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 1 | the watch feed in production |
-| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules |
+| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules, [event sources](event-sources.md) — pushed and polled ([#3269](https://github.com/SocialGouv/iterion/issues/3269), gaps in [#3396](https://github.com/SocialGouv/iterion/issues/3396)) |
 | 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 38 bundles, shapes, `dsl: 2`, dogfood |
 | 🏷️ [Brand & product home](https://github.com/SocialGouv/iterion/issues/1429) | 🟡 | 1 | what iterion says it is, and how it talks to users |
 | ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 13 | tenancy, replicas, persistence |

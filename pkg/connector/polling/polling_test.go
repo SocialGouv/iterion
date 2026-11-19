@@ -737,3 +737,26 @@ func TestAFailingPollerSaysSoOnItsSubscriptions(t *testing.T) {
 		t.Fatalf("subscription last error = %q after the poller read again, want it cleared", got)
 	}
 }
+
+// A connection whose trigger grant was withdrawn feeds nothing more: the
+// tick refuses it, as an ingress refuses a delivery, and says why.
+func TestAWithdrawnTriggerGrantFeedsNothing(t *testing.T) {
+	w := newWorld(t)
+	w.subscribe("s1", 0, 0)
+	wk := w.worker("w1", nil)
+	w.pass(wk)
+	conn, _ := w.conns.Get(context.Background(), "t1", "conn-1")
+	conn.Capabilities = []connection.Capability{connection.CapAction}
+	if err := w.conns.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	w.vendor.add("ENG-9", "after the withdrawal", t0.Add(time.Minute), nil)
+	w.advance(5 * time.Minute)
+	w.pass(wk)
+	if got := w.pending(); len(got) != 0 {
+		t.Fatalf("a connection without the trigger grant fed %v", got)
+	}
+	if got := w.sub("s1").LastError; !strings.Contains(got, "trigger grant") {
+		t.Fatalf("subscription last error = %q, want the withdrawn grant named", got)
+	}
+}

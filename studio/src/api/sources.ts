@@ -4,6 +4,7 @@
 // schemas are inline in schema.ts.
 
 import { apiRequest, guard404, FeatureUnavailableError } from "./client";
+import { scopePrefix } from "@/lib/scope";
 
 export { FeatureUnavailableError };
 
@@ -116,7 +117,9 @@ export async function listTeamSources(teamID: string): Promise<Source[]> {
 // authenticates it and the answer is always an image — the sanitized mark
 // or the monogram — so the component carries no fallback of its own.
 export function sourceIconURL(connectorID: string): string {
-  return `/api/v1/connectors/${encodeURIComponent(connectorID)}/icon`;
+  // Through the pane's scope, as apiRequest routes every call: a desktop
+  // workspace pane serves its own backend under a prefix.
+  return `${scopePrefix()}/api/v1/connectors/${encodeURIComponent(connectorID)}/icon`;
 }
 
 // Labels of the closed category taxonomy (pkg/connector/spec Category).
