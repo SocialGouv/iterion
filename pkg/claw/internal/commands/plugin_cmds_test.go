@@ -2,7 +2,12 @@ package commands
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // mockPluginManager implements pluginManagerLoop for testing.
@@ -311,16 +316,43 @@ func TestTasksMissingArg(t *testing.T) {
 }
 
 func TestMemoryCommand(t *testing.T) {
-	r := NewRegistry()
-	RegisterPluginCommands(r)
+	// Pin TestMain's isolation before the command can read the inherited HOME.
+	hometest.RequireNoOperatorProfile(t, os.Getenv("HOME"))
+	t.Chdir(t.TempDir())
 
-	// Memory command does not require a loop interface.
-	handled, err := r.Execute("/memory", nil)
-	if !handled {
-		t.Error("expected command to be handled")
-	}
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	for _, withMemory := range []bool{false, true} {
+		t.Run(fmt.Sprintf("global_memory=%t", withMemory), func(t *testing.T) {
+			want := "No CLAUDE.md files found.\n"
+			if withMemory {
+				home := t.TempDir()
+				t.Setenv("HOME", home)
+				path := filepath.Join(home, ".claude", "CLAUDE.md")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				const memory = "owned command-test memory"
+				if err := os.WriteFile(path, []byte(memory), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				want = fmt.Sprintf("--- %s ---\n%s\n", home+"/.claude/CLAUDE.md", memory)
+			}
+
+			r := NewRegistry()
+			RegisterPluginCommands(r)
+			out := stdiotest.Run(t, &os.Stdout, func() {
+				// Memory command does not require a loop interface.
+				handled, err := r.Execute("/memory", nil)
+				if !handled {
+					t.Error("expected command to be handled")
+				}
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			})
+			if out != want {
+				t.Fatalf("/memory output = %q, want %q", out, want)
+			}
+		})
 	}
 }
 
