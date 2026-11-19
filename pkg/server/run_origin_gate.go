@@ -23,8 +23,20 @@ import (
 // snapshot header and the run rows). A run deleted and recreated under the
 // same ID has another birth, so the server refuses a request whose
 // expectation no longer matches — 409 run_origin_lost — before any handler
-// runs: the successor's data never answers a request meant for its
-// predecessor, and no action meant for the predecessor reaches it.
+// runs, and hands the handler the origin it admitted (admittedOrigin).
+//
+// Admission is a read: the run can be replaced right after it, so the handler
+// holds its action to the admitted origin (run_origin_action.go). A
+// store-only action and the three GET reads run under a context bound to it;
+// an action that continues an execution or reads other runs carries it as a
+// runview.ActionOrigin, verified against the run the action decides on and
+// binding only named store-only writes of that run; a signal keyed by run ID
+// (a cancel, a pause, steering, a browser attach) follows a bound load, so a
+// run replaced between that load and the signal still receives it. A checked
+// action that fails answers run_origin_lost only when the addressed run, read
+// again, is gone or holds another birth. A run carried in a body is compared
+// right after the handler's own load of it (checkCarriedBirth), then acted on
+// unbound.
 //
 // The expectation is optional on every route: the CLI, MCP, bots and the
 // remote API address runs by ID by contract, and a studio served by another
@@ -136,8 +148,8 @@ func withoutQueryParam(r *http.Request, key string) *http.Request {
 }
 
 // admittedRunOrigin is the run of the server's own store the gate compared
-// for a request: what a handler binds its reads to, and what the run socket
-// keeps.
+// for a request: what a handler holds its reads and actions to
+// (run_origin_action.go), and what the run socket keeps.
 type admittedRunOrigin struct {
 	runID  string
 	origin store.RunObservation

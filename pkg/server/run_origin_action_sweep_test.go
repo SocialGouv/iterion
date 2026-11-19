@@ -53,7 +53,7 @@ var mutationCarriers = map[string]carrierEntry{
 	"POST /api/runs/{id}/resume":                              {"E", "the handler's load stays unbound and Resume verifies (D4a-b); its failures go through the confirm rule"},
 	"POST /api/runs/{id}/rewind":                              {"E", "Rewind verifies after its load (D4e)"},
 	"POST /api/runs/{id}/fork":                                {"E", "the fork verifies its source; the child is created unbound (D4e)"},
-	"POST /api/runs/{id}/host-event":                          {"E", "verified after the delivery's load; the resume carries the expectation (D4d)"},
+	"POST /api/runs/{id}/host-event":                          {"E", "the delivery loads unverified; the resume it triggers carries and verifies the expectation (D4d)"},
 	"POST /api/runs/{id}/assistant-watches":                   {"E", "the target verified (D4e); the assistant run is body-carried; its failures go through the confirm rule"},
 	"DELETE /api/runs/{id}/assistant-watches/{watchID}":       {"own", "stops the watch by its own ID"},
 	"POST /api/runs/{id}/assistant-missions":                  {"E", "the target verified after the mission's load (D4e)"},

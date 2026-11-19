@@ -41,7 +41,8 @@ Mongo inside the same conditional write, and a successor recreated under the
 ID answers `ErrRunDataIdentityChanged` instead of receiving the outcome; `""`
 is the historical empty birth. A successor in another tenant is outside a
 tenant-scoped query and answers as an absent run does. Other metadata writes
-carry no caller birth.
+carry no caller birth; under a binding they carry the bound birth
+([run-action-origin.md](run-action-origin.md)).
 Child collections publish in a transaction that writes the parent.
 This parent write conflicts with deletion, recreation or concurrent changes;
 a retry reads again but retains the original format. Legacy orphan children

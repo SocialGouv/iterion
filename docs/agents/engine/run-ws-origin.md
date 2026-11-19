@@ -20,15 +20,13 @@ route, before any handler: a mismatch, a deletion or an absence answers 409
 `scope_lost` (the run socket first sends `run_origin_lost`; the shell and the
 CDP pump get the close alone); a malformed or conflicting value is 400
 `invalid_expected_birth`, a socket closed with that token (not redialed);
-another read error 503 `scope_unavailable`. A body field is compared right
-after the handler's own load of that run (a mission reattach loads it first);
-a context reference resolves to reason `run_origin_lost` for another birth or
-a deletion, `not_found` when not found — a tenant-scoped store's answer for a
-run of another team. Without an expectation a request is unchecked and costs
-no read — the CLI, MCP, bots and older studios address runs by ID. The read
-follows the Mongo URI's read preference; the store warns at open when it is
-not primary. `ITERION_RUN_BIRTH_CHECK=0` (operator-grade) admits every HTTP
-and body expectation of the server's own store unread; it does not lift the
+another read error 503 `scope_unavailable`. A context reference resolves to
+reason `run_origin_lost` for another birth or a deletion, `not_found` when not
+found — a tenant-scoped store's answer for a run of another team. Without an
+expectation a request is unchecked and costs no read. The read follows the
+Mongo URI's read preference; the store warns at open when it is not primary.
+`ITERION_RUN_BIRTH_CHECK=0` (operator-grade) admits every HTTP and body
+expectation of the server's own store unread; it does not lift the
 foreign-store refusal below, a socket's binding (a dropped birth still
 closes it `scope_lost`) nor the studio's registry.
 
@@ -73,8 +71,10 @@ log reservation, so the snapshot, replay, terminal catch-up, log admission
 and persisted log reads of each (re)subscribe read the upgrade's run. Native
 filesystem and Mongo stores refuse another birth or tenant under the ID
 (`ErrRunDataIdentityChanged`), a deletion (`ErrRunDeleted`) or an absence
-(`ErrRunNotFound`). Mutating actions keep the unbound `authCtx`: a resume or
-a child run never inherits the binding.
+(`ErrRunNotFound`). Mutating actions keep the unbound `authCtx` unless the
+upgrade was admitted on an expected birth; then they are held to it as
+[run-action-origin.md](run-action-origin.md) says, which the Atomicity item
+below predates. A resume or a child run never inherits the binding.
 
 ## Source capability
 
