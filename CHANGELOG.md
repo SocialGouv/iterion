@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.16.0](https://github.com/SocialGouv/iterion/compare/v7.15.0...v7.16.0) (2026-11-19)
+
+### Features
+
+* **connectors:** a trigger can be polled — the poll format, a bounded feed decoder, and one routing lookup (L4-1, [#3274](https://github.com/SocialGouv/iterion/issues/3274)) ([#3369](https://github.com/SocialGouv/iterion/issues/3369)) ([db06c67](https://github.com/SocialGouv/iterion/commit/db06c67c5928c0698728373093768575452df91e)), references [#3269](https://github.com/SocialGouv/iterion/issues/3269)
+
+    <details><summary>why</summary>
+
+    L4-1 of #3269 (#3274). A trigger gains `delivery: poll` and a `poll:` block: one read operation of the same package, its params built from the operator's query and the last checkpoint, where the items are, what an item's identity and revision are, a timestamp or opaque cursor, and an interval. Everything is judged at load, one refusal per guard: the operation is a read (a poller repeats it), every parameter it requires is built or written by its pagination, params read only `query` and…
+
+    </details>
+
+### Bug Fixes
+
+* **ops:** migrate-ids runs in two phases around the roll ([#2699](https://github.com/SocialGouv/iterion/issues/2699)) ([#3375](https://github.com/SocialGouv/iterion/issues/3375)) ([09e7002](https://github.com/SocialGouv/iterion/commit/09e700275f84d598d5ff3a959eb5a740ecb8c8a3))
+
+    <details><summary>why</summary>
+
+    The catalogue serves one review-pr version to every integration, so the roll that ships 0.10.0 moves all of them at once, and a routing block spelled for either vocabulary is inert under the other. A one-shot migrate-ids is wrong on both sides of the roll: before it, the 0.9.x runs lose their cells; after it, the 17 gateway integrations fall off their Pliage gateway onto the deployment's env pins until the script has run.
+
+    </details>
+* **webhooks:** a re-applied trigger label launches again once the previous run is terminal ([#3373](https://github.com/SocialGouv/iterion/issues/3373)) ([#3389](https://github.com/SocialGouv/iterion/issues/3389)) ([e4bdfc5](https://github.com/SocialGouv/iterion/commit/e4bdfc52eafd4a27908785a84fe973647eb83adc)), references [#n](https://github.com/SocialGouv/iterion/issues/n)
+
+    <details><summary>why</summary>
+
+    An issue label (and GitHub's zero-touch open) is a request a person can make again, but both dedupe keys were claimed once for good: the direct lane's `gh|issue|…|label` / `gl|issue|…|label` idempotency key and the board lane's `cmd:issue:<n>` card label, which answered `carded` for any card in any column. An issue served once could never be served again by the same label.
+
+    </details>
+
 ## [7.15.0](https://github.com/SocialGouv/iterion/compare/v7.14.0...v7.15.0) (2026-11-18)
 
 ### Features
