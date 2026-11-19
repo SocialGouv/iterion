@@ -350,6 +350,7 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		writeTriggerExists(w, sub.Invocation, sub.ID)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	dispatcher.WriteJSON(w, http.StatusCreated, sub)
 }
 
@@ -686,6 +687,7 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	// The pins just landed; close the born-mid-delete window before the
 	// answer — reconcileLandedPins sweeps a record revoked between this
 	// write's validation and its landing, the row the delete's sweep never
@@ -812,6 +814,7 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, &cur, next)
 	// Same closure as the create route: the landed pins are re-checked
 	// against their records — a pin that validated while its record lived
 	// but landed after the record's delete sweep listed would otherwise

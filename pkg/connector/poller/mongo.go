@@ -151,7 +151,8 @@ func (s *MongoStore) Acquire(ctx context.Context, id string, generation int64, o
 
 func (s *MongoStore) Wake(ctx context.Context, tenantID, id string, at time.Time) error {
 	at = stamp(at)
-	res, err := s.pollers.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}, bson.M{"$min": bson.M{"next_tick_at": at}})
+	res, err := s.pollers.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID},
+		bson.M{"$min": bson.M{"next_tick_at": at}, "$inc": bson.M{"generation": 1}})
 	if err != nil {
 		return fmt.Errorf("poller: wake %s: %w", id, err)
 	}

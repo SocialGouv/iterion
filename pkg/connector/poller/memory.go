@@ -135,6 +135,7 @@ func (m *MemoryStore) Wake(_ context.Context, tenantID, id string, at time.Time)
 	if p.NextTickAt.After(at) {
 		p.NextTickAt = at
 	}
+	p.Generation++
 	return nil
 }
 

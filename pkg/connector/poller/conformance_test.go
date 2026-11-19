@@ -474,6 +474,24 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
+	t.Run("a wake fences a tick in flight off parking the poller", func(t *testing.T) {
+		s := newStore(t)
+		p := mustEnsure(t, s, record("t1", "c1", nil))
+		inFlight, _ := s.Acquire(ctx, p.ID, 0, "w", t0)
+		// The tick listed no subscriber; the subscription lands and wakes.
+		if err := s.Wake(ctx, "t1", p.ID, t0.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		dormant := tick(24 * time.Hour)
+		dormant.Idle = true
+		if err := s.Complete(ctx, p.ID, inFlight.Generation, dormant); !errors.Is(err, ErrFenced) {
+			t.Fatalf("the in-flight dormant tick = %v, want ErrFenced", err)
+		}
+		if got, _ := s.Get(ctx, "t1", p.ID); got.NextTickAt.After(stamp(t0.Add(time.Second))) {
+			t.Fatalf("next tick = %s, want no later than the wake: a parked poller would ignore its subscription for a day", got.NextTickAt)
+		}
+	})
+
 	t.Run("a seen row needs its tenant", func(t *testing.T) {
 		s := newStore(t)
 		if err := s.MarkSeen(ctx, "", "pl-1", []ItemKey{{"a", "v"}}, t0); !errors.Is(err, ErrInvalid) {

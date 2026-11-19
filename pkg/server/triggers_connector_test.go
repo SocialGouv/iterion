@@ -356,6 +356,9 @@ func TestAPolledSubscriptionActivatesOnItsPoller(t *testing.T) {
 	if paused.PollerSince != 4 || !paused.BackfillDone {
 		t.Fatalf("a pause = since %d done %v, want both kept", paused.PollerSince, paused.BackfillDone)
 	}
+	// A tick after the save's wake takes the poller's current generation.
+	p, _ = w.s.connectorPollers.Get(ctx, tenant, p.ID)
+	p, _ = w.s.connectorPollers.Acquire(ctx, p.ID, p.Generation, "w", time.Now())
 	if _, err := w.s.connectorPollers.Reserve(ctx, p.ID, p.Generation, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -483,5 +486,30 @@ func TestAPolledSaveRefusesWhatWouldNeverFire(t *testing.T) {
 	}
 	if rec := put(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"poller":"pl-other"}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "derived") {
 		t.Fatalf("an edit naming another poller = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+// The poller is woken once the subscription is written — taking its next
+// generation, which fences off a tick that listed no subscriber before the
+// write — and not for a save that wrote nothing.
+func TestAPolledSaveWakesItsPollerAfterTheWrite(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	ctx := context.Background()
+	tenant := binding.ConnectionTenant(w.s.triggerTenant(teamT1(httptest.NewRequest(http.MethodGet, "/", nil))))
+	pid := poller.ID(tenant, "conn-chat", "chat.message.posted", map[string]string{"room": "ops"})
+	body := `{` + validConnectorSub + `,"poll_query":{"room":"ops"}}`
+	if rec := w.create(body); rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body.String())
+	}
+	p, err := w.s.connectorPollers.Get(ctx, tenant, pid)
+	if err != nil || p.Generation != 1 {
+		t.Fatalf("poller after the save = (generation %d, %v), want the wake's generation 1", p.Generation, err)
+	}
+	if rec := w.create(body); rec.Code != http.StatusConflict {
+		t.Fatalf("a duplicate save = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if p, _ := w.s.connectorPollers.Get(ctx, tenant, pid); p.Generation != 1 {
+		t.Fatalf("a save that wrote nothing woke the poller (generation %d)", p.Generation)
 	}
 }

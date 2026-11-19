@@ -54,14 +54,10 @@ func bindingViewOf(s trigger.Subscription) connectorBindingView {
 // edit that activates nothing keeps both. The poller is written before the
 // subscription, so a subscription never names a poller nothing ticks.
 func (s *Server) activatePolledSubscription(ctx context.Context, tenant string, cur *trigger.Subscription, next *trigger.Subscription) (int, error) {
-	if next.Poller == "" {
-		return 0, nil
-	}
-	if cur != nil && cur.Enabled && cur.Poller == next.Poller {
-		next.PollerSince, next.BackfillDone = cur.PollerSince, cur.BackfillDone
-		return 0, nil
-	}
-	if !next.Enabled {
+	if !polledActivation(cur, *next) {
+		if cur != nil && cur.Enabled && next.Poller != "" && cur.Poller == next.Poller {
+			next.PollerSince, next.BackfillDone = cur.PollerSince, cur.BackfillDone
+		}
 		return 0, nil
 	}
 	if why := s.connectorPollersOff(); why != "" {
@@ -78,13 +74,29 @@ func (s *Server) activatePolledSubscription(ctx context.Context, tenant string, 
 	if p.ID != next.Poller {
 		return http.StatusInternalServerError, fmt.Errorf("the poller of trigger %s is %s, and the subscription derived %s", next.TriggerID, p.ID, next.Poller)
 	}
-	// A dormant poller — nobody listened — is read at once, and its next
-	// scan primes what changed while it slept.
-	if err := s.connectorPollers.Wake(ctx, p.TenantID, p.ID, now); err != nil {
-		return http.StatusServiceUnavailable, fmt.Errorf("wake the poller of trigger %s: %w", next.TriggerID, err)
-	}
 	next.PollerSince, next.BackfillDone = p.Sequence, false
 	return 0, nil
+}
+
+// polledActivation reports whether a save activates a subscription on its
+// poller: created enabled, enabled again, or moved to another query.
+func polledActivation(cur *trigger.Subscription, next trigger.Subscription) bool {
+	return next.Poller != "" && next.Enabled && (cur == nil || !cur.Enabled || cur.Poller != next.Poller)
+}
+
+// wakePolledSubscription wakes the poller a subscription was just activated
+// on, once the subscription is written: a dormant poller is read at once,
+// and a tick in flight — one that listed no subscriber before the write and
+// would park the poller for a day — is fenced off. The subscription stands
+// whatever the wake answers; a lost wake costs the dormant recheck, said in
+// the log.
+func (s *Server) wakePolledSubscription(ctx context.Context, tenant string, cur *trigger.Subscription, sub trigger.Subscription) {
+	if !polledActivation(cur, sub) || s.connectorPollers == nil {
+		return
+	}
+	if err := s.connectorPollers.Wake(ctx, binding.ConnectionTenant(tenant), sub.Poller, time.Now()); err != nil && s.logger != nil {
+		s.logger.Warn("connectors: subscription %s is saved, and waking its poller %s failed: %v — it is read at its next recheck", sub.ID, sub.Poller, err)
+	}
 }
 
 // checkRequestedPoller refuses a request that names a poller other than the

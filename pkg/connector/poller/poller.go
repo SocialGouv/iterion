@@ -150,10 +150,10 @@ type Store interface {
 	// the first; the poller's Sequence moves to first+n-1. ErrFenced under
 	// a generation the poller moved past.
 	Reserve(ctx context.Context, id string, generation int64, n int) (int64, error)
-	// Wake makes the poller due at at when it is due later: a subscription
-	// activated on a dormant poller (Tick.Dormant) is read at once. Not
-	// fenced — it moves nothing a tick owns but the due instant, and a
-	// tick's Complete sets that again.
+	// Wake makes the poller due at at when it is due later, and takes the
+	// next generation: a subscription just written is read at once, and a
+	// tick in flight — one that listed no subscriber before it was written,
+	// and would park the poller dormant for a day — is fenced off.
 	Wake(ctx context.Context, tenantID, id string, at time.Time) error
 	// Complete records a tick's outcome under generation (Tick).
 	// ErrFenced under a generation the poller moved past,
