@@ -11,8 +11,9 @@ import (
 // tenantHeaderAliasPattern matches every key a decoder can read as tenant_id:
 // JSON EqualFold and BSON ToLower (dotted capital I). The server-side
 // projection and the whole-document parse share it, so both count the same
-// keys.
-const tenantHeaderAliasPattern = "^[tT][eE][nN][aA][nN][tT]_[iIİ][dD]$"
+// keys. It ends in `\z`, never `$`: Mongo's PCRE `$` also matches before a
+// final newline, which Go's RE2 `$` and the key comparisons do not.
+const tenantHeaderAliasPattern = `^[tT][eE][nN][aA][nN][tT]_[iIİ][dD]\z`
 
 var tenantHeaderAlias = regexp.MustCompile(tenantHeaderAliasPattern)
 

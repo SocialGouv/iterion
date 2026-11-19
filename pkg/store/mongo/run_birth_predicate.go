@@ -11,8 +11,9 @@ import (
 
 // runBirthHeaderAliasPattern selects every key the canonical header parser
 // folds to birth_id (JSON EqualFold and BSON ToLower, dotted-I included), the
-// same family runDataHeaderProjection preserves.
-const runBirthHeaderAliasPattern = "^[bB][iIİ][rR][tT][hH]_[iIİ][dD]$"
+// same family runDataHeaderProjection preserves. `\z` ends it, as every key
+// pattern of this package (tenantHeaderAliasPattern says why).
+const runBirthHeaderAliasPattern = `^[bB][iIİ][rR][tT][hH]_[iIİ][dD]\z`
 
 func birthHeaderEntries() bson.M {
 	return bson.M{"$filter": bson.M{

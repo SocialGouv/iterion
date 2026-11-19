@@ -39,6 +39,11 @@ func TestCanonicalBirthPredicateMatchesTheParser(t *testing.T) {
 		{"canonical-and-alias", bson.D{{Key: "birth_id", Value: "x"}, {Key: "BIRTH_ID", Value: "x"}}},
 		{"near-miss", bson.D{{Key: "birth_idx", Value: "x"}}},
 		{"dotless-i", bson.D{{Key: "bırth_id", Value: "x"}}},
+		// Mongo's PCRE `$` matches before a final newline; the parser never
+		// reads a newline-suffixed key as birth_id.
+		{"newline-alone", bson.D{{Key: "birth_id\n", Value: "x"}}},
+		{"newline-with-canonical", bson.D{{Key: "birth_id", Value: "x"}, {Key: "birth_id\n", Value: "y"}}},
+		{"alias-newline-with-canonical", bson.D{{Key: "birth_id", Value: "x"}, {Key: "BIRTH_ID\n", Value: "x"}}},
 	}
 	expectations := []string{"", "x", "y", "$x"}
 	refused, matched := 0, 0
@@ -143,5 +148,38 @@ func TestMergeExpectedHistoricalBirthMongo(t *testing.T) {
 	}
 	if !r.MergeClaimedAt.Equal(token) {
 		t.Fatalf("a refused claim restamped birth \"x\": claimed_at=%v, want %v", r.MergeClaimedAt, token)
+	}
+}
+
+// TestMergeDoorsIgnoreANewlineSuffixedBirthKey: a "birth_id\n" member is not
+// a birth_id for the parser, so a run loaded with its own birth is exited,
+// claimed and released by both merge doors anchored to that birth — the
+// predicate counts the keys the parser counts, and no CAS misses silently.
+func TestMergeDoorsIgnoreANewlineSuffixedBirthKey(t *testing.T) {
+	s, ctx := valueFormatMongo(t, true)
+	const id = "newline-birth"
+	if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.runs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"birth_id\n": "other"}}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err := s.ObserveRunDataHeader(ctx, id); err != nil || a.BirthID == "" || h.BirthID != a.BirthID {
+		t.Fatalf("fixture: loaded birth %q, observed header %+v, %v", a.BirthID, h, err)
+	}
+	expect := store.ExpectBirthOf(a)
+	if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: store.MergeStatusPending, ExpectBirth: expect}, []store.MergeStatus{""}); err != nil || !changed {
+		t.Fatalf("exit anchored to the run's own birth, beside a \"birth_id\\n\" member = (%t, %v), want (true, nil)", changed, err)
+	}
+	claimed, prior, token, err := s.ClaimMerge(ctx, id, time.Now().Add(-15*time.Minute), expect)
+	if err != nil || !claimed {
+		t.Fatalf("claim anchored to the run's own birth, beside a \"birth_id\\n\" member = (%t, prior %q, %v), want claimed", claimed, prior, err)
+	}
+	if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: store.MergeStatusPending, ExpectBirth: expect, ExpectClaimedAt: token}, []store.MergeStatus{store.MergeStatusMerging}); err != nil || !changed {
+		t.Fatalf("release anchored to the run's own birth, beside a \"birth_id\\n\" member = (%t, %v), want (true, nil)", changed, err)
 	}
 }

@@ -39,6 +39,11 @@ func TestSnapshotOriginNativeMongo(t *testing.T) {
 				snapshotOriginTenantMongo(t, uri, f, scope)
 			})
 		}
+		// The tenant-less row: a run created team-blind records no tenant
+		// and its observation binds "" — a value the bound scan compares.
+		t.Run(fmt.Sprintf("f%d/tenant-none", f), func(t *testing.T) {
+			snapshotOriginNoTenantMongo(t, uri, f)
+		})
 	}
 	for _, forge := range []string{"duplicate", "alias"} {
 		t.Run("f1/lenient-tenant-"+forge, func(t *testing.T) {
@@ -158,6 +163,49 @@ func snapshotOriginTenantMongo(t *testing.T, uri string, f store.ValueFormat, sc
 	snap, err := BuildSnapshot(ctx, wrapped, "r")
 	if !errors.Is(err, store.ErrRunDataIdentityChanged) || snap != nil || wrapped.scanned != 0 {
 		t.Fatalf("%s: tenant replaced as the scan begins: snapshot=%v err=%v scanned=%d marker=%q, want ErrRunDataIdentityChanged and nothing scanned", scope, snap != nil, err, wrapped.scanned, wrapped.seen)
+	}
+}
+
+// snapshotOriginNoTenantMongo: A is created team-blind and records no tenant,
+// so the observation BuildSnapshot binds carries "" — a value, not
+// "unobserved". As the scan begins B replaces A with the same birth, format
+// and protocol and tenant "other-tenant": the team-blind BuildSnapshot refuses
+// exactly ErrRunDataIdentityChanged before any event is folded.
+func snapshotOriginNoTenantMongo(t *testing.T, uri string, f store.ValueFormat) {
+	blind := store.WithoutTenantFilter(t.Context())
+	s := snapshotMongoStore(t, uri, blind)
+	a, err := s.CreateRunWithValueFormat(blind, store.RunCreateSpec{ID: "r", WorkflowName: "wf", Format: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := store.BindRunValueFormat(blind, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AppendEvent(write, "r", store.Event{Data: map[string]any{"marker": "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	o, err := mongoCanonicalObservation(t, s)
+	if err != nil || !o.Observed() || o.TenantID() != "" || o.Header().BirthID != a.BirthID || o.Header().BirthID == "" || o.Header().Format != f {
+		t.Fatalf("fixture: canonical observation %+v tenant %q observed %t, %v; created birth %q format %d", o.Header(), o.TenantID(), o.Observed(), err, a.BirthID, f)
+	}
+	control := &snapshotOriginBarrier{RunStore: s}
+	if snap, err := BuildSnapshot(blind, control, "r"); err != nil || snap == nil || control.scanned != 1 || control.seen != "A" {
+		t.Fatalf("control: snapshot=%v err=%v scanned=%d marker=%q", snap != nil, err, control.scanned, control.seen)
+	}
+	forge := func() {
+		rewriteMongoRunDocument(t, s, func(doc bson.D) bson.D {
+			return append(withoutTenantID(doc), bson.E{Key: "tenant_id", Value: "other-tenant"})
+		})
+		b, err := mongoCanonicalObservation(t, s)
+		if err != nil || b.Header() != o.Header() || b.TenantID() != "other-tenant" {
+			t.Fatalf("fixture: forged successor observed %+v tenant %q, %v; want A's header %+v and \"other-tenant\"", b.Header(), b.TenantID(), err, o.Header())
+		}
+	}
+	wrapped := &snapshotOriginBarrier{RunStore: s, beforeScan: forge}
+	snap, err := BuildSnapshot(blind, wrapped, "r")
+	if !errors.Is(err, store.ErrRunDataIdentityChanged) || snap != nil || wrapped.scanned != 0 {
+		t.Fatalf("observed \"\", B records \"other-tenant\" as the scan begins: snapshot=%v err=%v scanned=%d marker=%q, want ErrRunDataIdentityChanged and nothing scanned", snap != nil, err, wrapped.scanned, wrapped.seen)
 	}
 }
 

@@ -18,8 +18,19 @@ import (
 // the canonical parsers before the binding is built.
 func mongoObservedTenantRun(t *testing.T, f store.ValueFormat, id string, events int) (*Store, store.RunDataHeader, context.Context, context.Context) {
 	t.Helper()
+	return mongoObservedTenantRunIn(t, f, id, "T", events)
+}
+
+// mongoObservedTenantRunIn is mongoObservedTenantRun for a run that records
+// tenant: "" creates it team-blind, so it records no tenant at all — the
+// shape every tenant-less run carries — and the binding observes "".
+func mongoObservedTenantRunIn(t *testing.T, f store.ValueFormat, id, tenant string, events int) (*Store, store.RunDataHeader, context.Context, context.Context) {
+	t.Helper()
 	s, _ := valueFormatMongo(t, true)
-	tenantCtx := store.WithIdentity(t.Context(), "T", "owner")
+	tenantCtx := store.WithoutTenantFilter(t.Context())
+	if tenant != "" {
+		tenantCtx = store.WithIdentity(t.Context(), tenant, "owner")
+	}
 	a, err := s.CreateRunWithValueFormat(tenantCtx, store.RunCreateSpec{ID: id, WorkflowName: "A", Format: f})
 	if err != nil {
 		t.Fatal(err)
@@ -44,10 +55,13 @@ func mongoObservedTenantRun(t *testing.T, f store.ValueFormat, id string, events
 	if h.BirthID == "" || h.Format != f || h.BirthID != a.BirthID {
 		t.Fatalf("fixture: canonical header %+v, created run birth %q format %d", h, a.BirthID, f)
 	}
-	if got := mongoCanonicalTenant(t, s, id); got != "T" {
-		t.Fatalf("fixture: canonical tenant %q, want the seeded \"T\"", got)
+	if got := mongoCanonicalTenant(t, s, id); got != tenant {
+		t.Fatalf("fixture: canonical tenant %q, want the seeded %q", got, tenant)
 	}
-	o, err := store.CaptureRunObservation(h, "T", true)
+	if keys := storedTenantKeys(t, s, id); (tenant == "") != (len(keys) == 0) {
+		t.Fatalf("fixture: stored tenant keys %q for tenant %q", keys, tenant)
+	}
+	o, err := store.CaptureRunObservation(h, tenant, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,20 +106,21 @@ func rewriteMongoRun(t *testing.T, s *Store, id string, edit func(bson.D) bson.D
 	}
 }
 
-// withTenantID sets the single tenant_id member of a run document.
-func withTenantID(t *testing.T, tenant string) func(bson.D) bson.D {
+// withTenantID replaces the tenant_id members of a run document with one
+// holding tenant; "" leaves none, the shape a run that records no tenant
+// carries.
+func withTenantID(tenant string) func(bson.D) bson.D {
 	return func(doc bson.D) bson.D {
-		found := 0
-		for i := range doc {
-			if doc[i].Key == "tenant_id" {
-				doc[i].Value = tenant
-				found++
+		kept := bson.D{}
+		for _, e := range doc {
+			if e.Key != "tenant_id" {
+				kept = append(kept, e)
 			}
 		}
-		if found != 1 {
-			t.Fatalf("fixture: %d tenant_id members", found)
+		if tenant == "" {
+			return kept
 		}
-		return doc
+		return append(kept, bson.E{Key: "tenant_id", Value: tenant})
 	}
 }
 
@@ -114,7 +129,7 @@ func withTenantID(t *testing.T, tenant string) func(bson.D) bson.D {
 // the new tenant back.
 func retenantMongoRun(t *testing.T, s *Store, id, tenant string, h store.RunDataHeader) {
 	t.Helper()
-	rewriteMongoRun(t, s, id, withTenantID(t, tenant))
+	rewriteMongoRun(t, s, id, withTenantID(tenant))
 	got, err := s.ObserveRunDataHeader(store.WithoutTenantFilter(t.Context()), id)
 	if err != nil || got != h {
 		t.Fatalf("fixture: the forged successor changed the header %+v -> %+v (%v); the header path would refuse first", h, got, err)
@@ -159,86 +174,96 @@ func mongoLoadedTenant(r *store.Run) string {
 	return r.TenantID
 }
 
-// TestMongoBoundReadsRefuseAnotherTenant: run A records tenant "T" and a
-// team-blind ctx is bound to its observation; B replaces A with the same
-// birth, format and protocol and tenant "U", so every header compare agrees
-// and no tenant filter hides B. Each bound native read refuses
+// TestMongoBoundReadsRefuseAnotherTenant: run A records the observed tenant
+// and a team-blind ctx is bound to its observation; B replaces A with the
+// same birth, format and protocol and the successor's tenant, so every header
+// compare agrees and no tenant filter hides B. Each bound native read refuses
 // ErrRunDataIdentityChanged and delivers nothing; the same reads unbound, or
-// under a header-only binding, return B as the team-blind legacy does.
+// under a header-only binding, return B as the team-blind legacy does. ""
+// is a value, not "unobserved": a run that records no tenant binds "" and
+// refuses a successor recording "T", and a binding of "T" refuses a
+// successor recording none.
 func TestMongoBoundReadsRefuseAnotherTenant(t *testing.T) {
 	for _, f := range []store.ValueFormat{store.LegacyValueFormat, store.ExactValueFormat} {
-		t.Run(fmt.Sprint("f", f), func(t *testing.T) {
-			const id = "r"
-			s, h, blind, bound := mongoObservedTenantRun(t, f, id, 3)
-			if r, err := s.LoadRun(bound, id); err != nil || r.TenantID != "T" {
-				t.Fatalf("control: bound load of the observed run = tenant %q, %v", mongoLoadedTenant(r), err)
-			}
-			if n, err := mongoScanCount(bound, s, id); err != nil || n != 3 {
-				t.Fatalf("control: bound scan of the observed run = %d, %v", n, err)
-			}
-			if got, err := s.ReadRunLogRange(bound, id, 0, 0); err != nil || string(got) != "original log" {
-				t.Fatalf("control: bound run.log of the observed run = %q, %v", got, err)
-			}
-			if sel, err := s.ResolveStreamSelection(bound, id); err != nil || sel.EventStreamObservation().TenantID() != "T" {
-				t.Fatalf("control: bound selection of the observed run: %v", err)
-			}
+		for _, tc := range []struct{ observed, successor string }{{"T", "U"}, {"", "T"}, {"T", ""}} {
+			t.Run(fmt.Sprintf("f%d/observed=%q/successor=%q", f, tc.observed, tc.successor), func(t *testing.T) {
+				mongoBoundReadsRefuseAnotherTenant(t, f, tc.observed, tc.successor)
+			})
+		}
+	}
+}
 
-			retenantMongoRun(t, s, id, "U", h)
+func mongoBoundReadsRefuseAnotherTenant(t *testing.T, f store.ValueFormat, observed, successor string) {
+	const id = "r"
+	s, h, blind, bound := mongoObservedTenantRunIn(t, f, id, observed, 3)
+	if r, err := s.LoadRun(bound, id); err != nil || r.TenantID != observed {
+		t.Fatalf("control: bound load of the observed run = tenant %q, %v", mongoLoadedTenant(r), err)
+	}
+	if n, err := mongoScanCount(bound, s, id); err != nil || n != 3 {
+		t.Fatalf("control: bound scan of the observed run = %d, %v", n, err)
+	}
+	if got, err := s.ReadRunLogRange(bound, id, 0, 0); err != nil || string(got) != "original log" {
+		t.Fatalf("control: bound run.log of the observed run = %q, %v", got, err)
+	}
+	if sel, err := s.ResolveStreamSelection(bound, id); err != nil || sel.EventStreamObservation().TenantID() != observed {
+		t.Fatalf("control: bound selection of the observed run: %v", err)
+	}
 
-			// LoadRun (loadRunValueRecord).
-			if r, err := s.LoadRun(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
-				t.Errorf("LoadRun: bound to tenant \"T\", B records \"U\": loaded tenant %q, %v, want ErrRunDataIdentityChanged", mongoLoadedTenant(r), err)
-			}
-			// Stream reads, the scan and the selection (readRunFormatObservationPolicy).
-			if got, err := s.LoadEvents(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
-				t.Errorf("LoadEvents: bound to tenant \"T\", B records \"U\": %d events, %v, want ErrRunDataIdentityChanged", len(got), err)
-			}
-			if n, err := mongoScanCount(bound, s, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || n != 0 {
-				t.Errorf("ScanEvents: bound to tenant \"T\", B records \"U\": %d events, %v, want 0 and ErrRunDataIdentityChanged", n, err)
-			}
-			if got, err := s.ReadRunLogRange(bound, id, 0, 0); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
-				t.Errorf("run.log: bound to tenant \"T\", B records \"U\": %q, %v, want ErrRunDataIdentityChanged", got, err)
-			}
-			if sel, err := s.ResolveStreamSelection(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || sel != nil {
-				t.Errorf("ResolveStreamSelection: bound to tenant \"T\", B records \"U\": selection %t, %v, want ErrRunDataIdentityChanged", sel != nil, err)
-			}
-			// The header observation (ObserveRunDataHeader).
-			if got, err := s.ObserveRunDataHeader(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
-				t.Errorf("ObserveRunDataHeader: bound to tenant \"T\", B records \"U\": %+v, %v, want ErrRunDataIdentityChanged", got, err)
-			}
+	retenantMongoRun(t, s, id, successor, h)
 
-			headerOnly, err := store.CaptureRunDataBinding(h)
-			if err != nil {
-				t.Fatal(err)
-			}
-			legacy, err := store.WithRunDataBinding(blind, headerOnly)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if legacy, err = store.WithRunValueFormat(legacy, store.RunValueFormat{RunID: id, Format: f}); err != nil {
-				t.Fatal(err)
-			}
-			for name, ctx := range map[string]context.Context{"unbound": blind, "header-only": legacy} {
-				if r, err := s.LoadRun(ctx, id); err != nil || r.TenantID != "U" {
-					t.Fatalf("%s LoadRun = tenant %q, %v, want B's tenant \"U\"", name, mongoLoadedTenant(r), err)
-				}
-				if got, err := s.LoadEvents(ctx, id); err != nil || len(got) != 3 {
-					t.Fatalf("%s LoadEvents = %d, %v, want 3 events", name, len(got), err)
-				}
-				if n, err := mongoScanCount(ctx, s, id); err != nil || n != 3 {
-					t.Fatalf("%s ScanEvents = %d, %v, want 3 events", name, n, err)
-				}
-				if got, err := s.ReadRunLogRange(ctx, id, 0, 0); err != nil || string(got) != "original log" {
-					t.Fatalf("%s run.log = %q, %v", name, got, err)
-				}
-				if got, err := s.ObserveRunDataHeader(ctx, id); err != nil || got != h {
-					t.Fatalf("%s ObserveRunDataHeader = %+v, %v", name, got, err)
-				}
-				if sel, err := s.ResolveStreamSelection(ctx, id); err != nil || sel.EventStreamObservation().TenantID() != "U" {
-					t.Fatalf("%s ResolveStreamSelection: %v", name, err)
-				}
-			}
-		})
+	pair := fmt.Sprintf("bound to tenant %q, B records %q", observed, successor)
+	// LoadRun (loadRunValueRecord).
+	if r, err := s.LoadRun(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
+		t.Errorf("LoadRun: %s: loaded tenant %q, %v, want ErrRunDataIdentityChanged", pair, mongoLoadedTenant(r), err)
+	}
+	// Stream reads, the scan and the selection (readRunFormatObservationPolicy).
+	if got, err := s.LoadEvents(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
+		t.Errorf("LoadEvents: %s: %d events, %v, want ErrRunDataIdentityChanged", pair, len(got), err)
+	}
+	if n, err := mongoScanCount(bound, s, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || n != 0 {
+		t.Errorf("ScanEvents: %s: %d events, %v, want 0 and ErrRunDataIdentityChanged", pair, n, err)
+	}
+	if got, err := s.ReadRunLogRange(bound, id, 0, 0); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
+		t.Errorf("run.log: %s: %q, %v, want ErrRunDataIdentityChanged", pair, got, err)
+	}
+	if sel, err := s.ResolveStreamSelection(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || sel != nil {
+		t.Errorf("ResolveStreamSelection: %s: selection %t, %v, want ErrRunDataIdentityChanged", pair, sel != nil, err)
+	}
+	// The header observation (ObserveRunDataHeader).
+	if got, err := s.ObserveRunDataHeader(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
+		t.Errorf("ObserveRunDataHeader: %s: %+v, %v, want ErrRunDataIdentityChanged", pair, got, err)
+	}
+
+	headerOnly, err := store.CaptureRunDataBinding(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.WithRunDataBinding(blind, headerOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy, err = store.WithRunValueFormat(legacy, store.RunValueFormat{RunID: id, Format: f}); err != nil {
+		t.Fatal(err)
+	}
+	for name, ctx := range map[string]context.Context{"unbound": blind, "header-only": legacy} {
+		if r, err := s.LoadRun(ctx, id); err != nil || r.TenantID != successor {
+			t.Fatalf("%s LoadRun = tenant %q, %v, want B's tenant %q", name, mongoLoadedTenant(r), err, successor)
+		}
+		if got, err := s.LoadEvents(ctx, id); err != nil || len(got) != 3 {
+			t.Fatalf("%s LoadEvents = %d, %v, want 3 events", name, len(got), err)
+		}
+		if n, err := mongoScanCount(ctx, s, id); err != nil || n != 3 {
+			t.Fatalf("%s ScanEvents = %d, %v, want 3 events", name, n, err)
+		}
+		if got, err := s.ReadRunLogRange(ctx, id, 0, 0); err != nil || string(got) != "original log" {
+			t.Fatalf("%s run.log = %q, %v", name, got, err)
+		}
+		if got, err := s.ObserveRunDataHeader(ctx, id); err != nil || got != h {
+			t.Fatalf("%s ObserveRunDataHeader = %+v, %v", name, got, err)
+		}
+		if sel, err := s.ResolveStreamSelection(ctx, id); err != nil || sel.EventStreamObservation().TenantID() != successor {
+			t.Fatalf("%s ResolveStreamSelection: %v", name, err)
+		}
 	}
 }
 
@@ -376,6 +401,11 @@ func TestMongoDocumentCanonicalTenantMatchesTheProjection(t *testing.T) {
 		{"mixed", bson.D{{Key: "Tenant_Id", Value: "a"}}, "", false},
 		{"alias-and-canonical", bson.D{{Key: "tenant_id", Value: "a"}, {Key: "Tenant_ID", Value: "a"}}, "", false},
 		{"dotted-capital-i", bson.D{{Key: "tenant_İd", Value: "a"}}, "", false},
+		// Mongo's PCRE `$` matches before a final newline; neither parser
+		// reads a newline-suffixed key as tenant_id.
+		{"newline-alone", bson.D{{Key: "tenant_id\n", Value: "u"}}, "", true},
+		{"newline-with-canonical", bson.D{{Key: "tenant_id", Value: "t"}, {Key: "tenant_id\n", Value: "u"}}, "t", true},
+		{"alias-newline-alone", bson.D{{Key: "TENANT_ID\n", Value: "u"}}, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id := fmt.Sprint("tenant-shape-", i)
@@ -403,5 +433,90 @@ func TestMongoDocumentCanonicalTenantMatchesTheProjection(t *testing.T) {
 				t.Fatalf("document %q, %v; projection %q, %v; want ErrInvalidRunDataIdentity from both", whole, wholeErr, projected, projectedErr)
 			}
 		})
+	}
+}
+
+// TestMongoBoundReadsIgnoreANewlineSuffixedTenantKey: a "tenant_id\n" member
+// is not a tenant_id for any parser, so the run bound to its observed "T" is
+// still that run on every bound read — the server-side projection counts the
+// keys the Go parser counts.
+func TestMongoBoundReadsIgnoreANewlineSuffixedTenantKey(t *testing.T) {
+	for _, f := range []store.ValueFormat{store.LegacyValueFormat, store.ExactValueFormat} {
+		t.Run(fmt.Sprint("f", f), func(t *testing.T) {
+			const id = "r"
+			s, h, blind, bound := mongoObservedTenantRun(t, f, id, 3)
+			rewriteMongoRun(t, s, id, func(doc bson.D) bson.D { return append(doc, bson.E{Key: "tenant_id\n", Value: "U"}) })
+			if got, err := s.ObserveRunDataHeader(blind, id); err != nil || got != h {
+				t.Fatalf("fixture: header after the newline key %+v, %v, want %+v", got, err, h)
+			}
+			if got := storedTenantKeys(t, s, id); fmt.Sprint(got) != "[tenant_id]" {
+				t.Fatalf("fixture: stored tenant keys %q, want only the canonical one", got)
+			}
+			if r, err := s.LoadRun(bound, id); err != nil || r.TenantID != "T" {
+				t.Errorf("LoadRun: tenant %q, %v, want the observed run", mongoLoadedTenant(r), err)
+			}
+			if got, err := s.LoadEvents(bound, id); err != nil || len(got) != 3 {
+				t.Errorf("LoadEvents: %d events, %v, want 3", len(got), err)
+			}
+			if n, err := mongoScanCount(bound, s, id); err != nil || n != 3 {
+				t.Errorf("ScanEvents: %d events, %v, want 3", n, err)
+			}
+			if got, err := s.ReadRunLogRange(bound, id, 0, 0); err != nil || string(got) != "original log" {
+				t.Errorf("run.log: %q, %v, want the observed run's log", got, err)
+			}
+			if got, err := s.ObserveRunDataHeader(bound, id); err != nil || got != h {
+				t.Errorf("ObserveRunDataHeader: %+v, %v, want %+v", got, err, h)
+			}
+			if sel, err := s.ResolveStreamSelection(bound, id); err != nil || sel.EventStreamObservation().TenantID() != "T" {
+				t.Errorf("ResolveStreamSelection: %v, want the observed run's selection", err)
+			}
+		})
+	}
+}
+
+// TestMongoBoundReadsRefuseASuccessorWithAnInvalidTenant: B replaces A with a
+// new birth and a tenant the strict parser refuses (canonical plus case
+// alias). Under A's binding every bound read answers what any successor
+// answers, ErrRunDataIdentityChanged — the header comparison comes before the
+// tenant parse, so a stream read and LoadRun agree on the sentinel.
+func TestMongoBoundReadsRefuseASuccessorWithAnInvalidTenant(t *testing.T) {
+	const id = "r"
+	s, h, blind, bound := mongoObservedTenantRun(t, store.LegacyValueFormat, id, 1)
+	rewriteMongoRun(t, s, id, func(doc bson.D) bson.D {
+		out := bson.D{}
+		for _, e := range doc {
+			switch e.Key {
+			case "birth_id":
+				e.Value = "successor-birth"
+			case "tenant_id":
+				continue
+			}
+			out = append(out, e)
+		}
+		return append(out, bson.E{Key: "tenant_id", Value: "U"}, bson.E{Key: "Tenant_Id", Value: "U"})
+	})
+	if got, err := s.ObserveRunDataHeader(blind, id); err != nil || got.BirthID == h.BirthID {
+		t.Fatalf("fixture: successor header %+v, %v, want a new birth", got, err)
+	}
+	if got := storedTenantKeys(t, s, id); fmt.Sprint(got) != "[tenant_id Tenant_Id]" {
+		t.Fatalf("fixture: stored tenant keys %q", got)
+	}
+	if r, err := s.LoadRun(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
+		t.Errorf("LoadRun: tenant %q, %v, want ErrRunDataIdentityChanged", mongoLoadedTenant(r), err)
+	}
+	if got, err := s.LoadEvents(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
+		t.Errorf("LoadEvents: %d events, %v, want ErrRunDataIdentityChanged", len(got), err)
+	}
+	if n, err := mongoScanCount(bound, s, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || n != 0 {
+		t.Errorf("ScanEvents: %d events, %v, want 0 and ErrRunDataIdentityChanged", n, err)
+	}
+	if got, err := s.ReadRunLogRange(bound, id, 0, 0); !errors.Is(err, store.ErrRunDataIdentityChanged) || got != nil {
+		t.Errorf("run.log: %q, %v, want ErrRunDataIdentityChanged", got, err)
+	}
+	if got, err := s.ObserveRunDataHeader(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) {
+		t.Errorf("ObserveRunDataHeader: %+v, %v, want ErrRunDataIdentityChanged", got, err)
+	}
+	if sel, err := s.ResolveStreamSelection(bound, id); !errors.Is(err, store.ErrRunDataIdentityChanged) || sel != nil {
+		t.Errorf("ResolveStreamSelection: selection %t, %v, want ErrRunDataIdentityChanged", sel != nil, err)
 	}
 }

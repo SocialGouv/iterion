@@ -124,6 +124,57 @@ func TestRunMetadataFormatAtomicShape(t *testing.T) {
 	}
 }
 
+// TestRunMetadataFormatNewlineKeysAgree: Mongo's PCRE `$` matches before a
+// final newline, the Go parser never reads a newline-suffixed key as
+// format_version. On such documents the whole-document parser, the projected
+// metadata read and the atomic predicate agree on the format.
+func TestRunMetadataFormatNewlineKeysAgree(t *testing.T) {
+	t.Parallel()
+	s, ctx := valueFormatMongo(t, true)
+	tenant, _ := store.TenantFromContext(ctx)
+	for i, tt := range []struct {
+		name    string
+		entries bson.D
+		format  store.ValueFormat
+	}{
+		{"newline-alone", bson.D{{Key: "format_version\n", Value: int32(2)}}, store.LegacyValueFormat},
+		{"newline-with-canonical", bson.D{{Key: "format_version", Value: int32(2)}, {Key: "format_version\n", Value: int64(99)}}, store.ExactValueFormat},
+		{"alias-newline-with-canonical", bson.D{{Key: "format_version", Value: int32(1)}, {Key: "FORMAT_VERSION\n", Value: int32(2)}}, store.LegacyValueFormat},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fmt.Sprintf("newline-format-%d", i)
+			doc := append(bson.D{{Key: "_id", Value: id}, {Key: "tenant_id", Value: tenant}, {Key: "version", Value: int64(1)}}, tt.entries...)
+			if _, err := s.runs.InsertOne(ctx, doc); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := s.runs.FindOne(ctx, bson.M{"_id": id}).Raw()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed, err := store.RunValueFormatFromBSON(ctx, raw); err != nil || parsed != tt.format {
+				t.Fatalf("fixture: whole-document parser = %d, %v, want %d", parsed, err, tt.format)
+			}
+			parent, _, err := s.readRunFormatMetadata(ctx, id)
+			if err != nil {
+				t.Fatalf("projected metadata read: %v", err)
+			}
+			if projected, err := store.NormalizeValueFormat(parent.FormatVersion); err != nil || projected != tt.format {
+				t.Errorf("projected metadata read = %d, %v, want the parser's %d", projected, err, tt.format)
+			}
+			for _, f := range []store.ValueFormat{store.LegacyValueFormat, store.ExactValueFormat} {
+				filter := bson.M{"_id": id, "$and": bson.A{canonicalValueFormatPredicate(f)}}
+				result, err := s.runs.UpdateOne(ctx, filter, bson.M{"$set": bson.M{fmt.Sprintf("probe_%d", f): true}})
+				if err != nil {
+					t.Fatal(f, err)
+				}
+				if want := f == tt.format; (result.MatchedCount == 1) != want {
+					t.Errorf("atomic predicate for format %d matched=%d, the parser reads format %d", f, result.MatchedCount, tt.format)
+				}
+			}
+		})
+	}
+}
+
 func TestRunMetadataFormatCapturedAndBusinessCAS(t *testing.T) {
 	t.Parallel()
 	s, ctx := valueFormatMongo(t, true)

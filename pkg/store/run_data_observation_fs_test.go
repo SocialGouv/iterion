@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -65,7 +66,8 @@ func canonicalRunJSONHeader(t *testing.T, s *FilesystemRunStore, id string) RunD
 }
 
 // rewriteRunJSONTenant sets tenant_id in id's run.json, every other member kept
-// as written, asserts the canonical parser reads that tenant back and returns
+// as written — "" drops the member, the shape a run that records no tenant
+// carries — asserts the canonical parser reads that tenant back and returns
 // the canonical header of the rewritten bytes.
 func rewriteRunJSONTenant(t *testing.T, s *FilesystemRunStore, id, tenant string) RunDataHeader {
 	t.Helper()
@@ -77,7 +79,9 @@ func rewriteRunJSONTenant(t *testing.T, s *FilesystemRunStore, id, tenant string
 	if err = json.Unmarshal(b, &raw); err != nil {
 		t.Fatal(err)
 	}
-	if raw["tenant_id"], err = json.Marshal(tenant); err != nil {
+	if tenant == "" {
+		delete(raw, "tenant_id")
+	} else if raw["tenant_id"], err = json.Marshal(tenant); err != nil {
 		t.Fatal(err)
 	}
 	if b, err = json.Marshal(raw); err != nil {
@@ -106,17 +110,29 @@ func scanCount(ctx context.Context, s *FilesystemRunStore, id string) (int, erro
 }
 
 // TestFilesystemBoundReadsRefuseAnotherTenant: a run whose run.json records
-// tenant "T" is bound; the file is rewritten to tenant "U" with the same birth,
-// format and protocol, so every header compare still agrees. Each bound native
-// read refuses ErrRunDataIdentityChanged and delivers nothing.
+// the observed tenant is bound; the file is rewritten to the successor's tenant
+// with the same birth, format and protocol, so every header compare still
+// agrees. Each bound native read refuses ErrRunDataIdentityChanged and
+// delivers nothing. "" is a value, not "unobserved": a run that records no
+// tenant — every filesystem run — binds "" and refuses a successor recording
+// "T", and a binding of "T" refuses a successor recording none.
 func TestFilesystemBoundReadsRefuseAnotherTenant(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct{ observed, successor string }{{"T", "U"}, {"", "T"}, {"T", ""}} {
+		t.Run(fmt.Sprintf("observed=%q/successor=%q", tc.observed, tc.successor), func(t *testing.T) {
+			t.Parallel()
+			filesystemBoundReadsRefuseAnotherTenant(t, tc.observed, tc.successor)
+		})
+	}
+}
+
+func filesystemBoundReadsRefuseAnotherTenant(t *testing.T, observedTenant, successor string) {
 	const id = "r"
-	s, h, bound := observedTenantFixture(t, ExactValueFormat, id, "T", 3)
+	s, h, bound := observedTenantFixture(t, ExactValueFormat, id, observedTenant, 3)
 	if h.BirthID == "" || h.Format != ExactValueFormat {
 		t.Fatalf("fixture: header %+v has no birth or is not exact", h)
 	}
-	if r, err := s.LoadRun(bound, id); err != nil || r.TenantID != "T" {
+	if r, err := s.LoadRun(bound, id); err != nil || r.TenantID != observedTenant {
 		t.Fatalf("control: bound load of the observed run = tenant %q, %v", loadedTenant(r), err)
 	}
 	if n, err := scanCount(bound, s, id); err != nil || n != 3 {
@@ -126,28 +142,29 @@ func TestFilesystemBoundReadsRefuseAnotherTenant(t *testing.T) {
 		t.Fatalf("control: bound run.log of the observed run = %q, %v", got, err)
 	}
 
-	if got := rewriteRunJSONTenant(t, s, id, "U"); got != h {
+	if got := rewriteRunJSONTenant(t, s, id, successor); got != h {
 		t.Fatalf("fixture: the forged successor changed the header %+v -> %+v; the header path would refuse first", h, got)
 	}
 
+	pair := fmt.Sprintf("bound to tenant %q, run.json records %q", observedTenant, successor)
 	if r, err := s.LoadRun(bound, id); !errors.Is(err, ErrRunDataIdentityChanged) {
-		t.Errorf("LoadRun: bound to tenant \"T\", run.json records \"U\": loaded tenant %q, %v, want ErrRunDataIdentityChanged", loadedTenant(r), err)
+		t.Errorf("LoadRun: %s: loaded tenant %q, %v, want ErrRunDataIdentityChanged", pair, loadedTenant(r), err)
 	}
 	if n, err := scanCount(bound, s, id); !errors.Is(err, ErrRunDataIdentityChanged) || n != 0 {
-		t.Errorf("ScanEvents: bound to tenant \"T\", run.json records \"U\": %d events, %v, want 0 and ErrRunDataIdentityChanged", n, err)
+		t.Errorf("ScanEvents: %s: %d events, %v, want 0 and ErrRunDataIdentityChanged", pair, n, err)
 	}
 	if got, err := s.ReadRunLogRange(bound, id, 0, 0); !errors.Is(err, ErrRunDataIdentityChanged) || got != nil {
-		t.Errorf("run.log: bound to tenant \"T\", run.json records \"U\": %q, %v, want ErrRunDataIdentityChanged", got, err)
+		t.Errorf("run.log: %s: %q, %v, want ErrRunDataIdentityChanged", pair, got, err)
 	}
 	if got, err := s.ObserveRunDataHeader(bound, id); !errors.Is(err, ErrRunDataIdentityChanged) {
-		t.Errorf("ObserveRunDataHeader: bound to tenant \"T\", run.json records \"U\": %+v, %v, want ErrRunDataIdentityChanged", got, err)
+		t.Errorf("ObserveRunDataHeader: %s: %+v, %v, want ErrRunDataIdentityChanged", pair, got, err)
 	}
 	sel, observed, err := s.OpenFilesystemStream(bound, id, FilesystemStreamOpenOptions{})
 	if sel != nil {
 		sel.Close()
 	}
 	if !errors.Is(err, ErrRunDataIdentityChanged) || sel != nil || observed {
-		t.Errorf("OpenFilesystemStream: bound to tenant \"T\", run.json records \"U\": selection %t observed %t, %v, want ErrRunDataIdentityChanged", sel != nil, observed, err)
+		t.Errorf("OpenFilesystemStream: %s: selection %t observed %t, %v, want ErrRunDataIdentityChanged", pair, sel != nil, observed, err)
 	}
 }
 

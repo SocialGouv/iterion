@@ -332,6 +332,10 @@ type MergeRequest struct {
 	// "merge" strategy. Empty falls back to a generated message that
 	// lists each squashed commit.
 	CommitMessage string
+	// ExpectBirth, when it checks, is the birth of the run its caller
+	// decided on: a successor recreated under the ID since answers
+	// ErrRunDataIdentityChanged before any claim. Zero skips the check.
+	ExpectBirth store.ExpectedBirth
 }
 
 // MergeResponse mirrors the persisted Run fields after a successful
@@ -396,6 +400,9 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	}
 	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
+		return nil, err
+	}
+	if err := req.ExpectBirth.Verify(runID, r.BirthID); err != nil {
 		return nil, err
 	}
 	if r.FinalCommit == "" || r.FinalBranch == "" {
@@ -693,6 +700,7 @@ func (s *Service) CommitAndFinalizeCtx(ctx context.Context, runID, message strin
 	if err != nil {
 		return nil, err
 	}
+	acted := store.ExpectBirthOf(r)
 	// The RUN's logger: the commit + promote this helper drives logs git
 	// output on the handle it is given (iterion#2822).
 	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.runLoggerFor(runID)); err != nil {
@@ -700,9 +708,14 @@ func (s *Service) CommitAndFinalizeCtx(ctx context.Context, runID, message strin
 	}
 	// Re-read so we return the just-persisted state (RecoverFinalize
 	// writes via SaveRun under its own context; we want the canonical
-	// post-write snapshot to send back).
+	// post-write snapshot to send back). The re-read must still be the run
+	// just finalized: a successor recreated under the ID since answers
+	// ErrRunDataIdentityChanged and never receives the flip below.
 	r, err = s.store.LoadRun(ctx, runID)
 	if err != nil {
+		return nil, err
+	}
+	if err := acted.Verify(runID, r.BirthID); err != nil {
 		return nil, err
 	}
 	// RecoverFinalize promotes the worktree HEAD with mergeInto:"none",

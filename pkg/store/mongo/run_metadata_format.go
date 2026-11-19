@@ -16,7 +16,9 @@ import (
 // them away would turn a refusal into a canonical or absent selector. Explicit
 // character classes cover JSON EqualFold and BSON ToLower (long-s and dotted-I)
 // without relying on Mongo Unicode case conversion. Payloads are not traversed.
-const runFormatHeaderAliasPattern = "^[fF][oO][rR][mM][aA][tT]_[vV][eE][rR]([sSſ][iI]|[sS][iIİ])[oO][nN]$"
+// `\z` ends it, as every key pattern of this package (tenantHeaderAliasPattern
+// says why).
+const runFormatHeaderAliasPattern = `^[fF][oO][rR][mM][aA][tT]_[vV][eE][rR]([sSſ][iI]|[sS][iIİ])[oO][nN]\z`
 
 func valueFormatHeaderEntries() bson.M {
 	return bson.M{"$filter": bson.M{
@@ -164,6 +166,9 @@ func (s *Store) readRunFormatObservation(ctx context.Context, id string, capture
 // (parent.TenantID). A binding that observed a tenant forces it too and is
 // compared with it after the header: another tenant under the same header
 // answers ErrRunDataIdentityChanged, whatever the tenant filter lets through.
+// Under such a binding a tenant the strict parser refuses is reported after
+// the header comparison too, so a successor answers ErrRunDataIdentityChanged
+// whatever tenant shape it carries — the answer LoadRun gives.
 func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, capture, retained bool) (*store.Run, bson.Raw, error) {
 	if ctx == nil {
 		return nil, nil, store.ErrInvalidValueFormat
@@ -193,16 +198,19 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 	}
 	raw := append(bson.Raw(nil), cursor.Current...)
 	var tenant string
+	var tenantErr error
 	if retained {
-		var e error
-		tenant, e = retainedCanonicalTenant(raw)
-		if e != nil {
-			return nil, raw, e
+		tenant, tenantErr = retainedCanonicalTenant(raw)
+		if tenantErr != nil && !observed {
+			return nil, raw, tenantErr
 		}
 	}
 	parent, err := decodeRunFormatObservation(ctx, raw, capture)
 	if err != nil {
 		return parent, raw, err
+	}
+	if tenantErr != nil {
+		return nil, raw, tenantErr
 	}
 	if retained {
 		parent.TenantID = tenant

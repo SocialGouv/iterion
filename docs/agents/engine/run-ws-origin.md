@@ -65,16 +65,16 @@ deleted one answers 410, any other read error 500.
 
 ## Bound reads
 
-`store.BindRunObservation` carries the header and format as compare-only
-read intent: a binding or format the context already carries is compared,
-never replaced. Tenant and presence do not travel. The socket's `streamCtx`
+`store.BindRunObservation` carries the header, format and recorded tenant
+(even `""`) as compare-only read intent: what the context already carries is
+compared, never replaced. Presence does not travel. The socket's `streamCtx`
 (its unbound `authCtx` plus that binding) is the parent of every event and
 log reservation, so the snapshot, replay, terminal catch-up, log admission
-and persisted log reads of every subscribe and resubscribe read the
-upgrade's run. Native filesystem and Mongo stores refuse a successor
-recreated under the ID (`ErrRunDataIdentityChanged`), a deletion
-(`ErrRunDeleted`) or an absence (`ErrRunNotFound`). Mutating actions keep the
-unbound `authCtx`: a resume or a child run never inherits the binding.
+and persisted log reads of each (re)subscribe read the upgrade's run. Native
+filesystem and Mongo stores refuse another birth or tenant under the ID
+(`ErrRunDataIdentityChanged`), a deletion (`ErrRunDeleted`) or an absence
+(`ErrRunNotFound`). Mutating actions keep the unbound `authCtx`: a resume or
+a child run never inherits the binding.
 
 ## Source capability
 

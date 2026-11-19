@@ -15,7 +15,7 @@ import (
 func runDataHeaderProjection() bson.M {
 	aliases := bson.A{
 		bson.M{"$regexMatch": bson.M{"input": "$$header.k", "regex": runFormatHeaderAliasPattern}},
-		bson.M{"$regexMatch": bson.M{"input": "$$header.k", "regex": "^(?:_[iIİ][dD]|[bB][iIİ][rR][tT][hH]_[iIİ][dD]|[dD][aA][tT][aA]_[pP][rR][oO][tT][oO][cC][oO][lL]|[vV]|[dD][eE][lL][eE][tT][eE][dD]_[aA][tT])$"}},
+		bson.M{"$regexMatch": bson.M{"input": "$$header.k", "regex": `^(?:_[iIİ][dD]|[bB][iIİ][rR][tT][hH]_[iIİ][dD]|[dD][aA][tT][aA]_[pP][rR][oO][tT][oO][cC][oO][lL]|[vV]|[dD][eE][lL][eE][tT][eE][dD]_[aA][tT])\z`}},
 	}
 	return bson.M{"_id": 0, "data_headers": bson.M{"$filter": bson.M{
 		"input": bson.M{"$objectToArray": "$$ROOT"}, "as": "header", "cond": bson.M{"$or": aliases},

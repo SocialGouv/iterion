@@ -240,11 +240,7 @@ func (m *Manager) Register(runID string, obs store.RunObservation, lane Observed
 		// A different observation holds the ID: close every old bail and
 		// rebuild the episode around the new registration (a replacement
 		// is a new truth, not a continuation).
-		old := rs.bails
-		rs.bails = nil
-		for _, b := range old {
-			b.closeLocked()
-		}
+		rs.closeBailsLocked()
 	}
 	rs.obs = obs
 	rs.bails = []*Bail{bail}
@@ -393,10 +389,15 @@ func (m *Manager) ReleaseRun(runID string) {
 // over for good (a reap, a service shutdown). Each bail's own Close stays a
 // no-op afterwards.
 func (m *Manager) releaseAllLocked(runID string) {
-	rs := m.runs[runID]
-	if rs == nil {
-		return
+	if rs := m.runs[runID]; rs != nil {
+		rs.closeBailsLocked()
 	}
+}
+
+// closeBailsLocked detaches every live bail of the episode and closes each
+// once; m.mu is held. A replacement and a release-all both close through it,
+// so a holder's concurrent Close only ever waits on m.mu.
+func (rs *runState) closeBailsLocked() {
 	bails := rs.bails
 	rs.bails = nil
 	for _, b := range bails {
