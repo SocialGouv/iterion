@@ -3,6 +3,7 @@
 package scripthost
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -20,17 +21,28 @@ import (
 // same mapping twice, once under RLIMIT_DATA (and survives it) and once under
 // the probe (and is killed).
 func TestAMappingRLIMITDataDoesNotChargeGrowsTheResidentSet(t *testing.T) {
-	// Premise: 96 MiB of MAP_SHARED beside a 32 MiB RLIMIT_DATA. The kernel
-	// does not charge the mapping to the data segment, so the child finishes.
-	cmd := rssHelper(t, "96", map[string]string{"ITERION_RLIMIT_DATA_MIB": "32"})
+	// Premise: 96 MiB of MAP_SHARED with only 16 MiB of room left under
+	// RLIMIT_DATA. Charged, the mapping alone would overrun the room and the
+	// mmap would be refused (exit 3); the kernel does not charge it, so the
+	// child finishes.
+	//
+	// ROOM, not an absolute limit: the helper sets its own data segment plus
+	// 16 MiB. An absolute 32 MiB sat a few MiB above the test binary's own
+	// ~22 MiB, and the runtime died whenever it needed a mapping after the
+	// limit went up — a memory-profile sample asking for a persistentalloc
+	// chunk, at random: red five times on CI in a day, 3 runs out of 40
+	// locally under CPU contention (#3372).
+	cmd, stderr := rssHelper(t, "96", map[string]string{"ITERION_RLIMIT_DATA_ROOM_MIB": "16"})
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("a MAP_SHARED mapping under RLIMIT_DATA died (%v) — the axis this probe covers "+
-			"would not exist, and the probe's own verdict would be about something else", err)
+			"would not exist, and the probe's own verdict would be about something else. "+
+			"Helper exits: 3 = the mmap was refused (charged), 5 = setrlimit, 6 = no base, 7 = bad room. "+
+			"stderr: %.400s", err, stderr.Bytes())
 	}
 }
 
 func TestTheProbeKillsAChildWhoseMappingRLIMITDataDoesNotCharge(t *testing.T) {
-	cmd := rssHelper(t, "96", nil)
+	cmd, _ := rssHelper(t, "96", nil)
 	stop := make(chan struct{})
 	done := watchRSS(cmd, 32<<20, 5*time.Millisecond, stop)
 	// BOUNDED. A probe that never kills must FAIL this test, not hang it: the
@@ -58,7 +70,7 @@ func TestTheProbeKillsAChildWhoseMappingRLIMITDataDoesNotCharge(t *testing.T) {
 }
 
 func TestTheProbeLeavesAChildUnderItsBoundAlone(t *testing.T) {
-	cmd := rssHelper(t, "8", nil)
+	cmd, _ := rssHelper(t, "8", nil)
 	stop := make(chan struct{})
 	done := watchRSS(cmd, 256<<20, 5*time.Millisecond, stop)
 	// Let it finish on its own, then stop the probe: a probe that killed a
@@ -74,7 +86,7 @@ func TestTheProbeLeavesAChildUnderItsBoundAlone(t *testing.T) {
 }
 
 func TestABoundNobodyChoseIsNotProbed(t *testing.T) {
-	cmd := rssHelper(t, "8", nil)
+	cmd, _ := rssHelper(t, "8", nil)
 	done := watchRSS(cmd, 0, 5*time.Millisecond, make(chan struct{}))
 	_ = cmd.Wait()
 	if res := <-done; res.samples != 0 || res.killed {
@@ -92,13 +104,20 @@ func TestRSSProbeHelper(t *testing.T) {
 	if err != nil {
 		os.Exit(2)
 	}
-	// The bounds the premise test names, applied by the child to itself.
-	if lim := os.Getenv("ITERION_RLIMIT_DATA_MIB"); lim != "" {
-		if n, err := strconv.Atoi(lim); err == nil {
-			if err := syscall.Setrlimit(syscall.RLIMIT_DATA,
-				&syscall.Rlimit{Cur: uint64(n) << 20, Max: uint64(n) << 20}); err != nil {
-				os.Exit(5)
-			}
+	// The bound the premise test names, applied by the child to itself: ROOM
+	// above the data segment it already holds.
+	if room := os.Getenv("ITERION_RLIMIT_DATA_ROOM_MIB"); room != "" {
+		r, err := strconv.Atoi(room)
+		if err != nil {
+			os.Exit(7)
+		}
+		base, err := ownDataSegment()
+		if err != nil {
+			os.Exit(6)
+		}
+		lim := base + uint64(r)<<20
+		if err := syscall.Setrlimit(syscall.RLIMIT_DATA, &syscall.Rlimit{Cur: lim, Max: lim}); err != nil {
+			os.Exit(5)
 		}
 	}
 	// MAP_SHARED|MAP_ANONYMOUS is the spelling RLIMIT_DATA does not charge.
@@ -119,7 +138,32 @@ func TestRSSProbeHelper(t *testing.T) {
 
 // rssHelper spawns the helper above in its own process group, which the probe
 // needs to be able to kill the whole child rather than one of its threads.
-func rssHelper(t *testing.T, mib string, env map[string]string) *exec.Cmd {
+// ownDataSegment is this process's VmData — mm->data_vm, the counter
+// RLIMIT_DATA is compared with — in bytes.
+func ownDataSegment() (uint64, error) {
+	raw, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || name != "VmData" {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) < 1 {
+			break
+		}
+		kb, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return kb << 10, nil
+	}
+	return 0, errors.New("no VmData line in /proc/self/status")
+}
+
+func rssHelper(t *testing.T, mib string, env map[string]string) (*exec.Cmd, *bytes.Buffer) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRSSProbeHelper$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "ITERION_RSS_HELPER_MIB="+mib)
@@ -130,10 +174,14 @@ func rssHelper(t *testing.T, mib string, env map[string]string) *exec.Cmd {
 	// Rlimits field on this platform, and a child that lowers its own bound
 	// before allocating is the same guarantee.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The helper's stderr is the runtime's own account of a death, which an
+	// exit status alone does not carry.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting the helper: %v", err)
 	}
-	return cmd
+	return cmd, &stderr
 }
 
 // The verdict must carry the probe's own numbers, not a shrug: an operator
