@@ -1520,7 +1520,7 @@ tasks:
       - bash scripts/diagnostics/queue-stats.sh {{.CLI_ARGS}}
 
   ci:shards:
-    desc: "Print one deterministic Go-test shard — the mechanism the CI race-shard matrix legs (tests.yml #1977 split) use to divide ./... across runners. Assign, never inline $( ): `pkgs=$(task ci:shards -- -n 3 -i 0)` then use $pkgs, so a nonzero exit aborts. Bare or `-all` dumps every shard; `-weights scripts/ci/test-shards-weights.tsv` balances by measured duration"
+    desc: "Print one deterministic Go-test shard — the mechanism the CI race-shard and test-unit matrix legs (tests.yml #1977, #3402) use to divide ./... across runners. Assign, never inline $( ): `pkgs=$(task ci:shards -- -n 3 -i 0)` then use $pkgs, so a nonzero exit aborts. Bare or `-all` dumps every shard; `-weights scripts/ci/test-shards-weights.tsv` (race) or `scripts/ci/test-shards-unit-weights.tsv` (unit) balances by measured duration"
     cmds:
       - go run -mod=vendor ./scripts/ci/testshards {{.CLI_ARGS}}
 

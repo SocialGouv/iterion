@@ -1,6 +1,6 @@
 // Command testshards prints the Go test packages of one deterministic shard,
 // the mechanism the CI matrix legs use to split `./...` across runners (the
-// `race-shard` legs in .github/workflows/tests.yml). The partition is a pure
+// `race-shard` and `test-unit` legs in .github/workflows/tests.yml). The partition is a pure
 // function of the package list (and, when given, the weights table): the same
 // commit always produces the same shards, which is what lets three matrix legs
 // of one merge-queue entry agree without communicating.
