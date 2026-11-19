@@ -50,7 +50,9 @@ export interface SourceOutput {
   type?: string;
 }
 
-// SourceFilter mirrors sourceFilter: a value an operator may filter on.
+// SourceFilter mirrors sourceFilter: a value an operator may filter on. A
+// string, enum or bool filter matches when the event's value is among the
+// chosen ones; a list filter when any element of the event's list is.
 export interface SourceFilter {
   id: string;
   type: string;
@@ -91,6 +93,9 @@ export interface Source {
   // The package's setup.md: what to do at the vendor's side once the
   // binding exists. Plain text, rendered as text.
   setup?: string;
+  // The package's setup-poll.md: the setup of its polled triggers, shown in
+  // place of setup for one. Absent when the package ships none.
+  setup_poll?: string;
   ingress?: SourceIngress;
 }
 

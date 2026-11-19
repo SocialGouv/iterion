@@ -5516,6 +5516,9 @@
           "scheme_id": {
             "type": "string"
           },
+          "scheme_kind": {
+            "type": "string"
+          },
           "scopes_known": {
             "type": "boolean"
           },
@@ -5542,6 +5545,7 @@
           "alias",
           "base_url",
           "scheme_id",
+          "scheme_kind",
           "placement",
           "capabilities",
           "status",

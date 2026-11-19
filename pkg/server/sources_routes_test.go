@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/connectors"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
@@ -485,5 +487,41 @@ func TestAPolledCardStatesTheEffectiveInterval(t *testing.T) {
 	t.Setenv("ITERION_CONNECTOR_POLL_INTERVAL", "1h")
 	if got := interval(); got != "1h" {
 		t.Fatalf("rss interval under the deployment's dial = %v, want 1h", got)
+	}
+}
+
+// A card carries a package's setup-poll.md beside its setup.md — from a
+// team's published file map and from the baked Jira package alike — and
+// carries none for a package that ships none.
+func TestASourceCardServesItsPolledSetupNotes(t *testing.T) {
+	s, _ := sourcesWorld(t)
+	mixed := renamedProbe(t, "mixed")
+	files := connectorPackageFiles(t, mixed)
+	files["triggers.yaml"] = "schema_version: 1\nconnector: mixed\n" +
+		"ingress:\n  credential:\n    scheme: hmac-sha256\n    in: header\n    name: X-Probe-Signature\n    secret: minted\n" +
+		"  event:\n    header: X-Probe-Event\n" +
+		"triggers:\n- id: mixed.issue.commented\n  event: issue_comment\n" + polledProbeTrigger("mixed")
+	files["setup.md"] = "# Add the hook.\n"
+	files["setup-poll.md"] = "# Grant action; no hook.\n"
+	if err := s.connectorPackages.Publish(context.Background(), connection.StoredPackage{
+		TenantID: "t1", ConnectorID: "mixed", Files: files, CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("publish mixed: %v", err)
+	}
+	byID := sourcesView(t, s, "viewer1", "t1")
+	if card := byID["mixed"]; card["setup"] != "# Add the hook.\n" || card["setup_poll"] != "# Grant action; no hook.\n" {
+		t.Fatalf("team card setup = %q, setup_poll = %q, want each file's own text", card["setup"], card["setup_poll"])
+	}
+	jiraPoll, err := fs.ReadFile(connectors.FS(), "jira/setup-poll.md")
+	if err != nil {
+		t.Fatalf("the baked jira package ships no setup-poll.md: %v", err)
+	}
+	if got := byID["jira"]["setup_poll"]; got != string(jiraPoll) {
+		t.Fatalf("baked jira card setup_poll = %q, want the package's setup-poll.md", got)
+	}
+	for _, id := range []string{"probe", "rss"} {
+		if got, has := byID[id]["setup_poll"]; has {
+			t.Fatalf("%s ships no setup-poll.md and its card carries %q", id, got)
+		}
 	}
 }

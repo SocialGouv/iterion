@@ -568,3 +568,70 @@ func TestASampleItsOwnGuardDropsIsRefused(t *testing.T) {
 		t.Fatalf("Validate() = %v, want the sample its guard drops refused", err)
 	}
 }
+
+// polledFeedDir writes the reference package with one polled feed trigger,
+// plus the extra files named.
+func polledFeedDir(t *testing.T, extra map[string]string) string {
+	t.Helper()
+	p := pollPackage()
+	p.Triggers = nil
+	dir := t.TempDir()
+	if err := spec.Write(dir, p); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writeTriggers(t, dir, `schema_version: 1
+connector: probe
+triggers:
+  - id: probe.feed.published
+    delivery: poll
+    poll:
+      operation: probe.feed.read
+      items: 'response.items'
+      item_id: 'item.id'
+      item_version: 'item.version'
+      interval: { default: 15m, min: 5m }
+    outputs:
+      - { name: subject, from: 'payload.title' }
+`)
+	for rel, body := range extra {
+		writeSample(t, dir, rel, body)
+	}
+	return dir
+}
+
+// TestAPolledPackageShipsItsOwnSetupNotes: setup-poll.md is read at load
+// beside setup.md, each its own bytes, capped like it; a package without
+// one has none; and one whose package declares no polled trigger — the
+// notes nothing would show — refuses the load.
+func TestAPolledPackageShipsItsOwnSetupNotes(t *testing.T) {
+	p, err := spec.Load(polledFeedDir(t, map[string]string{
+		spec.SetupFile:     "# Webhook\n\nAdd the hook.\n",
+		spec.SetupPollFile: "# Polling\n\nGrant action.\n",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if string(p.Setup) != "# Webhook\n\nAdd the hook.\n" || string(p.SetupPoll) != "# Polling\n\nGrant action.\n" {
+		t.Fatalf("setup = %q, setup-poll = %q, want each file's own bytes", p.Setup, p.SetupPoll)
+	}
+
+	p, err = spec.Load(polledFeedDir(t, map[string]string{spec.SetupFile: "# Webhook\n"}))
+	if err != nil {
+		t.Fatalf("load without setup-poll.md: %v", err)
+	}
+	if p.SetupPoll != nil {
+		t.Fatalf("a package shipping no setup-poll.md carries %q", p.SetupPoll)
+	}
+
+	big := polledFeedDir(t, map[string]string{spec.SetupPollFile: strings.Repeat("x", spec.SetupMaxBytes+1)})
+	if _, err := spec.Load(big); err == nil || !strings.Contains(err.Error(), spec.SetupPollFile+" is") {
+		t.Fatalf("oversized setup-poll.md: err = %v, want a refusal naming %s", err, spec.SetupPollFile)
+	}
+
+	webhook := writePackageDir(t)
+	writeTriggers(t, webhook, "schema_version: 1\nconnector: probe\ntriggers:\n  - id: probe.issue.commented\n    event: issue_comment\n")
+	writeSample(t, webhook, spec.SetupPollFile, "# Polling\n")
+	if _, err := spec.Load(webhook); err == nil || !strings.Contains(err.Error(), "declares no polled trigger") {
+		t.Fatalf("setup-poll.md in a package with no polled trigger: err = %v, want a refusal", err)
+	}
+}

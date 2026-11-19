@@ -66,6 +66,11 @@ type Package struct {
 	// ships none. The catalog shows it verbatim where the hook is
 	// configured, so it is read here rather than re-read by a route.
 	Setup []byte `json:"-"`
+	// SetupPoll is the package's setup-poll.md: the setup of its polled
+	// triggers, which read the vendor rather than wait for its hook. Read,
+	// capped and served like Setup; nil when the package ships none, and
+	// the polled flow then shows Setup.
+	SetupPoll []byte `json:"-"`
 	// IconSVG is the package's icon: Connector.Icon's file, read, sanitized
 	// and size-capped at load (icon.go). Nil when the package declares no
 	// icon; never a byte of the unsanitized file — the load is the only

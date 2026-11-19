@@ -279,8 +279,8 @@ func readFS(fsys fs.FS, dir string) (*Package, error) {
 		return nil, err
 	}
 	// The operator's setup instructions, shipped beside the package (see
-	// Package.Setup): read here so the catalog can show them where the
-	// vendor hook is configured.
+	// Package.Setup and Package.SetupPoll): read here so the catalog can
+	// show them where the vendor hook or the poller is configured.
 	if err := readSetup(fsys, dir, p); err != nil {
 		return nil, err
 	}

@@ -47,8 +47,8 @@ triggers:
         from: 'payload.updated'
         description: Atom's updated instant, RFC 3339 in UTC; RSS has none.
       - { name: categories, from: 'payload.categories', type: list }
-    # A filter compares one value, so the categories (a list) are not one; a
-    # subscription narrows on them with its `when:` instead.
+    # A list filter matches an entry carrying any of the chosen categories.
     filters:
       - { id: author, from: 'payload.author', type: string }
+      - { id: category, from: 'payload.categories', type: list }
     sample: samples/feed.json

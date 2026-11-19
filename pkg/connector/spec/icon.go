@@ -203,23 +203,39 @@ func sanitizeSVG(body []byte, cap int) ([]byte, error) {
 // SetupFile is the package's own setup instructions, read at load.
 const SetupFile = "setup.md"
 
-// SetupMaxBytes bounds the setup file a catalog card will carry. A setup
+// SetupPollFile is the setup instructions for the package's polled
+// triggers, read at load beside SetupFile: a package whose setup.md walks
+// through a webhook ships the steps a poller needs on their own, so the
+// polled flow shows no step it never takes.
+const SetupPollFile = "setup-poll.md"
+
+// SetupMaxBytes bounds each setup file a catalog card will carry. A setup
 // guide is a page; a package shipping megabytes of it is a package whose
 // author meant something else.
 const SetupMaxBytes = 32 << 10
 
-// readSetup reads setup.md when the package ships one.
+// readSetup reads setup.md and setup-poll.md when the package ships them.
 func readSetup(fsys fs.FS, dir string, p *Package) error {
-	body, err := fs.ReadFile(fsys, path.Join(dir, SetupFile))
+	var err error
+	if p.Setup, err = readSetupFile(fsys, dir, SetupFile); err != nil {
+		return err
+	}
+	p.SetupPoll, err = readSetupFile(fsys, dir, SetupPollFile)
+	return err
+}
+
+// readSetupFile reads one capped setup file; nil when the package ships
+// none.
+func readSetupFile(fsys fs.FS, dir, name string) ([]byte, error) {
+	body, err := fs.ReadFile(fsys, path.Join(dir, name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("spec: read %s: %w", SetupFile, err)
+		return nil, fmt.Errorf("spec: read %s: %w", name, err)
 	}
 	if len(body) > SetupMaxBytes {
-		return fmt.Errorf("spec: %s is %d bytes, over the %d byte cap", SetupFile, len(body), SetupMaxBytes)
+		return nil, fmt.Errorf("spec: %s is %d bytes, over the %d byte cap", name, len(body), SetupMaxBytes)
 	}
-	p.Setup = body
-	return nil
+	return body, nil
 }

@@ -145,6 +145,61 @@ func TestJudgeMatchesByMembershipThenWhen(t *testing.T) {
 	}
 }
 
+// listTrigger declares list filters over a feed entry's categories, an empty
+// list, an absent field, numbers and a scalar, beside a string filter over
+// the same list — the filter that keeps comparing one value.
+var listTrigger = spec.Trigger{ID: "feed.item.published", Filters: []spec.TriggerFilter{
+	{ID: "category", From: "payload.categories", Type: spec.FilterList},
+	{ID: "none", From: "payload.empty", Type: spec.FilterList},
+	{ID: "absent", From: "payload.nope", Type: spec.FilterList},
+	{ID: "number", From: "payload.ids", Type: spec.FilterList},
+	{ID: "scalar", From: "payload.channel", Type: spec.FilterList},
+	{ID: "whole", From: "payload.categories", Type: spec.FilterString},
+	{ID: "channel", From: "payload.channel", Type: spec.FilterString},
+}}
+
+const listEvent = `{"payload":{"categories":["sources","pollers"],"empty":[],"ids":[7,12],"channel":"C1"}}`
+
+// A list filter matches when any element of the event's list is among the
+// chosen values, each element converted as LaunchString converts a value; a
+// filter of any other type still compares the one value it reads.
+func TestAListFilterMatchesWhenAnyElementIsChosen(t *testing.T) {
+	ev, err := DecodeEvent([]byte(listEvent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		filters map[string][]string
+		matched bool
+		refused bool
+		reason  string
+	}{
+		"one chosen element present":     {map[string][]string{"category": {"pollers"}}, true, false, ""},
+		"one of several chosen present":  {map[string][]string{"category": {"feeds", "sources"}}, true, false, ""},
+		"no chosen element present":      {map[string][]string{"category": {"feeds"}}, false, false, `no element of ["sources","pollers"] is one of ["feeds"]`},
+		"an empty list":                  {map[string][]string{"none": {"sources"}}, false, false, "no element of []"},
+		"an absent list":                 {map[string][]string{"absent": {"sources"}}, false, false, "carries no value"},
+		"numbers converted as a launch":  {map[string][]string{"number": {"12"}}, true, false, ""},
+		"a scalar under a list filter":   {map[string][]string{"scalar": {"C1"}}, false, true, "not the list its type declares"},
+		"a string filter over the list":  {map[string][]string{"whole": {"sources"}}, false, false, "is not one of"},
+		"a string filter, its JSON text": {map[string][]string{"whole": {`["sources","pollers"]`}}, true, false, ""},
+		"a string filter over a scalar":  {map[string][]string{"channel": {"C1"}}, true, false, ""},
+		"a string filter, another value": {map[string][]string{"channel": {"C2"}}, false, false, "is not one of"},
+	} {
+		v, err := Judge(context.Background(), trigger.Subscription{Filters: tc.filters}, listTrigger, ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Matched != tc.matched || (v.Refusal != "") != tc.refused {
+			t.Errorf("%s: verdict %+v, want matched=%v refused=%v", name, v, tc.matched, tc.refused)
+			continue
+		}
+		if tc.reason != "" && !strings.Contains(v.Reason+v.Refusal, tc.reason) {
+			t.Errorf("%s: verdict %+v, want it to say %q", name, v, tc.reason)
+		}
+	}
+}
+
 // An expression past its work budget is a refused verdict naming it — a
 // per-pair outcome, never an error that would retry the whole intake.
 func TestASpentBudgetIsARefusal(t *testing.T) {

@@ -129,8 +129,11 @@ type Verdict struct {
 // Judge evaluates a subscription's filters, then its `when`, against an
 // event its trigger declared. A filter with no chosen value constrains
 // nothing; one with values matches when the event's value, converted by
-// LaunchString, is among them. Only ctx's own end is an error: everything
-// an expression does is the verdict.
+// LaunchString, is among them — or, for a list filter, when any element of
+// the event's list, each converted alike, is. A list filter whose event
+// value is not a list is a refusal: the package's contract and the event
+// disagree, and no retry changes that. Only ctx's own end is an error:
+// everything an expression does is the verdict.
 func Judge(ctx context.Context, sub trigger.Subscription, trig spec.Trigger, ev Event) (Verdict, error) {
 	ids := make([]string, 0, len(sub.Filters))
 	for id := range sub.Filters {
@@ -157,6 +160,16 @@ func Judge(ctx context.Context, sub trigger.Subscription, trig spec.Trigger, ev 
 		s, ok := LaunchString(v)
 		if !ok {
 			return Verdict{Reason: fmt.Sprintf("filter %s: the event carries no value", id)}, nil
+		}
+		if f.Type == spec.FilterList {
+			items, isList := v.([]any)
+			if !isList {
+				return Verdict{Refusal: fmt.Sprintf("filter %s (%s): reads a %T, not the list its type declares", id, f.From, v)}, nil
+			}
+			if !anyChosen(items, chosen) {
+				return Verdict{Reason: fmt.Sprintf("filter %s: no element of %s is one of %q", id, s, chosen)}, nil
+			}
+			continue
 		}
 		if !slices.Contains(chosen, s) {
 			return Verdict{Reason: fmt.Sprintf("filter %s: %q is not one of %q", id, s, chosen)}, nil
@@ -214,6 +227,18 @@ func Vars(ctx context.Context, sub trigger.Subscription, ev Event, botVars []str
 		vars[k] = v
 	}
 	return vars, "", nil
+}
+
+// anyChosen reports whether an element of a list value, converted by
+// LaunchString, is among the chosen values. An absent element matches
+// nothing, as an absent value does.
+func anyChosen(items []any, chosen []string) bool {
+	for _, item := range items {
+		if s, ok := LaunchString(item); ok && slices.Contains(chosen, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterOf(trig spec.Trigger, id string) (spec.TriggerFilter, bool) {

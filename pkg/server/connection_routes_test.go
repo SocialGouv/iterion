@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -412,3 +413,65 @@ func TestAConnectionCredentialGoesWhereItsSchemeSays(t *testing.T) {
 type failingSealer struct{ secrets.Sealer }
 
 func (failingSealer) Seal([]byte, []byte) ([]byte, error) { return nil, errors.New("kms unreachable") }
+
+// A connection says the kind of the credential it holds as a token — the
+// kind its placement pinned from the package's scheme at creation — on the
+// create, the read and the listing, so a rotation form picks its fields
+// (none, a username and a password, a token) without parsing Placement.
+func TestAConnectionSaysItsSchemeKind(t *testing.T) {
+	s := newConnectionTestServer(t)
+	ctx := connUserCtx("admin1")
+	for _, tc := range []struct {
+		alias, body string
+		want        spec.AuthKind
+	}{
+		{"api-key", `{"connector":"forgejo","alias":"api-key","base_url":"https://git.example.com","scheme_id":"token","token":"x"}`, spec.AuthAPIKey},
+		{"basic", `{"connector":"forgejo","alias":"basic","base_url":"https://git.example.com","scheme_id":"basic","username":"jo","password":"pw"}`, spec.AuthBasic},
+		{"bearer", `{"connector":"jira","alias":"bearer","base_url":"https://acme.atlassian.net","scheme_id":"bearer","token":"x"}`, spec.AuthBearer},
+		{"none", `{"connector":"rss","alias":"none","base_url":"https://example.org/feed/","scheme_id":"none"}`, spec.AuthNone},
+	} {
+		w := httptest.NewRecorder()
+		s.handleCreateConnection(w, connReq(ctx, "POST", "/api/teams/t1/connections", tc.body, "t1", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: create: code=%d body=%s", tc.alias, w.Code, w.Body.String())
+		}
+		var created connectionDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+			t.Fatalf("%s: decode: %v", tc.alias, err)
+		}
+		if created.SchemeKind != string(tc.want) {
+			t.Errorf("%s: created scheme_kind = %q, want %q (placement %q)", tc.alias, created.SchemeKind, tc.want, created.Placement)
+		}
+		g := httptest.NewRecorder()
+		s.handleGetConnection(g, connReq(connUserCtx("viewer1"), "GET", "/api/teams/t1/connections/"+created.ID, "", "t1", created.ID))
+		var read map[string]any
+		if err := json.Unmarshal(g.Body.Bytes(), &read); err != nil || g.Code != http.StatusOK {
+			t.Fatalf("%s: get: code=%d body=%s (%v)", tc.alias, g.Code, g.Body.String(), err)
+		}
+		if read["scheme_kind"] != string(tc.want) {
+			t.Errorf("%s: read scheme_kind = %v, want %q", tc.alias, read["scheme_kind"], tc.want)
+		}
+	}
+	l := httptest.NewRecorder()
+	s.handleListConnections(l, connReq(connUserCtx("viewer1"), "GET", "/api/teams/t1/connections", "", "t1", ""))
+	var listed struct {
+		Connections []map[string]any `json:"connections"`
+	}
+	if err := json.Unmarshal(l.Body.Bytes(), &listed); err != nil || l.Code != http.StatusOK {
+		t.Fatalf("list: code=%d body=%s (%v)", l.Code, l.Body.String(), err)
+	}
+	kinds := map[any]any{}
+	for _, c := range listed.Connections {
+		kinds[c["alias"]] = c["scheme_kind"]
+	}
+	if want := map[any]any{"api-key": "api_key", "basic": "basic", "bearer": "bearer", "none": "none"}; !reflect.DeepEqual(kinds, want) {
+		t.Errorf("listed scheme kinds = %v, want %v", kinds, want)
+	}
+	// oauth2 is a kind no shipped package declares: the projection carries
+	// it like every other.
+	for _, kind := range []spec.AuthKind{spec.AuthAPIKey, spec.AuthBearer, spec.AuthBasic, spec.AuthOAuth2, spec.AuthNone} {
+		if got := connectionDTOOf(connection.Connection{AuthPlacement: connection.AuthPlacement{Kind: string(kind)}}).SchemeKind; got != string(kind) {
+			t.Errorf("a %s placement projects scheme_kind %q", kind, got)
+		}
+	}
+}

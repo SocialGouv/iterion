@@ -101,6 +101,48 @@ func TestAnIngressAndItsSampleLoad(t *testing.T) {
 	}
 }
 
+// TestAListFilterLoadsOverAList: a list filter whose sample reads a list
+// loads with its declared type, and one whose event does not carry the value
+// passes — a nil value is an event without it, not a contradiction.
+func TestAListFilterLoadsOverAList(t *testing.T) {
+	line := `      - { id: action, from: 'payload.action', type: enum, options: [created, edited, deleted], default: [created] }`
+	for name, filter := range map[string]string{
+		"a list":        `      - { id: label, from: 'map(payload.issue.labels, l => l.name)', type: list }`,
+		"an absent one": `      - { id: label, from: 'payload.issue.milestones', type: list }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(ingressDoc, line) {
+				t.Fatalf("fixture drift: %q is not in the document", line)
+			}
+			p, err := spec.Load(writeIngressPackage(t, strings.Replace(ingressDoc, line, filter, 1), ingressSample))
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if f := p.Triggers[0].Filters; len(f) != 1 || f[0].Type != spec.FilterList {
+				t.Fatalf("filters = %+v, want the one list filter", f)
+			}
+		})
+	}
+}
+
+// TestAScalarFilterOverAListStillLoads: a string filter whose sample reads a
+// list loads, as it always has — it compares the list's JSON text, and a
+// package relying on that keeps loading.
+func TestAScalarFilterOverAListStillLoads(t *testing.T) {
+	line := `      - { id: action, from: 'payload.action', type: enum, options: [created, edited, deleted], default: [created] }`
+	if !strings.Contains(ingressDoc, line) {
+		t.Fatalf("fixture drift: %q is not in the document", line)
+	}
+	doc := strings.Replace(ingressDoc, line, `      - { id: label, from: 'map(payload.issue.labels, l => l.name)', type: string }`, 1)
+	p, err := spec.Load(writeIngressPackage(t, doc, ingressSample))
+	if err != nil {
+		t.Fatalf("a string filter over a list must load: %v", err)
+	}
+	if f := p.Triggers[0].Filters; len(f) != 1 || f[0].Type != spec.FilterString {
+		t.Fatalf("filters = %+v, want the one string filter", f)
+	}
+}
+
 // TestABodyTimestampNeedsNoTimestampPlaceholder pins Linear's contract: the
 // timestamp travels inside the signed body, so the signature over {body}
 // already authenticates it and the template must not demand {timestamp}.
@@ -140,6 +182,8 @@ func TestAnIngressDeclarationNoLaneCouldHonourIsRefused(t *testing.T) {
 		{"an output shadowing event.headers", `- { name: event_name,`, `- { name: headers,`, "", `output name "headers" is reserved`},
 		{"an enum default outside its options", `default: [created]`, `default: [opened]`, "", "is not an option"},
 		{"a selector naming no operation", `default: [created] }`, `default: [created], selector: probe.nothing.list }`, "", "is not an operation of this package"},
+		{"an unknown filter type", `type: enum, options: [created, edited, deleted], default: [created] }`, `type: set }`, "", `has type "set", not one of string, enum, bool, list`},
+		{"a list filter whose sample reads a scalar", `type: enum, options: [created, edited, deleted], default: [created] }`, `type: list }`, "", `filter "action" reads string from the sample, not the list its type declares`},
 		{"a sample of another event", "", "", strings.Replace(ingressSample, `"X-Probe-Event": "issue_comment"`, `"X-Probe-Event": "push"`, 1), `the sample's event is "push"`},
 		{"a sample the trigger's own guard drops", "", "", strings.Replace(ingressSample, `"login": "alice"`, `"login": "iterion-bot"`, 1), "drops its sample"},
 		{"a sample whose output has the wrong type", "", "", strings.Replace(ingressSample, `"number": 7`, `"number": "7"`, 1), `output "issue_number" reads string`},

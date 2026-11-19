@@ -8923,6 +8923,7 @@ export interface components {
             id: string;
             placement: string;
             scheme_id: string;
+            scheme_kind: string;
             scopes_known?: boolean;
             status: string;
             status_reason?: string;
