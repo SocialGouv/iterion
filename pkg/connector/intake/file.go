@@ -185,6 +185,15 @@ func (f *FileStore) ListPairs(ctx context.Context, tenantID string, q PairQuery,
 	return out, err
 }
 
+func (f *FileStore) LaunchedPair(ctx context.Context, tenantID, subscriptionID, itemKey string) (out Pair, found bool, err error) {
+	err = f.withState(ctx, func(m *MemoryStore) error {
+		var e error
+		out, found, e = m.LaunchedPair(ctx, tenantID, subscriptionID, itemKey)
+		return e
+	})
+	return out, found, err
+}
+
 func (f *FileStore) ClaimPairs(ctx context.Context, owner string, now time.Time, ttl time.Duration, limit int) (out []Pair, err error) {
 	err = f.withState(ctx, func(m *MemoryStore) error {
 		var e error

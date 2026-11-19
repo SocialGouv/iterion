@@ -249,8 +249,19 @@ example is a fictional `probe` vendor, loaded as written by
   cuts reads on at the next tick; its first scan reads the last day, so a
   backfill reaches no further back).
 - **Re-binding** a subscription to the query of another, existing poller
-  activates it on that poller's sequence: an item both pollers observe can be
-  delivered once by each.
+  activates it on that poller's sequence. A revision it already received
+  through its first poller is not launched again when the other poller
+  accepts it later: that pair is refused at launch, naming the pair and run
+  that delivered the revision. A pair the first poller still owed when the
+  subscription moved is refused at launch — the subscription now listens to
+  another poller — and delivered nothing, so the revision launches once,
+  through the new poller. Three windows stay open, each a duplicate rather
+  than a loss: a first submission acknowledged but not yet marked launched
+  when the second pair is judged; pairs written before this check, which
+  name no item, so a revision delivered before that deploy can be delivered
+  once more after it; and a pair expires with its intake
+  (`ITERION_CONNECTOR_INTAKE_RETENTION`), so a poller lagging past that
+  retention delivers the revision again.
 
 A webhook trigger of a package that declares no ingress stays refused at save
 and off the catalogue: no delivery can reach it. Three limits are known: a
