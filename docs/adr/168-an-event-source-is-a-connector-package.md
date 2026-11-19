@@ -196,7 +196,7 @@ Every expression is `pkg/dsl/expr`, under its existing per-expression work budge
 | `provision.*.params`, `match`, `id_from` | `registration` (url, secret, epoch, marker, scope, remote id), `response` (`match`, `id_from`) | package load |
 | subscription `when`, `var_map` | `event` (outputs, payload, headers) | subscription save |
 
-An absent path evaluates to nil, and a nil output is absent: the var it maps to is not set, never set to an empty string. Values reach a launch as strings by one conversion — a string as is, a number in canonical decimal, a bool as `true`/`false`, a list or map as compact JSON. The preview and the lane call the same evaluator and conversion.
+`ignore`, `handshake.when` and a subscription's `when` read their value as a condition, as every guard in the language does (`expr.Truthy`): a set field holds, so `payload.event.bot_id` drops a bot's own message; nil, `false`, zero, an empty string, list or map, and the strings `"false"`, `"no"`, `"0"` do not. Read this way, a loop guard errs toward dropping, the safe side of a loop; an operation's success predicate would err toward reading a failure as success, so it must answer a boolean. An absent path evaluates to nil, and a nil output is absent: the var it maps to is not set, never set to an empty string. Values reach a launch as strings by one conversion — a string as is, a number in canonical decimal, a bool as `true`/`false`, a list or map as compact JSON. The preview and the lane call the same evaluator and conversion.
 
 ### 10. The catalog is a read model
 

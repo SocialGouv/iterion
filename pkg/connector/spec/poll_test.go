@@ -529,3 +529,14 @@ func TestASchemeThatPresentsNothingTakesNoLocation(t *testing.T) {
 		t.Fatalf("kind none with a location = %v, want a refusal", err)
 	}
 }
+
+// A sample is judged as the lane will read it: a guard that holds on it —
+// truthily, as the lane reads a guard (expr.Truthy) — drops it, and a package
+// whose sample its own guard drops does not load (#3360).
+func TestASampleItsOwnGuardDropsIsRefused(t *testing.T) {
+	p := pollPackage()
+	p.Triggers[0].Ignore = "payload.key" // set on the sample's item: a string, not true
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "drops its sample") {
+		t.Fatalf("Validate() = %v, want the sample its guard drops refused", err)
+	}
+}

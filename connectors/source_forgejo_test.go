@@ -17,5 +17,10 @@ func init() {
 			return map[string]string{"X-Forgejo-Signature": hex.EncodeToString(mac.Sum(nil))}
 		},
 		eventHeader: "X-Forgejo-Event",
+		// A comment iterion posted comes from the project bot's account
+		// (connectors/forgejo/setup.md), named on the sender.
+		echo: func(payload map[string]any) {
+			payload["sender"].(map[string]any)["login"] = "iterion-bot"
+		},
 	})
 }
