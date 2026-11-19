@@ -574,7 +574,12 @@ filter installed by `Confine` after the Landlock domain — `socket`,
 (`SECCOMP_FILTER_FLAG_TSYNC`), and a syscall under another architecture or the
 x32 ABI kills the process. The child needs no socket: its channel to the parent
 is two pipes, and it refuses to run with an inherited socket, which would walk
-around a creation-only filter. The filter needs no privilege and holds on any
+around a creation-only filter. A socket can also be **borrowed** from another
+process: `pidfd_getfd` duplicates one out of the runner, and `ptrace` or
+`process_vm_writev` make the runner act. Landlock's ptrace scoping refuses all
+of them from ABI 1, but the ABI-0 posture has only Yama, a host setting; so the
+same filter denies those four calls too (found by revi on #3374). The filter
+needs no privilege and holds on any
 kernel with seccomp, ABI 0 included; it was measured to install and refuse all
 of the above under docker's and containerd's default profiles with every
 capability dropped. amd64 and arm64 carry rows; any other architecture fails

@@ -555,7 +555,7 @@ fcec3748fceff346d4e242e3ad0dd030f6b617de58643ace62f1106b7c40bcfd cba2f371b420ba4
 cdfbe2b65fa53b1394c469266af7f87827732037f49b33f1f80c0c1b80d6927c 595e61bbe9909421390adb2f8490d9ed0ad0dadf80efca41387342dd331f18f6 ../../docs/adr/162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md
 69bc606d60bd4d231b5354267d47f7e917ff6ba424616c986f8ca89b7d7e0c1a 0b3685746d17be54fe3262fac40c731f173235ca779eb42f577b318c945572d0 ../../docs/adr/163-the-gateway-price-feed-syncs-into-the-database-and-rides-the-ipc.md
 8ad700113cf835b757ba0318e34b5fb91e4f1ba3b42a964f0dc8e885858c4717 09719c55365a950c92a06122b6ce2634e3ce9b6dbcde1827171941658c7eedab ../../docs/adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md
-48c49e251cb00be7181b15517e4f344dec33fec6096a8fb62cfddbf402dc13f6 24cde3027d39d5e687d2d3ea4ae8a514d902b7f6f379c64bef7383186cfb9e35 ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
+d8e45437333f616907f6c9fc5b03c917ba49de9ed30001459a55f95c05ccdef7 6d1402f4582598044a0c15bb81b15115a6f617bb2b36a36aa94a1c81e0504925 ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
 bc0a53c63999934b46c07a87a0119f9a8e181ec4a8567ebb953a391d7c3b036d 2e3d3d68eefdb0dd58da7a2180bc155d1e484c92f5b14c52d780f184ee764536 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
 f48cb3bbd9f3bccf84cf93d59ccf5f1415eaa6fc765221ea7be583c25a293e0c 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
 48f0af3fe864bc545f4d9ab299abd45b7d091b1c1ba477710a48fc85b2547bf9 ce80ebaab820496515cde2edcc8f0f0a71c66ade207469e1180640117a2a8597 ../../docs/adr/168-an-event-source-is-a-connector-package.md
@@ -566,7 +566,7 @@ fbbbc44294a4c36f378d8eead10e4005362b9a0d50fc9fc7d1b004508fbd31cb 84e0c0eafaa95a3
 504db14aead0670eaaf4622e895ca6decc8af2e1a9772c33a5bc3735f2df06f1 e4bfa392b5fa6b1c53ed5721c3442aaf843219d3f8f58dfe2a231a318bcef500 ../../docs/agents/backends/README.md
 bde1c54fc3ecf62a9ccb753119774ed4d730c04e2f6f8cc4339ef09091952779 2616b5d75f586c05356c554952405ade4621f9e72891a9c9677129bb96ef1a85 ../../docs/agents/backends/backend-selection.md
 6c94807e4aad5121dc9971fec331f59c63d93b0919a1d461d9f41b2ce2d74cad 315f4c3855783079f6487a9dc49f86257b99cd557bfa1832d1bd0d63f046a701 ../../docs/agents/backends/clawfold.md
-42f3fe1b24dcee36fbd9af0827b6828293a4b83c31f2bb37ae1d5a4b0cbc47ef 78246f3b1d07021b73191cd78c60ce61c79fd3f6fe81ddcafefd2d58c14f6806 ../../docs/agents/backends/codemode-confinement.md
+5276be407bb7d57f7e14dbf9a9ac60c01311e9d71345ef9c0d42c328dce33b82 78246f3b1d07021b73191cd78c60ce61c79fd3f6fe81ddcafefd2d58c14f6806 ../../docs/agents/backends/codemode-confinement.md
 4696035e05cf958425098803432fbc7681d4fe7b70411910b53c0efe48bdffd6 267545a2b50c0defa275cd489d8ea68f32e3b7ca34750407d0012e4e4cb2b18a ../../docs/agents/backends/codemode.md
 f08c56ab2e9715e0c1edd3d447747b1afce09b3d57a2a3becb4534566bc2a90a 6863135060f66567bc633d2c087a75593c9b88301aee659850b2dc0573ea7518 ../../docs/agents/backends/exec-environment.md
 891acde4889dbc3a46500773e295e56b9caa8726770cf83bd6d0415cf0a47f01 60e05bd1b195af2f94112fa7197a5c88289058840ce7c6df9693756bc6250f55 ../../docs/agents/backends/facade-substitution.md

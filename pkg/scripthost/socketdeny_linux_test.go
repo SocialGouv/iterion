@@ -129,7 +129,8 @@ func contains(xs []uint32, x uint32) bool {
 // The literal numbers in socketDenySpecs against the kernel's own tables as
 // x/sys vendors them, for EVERY architecture — not only the one compiling.
 func TestTheSocketFilterNumbersAreTheKernels(t *testing.T) {
-	want := []string{"SYS_SOCKET", "SYS_SOCKETPAIR", "SYS_IO_URING_SETUP", "SYS_IO_URING_ENTER", "SYS_IO_URING_REGISTER"}
+	want := []string{"SYS_SOCKET", "SYS_SOCKETPAIR", "SYS_IO_URING_SETUP", "SYS_IO_URING_ENTER", "SYS_IO_URING_REGISTER",
+		"SYS_PTRACE", "SYS_PROCESS_VM_READV", "SYS_PROCESS_VM_WRITEV", "SYS_PIDFD_GETFD"}
 	for goarch, spec := range socketDenySpecs {
 		src, err := os.ReadFile(filepath.Join("..", "..", "vendor", "golang.org", "x", "sys", "unix",
 			"zsysnum_linux_"+goarch+".go"))

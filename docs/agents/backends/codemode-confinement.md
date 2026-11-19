@@ -22,7 +22,7 @@ at the end.
 | wall clock (soft) | `vm.Interrupt` | a preemptible loop yields a typed refusal from the child |
 | recursion | `SetMaxCallStackSize` | a self-calling function is refused with a cause |
 | filesystem | Landlock, deny-all | a file readable a moment earlier is refused |
-| network | seccomp: no socket creation | TCP, UDP, `io_uring`, any ABI, every thread |
+| network | seccomp: no socket created or borrowed | TCP, UDP, `io_uring`, `pidfd_getfd`/`ptrace`/`process_vm_*` at the parent; any ABI, every thread |
 | exec | Landlock `FS_EXECUTE` | `execve` of an existing binary is refused at `fork/exec` |
 | **every thread** | `AllThreadsSyscall` | a sibling OS thread is refused too |
 | credentials | empty `cmd.Env` + `PR_SET_DUMPABLE` | a same-uid sibling cannot read the child's `/proc` |

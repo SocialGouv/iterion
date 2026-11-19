@@ -126,6 +126,13 @@ type escapeReport struct {
 	// domain leaves this one open.
 	SiblingRead attempt `json:"sibling_read"`
 
+	// Borrow is each cross-process call aimed at the parent, by name, with the
+	// error it met. The filter answers EACCES before any permission check;
+	// Yama and Landlock answer EPERM, and a call that got through answers
+	// ESRCH or EFAULT. So EACCES, and only EACCES, says the seccomp wall
+	// refused — the one that holds when Landlock is absent.
+	Borrow map[string]string `json:"borrow"`
+
 	// SiblingSocket is a socket(2) on that same pre-existing thread: the
 	// witness that the seccomp filter was synchronised to every thread
 	// (TSYNC) and not only installed on the one that called it.
@@ -272,6 +279,7 @@ func TestEscapeHelperProcess(t *testing.T) {
 		report.SendUDP = try(sendUDP(udpTo))
 	}
 	report.IOURing = try(ioURingProbe())
+	report.Borrow = borrowProbes(os.Getppid())
 
 	report.Exec = try(execProbe())
 
@@ -320,6 +328,47 @@ func ioURingProbe() error {
 	}
 	unix.Close(int(fd))
 	return nil
+}
+
+// borrowProbes aims the four cross-process calls at pid, each in a form that
+// does nothing even if it gets through: PEEKDATA on a process nobody traces
+// (ESRCH), a one-byte read and write at address 1 (EFAULT), and a duplicate
+// of the target's stdin, closed at once.
+func borrowProbes(pid int) map[string]string {
+	errText := func(errno syscall.Errno) string {
+		if errno == 0 {
+			return "ok"
+		}
+		return errno.Error()
+	}
+	out := map[string]string{}
+	_, _, errno := unix.Syscall6(unix.SYS_PTRACE, unix.PTRACE_PEEKDATA, uintptr(pid), 1, 0, 0, 0)
+	out["ptrace"] = errText(errno)
+
+	var buf [1]byte
+	local := unix.Iovec{Base: &buf[0], Len: 1}
+	// struct iovec {base, len} as two raw words: base 1 is never mapped, and
+	// a raw word keeps that address out of a Go pointer.
+	remote := [2]uintptr{1, 1}
+	_, _, errno = unix.Syscall6(unix.SYS_PROCESS_VM_READV, uintptr(pid),
+		uintptr(unsafe.Pointer(&local)), 1, uintptr(unsafe.Pointer(&remote[0])), 1, 0)
+	out["process_vm_readv"] = errText(errno)
+	_, _, errno = unix.Syscall6(unix.SYS_PROCESS_VM_WRITEV, uintptr(pid),
+		uintptr(unsafe.Pointer(&local)), 1, uintptr(unsafe.Pointer(&remote[0])), 1, 0)
+	out["process_vm_writev"] = errText(errno)
+
+	pidfd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(pid), 0, 0)
+	if errno != 0 {
+		out["pidfd_getfd"] = "pidfd_open: " + errno.Error()
+		return out
+	}
+	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_GETFD, pidfd, 0, 0)
+	if errno == 0 {
+		unix.Close(int(fd))
+	}
+	unix.Close(int(pidfd))
+	out["pidfd_getfd"] = errText(errno)
+	return out
 }
 
 // execProbe attempts an execve of a path proven to exist — this very binary.
@@ -486,14 +535,14 @@ func runEscapeHelper(t *testing.T, limits Limits, opts ...escapeOpts) escapeRepo
 		report.procReadableBySibling = procEnvironReadable(t, report.PID)
 		t.Logf("escape report: landlock ABI %d allThreads=%v declared fs=%#x net=%#x scoped=%#x size=%d | "+
 			"premises read=%v write=%v connect=%v exec=%v | read=%+v write=%+v dir=%+v connect=%+v exec=%+v "+
-			"sibling=%+v | sockets denied=%v udp before=%v after=%+v io_uring before=%v after=%+v sibling socket=%+v | "+
+			"sibling=%+v | sockets denied=%v udp before=%v after=%+v io_uring before=%v after=%+v sibling socket=%+v borrow=%v | "+
 			"applied cpu=%ds mem=%d | env=%d pid=%d proc before=%v after=%v",
 			report.LandlockABI, report.AllThreads, report.DeclaredFS, report.DeclaredNet,
 			report.DeclaredScoped, report.DeclaredSize,
 			report.CouldReadBefore, report.CouldWriteBefore, report.CouldConnectBefore, report.CouldExecBefore,
 			report.ReadFile, report.WriteFile, report.ReadDir, report.Connect, report.Exec, report.SiblingRead,
 			report.SocketsDenied, report.CouldSendUDPBefore, report.SendUDP, report.CouldIOURingBefore,
-			report.IOURing, report.SiblingSocket,
+			report.IOURing, report.SiblingSocket, report.Borrow,
 			report.AppliedCPUSeconds, report.AppliedMemoryBytes,
 			report.EnvCount, report.PID, report.procReadableBeforeConfine, report.procReadableBySibling)
 	}
@@ -717,6 +766,23 @@ func TestAConfinedChildCannotUseIOURing(t *testing.T) {
 	if !report.CouldIOURingBefore {
 		t.Logf("io_uring was already refused BEFORE confinement on this host (the runtime's profile), " +
 			"so this run does not attribute the refusal to the filter; TestTheSocketFilterProgram does")
+	}
+}
+
+// The four ways to use the parent's sockets without creating one. Landlock's
+// ptrace scoping covers them from ABI 1, so on such a host the call would be
+// refused anyway — with EPERM. The assertion is EACCES, the filter's own
+// answer: it is the wall that also holds on the ABI-0 posture, and removing
+// one row reddens here even where Landlock or Yama would still refuse.
+func TestAConfinedChildCannotBorrowFromAnotherProcess(t *testing.T) {
+	t.Parallel()
+	report := escapeBaseline(t)
+	requireSocketWall(t, report)
+	want := unix.EACCES.Error()
+	for _, call := range []string{"ptrace", "process_vm_readv", "process_vm_writev", "pidfd_getfd"} {
+		if got, ok := report.Borrow[call]; !ok || got != want {
+			t.Errorf("%s at the parent answered %q (present=%v), want the filter's %q", call, got, ok, want)
+		}
 	}
 }
 

@@ -42,8 +42,9 @@ type Host struct {
 	Binary string
 
 	// AllowWithoutLandlock lets scripts run on a kernel that offers no
-	// Landlock — with an unrestricted filesystem. Sockets stay denied: that
-	// wall is seccomp, and it has no allowance.
+	// Landlock — with an unrestricted filesystem. Sockets stay denied, created
+	// or borrowed from another process: that wall is seccomp, and it has no
+	// allowance.
 	//
 	// It travels in the REQUEST and not in the environment, because the
 	// child's environment is deliberately empty and an env-var opt-in could

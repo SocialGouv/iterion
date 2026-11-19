@@ -27,6 +27,14 @@ import (
 // measured under docker's and containerd's default profiles with every
 // capability dropped, the filter installs and refuses all of it.
 //
+// A socket can also be BORROWED rather than created: pidfd_getfd duplicates a
+// descriptor out of another process, and ptrace or process_vm_writev can make
+// the runner itself act. Each needs ptrace access to the target, which
+// Landlock's ptrace scoping refuses from ABI 1 — but a child allowed to run
+// without Landlock (ABI 0) has only Yama, a host setting this package does not
+// control. The child borrows from nobody, so the same filter denies the four
+// cross-process calls too: the wall holds on every posture it is claimed for.
+//
 // A network namespace per child would be tighter and is refused there: the
 // default profiles deny CLONE_NEWUSER without CAP_SYS_ADMIN (EPERM, measured).
 
@@ -35,15 +43,15 @@ import (
 type socketDenySpec struct {
 	arch   uint32   // the AUDIT_ARCH_* the kernel reports in seccomp_data.arch
 	x32    bool     // amd64: a number with the x32 bit set is ANOTHER ABI
-	denied []uint32 // socket, socketpair, io_uring_setup, io_uring_enter, io_uring_register
+	denied []uint32 // socket, socketpair, the io_uring trio, then ptrace, process_vm_readv/writev, pidfd_getfd
 }
 
 // socketDenySpecs holds literal numbers because unix.SYS_* only exists for the
 // architecture being compiled; a test pins each row to the vendored x/sys
 // tables, so a literal cannot drift from the kernel's numbering.
 var socketDenySpecs = map[string]socketDenySpec{
-	"amd64": {arch: unix.AUDIT_ARCH_X86_64, x32: true, denied: []uint32{41, 53, 425, 426, 427}},
-	"arm64": {arch: unix.AUDIT_ARCH_AARCH64, denied: []uint32{198, 199, 425, 426, 427}},
+	"amd64": {arch: unix.AUDIT_ARCH_X86_64, x32: true, denied: []uint32{41, 53, 425, 426, 427, 101, 310, 311, 438}},
+	"arm64": {arch: unix.AUDIT_ARCH_AARCH64, denied: []uint32{198, 199, 425, 426, 427, 117, 270, 271, 438}},
 }
 
 const x32SyscallBit = 0x40000000

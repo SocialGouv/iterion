@@ -329,8 +329,9 @@ type Request struct {
 	Seed string `json:"seed,omitempty"`
 
 	// AllowWithoutLandlock lets a script run on a kernel that offers no
-	// Landlock — no filesystem bound; the socket wall is seccomp and holds
-	// either way. It travels HERE and
+	// Landlock — no filesystem bound; the socket wall (creating one, or
+	// borrowing one through ptrace, process_vm_* or pidfd_getfd) is seccomp
+	// and holds either way. It travels HERE and
 	// not in the environment because the child's environment is deliberately
 	// empty, so an env-var opt-in could never reach it. This is the greppable
 	// escape hatch philosophy 1 requires of a load-bearing limit.
