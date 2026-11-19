@@ -52,7 +52,8 @@ const (
 var jiraWitnessCred = exec.Credential{SchemeID: "basic", Username: "alice@acme.example", Password: "ATATT-witness-token"}
 
 func init() {
-	registerPoll("jira.issue.changed", pollDouble{cases: []pollCase{
+	// The JQL's ORDER BY updated ASC: Jira answers oldest first.
+	registerPoll("jira.issue.changed", pollDouble{order: spec.PollOrderOldestFirst, cases: []pollCase{
 		{
 			name:   "project-filter",
 			query:  map[string]any{"jql": "project = OPS"},
@@ -291,8 +292,8 @@ func (v *jiraVendor) checkTick(t *testing.T, tick int, cp *spec.PollCheckpoint, 
 	switch {
 	case cp == nil && !slices.Equal(since, []int64{v.clock().Add(-24 * time.Hour).UnixMilli()}):
 		// The first tick has no checkpoint and reads the last day alone: a
-		// project's whole history would exceed the walk's page bound and
-		// never prime.
+		// project's whole history would be walked one page bound per tick
+		// before the poller primes.
 		t.Errorf("tick %d: the first tick's JQL %q reads updated >= %v, want the last day alone", tick, jql, since)
 	case cp != nil && !slices.Contains(since, cp.At.UnixMilli()):
 		t.Errorf("tick %d: the JQL %q reads updated >= %v, and the checkpoint is %d ms (%s)", tick, jql, since, cp.At.UnixMilli(), cp.At.UTC().Format(time.RFC3339Nano))

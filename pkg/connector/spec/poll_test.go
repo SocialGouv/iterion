@@ -92,6 +92,25 @@ func TestAPollWalkTheExecutorRunsValidates(t *testing.T) {
 	}
 }
 
+// TestAPollDeclaringItsOrderValidates: an operation declared to answer oldest
+// first loads with either cursor kind — the positive witness of the two order
+// refusals below, which could otherwise pass by refusing every declaration.
+func TestAPollDeclaringItsOrderValidates(t *testing.T) {
+	for name, cursor := range map[string]*spec.PollCursor{
+		"a timestamp cursor": {From: "item.fields.updated", Kind: spec.CursorTimestamp, Overlap: "1m"},
+		"an opaque cursor":   {From: "item.key", Kind: spec.CursorOpaque},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := pollPackage()
+			p.Triggers[0].Poll.Order = spec.PollOrderOldestFirst
+			p.Triggers[0].Poll.Cursor = cursor
+			if err := p.Validate(); err != nil {
+				t.Fatalf("a poll declared oldest first must validate: %v", err)
+			}
+		})
+	}
+}
+
 // TestAPollDeclarationNoPollerCouldRunIsRefused: one case per guard, each a
 // single change to the reference package, each naming what it refuses.
 func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
@@ -147,6 +166,10 @@ func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
 		{"a cursor of an unknown kind", func(p *spec.Package) { search(p).Poll.Cursor.Kind = "sequence" }, `kind "sequence"`},
 		{"a negative overlap", func(p *spec.Package) { search(p).Poll.Cursor.Overlap = "-1m" }, "not a non-negative duration"},
 		{"an overlap on an opaque cursor", func(p *spec.Package) { search(p).Poll.Cursor.Kind = spec.CursorOpaque }, "opaque token has no before"},
+		{"an order no poller reads", func(p *spec.Package) { search(p).Poll.Order = "newest_first" }, `poll.order "newest_first" is not oldest_first`},
+		{"an opaque cursor on an answer in no declared order", func(p *spec.Package) {
+			search(p).Poll.Cursor = &spec.PollCursor{From: "item.key", Kind: spec.CursorOpaque}
+		}, "must answer oldest first — declare poll.order: oldest_first"},
 		{"no default interval", func(p *spec.Package) { search(p).Poll.Interval.Default = "" }, "interval.default"},
 		{"a zero minimum", func(p *spec.Package) { search(p).Poll.Interval.Min = "0s" }, `poll.interval.min "0s" is not a positive duration`},
 		{"an unreadable minimum", func(p *spec.Package) { search(p).Poll.Interval.Min = "abc" }, `poll.interval.min "abc" is not a positive duration`},
@@ -226,6 +249,7 @@ func TestAPolledSampleProvesWhatThePollerReads(t *testing.T) {
 		{"an opaque cursor that is an object", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"s","updated":{"t":1}}}]}}`, "opaque cursor must be a string or number",
 			func(p *spec.Package) {
 				p.Triggers[0].Poll.Cursor = &spec.PollCursor{From: "item.fields.updated", Kind: spec.CursorOpaque}
+				p.Triggers[0].Poll.Order = spec.PollOrderOldestFirst
 				p.Triggers[0].Poll.ItemVersion = "item.key"
 			}},
 		{"a cursor in a zone RFC 822 does not define", `{"response":{"issues":[{"key":"ENG-1","fields":{"summary":"s","updated":"Mon, 17 Nov 2026 09:10:00 CET"}}]}}`, "not one RFC 822 defines", nil},
@@ -351,6 +375,7 @@ triggers:
       item_id: 'item.key'
       item_version: 'item.fields.updated'
       cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
+      order: oldest_first
       interval: { default: 5m, min: 1m }
     outputs:
       - { name: subject, from: 'payload.fields.summary' }
@@ -373,6 +398,9 @@ triggers:
 	}
 	if len(loaded.Triggers) != 2 || !loaded.Triggers[0].Polled() || loaded.Triggers[0].Poll.Cursor.Overlap != "1m" {
 		t.Fatalf("triggers = %+v", loaded.Triggers)
+	}
+	if got := loaded.Triggers[0].Poll.Order; got != spec.PollOrderOldestFirst {
+		t.Fatalf("poll.order = %q, want %q read from the YAML", got, spec.PollOrderOldestFirst)
 	}
 	op, _ := loaded.Operation("probe.feed.read")
 	if op.HTTP.ResponseFormat != spec.ResponseFeed {
@@ -449,7 +477,7 @@ func TestTwoWebhookTriggersOnOneEventAreRefused(t *testing.T) {
 // The cursor namespace a tick's params read: the checkpoint moved back by
 // its overlap, as RFC 3339 in UTC and — for a timestamp — as epoch
 // milliseconds, the form a vendor reading a bare number takes in its own
-// clock's terms; every field nil before the first complete scan.
+// clock's terms; every field nil before a scan left a checkpoint.
 func TestAPollCheckpointRendersEveryFieldOfItsKind(t *testing.T) {
 	at := time.Date(2026, 11, 18, 21, 30, 15, 250e6, time.FixedZone("CET", 3600))
 	cases := []struct {

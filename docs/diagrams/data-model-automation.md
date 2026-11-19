@@ -247,7 +247,7 @@ erDiagram
         string connection_id FK "connections._id"
         string trigger_id "the polled trigger it reads"
         int64 generation "the fence: one per tick that took it"
-        object checkpoint "timestamp or opaque token a complete scan reached"
+        object checkpoint "timestamp or opaque token a complete scan reached, or the last instant an oldest-first scan read in full before it stopped"
         bool primed "its first complete scan recorded what was there"
         int64 sequence "the last number handed to an intake"
         datetime next_tick_at
