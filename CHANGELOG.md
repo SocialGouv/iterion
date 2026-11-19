@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.19.1](https://github.com/SocialGouv/iterion/compare/v7.19.0...v7.19.1) (2026-11-19)
+
+### Bug Fixes
+
+* **studio:** a gateway route shows its model's vendor logo, not OpenAI's ([#3409](https://github.com/SocialGouv/iterion/issues/3409)) ([b34ea4f](https://github.com/SocialGouv/iterion/commit/b34ea4fd4ceb045ebb71264af2c120cb9bb2a2d3))
+
+    <details><summary>why</summary>
+
+    detectProvider matched keywords against the whole model spec, so a gateway route such as "openai_compatible/scaleway/deepseek-v4.1-flash" hit "openai" before "deepseek" and the node carried the OpenAI logo. The protocol's name says nothing about the vendor: detection now ignores it wherever the spec carries it (a route's first segment, an env default the run graph passes unresolved, the name of the variable holding the route), on the single function every logo site calls (run graph, editor…
+
+    </details>
+
 ## [7.19.0](https://github.com/SocialGouv/iterion/compare/v7.18.3...v7.19.0) (2026-11-19)
 
 ### Features
