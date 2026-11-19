@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -275,19 +274,18 @@ func (a *App) onBeforeClose(ctx context.Context) bool {
 	return false
 }
 
-// stopAllDaemons sends SIGTERM to every daemon in the list, best-effort.
-// Each daemon's own signal handler tears down the server + clears the
-// discovery file. We don't wait for shutdown to complete; the dialog
-// flow needs to be responsive and the daemon's drain timeout already
-// bounds shutdown time.
+// stopAllDaemons asks every daemon in the list to stop, best-effort
+// (stopDaemonProcess: SIGTERM, or the stop event on Windows). Each
+// daemon tears down its server and clears its discovery file. We don't
+// wait for shutdown to complete; the dialog flow needs to be responsive
+// and the daemon's drain timeout already bounds shutdown time.
 func stopAllDaemons(daemons []daemonInfo) {
 	for _, d := range daemons {
-		proc, err := os.FindProcess(d.PID)
-		if err != nil {
+		if err := stopDaemonProcess(d.PID); err != nil {
+			log.Printf("desktop: stop daemon pid=%d project=%s: %v", d.PID, d.ProjectDir, err)
 			continue
 		}
-		_ = proc.Signal(syscall.SIGTERM)
-		log.Printf("desktop: sent SIGTERM to daemon pid=%d project=%s", d.PID, d.ProjectDir)
+		log.Printf("desktop: asked daemon pid=%d project=%s to stop", d.PID, d.ProjectDir)
 	}
 }
 

@@ -33,7 +33,8 @@ func attachDaemonEnabled() bool {
 // without Wails, writes both the per-project daemon registry file
 // (~/.iterion/daemons/<key>.json) and the legacy global desktop.json
 // (~/.iterion/desktop.json — kept for the iterion-control MCP), then
-// blocks until SIGTERM / SIGINT.
+// blocks until SIGTERM / SIGINT, or on Windows until the GUI sets its
+// stop event (stopDaemonProcess).
 //
 // Multi-project: each daemon hosts ONE project. The GUI auto-spawns a
 // daemon per project the operator opens, and attaches by reading the
@@ -100,7 +101,12 @@ func runHeadless() {
 	}
 
 	url := "http://" + addr + "/"
-	writeDaemonInfo(projectDir, url)
+	// The stop channel exists before the daemon is discoverable, so a GUI
+	// that finds it can always stop it.
+	stopCh := daemonStopRequests()
+	if err := writeDaemonInfo(projectDir, url); err != nil {
+		log.Fatalf("daemon: %v — the GUI could not find this daemon, so it exits instead of holding the project", err)
+	}
 	writeDesktopURLFile(url) // legacy global discovery file for MCP
 	defer removeDaemonInfo(projectDir)
 	defer removeDesktopURLFile()
@@ -108,8 +114,12 @@ func runHeadless() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	sig := <-sigCh
-	log.Printf("daemon: received %s, shutting down", sig)
+	select {
+	case sig := <-sigCh:
+		log.Printf("daemon: received %s, shutting down", sig)
+	case <-stopCh:
+		log.Printf("daemon: stop requested by the GUI, shutting down")
+	}
 }
 
 // resolveDaemonProject picks the project directory the daemon will host.

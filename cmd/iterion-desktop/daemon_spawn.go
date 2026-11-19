@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,13 +27,63 @@ import (
 // store migrations and file-watcher setup that can take a few seconds
 // on cold caches. We poll the discovery file every 200ms so the GUI
 // doesn't block on the spawn longer than necessary.
+//
+// Spawns of one project are serialized: startup, a project switch, a pane
+// and a run deep-link each find-then-spawn, and of two concurrent spawns
+// the second child dies on the project lock while the first is still
+// starting. Under the lock the registry is read again, so the second
+// caller gets the first daemon instead of that child's failure.
 func spawnDaemonForProject(projectDir string) (string, error) {
 	if projectDir == "" {
 		return "", fmt.Errorf("spawnDaemonForProject: empty project dir")
 	}
+	mu := projectSpawnLock(projectDir)
+	mu.Lock()
+	defer mu.Unlock()
+	if url, ok := findDaemonForProject(projectDir); ok {
+		return url, nil
+	}
+	exited, pid, logPath, err := startDaemonChild(projectDir)
+	if err != nil {
+		return "", err
+	}
+	url, err := awaitDaemon(projectDir, exited, 20*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("%w (daemon log: %s)", err, logPath)
+	}
+	log.Printf("desktop: daemon for %s at %s (spawned pid=%d)", projectDir, url, pid)
+	return url, nil
+}
+
+var (
+	spawnLocksMu sync.Mutex
+	spawnLocks   = map[string]*sync.Mutex{}
+)
+
+// projectSpawnLock is the per-project spawn mutex, keyed like the
+// project's daemon lock file — case-folded on Windows, where two spellings
+// of a directory name the same lock and registry files.
+func projectSpawnLock(projectDir string) *sync.Mutex {
+	key := encodeProjectDirKey(projectDir)
+	if goruntime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	spawnLocksMu.Lock()
+	defer spawnLocksMu.Unlock()
+	mu, ok := spawnLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		spawnLocks[key] = mu
+	}
+	return mu
+}
+
+// startDaemonChild launches the detached daemon process and reports its
+// exit on the returned channel. A variable so tests can stand in a child.
+var startDaemonChild = func(projectDir string) (exited <-chan error, pid int, logPath string, err error) {
 	self, err := selfExecPath()
 	if err != nil {
-		return "", fmt.Errorf("resolve self exec: %w", err)
+		return nil, 0, "", fmt.Errorf("resolve self exec: %w", err)
 	}
 	logFile, err := openDaemonLogFile(projectDir)
 	if err != nil {
@@ -41,16 +94,18 @@ func spawnDaemonForProject(projectDir string) (string, error) {
 
 	cmd := exec.Command(self, "--server-only", "--project="+projectDir)
 	cmd.Env = os.Environ()
+	logPath = "(no log)"
 	if logFile != nil {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
+		logPath = logFile.Name()
 	}
 	detachChild(cmd) // platform-specific: setsid on unix, equivalent on windows
 	if err := cmd.Start(); err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}
-		return "", fmt.Errorf("daemon spawn: %w", err)
+		return nil, 0, "", fmt.Errorf("daemon spawn: %w", err)
 	}
 	// Close our copy of the log FD now that Start has succeeded: the
 	// child inherited its own dup'd descriptor for stdout/stderr, so the
@@ -59,20 +114,41 @@ func spawnDaemonForProject(projectDir string) (string, error) {
 	if logFile != nil {
 		_ = logFile.Close()
 	}
-	// Don't wait on the child — it's intentionally orphaned. Release
-	// the process handle so the GUI doesn't hold onto a zombie reaper
-	// duty for the daemon's lifetime.
-	go func() { _ = cmd.Process.Release() }()
+	// The child outlives the GUI on purpose; waiting on it only reaps it
+	// if it exits first, and tells awaitDaemon it did.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	return done, cmd.Process.Pid, logPath, nil
+}
 
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
+// awaitDaemon polls the project's discovery file until a live daemon
+// answers, the spawned child exits, or the timeout passes. A child that
+// exits is not necessarily a failure: it dies on the project lock when a
+// daemon already serves the project, so the registry is read once more
+// before giving up.
+func awaitDaemon(projectDir string, exited <-chan error, timeout time.Duration) (string, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
 		if url, ok := findDaemonForProject(projectDir); ok {
-			log.Printf("desktop: spawned daemon for %s at %s (pid=%d)", projectDir, url, cmd.Process.Pid)
 			return url, nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case err := <-exited:
+			if url, ok := findDaemonForProject(projectDir); ok {
+				return url, nil
+			}
+			if err == nil {
+				return "", fmt.Errorf("daemon for %s exited before serving", projectDir)
+			}
+			return "", fmt.Errorf("daemon for %s exited before serving: %w", projectDir, err)
+		case <-deadline.C:
+			return "", fmt.Errorf("daemon for %s did not come up within %s", projectDir, timeout)
+		case <-tick.C:
+		}
 	}
-	return "", fmt.Errorf("daemon for %s did not come up within 20s", projectDir)
 }
 
 // selfExecPath returns an absolute path to the running iterion-desktop
