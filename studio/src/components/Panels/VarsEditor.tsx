@@ -3,6 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { VarField, TypeExpr, VarsBlock, Literal } from "@/api/types";
 import { TextField, SelectField, NumberField } from "./forms/FormField";
+import { dslNameError } from "@/lib/dslName";
 import { Select } from "@/components/ui/Select";
 
 const TYPE_OPTIONS: { value: TypeExpr; label: string }[] = [
@@ -166,6 +167,7 @@ function VarsSection({
                 value={field.name}
                 onChange={(v) => updateField(i, { name: v })}
                 placeholder="var_name"
+                error={dslNameError(field.name) ?? undefined}
               />
             </div>
             <div className="w-24">

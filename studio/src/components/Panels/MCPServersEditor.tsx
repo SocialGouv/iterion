@@ -8,6 +8,7 @@ import {
   TagListField,
   TextField,
 } from "./forms/FormField";
+import { dslNameError } from "@/lib/dslName";
 
 /** Top-level reusable MCP server declarations. Servers listed here are
  *  referenced by name from a node's or workflow's MCP config block. */
@@ -131,7 +132,7 @@ function ServerCard({
         onChange={onRename}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const others = new Set(allNames);
           others.delete(server.name);
           if (others.has(v)) return "Name already used by another server";

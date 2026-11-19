@@ -13,6 +13,7 @@ import {
   SelectFieldWithCreate,
   TextField,
 } from "./FormField";
+import { dslNameError } from "@/lib/dslName";
 
 interface Props {
   decl: ComputeDecl;
@@ -55,7 +56,7 @@ export default function ComputeForm({ decl }: Props) {
         onCommit={(v) => setSelectedNode(v)}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const names = getAllNodeNames(document!);
           names.delete(decl.name);
           if (names.has(v)) return "Name already exists";
@@ -86,6 +87,7 @@ export default function ComputeForm({ decl }: Props) {
         label="Publish"
         value={decl.publish ?? ""}
         onChange={(v) => updateCompute(decl.name, { publish: v || undefined })}
+        error={dslNameError(decl.publish ?? "") ?? undefined}
         placeholder="Artifact name"
         help="Optional. Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
@@ -160,6 +162,7 @@ export default function ComputeForm({ decl }: Props) {
                     value={e.key}
                     onChange={(v) => setExprAt(i, { key: v })}
                     placeholder="output field name"
+                    error={dslNameError(e.key) ?? undefined}
                   />
                 )}
                 <TextField

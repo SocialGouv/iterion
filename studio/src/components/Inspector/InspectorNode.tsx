@@ -32,6 +32,7 @@ import NodeRunsChip from "./NodeRunsChip";
 import ProvenanceChip from "@/components/shared/ProvenanceChip";
 import { Button, IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
+import { dslNameError } from "@/lib/dslName";
 
 const TERMINAL_DESCRIPTIONS: Record<string, string> = {
   __start__: "Marks the workflow entry point.",
@@ -343,7 +344,7 @@ function SubbotForm({ decl }: { decl: SubbotDecl }) {
         onCommit={(v) => setSelectedNode(v)}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const names = getAllNodeNames(document!);
           names.delete(decl.name);
           if (names.has(v)) return "Name already exists";

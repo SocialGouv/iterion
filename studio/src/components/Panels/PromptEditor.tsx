@@ -1,6 +1,7 @@
 import { useCallback, useId, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { defaultPrompt } from "@/lib/defaults";
+import { dslNameError } from "@/lib/dslName";
 import { TextField, CommittedTextField } from "./forms/FormField";
 import PromptBodyEditor from "./PromptBodyEditor";
 import ConfirmDialog from "../shared/ConfirmDialog";
@@ -105,6 +106,7 @@ function PromptCard({
           onChange={onRename}
           validate={(v) => {
             if (!v.trim()) return "Name cannot be empty";
+            if (dslNameError(v)) return dslNameError(v);
             const others = new Set(allPromptNames);
             others.delete(name);
             if (others.has(v)) return "Prompt name already exists";
