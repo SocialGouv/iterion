@@ -602,7 +602,7 @@ func TestNoDescendantOutlivesASuccessfulRun(t *testing.T) {
 func TestAConfinedChildsProcIsClosedToASibling(t *testing.T) {
 	t.Parallel()
 
-	report := runEscapeHelper(t, raceSafeLimits(Limits{Memory: 256 << 20, CPU: 30 * time.Second, Wall: 30 * time.Second}))
+	report := runEscapeHelper(t, Limits{Memory: 256 << 20, CPU: 30 * time.Second, Wall: 30 * time.Second})
 	if !report.procReadableBeforeConfine {
 		t.Fatal("the probe could not read the child's /proc BEFORE it confined itself, so this arm " +
 			"cannot tell PR_SET_DUMPABLE from an environment that hides /proc from everyone")
@@ -631,10 +631,6 @@ func TestAConfinedChildsProcIsClosedToASibling(t *testing.T) {
 // artefact in TestTheRealBinaryConfinesEveryThreadOfTheProcess.
 func childWithRequest(t *testing.T, req Request) Response {
 	t.Helper()
-
-	// The child here is this test binary, so under -race it carries
-	// ThreadSanitizer and needs its floor before it runs a line.
-	req.Limits = raceSafeLimits(req.Limits)
 
 	payload, err := json.Marshal(req)
 	if err != nil {

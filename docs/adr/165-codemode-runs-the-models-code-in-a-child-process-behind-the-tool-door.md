@@ -594,3 +594,37 @@ leaves UDP open; a **NetworkPolicy** — the child shares the runner's network
 namespace, so a policy cannot tell them apart. The escape suite's network arms
 no longer depend on the ABI and run on every lane, which retires the CI record
 `ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET`.
+
+## Amendment — 2026-11-18 (bis): the memory bound is room, not a total (#3383)
+
+`Limits.Memory` was applied as an absolute `RLIMIT_DATA`. The shipped script
+host holds ~86 MiB of data segment before the interpreter exists, because the
+Go 1.26 runtime maps a 64 MiB heap arena read-write and only ~9 MiB of it is
+resident. So at the 64 MiB floor the child started **above** its own bound.
+Every mapping the runtime then needed was refused: a GC span-queue buffer, a
+memory-profile bucket, an arena. A script pushing 10 000 strings died of a
+SIGSEGV in the garbage collector 5 runs out of 5 (`script_host_died`), while
+128 MiB passed.
+
+The same class turned up as three CI flakes on 18/11. A test-binary child at
+the floor died 2 runs out of 60 on `1+1`, and a test helper that lowered its
+own limit to 32 MiB died 3 runs out of 40, whenever the profiler's random
+sample asked for a chunk. It also explains the 768 MiB race floor the tests
+carried.
+
+**Decision (Jo):** `memory:` is the program's **growth** budget. `Confine`
+reads its own `VmData`, which is `mm->data_vm`, the very counter the limit is
+compared with, before the deny-all ruleset closes `/proc`. It then sets
+`RLIMIT_DATA = base + Memory`, and reports the base as
+`Applied.MemoryBaseBytes`. This is the meaning the parent's resident-set probe
+already had (growth from a baseline, #3299). The floor, default and ceiling
+keep their numbers and now mean room, whatever the binary weighs. Measured on
+the shipped binary at the floor: the 10 000-push script completes, and a memory
+bomb dies with the runtime's own `out of memory`, the typed `memory_exceeded`.
+The race floor is retired: the race suite passes at 64 MiB of room, three runs
+out of three.
+
+Consequence for sizing: a child can hold its base plus `memory:`, ~86 + 256 MiB
+under the default. The base is mostly reserved, not resident, so a pod budget
+should count the resident base (~9 MiB) plus the room per concurrent child.
+`Ceiling().Memory` still caps the room a tenant may ask for.

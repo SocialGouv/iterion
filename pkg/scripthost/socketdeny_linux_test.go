@@ -159,7 +159,7 @@ func TestX32HelperProcess(t *testing.T) {
 	if os.Getenv("ITERION_SCRIPTHOST_X32_HELPER") != "1" {
 		t.Skip("helper process only")
 	}
-	if _, err := Confine(raceSafeLimits(Limits{Memory: 256 << 20, CPU: 30 * time.Second})); err != nil {
+	if _, err := Confine(Limits{Memory: 256 << 20, CPU: 30 * time.Second}); err != nil {
 		fmt.Println("X32-CONFINE-ERR", err)
 		os.Exit(3)
 	}

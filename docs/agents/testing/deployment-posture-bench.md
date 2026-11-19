@@ -197,9 +197,9 @@ samples the child's resident set and kills it ([native-ceiling.md](native-ceilin
 The in-pod leg is still owed — this bench wires no tool channel, so it cannot
 produce such a payload.
 
-**A floor on the memory bound.** Found by this bench: `Limits.Clamp` caps
-`Memory` and fills an unset value from the default but enforces no minimum, so
-a bound below what the child's Go runtime needs makes it **crash** — measured
-at 64 MiB, `script_host_died` with a SIGSEGV where the caller asked for
-`memory_exceeded`. The bench uses the shipped default and refuses leg 6 when
-the cgroup cannot hold the bombs; the product behaviour is its own ticket.
+**A floor on the memory bound.** Found by this bench: at 64 MiB a bomb
+**crashed** (`script_host_died`, SIGSEGV) instead of `memory_exceeded`. Now
+`Clamp` raises a bound to the floor (#3290), and the bound is room above the
+child's own ~86 MiB, not a total spent before the script ran (#3383). The
+bench uses the shipped default and refuses leg 6 when the cgroup cannot hold
+the bombs.

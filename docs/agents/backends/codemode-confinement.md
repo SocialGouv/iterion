@@ -16,7 +16,7 @@ at the end.
 
 | bound | mechanism | what the witness shows |
 |---|---|---|
-| memory | `RLIMIT_DATA` | a 400 MiB allocation dies under a 128 MiB bound |
+| memory | `RLIMIT_DATA`, room above the child's own segment | 10 000 pushes finish at the 64 MiB floor; a 400 MiB allocation dies |
 | CPU | `RLIMIT_CPU` | a native regex bomb is killed; nothing else kills it |
 | wall clock | the parent's deadline | a regex bomb the interpreter cannot interrupt is still stopped |
 | wall clock (soft) | `vm.Interrupt` | a preemptible loop yields a typed refusal from the child |
@@ -48,8 +48,9 @@ per-thread bound as a per-process one.
 **`RLIMIT_AS` is not a memory bound for a Go child.** It counts reserved
 address space, and the runtime dies at startup ("runtime: out of memory")
 anywhere below about 2 GiB — far above any heap budget worth setting.
-`RLIMIT_DATA` starts a child at 64 MiB and still kills the bomb. The two are
-not interchangeable, and only one can express what codemode needs.
+`RLIMIT_DATA` does, set as **room** above the segment the child already holds
+(~86 MiB for the shipped binary, #3383): as a total, the 64 MiB floor was spent
+before the script ran. Only one can express what codemode needs.
 
 **The interpreter cannot bound itself.** A backreference regex ran **past 60 s**
 of wall clock with `vm.Interrupt` posted at 1 s; `RLIMIT_CPU=2s` killed the same
@@ -156,9 +157,9 @@ Two things the record used to get wrong about its own legs, both measured:
 
 - The memory arm does **not** skip under `-race`. Its child is the shipping
   `CGO_ENABLED=0` binary that `TestMain` builds, which ThreadSanitizer never
-  reaches, so it is proven on every leg. The race floor
-  (`ITERION_SCRIPTHOST_RACE_FLOOR_MIB`) applies to the arms whose child IS the
-  instrumented test binary — the escape helper and the hand-built requests.
+  reaches, so it is proven on every leg. The arms whose child IS the
+  instrumented test binary need no floor of their own: ThreadSanitizer's
+  startup lands in the base, not in the room.
 - Whether the test binary is cgo-linked is a property of the LEG, not a fact:
   `CGO_ENABLED=0` on CI's unit leg, 1 on its race shards. So the process-wide
   guarantee is asserted against the shipping artefact, and its REFUSAL against

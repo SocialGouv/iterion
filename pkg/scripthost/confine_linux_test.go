@@ -666,7 +666,7 @@ func requireLandlock(t *testing.T, abi int) {
 
 func escapeBaseline(t *testing.T) escapeReport {
 	t.Helper()
-	return runEscapeHelper(t, raceSafeLimits(Limits{Memory: 256 << 20, CPU: 30 * time.Second}))
+	return runEscapeHelper(t, Limits{Memory: 256 << 20, CPU: 30 * time.Second})
 }
 
 // A confined child cannot read a file it could read a moment earlier. The

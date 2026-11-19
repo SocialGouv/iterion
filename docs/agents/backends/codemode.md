@@ -119,7 +119,7 @@ goja cannot bound itself. ADR-098 F19 closed on the measurement:
 *"goja's interrupt does not preempt native calls and bounds no heap"*. A native
 regex bomb hangs the runner, not the script. So the host is a **child process**
 and the limits are applied before the interpreter exists — `RLIMIT_AS` /
-`RLIMIT_DATA` for a real memory cap, `RLIMIT_CPU`, `no-new-privs`,
+`RLIMIT_DATA` for a real memory cap (room above the child's own segment), `RLIMIT_CPU`, `no-new-privs`,
 non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
 offers it.
 
