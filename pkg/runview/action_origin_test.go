@@ -19,10 +19,11 @@ import (
 
 // originCall is one store access the origin store recorded: the method,
 // whether its context carried a run data binding (never the value-format
-// intent), and whether it came after the spawn took the run lock.
+// intent), whether it came after the spawn took the run lock, and whether a
+// frame of the engine's resume (engineResumeLoad) was on its stack.
 type originCall struct {
-	method          string
-	bound, afterRun bool
+	method                  string
+	bound, afterRun, engine bool
 }
 
 // originStore is the filesystem store with the probes of the carrier-E
@@ -95,6 +96,7 @@ func (s *originStore) armFrom(method, caller string, h func() error) {
 
 func (s *originStore) enter(ctx context.Context, method string) {
 	_, bound := store.RunDataBindingFrom(ctx)
+	engine := calledFrom(engineResumeLoad)
 	s.mu.Lock()
 	hook, ok := s.before[method]
 	var h func() error
@@ -102,7 +104,7 @@ func (s *originStore) enter(ctx context.Context, method string) {
 		h = hook.h
 		delete(s.before, method)
 	}
-	s.calls = append(s.calls, originCall{method: method, bound: bound, afterRun: s.locked})
+	s.calls = append(s.calls, originCall{method: method, bound: bound, afterRun: s.locked, engine: engine})
 	s.mu.Unlock()
 	if h == nil {
 		return
@@ -124,6 +126,18 @@ func (s *originStore) recorded() []originCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]originCall(nil), s.calls...)
+}
+
+// engineCalls returns the methods of the recorded accesses the engine's
+// resume made, in order.
+func (s *originStore) engineCalls() []string {
+	var out []string
+	for _, c := range s.recorded() {
+		if c.engine {
+			out = append(out, c.method)
+		}
+	}
+	return out
 }
 
 func (s *originStore) LockRun(ctx context.Context, id string) (store.RunLock, error) {
@@ -390,10 +404,13 @@ func TestActionOriginVerifyComparesTheHeaderAndTheTenant(t *testing.T) {
 }
 
 // W8: a checked resume whose run is replaced after Resume's load — here as
-// the spawn takes the run lock — is refused under that lock: the successor's
-// status, checkpoint and events are as it was seeded, nothing executed it.
-// Control: the same replacement with the zero ActionOrigin resumes the
-// successor, as every unchecked caller does.
+// the spawn takes the run lock — is refused under that lock, before the
+// engine: no store access comes from the engine's resume (whose own check
+// would refuse the successor one load later and hide this one), and the
+// successor's status, checkpoint and events are as it was seeded, nothing
+// executed it. Control: the same replacement with the zero ActionOrigin
+// resumes the successor through the engine's resume, as every unchecked
+// caller does.
 func TestResumeExpectOriginUnderTheSpawnLock(t *testing.T) {
 	for _, checked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("checked=%t", checked), func(t *testing.T) {
@@ -412,14 +429,21 @@ func TestResumeExpectOriginUnderTheSpawnLock(t *testing.T) {
 				t.Fatalf("the replacement did not run: successor birth %q", before.birth)
 			}
 			after := fx.picture(t)
+			engine := fx.st.engineCalls()
 			if !checked {
 				if err != nil || after.status == before.status {
 					t.Fatalf("unchecked resume of the successor: err=%v, status %s → %s, want it resumed", err, before.status, after.status)
+				}
+				if len(engine) == 0 || engine[0] != "LoadRun" {
+					t.Fatalf("unchecked resume of the successor: the engine's resume made %v, want its load first", engine)
 				}
 				return
 			}
 			if !errors.Is(err, store.ErrRunDataIdentityChanged) {
 				t.Fatalf("checked resume of a replaced run: %v, want ErrRunDataIdentityChanged", err)
+			}
+			if len(engine) != 0 {
+				t.Fatalf("checked resume of a replaced run reached the engine's resume (%v): want it refused under the spawn lock, before the engine", engine)
 			}
 			if after != before {
 				t.Fatalf("the successor changed under the spawn lock:\nbefore %+v\nafter  %+v", before, after)

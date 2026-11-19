@@ -71,16 +71,23 @@ var mutationCarriers = map[string]carrierEntry{
 	"ws " + wsTypeRaiseBudget:         {"P", "the service's loads are the pre-checks (D5)"},
 }
 
+// readOnlyCase is a dispatch case that changes nothing: the one connection
+// method its case calls, and why it needs no carrier.
+type readOnlyCase struct{ method, reason string }
+
 // runWSReadOnlyTypes are the cases of (*runConn).dispatch that change
-// nothing: the act rung does not guard them and they need no carrier. A new
-// case is either guarded (runWSMutatingTypes, then a carrier) or listed here
-// with its reason.
-var runWSReadOnlyTypes = map[string]string{
-	wsTypeSubscribe:      "opens the event stream under the socket's binding",
-	wsTypeUnsubscribe:    "closes the event stream",
-	wsTypeSubscribeLogs:  "opens the log stream under the socket's binding",
-	wsTypeUnsubscribeLog: "closes the log stream",
-	wsTypePing:           "answers pong",
+// nothing: the act rung does not guard them and they need no carrier. Each
+// is pinned to the method its case calls: a read-only case calling any other
+// — a guarded case's handler, a wrapper around one — is reported. The sweep
+// reads the case, not the pinned method's body. A new case is either guarded
+// (runWSMutatingTypes, then a carrier) or listed here with its method and
+// its reason.
+var runWSReadOnlyTypes = map[string]readOnlyCase{
+	wsTypeSubscribe:      {"handleSubscribe", "opens the event stream under the socket's binding"},
+	wsTypeUnsubscribe:    {"handleUnsubscribe", "closes the event stream"},
+	wsTypeSubscribeLogs:  {"handleSubscribeLogs", "opens the log stream under the socket's binding"},
+	wsTypeUnsubscribeLog: {"handleUnsubscribeLogs", "closes the log stream"},
+	wsTypePing:           {"sendEnvelope", "answers pong"},
 }
 
 // mutationSweep is what the inventory is compared with: the non-GET
@@ -96,9 +103,9 @@ type mutationSweep struct {
 }
 
 // gaps lists every action without a carrier, every dispatch case neither
-// guarded nor read-only, every read-only case calling the method of a
-// guarded one, every guarded type no case handles, and every inventory entry
-// nothing matches any more.
+// guarded nor read-only, every read-only case calling another method than
+// the one it is pinned to, every guarded type no case handles, and every
+// inventory entry nothing matches any more.
 func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -130,14 +137,13 @@ func (sw mutationSweep) gaps(carriers map[string]carrierEntry) []string {
 		if sw.envelope[typ] {
 			continue
 		}
-		if _, ok := runWSReadOnlyTypes[typ]; !ok {
+		ro, ok := runWSReadOnlyTypes[typ]
+		if !ok {
 			out = append(out, "dispatch case neither guarded nor read-only: "+typ)
 			continue
 		}
-		for guarded, mutating := range sw.envelope {
-			if h := sw.handlers[typ]; mutating && h != "" && h == sw.handlers[guarded] {
-				out = append(out, "read-only case calls a guarded handler: "+typ+" → "+h)
-			}
+		if h := sw.handlers[typ]; h != ro.method {
+			out = append(out, fmt.Sprintf("read-only case %s calls %q, pinned to %q", typ, h, ro.method))
 		}
 	}
 	for typ, mutating := range sw.envelope {
@@ -382,13 +388,6 @@ func packageStringConsts() (map[string]string, error) {
 	return out, nil
 }
 
-// sweptDispatchCases parses src as this package's runs_ws.go.
-func sweptDispatchCases(t *testing.T, src []byte) []string {
-	t.Helper()
-	cases, _ := sweptDispatch(t, src)
-	return cases
-}
-
 // sweptDispatch parses src as this package's runs_ws.go: the cases and the
 // method each calls.
 func sweptDispatch(t *testing.T, src []byte) ([]string, map[string]string) {
@@ -519,16 +518,17 @@ func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
 		t.Fatal("fixture: the ping case of dispatch moved; plant the probe case elsewhere")
 	}
 	planted := strings.Replace(src, anchor, "\tcase \"rva_probe\":\n\t\tc.handleCancel(env)\n"+anchor, 1)
+	plantedCases, plantedHandlers := sweptDispatch(t, []byte(planted))
 	for _, tc := range []struct {
 		name string
 		sw   mutationSweep
 		want string
 	}{
 		{"M7a-route", productionMutationSweep(t, fx.srv), "no carrier: POST /api/runs/{id}/rva-mutation-probe"},
-		{"M7b-ladder", mutationSweep{routes: base.routes, ladder: ladder, envelope: base.envelope, dispatch: base.dispatch}, "no carrier: ladder rva-ladder-probe"},
-		{"M7w-envelope", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: envelope, dispatch: append(append([]string(nil), base.dispatch...), "rva_probe")}, "no carrier: ws rva_probe"},
-		{"M7c-dispatch-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: sweptDispatchCases(t, []byte(planted))}, "dispatch case neither guarded nor read-only: rva_probe"},
-		{"guarded-type-without-a-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: without(base.dispatch, wsTypePause)}, "guarded envelope no dispatch case handles: " + wsTypePause},
+		{"M7b-ladder", mutationSweep{routes: base.routes, ladder: ladder, envelope: base.envelope, dispatch: base.dispatch, handlers: base.handlers}, "no carrier: ladder rva-ladder-probe"},
+		{"M7w-envelope", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: envelope, dispatch: append(append([]string(nil), base.dispatch...), "rva_probe"), handlers: base.handlers}, "no carrier: ws rva_probe"},
+		{"M7c-dispatch-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: plantedCases, handlers: plantedHandlers}, "dispatch case neither guarded nor read-only: rva_probe"},
+		{"guarded-type-without-a-case", mutationSweep{routes: base.routes, ladder: base.ladder, envelope: base.envelope, dispatch: without(base.dispatch, wsTypePause), handlers: base.handlers}, "guarded envelope no dispatch case handles: " + wsTypePause},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gaps := tc.sw.gaps(mutationCarriers)
@@ -551,8 +551,9 @@ func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
 // runs_ws.go — are refused by the sweep's reading of dispatch: a branch in
 // the default, a comparison before the switch, a switch nested in the
 // default, a branch in a read-only case's body, a second switch on a copy of
-// the type. A read-only case calling a guarded case's method is reported.
-// (A planted case of its own is M7c above.)
+// the type. A read-only case calling another method than its pinned one — a
+// guarded case's handler, or a wrapper calling one — is reported. (A planted
+// case of its own is M7c above.)
 func TestRunMutationSweepRefusesDispatchShapes(t *testing.T) {
 	src := string(readRunsWS(t))
 	const (
@@ -594,20 +595,27 @@ func TestRunMutationSweepRefusesDispatchShapes(t *testing.T) {
 			}
 		})
 	}
-	t.Run("read-only-case-calling-a-guarded-method", func(t *testing.T) {
-		cases, handlers := sweptDispatch(t, plant(subscribe, "\tcase wsTypeSubscribe:\n\t\tc.handleCancel(env)\n"))
-		sw := mutationSweep{ladder: runScopeLadderRoutes, envelope: runWSMutatingTypes, dispatch: cases, handlers: handlers}
-		want := "read-only case calls a guarded handler: " + wsTypeSubscribe + " → handleCancel"
-		found := false
-		for _, g := range sw.gaps(mutationCarriers) {
-			if g == want {
-				found = true
-			} else if !strings.HasPrefix(g, "stale carrier entry: ") {
-				t.Fatalf("planted read-only case: unexpected gap %q", g)
+	// The wrapper is only parsed: the sweep reads the case, so the planted
+	// copy need not declare the method it names.
+	for _, tc := range []struct{ name, method string }{
+		{"read-only-case-calling-a-guarded-method", "handleCancel"},
+		{"read-only-case-calling-a-wrapper", "handleSubscribeAndCancel"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cases, handlers := sweptDispatch(t, plant(subscribe, "\tcase wsTypeSubscribe:\n\t\tc."+tc.method+"(env)\n"))
+			sw := mutationSweep{ladder: runScopeLadderRoutes, envelope: runWSMutatingTypes, dispatch: cases, handlers: handlers}
+			want := fmt.Sprintf("read-only case %s calls %q, pinned to %q", wsTypeSubscribe, tc.method, "handleSubscribe")
+			found := false
+			for _, g := range sw.gaps(mutationCarriers) {
+				if g == want {
+					found = true
+				} else if !strings.HasPrefix(g, "stale carrier entry: ") {
+					t.Fatalf("planted read-only case: unexpected gap %q", g)
+				}
 			}
-		}
-		if !found {
-			t.Fatalf("a read-only case calling handleCancel was not reported (want %q)", want)
-		}
-	})
+			if !found {
+				t.Fatalf("a read-only case calling %s was not reported (want %q)", tc.method, want)
+			}
+		})
+	}
 }
