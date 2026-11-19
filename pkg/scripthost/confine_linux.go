@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -34,6 +35,17 @@ import (
 // must treat an error as "do not run the script", never as "retry
 // unconfined"; [RunChild] does.
 func Confine(l Limits) (Applied, error) {
+	// ONE OS thread for the whole of Confine. In the per-thread fallback,
+	// no_new_privs lands on the calling thread only, and landlock_restrict_self
+	// and seccomp(2) each require it on THEIR calling thread. A goroutine that
+	// moved in between (any blocking syscall lets the scheduler resume it on
+	// another thread, and the base read below is three) met
+	// `seccomp(SET_MODE_FILTER, TSYNC): permission denied` — seen in CI on a
+	// race-built child. Nested locks count, so a caller already pinned stays
+	// pinned after this returns.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	// Resolve the local zone before the filesystem closes. time.Local loads
 	// the zoneinfo database from disk on first use, and after a deny-all
 	// ruleset that read is refused.
@@ -65,6 +77,9 @@ func Confine(l Limits) (Applied, error) {
 		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 			return Applied{}, fmt.Errorf("scripthost: prctl(PR_SET_NO_NEW_PRIVS): %w", err)
 		}
+	}
+	if afterNoNewPrivs != nil {
+		afterNoNewPrivs()
 	}
 	// The process's own /proc/<pid>/environ and /proc/<pid>/mem stop being
 	// readable by a same-uid process. In the in-pod posture every sibling runs
@@ -134,6 +149,11 @@ func Confine(l Limits) (Applied, error) {
 	applied.SocketsDenied = true
 	return applied, nil
 }
+
+// afterNoNewPrivs runs between the no_new_privs step and the bounds that need
+// it on the calling thread. nil in production; a test sets it to MOVE the
+// goroutine to another OS thread, the one event Confine's pin exists for.
+var afterNoNewPrivs func()
 
 // dataSegmentBytes is this process's data segment as the kernel counts it for
 // RLIMIT_DATA: VmData is mm->data_vm, the very counter the limit is compared
