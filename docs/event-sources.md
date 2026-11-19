@@ -74,6 +74,7 @@ example is a fictional `probe` vendor, loaded as written by
     item_id: 'item.key'
     item_version: 'item.fields.updated'
     cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
+    order: oldest_first                # the operation answers oldest first
     interval: { default: 5m, min: 1m }
   outputs:
     - { name: subject, from: 'payload.fields.summary' }
@@ -114,13 +115,24 @@ example is a fictional `probe` vendor, loaded as written by
   one of the names RFC 822 defines (UT, GMT, EST, EDT, CST, CDT, MST, MDT,
   PST, PDT) at its own offset, never the process's; any other zone name is
   refused. An `opaque` cursor is a string or number, handed back as is — the
-  last item's, so its operation must answer oldest first. A
+  last item's, so its operation must answer oldest first: a poll with an
+  opaque cursor that does not declare `order: oldest_first` is refused. A
   param reads the checkpoint, moved back by the overlap, as `cursor.value` —
   RFC 3339 in UTC for a timestamp, the token for an opaque cursor — and a
   timestamp also as `cursor.epoch_ms`, the epoch milliseconds as a decimal
   string, for a vendor that reads a bare number in its own clock's terms
   (JQL reads a quoted date in the searching user's time zone, an unquoted
-  number as epoch milliseconds). Both are nil before the first complete scan.
+  number as epoch milliseconds). Both are nil before a scan left a
+  checkpoint.
+- **The answer's order.** `order: oldest_first` says the operation answers
+  oldest first — Jira's `ORDER BY updated ASC`. It is the one value: any other
+  is refused at load, and none means the package does not say. Declared on a
+  timestamp cursor, a scan that stops before its last page still moves the
+  checkpoint, to the latest instant it read in full: the one before the last
+  instant it read, whose other items may sit on the page it never read, so
+  the next scan misses nothing whatever its overlap. Declared without a
+  cursor, it loads and changes nothing. An opaque cursor never moves on a
+  scan that stops early.
 - **The interval** is counted in seconds: `min` at least `1s` and at most
   `default`.
 - **Feeds.** An operation with `response_format: feed` reads a successful
@@ -177,15 +189,21 @@ example is a fictional `probe` vendor, loaded as written by
 - **Accept, then checkpoint.** Every item the poller's seen set does not
   hold becomes an intake, idempotent on (poller, item id, item version) and
   numbered by the poller's own sequence; then the seen set records every item
-  observed, and only a complete scan moves the checkpoint — to the latest
-  instant observed, never back, or to the last item's token. A scan that
-  stops early (a page error, the operation's page bound) keeps what it
-  accepted and moves nothing; an item the package cannot read is recorded on
-  the poller and remembered, so it does not stop every later tick. The seen
-  set keeps an item for `ITERION_CONNECTOR_POLL_SEEN_RETENTION` (7 days) after
-  it was last observed.
+  observed, and a complete scan moves the checkpoint — to the latest instant
+  observed, never back nor past the tick's clock, or to the last item's
+  token. A scan that stops early (a page error, the operation's page bound,
+  its deadline) keeps what it accepted, does not prime and says why; on a
+  timestamp cursor whose operation declares `order: oldest_first` it moves
+  the checkpoint to the latest instant it read in full — the one before the
+  last it read — under the same bounds, and the next scan reads on from
+  there; otherwise it moves nothing. An item the package cannot read is
+  recorded on the poller and remembered, so it does not stop every later
+  tick. The seen set keeps an item for `ITERION_CONNECTOR_POLL_SEEN_RETENTION`
+  (7 days) after it was last observed.
 - **Enabling never replays.** A new poller's first complete scan records
-  what is already there as `primed` intakes, matched to nothing. A
+  what is already there as `primed` intakes, matched to nothing — a first
+  answer longer than the page bound, read oldest first, primes on the tick
+  whose scan reaches its end, every intake before it primed. A
   subscription receives the intakes accepted after its activation — saved
   enabled, resumed, or moved to another query — by iterion's sequence, not the
   vendor's clock; `backfill: N` pairs, once per activation, the last N intakes
@@ -227,18 +245,24 @@ example is a fictional `probe` vendor, loaded as written by
   in the clear; a basic scheme seals them.
 - **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection) and
   `jira.issue.changed` (a JQL the operator writes, without `ORDER BY`,
-  checkpointed by `updated`; its first scan reads the last day, so a backfill
-  reaches no further back).
+  checkpointed by `updated` and read oldest first, so a scan the page bound
+  cuts reads on at the next tick; its first scan reads the last day, so a
+  backfill reaches no further back).
 - **Re-binding** a subscription to the query of another, existing poller
   activates it on that poller's sequence: an item both pollers observe can be
   delivered once by each.
 
 A webhook trigger of a package that declares no ingress stays refused at save
-and off the catalogue: no delivery can reach it. Two limits are known: a scan
-whose answer needs more pages than its operation's page bound never
-completes — so a poller whose first answer is that large never primes — and
-filters compare one value, so a list-valued output (a feed's categories) is
-mapped, not filtered on.
+and off the catalogue: no delivery can reach it. Three limits are known: a
+scan whose answer needs more pages than its operation's page bound completes
+only across ticks of an oldest-first timestamp cursor — without
+`order: oldest_first`, or on an opaque cursor, it never completes, so a
+poller whose first answer is that large never primes; an oldest-first scan
+cannot move the checkpoint when every item its page bound holds shares one
+instant, or when more changes fall within one overlap window than the bound
+holds, and reads the same pages on every tick; and filters compare one
+value, so a list-valued output (a feed's categories) is mapped, not filtered
+on.
 
 ## Icons
 

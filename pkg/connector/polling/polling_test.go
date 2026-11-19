@@ -24,15 +24,19 @@ import (
 )
 
 // vendor is a search API answering what a JQL-style poll asks: the issues
-// updated at or after `since` (epoch milliseconds, unquoted), oldest first,
+// updated at or after `since`, or strictly after `after` (both epoch
+// milliseconds, unquoted), oldest first,
 // pageSize to a page behind an opaque `next` token. It is written from the
 // vendor's side — it reads its own query string — never from the package.
 type vendor struct {
 	mu       sync.Mutex
 	issues   []map[string]any
 	pageSize int
-	requests []string
-	srv      *httptest.Server
+	// failCursor, when set, is the page token the vendor answers with a 503:
+	// a walk that reaches it stops on a failing page.
+	failCursor string
+	requests   []string
+	srv        *httptest.Server
 }
 
 func newVendor(t *testing.T) *vendor {
@@ -59,14 +63,28 @@ func (v *vendor) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		since = time.UnixMilli(ms)
 	}
+	var after *time.Time
+	if s := r.URL.Query().Get("after"); s != "" {
+		ms, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			http.Error(w, "after is not epoch milliseconds", http.StatusBadRequest)
+			return
+		}
+		at := time.UnixMilli(ms)
+		after = &at
+	}
 	match := []map[string]any{}
 	for _, is := range v.issues {
 		at, _ := time.Parse(time.RFC3339Nano, is["updated"].(string))
-		if !at.Before(since) {
+		if !at.Before(since) && (after == nil || at.After(*after)) {
 			match = append(match, is)
 		}
 	}
 	slices.SortStableFunc(match, func(a, b map[string]any) int { return strings.Compare(a["updated"].(string), b["updated"].(string)) })
+	if c := r.URL.Query().Get("cursor"); v.failCursor != "" && c == v.failCursor {
+		http.Error(w, "the search is temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	start, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
 	end := min(start+v.pageSize, len(match))
 	page := map[string]any{"issues": match[start:end]}
@@ -113,6 +131,7 @@ func vendorPackage() *spec.Package {
 			Params: []spec.Param{
 				{Key: "q", Name: "q", In: spec.InQuery, Type: "string", Required: true},
 				{Key: "since", Name: "since", In: spec.InQuery, Type: "string"},
+				{Key: "after", Name: "after", In: spec.InQuery, Type: "string"},
 				{Key: "cursor", Name: "cursor", In: spec.InQuery, Type: "string"},
 			},
 			Pagination: &spec.Pagination{Style: spec.PageCursor, CursorParam: "cursor", CursorField: "next", ItemsField: "issues", MaxPages: 3},
@@ -230,6 +249,27 @@ func (w *world) stored() poller.Poller {
 	p, err := w.pollers.Get(context.Background(), "t1", w.poller.ID)
 	if err != nil {
 		w.t.Fatal(err)
+	}
+	return p
+}
+
+// declare rewrites the probe trigger's poll as the package would declare it,
+// for every worker of the world (the catalog is read at each tick).
+func (w *world) declare(edit func(*spec.TriggerPoll)) {
+	pkg := vendorPackage()
+	edit(pkg.Triggers[0].Poll)
+	if err := pkg.Validate(); err != nil {
+		w.t.Fatalf("the declared package does not load: %v", err)
+	}
+	w.catalog = connection.NewMemoryCatalog(pkg)
+}
+
+// checkpointAt fails unless the stored checkpoint is the timestamp at.
+func (w *world) checkpointAt(when string, at time.Time) poller.Poller {
+	w.t.Helper()
+	p := w.stored()
+	if p.Checkpoint == nil || p.Checkpoint.Kind != poller.KindTimestamp || p.Checkpoint.At == nil || !p.Checkpoint.At.Equal(at) {
+		w.t.Fatalf("%s: checkpoint = %+v, want the timestamp %s", when, p.Checkpoint, at.Format(time.RFC3339))
 	}
 	return p
 }
@@ -370,10 +410,12 @@ func TestAFeedOnAPrivateAddressIsRefused(t *testing.T) {
 	}
 }
 
-// A scan that stops before its last page keeps what it accepted but moves
-// neither the checkpoint nor the priming: the next scan re-reads from the
-// old place, and the seen set absorbs what it re-reads.
-func TestAnIncompleteScanNeverMovesTheCheckpoint(t *testing.T) {
+// A scan of an operation that declares no order and stops before its last
+// page keeps what it accepted but moves neither the checkpoint nor the
+// priming: an unread page may hold an item older than every one it read, so
+// the next scan re-reads from the old place, and the seen set absorbs what it
+// re-reads.
+func TestAnIncompleteScanInNoDeclaredOrderNeverMovesTheCheckpoint(t *testing.T) {
 	w := newWorld(t)
 	w.subscribe("s1", 0, 0)
 	w.vendor.pageSize = 1
@@ -400,6 +442,247 @@ func TestAnIncompleteScanNeverMovesTheCheckpoint(t *testing.T) {
 		t.Fatalf("intakes = %v, want ENG-4 added once and nothing doubled", got)
 	}
 }
+
+// An operation that answers oldest first: a scan the page bound cuts moves
+// the checkpoint to the latest instant it read in full — the one before the
+// last it read — the next scan reads on from there less the overlap, and a
+// first answer longer than the bound primes once the scan that reaches its
+// end completes — every intake before it primed, none accepted twice, and a
+// later change pending.
+func TestAnOldestFirstScanPastItsPageBoundReadsOnAndPrimes(t *testing.T) {
+	w := newWorld(t)
+	w.declare(func(p *spec.TriggerPoll) { p.Order = spec.PollOrderOldestFirst })
+	w.subscribe("s1", 0, 0)
+	w.vendor.pageSize = 1 // three pages a scan (MaxPages)
+	var keys []string
+	for i := range 7 {
+		key := "ENG-" + strconv.Itoa(i+1)
+		w.vendor.add(key, "x", t0.Add(time.Duration(2*i-20)*time.Minute), nil)
+		keys = append(keys, key+"@primed")
+	}
+	wk := w.worker("w1", nil)
+	for i, step := range []struct {
+		// since is what the scan asks from; nil before a checkpoint.
+		since    *time.Time
+		reached  time.Time
+		accepted int
+		complete bool
+	}{
+		{nil, t0.Add(-18 * time.Minute), 3, false},
+		{ptr(t0.Add(-19 * time.Minute)), t0.Add(-16 * time.Minute), 4, false},
+		{ptr(t0.Add(-17 * time.Minute)), t0.Add(-14 * time.Minute), 5, false},
+		{ptr(t0.Add(-15 * time.Minute)), t0.Add(-12 * time.Minute), 6, false},
+		{ptr(t0.Add(-13 * time.Minute)), t0.Add(-8 * time.Minute), 7, true},
+	} {
+		if i > 0 {
+			w.advance(5 * time.Minute)
+		}
+		asked := len(w.vendor.calls())
+		w.pass(wk)
+		when := "tick " + strconv.Itoa(i+1)
+		first := w.vendor.calls()[asked]
+		switch {
+		case step.since == nil && strings.Contains(first, "since="):
+			t.Fatalf("%s asked %q, want no checkpoint yet", when, first)
+		case step.since != nil && !strings.Contains(first, "since="+strconv.FormatInt(step.since.UnixMilli(), 10)):
+			t.Fatalf("%s asked %q, want it to read on from %s", when, first, step.since.Format(time.RFC3339))
+		}
+		p := w.checkpointAt(when, step.reached)
+		if got := keysOf(w.intakesBy()); !slices.Equal(got, keys[:step.accepted]) {
+			t.Fatalf("%s: intakes = %v, want %v", when, got, keys[:step.accepted])
+		}
+		if !step.complete {
+			if p.Primed || !strings.Contains(p.LastError, "before the last page") {
+				t.Fatalf("%s: primed %v error %q, want a stopped scan unprimed and the reason said", when, p.Primed, p.LastError)
+			}
+			continue
+		}
+		if !p.Primed || p.PrimedThrough != 7 || p.LastError != "" {
+			t.Fatalf("%s: primed %v through %d error %q, want the complete scan primed through 7", when, p.Primed, p.PrimedThrough, p.LastError)
+		}
+	}
+	w.vendor.pageSize = 50
+	w.vendor.add("ENG-8", "new", w.now().Add(time.Minute), nil)
+	w.advance(5 * time.Minute)
+	w.pass(wk)
+	if got := w.pending(); !slices.Equal(got, []string{"ENG-8@pending"}) {
+		t.Fatalf("after the priming = %v, want the later change alone pending", got)
+	}
+}
+
+// An oldest-first scan cut by a failing page moves the checkpoint to the
+// latest instant the pages it read hold in full, says the failure, and the
+// next scan reads on from there.
+func TestAnOldestFirstScanCutByAFailingPageReadsOn(t *testing.T) {
+	w := newWorld(t)
+	w.declare(func(p *spec.TriggerPoll) { p.Order = spec.PollOrderOldestFirst })
+	w.subscribe("s1", 0, 0)
+	w.vendor.pageSize = 1
+	for i := range 4 {
+		w.vendor.add("ENG-"+strconv.Itoa(i+1), "x", t0.Add(time.Duration(2*i-20)*time.Minute), nil)
+	}
+	w.vendor.failCursor = "2" // the third page
+	wk := w.worker("w1", nil)
+	w.pass(wk)
+	p := w.checkpointAt("after the failing page", t0.Add(-20*time.Minute))
+	if p.Primed || !strings.Contains(p.LastError, "the scan stopped") || !strings.Contains(p.LastError, "503") {
+		t.Fatalf("after the failing page = primed %v error %q, want it unprimed and the vendor's failure said", p.Primed, p.LastError)
+	}
+	w.vendor.failCursor, w.vendor.pageSize = "", 50
+	w.advance(5 * time.Minute)
+	asked := len(w.vendor.calls())
+	w.pass(wk)
+	if first := w.vendor.calls()[asked]; !strings.Contains(first, "since="+strconv.FormatInt(t0.Add(-21*time.Minute).UnixMilli(), 10)) {
+		t.Fatalf("the next scan asked %q, want it to read on from the instant the cut scan reached, less the overlap", first)
+	}
+	w.checkpointAt("after the scan that completes", t0.Add(-14*time.Minute))
+	if p := w.stored(); !p.Primed || p.LastError != "" {
+		t.Fatalf("after the scan that completes = primed %v error %q", p.Primed, p.LastError)
+	}
+	if got := keysOf(w.intakesBy()); !slices.Equal(got, []string{"ENG-1@primed", "ENG-2@primed", "ENG-3@primed", "ENG-4@primed"}) {
+		t.Fatalf("intakes = %v, want each item once, primed", got)
+	}
+}
+
+// exclusiveAfter declares the probe poll oldest first, read strictly after
+// its checkpoint (`after`) with no overlap: a stopped scan that stood on an
+// instant it had not read in full would never be asked that instant again.
+func exclusiveAfter(p *spec.TriggerPoll) {
+	p.Order = spec.PollOrderOldestFirst
+	delete(p.Params, "since")
+	p.Params["after"] = "cursor.epoch_ms"
+	p.Cursor.Overlap = ""
+}
+
+// A page bound that splits the items of one instant: the scan stands on the
+// instant before it, so a param that reads the cursor exclusively, with no
+// overlap, still asks for the instant's unread items — every item is
+// accepted once, none lost.
+func TestAStoppedScanLosesNoItemOfAnInstantItSplit(t *testing.T) {
+	w := newWorld(t)
+	w.declare(exclusiveAfter)
+	w.subscribe("s1", 0, 0)
+	w.vendor.pageSize = 2 // six items a scan (MaxPages 3)
+	var want []string
+	for i, at := range []time.Duration{-20, -15, -12, -10, -10, -10, -10, -5} {
+		key := "ENG-" + strconv.Itoa(i+1)
+		w.vendor.add(key, "x", t0.Add(at*time.Minute), nil)
+		want = append(want, key+"@primed")
+	}
+	wk := w.worker("w1", nil)
+	w.pass(wk)
+	if p := w.stored(); p.Primed || !strings.Contains(p.LastError, "before the last page") {
+		t.Fatalf("the first scan = primed %v error %q, want it cut by the page bound inside the instant", p.Primed, p.LastError)
+	}
+	for tick := 2; !w.stored().Primed; tick++ {
+		if tick > 5 {
+			t.Fatalf("the poller did not prime in %d ticks", tick-1)
+		}
+		w.advance(5 * time.Minute)
+		w.pass(wk)
+	}
+	if got := keysOf(w.intakesBy()); !slices.Equal(got, want) {
+		t.Fatalf("intakes = %v, want every item once: %v", got, want)
+	}
+	asked := false
+	for _, c := range w.vendor.calls() {
+		asked = asked || strings.Contains(c, "after=")
+	}
+	if !asked {
+		t.Fatal("no scan read on through the exclusive param: the witness proves nothing about it")
+	}
+}
+
+// A stopped oldest-first scan whose every item shares one instant has read
+// no instant in full: the checkpoint stays where it was.
+func TestAStoppedScanOfOneInstantLeavesTheCheckpoint(t *testing.T) {
+	w := newWorld(t)
+	w.declare(exclusiveAfter)
+	w.subscribe("s1", 0, 0)
+	at := t0.Add(-30 * time.Minute)
+	w.vendor.add("ENG-0", "x", at, nil)
+	wk := w.worker("w1", nil)
+	w.pass(wk)
+	w.checkpointAt("after the first scan", at)
+	for i := range 4 {
+		w.vendor.add("ENG-"+strconv.Itoa(i+1), "same instant", t0.Add(-10*time.Minute), nil)
+	}
+	w.vendor.pageSize = 1
+	w.advance(5 * time.Minute)
+	w.pass(wk)
+	p := w.checkpointAt("after a stopped scan of one instant", at)
+	if !strings.Contains(p.LastError, "before the last page") {
+		t.Fatalf("last error = %q, want the scan stopped by the page bound", p.LastError)
+	}
+}
+
+// A stopped oldest-first scan whose pages hold only what the overlap re-reads
+// before the checkpoint leaves the checkpoint where it was — and its outcome
+// is recorded, which a write behind the stored checkpoint would not be (the
+// store refuses it).
+func TestAStoppedScanNeverMovesTheCheckpointBack(t *testing.T) {
+	w := newWorld(t)
+	w.declare(func(p *spec.TriggerPoll) { p.Order = spec.PollOrderOldestFirst })
+	w.subscribe("s1", 0, 0)
+	at := t0.Add(-10 * time.Minute)
+	w.vendor.add("ENG-1", "x", at, nil)
+	wk := w.worker("w1", nil)
+	w.pass(wk)
+	w.checkpointAt("after the first scan", at)
+	// Three changes inside the overlap, then one past the checkpoint: the
+	// scan's three pages hold the overlap alone.
+	for i, back := range []time.Duration{50 * time.Second, 40 * time.Second, 20 * time.Second} {
+		w.vendor.add("ENG-"+strconv.Itoa(i+2), "late", at.Add(-back), nil)
+	}
+	w.vendor.add("ENG-9", "after", t0.Add(time.Minute), nil)
+	w.vendor.pageSize = 1
+	w.advance(5 * time.Minute)
+	w.pass(wk)
+	p := w.checkpointAt("after a scan of the overlap alone", at)
+	if !strings.Contains(p.LastError, "before the last page") {
+		t.Fatalf("last error = %q, want the stopped scan's outcome recorded", p.LastError)
+	}
+}
+
+// A stopped oldest-first scan that read an instant a vendor stamped in the
+// future moves the checkpoint no further than the tick's clock.
+func TestAStoppedScanNeverMovesTheCheckpointPastItsClock(t *testing.T) {
+	w := newWorld(t)
+	w.declare(func(p *spec.TriggerPoll) { p.Order = spec.PollOrderOldestFirst })
+	w.subscribe("s1", 0, 0)
+	w.vendor.pageSize = 1
+	w.vendor.add("ENG-1", "x", t0.Add(-2*time.Minute), nil)
+	for i := range 3 {
+		w.vendor.add("IMP-"+strconv.Itoa(i+1), "imported", t0.Add(time.Duration(i+1)*24*time.Hour), nil)
+	}
+	w.pass(w.worker("w1", nil))
+	p := w.checkpointAt("after a stopped scan that read the future", w.now())
+	if !strings.Contains(p.LastError, "before the last page") {
+		t.Fatalf("last error = %q, want the scan stopped by the page bound", p.LastError)
+	}
+}
+
+// An opaque cursor is never moved by a stopped scan, even on an answer
+// declared oldest first: the partial advance is a timestamp's.
+func TestAStoppedScanNeverMovesAnOpaqueCheckpoint(t *testing.T) {
+	w := newWorld(t)
+	w.declare(func(p *spec.TriggerPoll) {
+		p.Order = spec.PollOrderOldestFirst
+		p.Params["since"] = "cursor.value"
+		p.Cursor = &spec.PollCursor{From: "item.key", Kind: spec.CursorOpaque}
+	})
+	w.subscribe("s1", 0, 0)
+	w.vendor.pageSize = 1
+	for i := range 4 {
+		w.vendor.add("ENG-"+strconv.Itoa(i+1), "x", t0.Add(time.Duration(i-10)*time.Minute), nil)
+	}
+	w.pass(w.worker("w1", nil))
+	if p := w.stored(); p.Checkpoint != nil || p.Primed || !strings.Contains(p.LastError, "before the last page") {
+		t.Fatalf("after a stopped scan = checkpoint %+v primed %v error %q, want nothing moved and the reason", p.Checkpoint, p.Primed, p.LastError)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
 
 // What the trigger's loop guard drops is observed, not accepted; a new
 // revision of an accepted item is a new intake.

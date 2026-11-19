@@ -66,7 +66,9 @@ type Poller struct {
 	// Holder is the owner of the last tick that took the poller; read by
 	// operators, never by the fence.
 	Holder string `json:"holder,omitempty" bson:"holder,omitempty"`
-	// Checkpoint is what the last complete scan read up to; nil before one.
+	// Checkpoint is what the last scan that moved it read up to — a complete
+	// one, or one an oldest-first answer let move before it stopped
+	// (pkg/connector/polling); nil before one.
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
 	// Primed: a complete scan recorded what was already there. Until then
 	// every item the poller accepts is primed — matched to nothing. A poller
@@ -104,7 +106,7 @@ type Tick struct {
 	At time.Time
 	// NextTickAt is when the poller is due again.
 	NextTickAt time.Time
-	// Checkpoint, when set, is the position a complete scan reached. A
+	// Checkpoint, when set, is the position the scan reached. A
 	// timestamp checkpoint never moves back: a lower one is refused
 	// (ErrCheckpointBehind). nil leaves the stored one.
 	Checkpoint *Checkpoint

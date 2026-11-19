@@ -35,6 +35,12 @@ import (
 
 // pollDouble is one vendor's answer to a poller.
 type pollDouble struct {
+	// order is the order the vendor's documentation says it answers the
+	// trigger's query in: spec.PollOrderOldestFirst, or empty for none. The
+	// trigger's poll.order must say the same — a stopped scan moves its
+	// checkpoint on that word — and an answer declared oldest first is
+	// checked ascending on every walk.
+	order string
 	// cases are the connections the trigger is driven through, each against
 	// a fresh vendor.
 	cases []pollCase
@@ -137,6 +143,9 @@ func TestAShippedPolledTriggerReadsItsVendor(t *testing.T) {
 			if !ok {
 				// TestEveryPolledTriggerIsWitnessed names it.
 				continue
+			}
+			if trig.Poll.Order != d.order {
+				t.Errorf("trigger %s declares poll.order %q, and its vendor answers the query in order %q", trig.ID, trig.Poll.Order, d.order)
 			}
 			for _, c := range d.cases {
 				t.Run(trig.ID+"/"+c.name, func(t *testing.T) {
@@ -250,6 +259,7 @@ func pollTick(e *exec.Executor, p *spec.Package, op spec.Operation, trig spec.Tr
 		return scan{}, fmt.Errorf("the scan read no item — the double always holds some, so the package asked for nothing")
 	}
 	out := scan{versions: map[string]string{}, items: map[string]map[string]any{}}
+	var previous time.Time
 	for i, item := range items {
 		payload, ok := item.(map[string]any)
 		if !ok {
@@ -275,6 +285,10 @@ func pollTick(e *exec.Executor, p *spec.Package, op spec.Operation, trig spec.Tr
 				if err != nil {
 					return scan{}, fmt.Errorf("item %q: %w", id, err)
 				}
+				if poll.Order == spec.PollOrderOldestFirst && at.Before(previous) {
+					return scan{}, fmt.Errorf("item %q at %s follows one at %s, and the poll declares %s", id, at.UTC().Format(time.RFC3339Nano), previous.UTC().Format(time.RFC3339Nano), poll.Order)
+				}
+				previous = at
 				if at.After(out.maxAt) {
 					out.maxAt = at
 				}

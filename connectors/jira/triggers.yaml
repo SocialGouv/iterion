@@ -220,8 +220,9 @@ triggers:
         # (https://support.atlassian.com/jira-software-cloud/docs/jql-fields/#Updated).
         # Oldest first, so a scan's last page holds the newest revisions.
         # The first scan reads the last day only: a project's whole history
-        # would exceed the walk's page bound, never complete, and never
-        # prime. JQL reads "-1d" relative to the search, in no time zone.
+        # would be walked one page bound per tick, every issue a primed
+        # intake, before the poller primes. JQL reads "-1d" relative to the
+        # search, in no time zone.
         jql: '"(" + query.jql + ")" + if(cursor.epoch_ms, " AND updated >= " + cursor.epoch_ms, " AND updated >= -1d") + " ORDER BY updated ASC"'
         # Jira returns only `id` unless fields are named; these are the ones
         # the outputs, the filters and the cursor read.
@@ -243,6 +244,10 @@ triggers:
       item_id: 'item.id'
       item_version: 'item.fields.updated'
       cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
+      # The JQL ends ORDER BY updated ASC: a scan the page bound cuts still
+      # moves the checkpoint, to the latest `updated` it read in full, and
+      # the next tick reads on from there.
+      order: oldest_first
       interval: { default: 5m, min: 1m }
     outputs:
       - { name: subject, from: 'payload.fields.summary' }
