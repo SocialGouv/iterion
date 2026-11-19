@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.18.2](https://github.com/SocialGouv/iterion/compare/v7.18.1...v7.18.2) (2026-11-19)
+
+### Bug Fixes
+
+* **scripthost:** the memory bound is room above the child's own segment, not a total it had spent before starting ([#3383](https://github.com/SocialGouv/iterion/issues/3383)) ([#3398](https://github.com/SocialGouv/iterion/issues/3398)) ([7e756a4](https://github.com/SocialGouv/iterion/commit/7e756a4d411640f439c37677203562207f3022b2)), references [#3394](https://github.com/SocialGouv/iterion/issues/3394) [#3394](https://github.com/SocialGouv/iterion/issues/3394)
+
+    <details><summary>why</summary>
+
+    Limits.Memory was applied as an absolute RLIMIT_DATA. The shipped script host holds ~86 MiB of data segment before the interpreter exists: the Go 1.26 runtime maps a 64 MiB heap arena read-write, and ~9 MiB of it is resident. So at the 64 MiB floor the child started ABOVE its own bound, and every mapping the runtime then needed was refused. Measured on a CGO_ENABLED=0 -trimpath build: a script pushing 10 000 strings died of a SIGSEGV in the GC (runtime.(*spanQueue).tryDrain) 5 runs out of 5,…
+
+    </details>
+
 ## [7.18.1](https://github.com/SocialGouv/iterion/compare/v7.18.0...v7.18.1) (2026-11-19)
 
 ### Bug Fixes
