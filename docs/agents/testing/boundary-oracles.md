@@ -4,6 +4,45 @@ The [flake register](flakes.md) links the affected families. These witnesses
 retain real production paths; their synchronization makes the transition under
 test happen before the assertion, without increasing a wall-clock allowance.
 
+## Run-log display work
+
+[#3412](https://github.com/SocialGouv/iterion/issues/3412) ejected an unrelated
+connector PR from the merge queue: logging a 4 MiB tool result took 3.059 s
+against a 3 s wall-clock ceiling on a loaded race runner. The contract is the
+amount of text handed to the redactor, not the machine's throughput.
+
+`TestTheRunLogRedactsOnlyABoundedWindowOfHugeToolValues` counts bytes entering
+the real secret guard through `logAssistantContent`. Its three cases cover a
+tool input leaf, a successful tool result and an error result. Each must redact
+nonzero bytes, bounded by the display window plus its secret-recognition
+margin. Passing the whole 4 MiB value to the redactor fails all three cases;
+bypassing the redactor fails with zero work. The existing secret-boundary and
+UTF-8 tests remain the content oracle. Assistant text is intentionally shown
+whole and is outside this bounded-tool-value contract. This witness does not
+claim to benchmark the secret guard's internal complexity.
+
+## Formatter authoring lock
+
+[#3338](https://github.com/SocialGouv/iterion/issues/3338) reported two refused
+files where only one was locked: filesystem and formatting work consumed the
+300 ms caller budget before the free file could take its lock.
+
+`TestFmtRefusesAFileASaveHoldsAndFormatsTheRest` now runs in a synctest bubble.
+The filesystem, formatting and authoring locks remain real; virtual time only
+advances once the goroutines are durably blocked. The free file is visited
+before the held file, so host latency cannot spend its budget. The unchanged
+300 ms deadline then ends the held lock's wait. Assertions retain the held
+file's bytes, the free file's write, the named refusal and its deadline cause.
+The 10 s virtual watchdog still fails on its own assertion if production drops
+the caller's context; skipping the free file's write also fails.
+Cleanup releases the held lock and joins the worker before the bubble's root
+exits, so the context-loss mutant ends with the watchdog assertion rather than
+a subsequent synctest deadlock panic.
+
+The adjacent `TestAReplacementRefusesWhileASaveHoldsTheLock` has one held file
+and no free-file acquisition that must precede expiry. Its existing real-time
+deadline does not create this ordering ambiguity and is unchanged.
+
 ## Mongo replay and watch
 
 In [PR #3050's run](https://github.com/SocialGouv/iterion/actions/runs/41897913872),
@@ -133,3 +172,11 @@ disabling claw alone still permits the aggregator's local fetch. Restoring
 the helper's old disk-backed constructor fails its planted-cache assertion.
 Provider-supplied costs and explicitly seeded model specs remain available.
 No cleanup retry, timeout increase or production pricing policy changes.
+
+## Sign-out retry window
+
+Moved from the flake register without changing its evidence or disposition:
+
+| Test / check | Machine class | Evidence (log / SHA) | Disposition | Re-check |
+|---|---|---|---|---|
+| `signOutMachineTransitions` (studio) — "holds the start while the named session is held" | **Any machine**, loaded or idle | [#3160](https://github.com/SocialGouv/iterion/issues/3160), two occurrences ([T43](https://github.com/SocialGouv/iterion/actions/runs/41243004752), [42842340310](https://github.com/SocialGouv/iterion/actions/runs/42842340310) on a diff of one comment and one markdown file). Reproduced on an **idle 32-core box** with one 2500 ms stall between the sample and the click, giving CI's message verbatim | **Corrected 2026-11-12.** Not load: `findByRole` with no explicit `timeout` is allowed 3000 ms by `studio/src/test/setup.ts` while the machine's declared re-presentation ladder sends at 2000 ms (`LOOP_RETRY_DELAYS_MS`), so the config tolerates a gap longer than the interval in which the machine is obliged to send, and an overshot count is permanent. The ladder has its own witness in the same file, so it is parked for the measured window only, by TIMER ORDER (a 50 ms parker is always due before a 2 s tick) rather than by a margin — never by relaxing the count. The oracle was also **toothless**: deleting the SSO start's `retrySignOut` left this arm green on 4182 tests, because the ladder supplied the send; with the parker the same mutant reddens here AND on `signOutBoundToItsSession` | 2026-11-19, and on the ladder's cadence |

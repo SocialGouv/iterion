@@ -13,4 +13,4 @@
 | [process-fixtures.md](process-fixtures.md) | Captures, sweep roots, chart scratch, PID publication, corpus copies, command-test HOME, installed binaries, recursive tests and foreign host state. |
 | [load-margins.md](load-margins.md) | A wall-clock bound blew on a loaded runner: re-pricing it by ratio or explicit margin, never a guessed constant. |
 | [background-oracles.md](background-oracles.md) | Proving an immediate background-session end independently of CLI startup, and distinguishing it from budget assertions. |
-| [boundary-oracles.md](boundary-oracles.md) | Proving Mongo backfill/watch, lease handover, parser lookup work, React title publication and isolated delegate pricing. |
+| [boundary-oracles.md](boundary-oracles.md) | Redaction bounds, fmt deadlines, Mongo/watch, leases, parser work, React titles, sign-out retries and pricing isolation. |
