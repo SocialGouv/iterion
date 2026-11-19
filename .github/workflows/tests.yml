@@ -772,11 +772,12 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # The sum of the harness's two inner `go test -timeout`s (20m + 15m) plus
-    # setup: a hang is named by go test's own timeout, and this ceiling only
-    # backstops the steps around it. At 15 it cut a green 11-14 min suite
-    # whenever two runs shared the runners (#3390).
-    timeout-minutes: 40
+    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
+    # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
+    # check_response_timeout: a hang is named by go test's own timeout, and
+    # this ceiling only backstops the steps around it. At 15 it cut a green
+    # 11-14 min suite whenever two runs shared the runners (#3390).
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -865,10 +866,10 @@ jobs:
           # The store harness runs alone on the replica set: its transactions
           # and change streams saturate a shared mongod, which starves the
           # suites beside it, so it carries its own budget.
-          go test -mod=vendor -count=1 -v -timeout 20m ./pkg/store/mongo/...
+          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/store/mongo/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
-          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
           # BuildSnapshot's run-origin matrix and the merge doors' expected
           # birth against the native Mongo store. The `/...` form keeps
