@@ -79,6 +79,9 @@ func Run(ctx context.Context, st Store, spec Spec, fn func(context.Context)) err
 			return nil
 		}
 		sent, ok, answered := c.tryAcquire(ctx)
+		if ok && c.stoppedWhileAcquiring(ctx) {
+			return nil
+		}
 		wait := retry
 		if ok {
 			spec.Health.beginTerm()
@@ -122,6 +125,9 @@ func TryRun(ctx context.Context, st Store, spec Spec, fn func(context.Context)) 
 	}
 	if !ok {
 		return false, nil
+	}
+	if c.stoppedWhileAcquiring(ctx) {
+		return false, ctx.Err()
 	}
 	c.serveTerm(ctx, sent, fn)
 	return true, nil
@@ -221,6 +227,19 @@ func (c *campaign) afterTerm(retry time.Duration) time.Duration {
 			spec.Name, spec.Owner, sickTerms)
 	}
 	return retry + backoff
+}
+
+// stoppedWhileAcquiring reports whether ctx ended while the acquire that took
+// the lease was in flight: a write that landed can answer after its caller's
+// stop. That term is not served — fn would start on a context already
+// cancelled, and may act once before it reads it — and the lease goes back at
+// once, so a live peer need not wait out the TTL.
+func (c *campaign) stoppedWhileAcquiring(ctx context.Context) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	c.release(ctx, false)
+	return true
 }
 
 // releaseUnanswered gives back what an attempt whose answer was lost may have
