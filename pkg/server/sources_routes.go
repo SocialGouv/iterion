@@ -11,24 +11,29 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/polling"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 )
 
 // sourceEntry is one catalog card.
 type sourceEntry struct {
-	Kind          string             `json:"kind"` // "connector" | "builtin"
-	ID            string             `json:"id"`
-	DisplayName   string             `json:"display_name"`
-	Description   string             `json:"description,omitempty"`
-	Category      string             `json:"category,omitempty"`
-	Maturity      string             `json:"maturity,omitempty"`
-	Tier          string             `json:"tier,omitempty"`
-	Delivery      string             `json:"delivery,omitempty"` // push; poll arrives with the polling lane
+	Kind        string `json:"kind"` // "connector" | "builtin"
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description,omitempty"`
+	Category    string `json:"category,omitempty"`
+	Maturity    string `json:"maturity,omitempty"`
+	Tier        string `json:"tier,omitempty"`
+	// Delivery is how the card's triggers reach iterion: push (a vendor
+	// delivers), poll (iterion reads), or mixed; each trigger says its own.
+	Delivery      string             `json:"delivery,omitempty"`
 	Auth          []sourceAuthScheme `json:"auth,omitempty"`
 	Triggers      []sourceTrigger    `json:"triggers,omitempty"`
 	Connections   int                `json:"connections"`
@@ -67,7 +72,28 @@ type sourceTrigger struct {
 	// operator may filter on, exactly as the package declares them.
 	Outputs []sourceOutput `json:"outputs,omitempty"`
 	Filters []sourceFilter `json:"filters,omitempty"`
+	// Delivery is push or poll. A polled trigger lists the Query fields
+	// an operator types for its poller, its Interval, and the Contract
+	// polling keeps (ADR-168 §7) — said on the card, not discovered later.
+	Delivery string             `json:"delivery"`
+	Query    []sourceQueryField `json:"query,omitempty"`
+	Interval string             `json:"interval,omitempty"`
+	Contract string             `json:"contract,omitempty"`
 }
+
+// sourceQueryField is one value an operator types for a poller.
+type sourceQueryField struct {
+	ID          string `json:"id"`
+	Type        string `json:"type,omitempty"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// pollContract is what a polled trigger promises, the same sentence on every
+// card: what polling observes is a snapshot, so a change that comes and goes
+// between two reads is one event — or, if it is undone, none.
+const pollContract = "Polled: sees the revisions it observes at each read, not the history between two reads. " +
+	"Enabling it never replays what is already there; a backfill asks for the last items explicitly."
 
 type sourceOutput struct {
 	Name        string `json:"name"`
@@ -144,10 +170,10 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 			return nil, err
 		}
 		// A card lists what an operator can plug, and nothing else: an
-		// outbound-only package has nothing, a package whose triggers declare
-		// no ingress has no delivery contract the lane can bind, and a
-		// polled trigger has no poller to feed it before L4-2 — listing any
-		// of them would end the plug in the bind's refusal.
+		// outbound-only package has nothing, and a webhook trigger of a
+		// package that declares no ingress has no delivery contract the lane
+		// can bind — listing it would end the plug in the bind's refusal. A
+		// polled trigger is fed by its poller.
 		plug := pkg.DeliverableTriggers()
 		if len(plug) == 0 {
 			continue
@@ -160,7 +186,6 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 			Category:      string(pkg.Connector.Category),
 			Maturity:      string(pkg.Connector.Maturity),
 			Tier:          string(tier.Kind),
-			Delivery:      "push",
 			Connections:   connsByConnector[id],
 			Subscriptions: subsByConnector[id],
 		}
@@ -179,8 +204,21 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 			}
 			e.Ingress = ing
 		}
+		pushed, polled := false, false
 		for _, tr := range plug {
-			st := sourceTrigger{ID: tr.ID, DisplayName: tr.DisplayName, Description: tr.Description}
+			st := sourceTrigger{ID: tr.ID, DisplayName: tr.DisplayName, Description: tr.Description, Delivery: "push"}
+			if tr.Polled() {
+				polled = true
+				// The cadence the pollers run at: the package's, or the
+				// deployment's dial.
+				policy, _ := polling.PolicyFromEnv(os.Getenv)
+				st.Delivery, st.Interval, st.Contract = "poll", compactDuration(polling.Interval(tr, policy)), pollContract
+				for _, q := range tr.Poll.Query {
+					st.Query = append(st.Query, sourceQueryField{ID: q.ID, Type: q.Type, Description: q.Description, Required: q.Required})
+				}
+			} else {
+				pushed = true
+			}
 			for _, o := range tr.Outputs {
 				st.Outputs = append(st.Outputs, sourceOutput{Name: o.Name, Description: o.Description, Type: o.Type})
 			}
@@ -188,6 +226,14 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 				st.Filters = append(st.Filters, sourceFilter{ID: f.ID, Type: f.Type, Options: f.Options, Default: f.Default})
 			}
 			e.Triggers = append(e.Triggers, st)
+		}
+		switch {
+		case pushed && polled:
+			e.Delivery = "mixed"
+		case polled:
+			e.Delivery = "poll"
+		default:
+			e.Delivery = "push"
 		}
 		out = append(out, e)
 	}
@@ -251,4 +297,18 @@ func (s *Server) handleTeamListSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSources(w, r, teamID)
+}
+
+// compactDuration writes a cadence the way a package declares one: "5m",
+// "1h", "90s".
+func compactDuration(d time.Duration) string {
+	switch {
+	case d > 0 && d%time.Hour == 0:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d > 0 && d%time.Minute == 0:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	case d > 0 && d%time.Second == 0:
+		return fmt.Sprintf("%ds", d/time.Second)
+	}
+	return d.String()
 }

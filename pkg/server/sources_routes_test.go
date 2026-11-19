@@ -203,6 +203,22 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	// The baked forgejo declares both a trigger and the ingress a delivery
 	// is read through, so it is pluggable and listed.
 	shipped := []string{"forgejo", "slack", "jira", "linear", "mattermost", "sentry", "alertmanager"}
+	// rss is read by a poller: it is pluggable with no ingress at all.
+	if e, ok := byID["rss"]; !ok || e["delivery"] != "poll" || e["ingress"] != nil {
+		t.Fatalf("the shipped polled source rss = %v, want a poll card with no ingress", e)
+	}
+	if e := byID["jira"]; e["delivery"] != "mixed" {
+		t.Fatalf("jira's card delivery = %v, want mixed: webhook triggers and a JQL poller", e["delivery"])
+	}
+	var jql map[string]any
+	for _, tr := range byID["jira"]["triggers"].([]any) {
+		if m := tr.(map[string]any); m["id"] == "jira.issue.changed" {
+			jql = m
+		}
+	}
+	if q, _ := jql["query"].([]any); len(q) != 1 || q[0].(map[string]any)["id"] != "jql" || q[0].(map[string]any)["required"] != true {
+		t.Fatalf("jira.issue.changed query = %v, want the required jql field the wizard asks for", jql["query"])
+	}
 	for _, id := range shipped {
 		e, ok := byID[id]
 		if !ok {
@@ -231,9 +247,9 @@ func TestSourcesListsTriggersPackagesAndBuiltins(t *testing.T) {
 	if _, ok := byID["noingress"]; ok {
 		t.Fatal("a package whose trigger declares no ingress is listed as pluggable — every plug would end in the bind's refusal")
 	}
-	// probe + the four built-in families + the seven shipped sources.
-	if len(byID) != 12 {
-		t.Fatalf("catalog holds %d entries, want 12: %v", len(byID), byID)
+	// probe + the four built-in families + the eight shipped sources.
+	if len(byID) != 13 {
+		t.Fatalf("catalog holds %d entries, want 13: %v", len(byID), byID)
 	}
 }
 
@@ -407,10 +423,9 @@ func polledProbeTrigger(id string) string {
 		"    interval: { default: 5m, min: 1m }\n"
 }
 
-// TestSourcesListOnlyWhatAnOperatorCanPlug: a polled trigger has no poller to
-// feed it before L4-2, and a subscription to one is refused at save — so the
-// catalog offers it nowhere. A card keeps its webhook triggers and drops the
-// polled one; a package whose only triggers are polled has no card at all.
+// TestSourcesListOnlyWhatAnOperatorCanPlug: a polled trigger is fed by its
+// poller, so it is pluggable with or without an ingress, and its card says
+// how each trigger is delivered and what polling promises.
 func TestSourcesListOnlyWhatAnOperatorCanPlug(t *testing.T) {
 	s, _ := sourcesWorld(t)
 	ingress := "ingress:\n  credential:\n    scheme: hmac-sha256\n    in: header\n    name: X-Probe-Signature\n    secret: minted\n" +
@@ -437,10 +452,38 @@ func TestSourcesListOnlyWhatAnOperatorCanPlug(t *testing.T) {
 		t.Fatalf("a package with a pluggable webhook trigger has no card: %v", byID)
 	}
 	trigs := card["triggers"].([]any)
-	if len(trigs) != 1 || trigs[0].(map[string]any)["id"] != "mixed.issue.commented" {
-		t.Fatalf("mixed triggers = %v, want the webhook one only — the polled one cannot be plugged yet", card["triggers"])
+	if len(trigs) != 2 || card["delivery"] != "mixed" {
+		t.Fatalf("mixed card = delivery %v triggers %v, want both triggers, mixed", card["delivery"], card["triggers"])
 	}
-	if _, ok := byID["pollonly"]; ok {
-		t.Fatal("a package whose only triggers are polled is listed — every plug would end in the bind's refusal")
+	push, poll := trigs[0].(map[string]any), trigs[1].(map[string]any)
+	if push["id"] != "mixed.issue.commented" || push["delivery"] != "push" || push["contract"] != nil {
+		t.Fatalf("webhook trigger = %v, want push with no polling contract", push)
+	}
+	if poll["id"] != "mixed.issue.listed" || poll["delivery"] != "poll" || poll["interval"] != "5m" ||
+		!strings.Contains(poll["contract"].(string), "not the history") {
+		t.Fatalf("polled trigger = %v, want poll with its interval, query fields and the honest contract", poll)
+	}
+	only, ok := byID["pollonly"]
+	if !ok || only["delivery"] != "poll" {
+		t.Fatalf("a package whose triggers are all polled = %v, want a poll card: its poller feeds it", only)
+	}
+}
+
+// A polled trigger's card states the cadence its poller runs at — the
+// deployment's dial when the operator set one, not the package's default.
+func TestAPolledCardStatesTheEffectiveInterval(t *testing.T) {
+	s, _ := sourcesWorld(t)
+	interval := func() any {
+		for _, tr := range sourcesView(t, s, "viewer1", "t1")["rss"]["triggers"].([]any) {
+			return tr.(map[string]any)["interval"]
+		}
+		return nil
+	}
+	if got := interval(); got != "15m" {
+		t.Fatalf("rss interval = %v, want the package's 15m", got)
+	}
+	t.Setenv("ITERION_CONNECTOR_POLL_INTERVAL", "1h")
+	if got := interval(); got != "1h" {
+		t.Fatalf("rss interval under the deployment's dial = %v, want 1h", got)
 	}
 }

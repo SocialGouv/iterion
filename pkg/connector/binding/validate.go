@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -23,8 +26,10 @@ type BotVar struct {
 // matcher and the launch would otherwise discover one event at a time:
 //
 //   - the mode is one a connector run honours (direct), and no field of
-//     another kind is set (args_var, cron), nor a poller — nor a polled
-//     trigger at all — before polling ships (L4-2);
+//     another kind is set (args_var, cron);
+//   - a polled trigger's query values are the ones it declares — the
+//     required ones set, each of its type — and the poller is derived from
+//     them; a webhook trigger takes no query, poller or backfill;
 //   - every chosen filter is declared, an enum's values are its options, a
 //     bool's are true/false; a declared default fills a filter left unset;
 //   - `when` and every var_map expression read the event namespace only;
@@ -48,12 +53,12 @@ func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []Bot
 		return sub, fmt.Errorf("args_var does not apply to a connector subscription: its var_map names what each var reads")
 	case sub.Cron != "":
 		return sub, fmt.Errorf("cron does not apply to a connector subscription")
-	case sub.Poller != "":
-		return sub, fmt.Errorf("poller %q: this deployment runs no pollers yet, so a subscription cannot listen to one", sub.Poller)
-	case trig.Polled():
-		// A polled trigger is fed by its poller alone, and no poller runs
-		// yet: a subscription saved now would be accepted and never fire.
-		return sub, fmt.Errorf("trigger %s is polled, and this deployment runs no pollers yet: a subscription to it would never fire", trig.ID)
+	case sub.Backfill < 0:
+		return sub, fmt.Errorf("backfill %d: want a number of past items, 0 or more", sub.Backfill)
+	}
+	query, err := checkPollQuery(sub, trig)
+	if err != nil {
+		return sub, err
 	}
 	switch sub.NoLiveRun {
 	case "", "launch", "drop":
@@ -135,7 +140,104 @@ func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []Bot
 
 	sub.Invocation = bundle.InvocationKindConnector
 	sub.ConnectorKey = trigger.ConnectorKey(sub.ConnectionID, sub.TriggerID)
+	sub.PollQuery = query
+	sub.Poller = ""
+	if trig.Polled() {
+		sub.Poller = poller.ID(ConnectionTenant(sub.TenantID), sub.ConnectionID, sub.TriggerID, query)
+	}
 	sub.Filters = filters
 	sub.Match = trigger.Matcher{Sources: []trigger.Source{trigger.SourceConnector}, Kinds: []string{trig.ID}}
 	return sub, nil
+}
+
+// checkPollQuery holds a subscription's query values to its trigger: a
+// polled trigger's declared fields only, the required ones set, an int an
+// integer and a bool true or false; a webhook trigger takes none, nor a
+// backfill. The poller is re-derived from them on every save, whatever the
+// subscription held — the query is its identity.
+func checkPollQuery(sub trigger.Subscription, trig spec.Trigger) (map[string]string, error) {
+	if !trig.Polled() {
+		switch {
+		case len(sub.PollQuery) > 0:
+			return nil, fmt.Errorf("poll_query applies to a polled trigger, and %s is delivered by webhook", trig.ID)
+		case sub.Backfill > 0:
+			return nil, fmt.Errorf("backfill applies to a polled trigger, and %s is delivered by webhook", trig.ID)
+		}
+		return nil, nil
+	}
+	declared := map[string]spec.PollQueryField{}
+	for _, f := range trig.Poll.Query {
+		declared[f.ID] = f
+	}
+	ids := make([]string, 0, len(sub.PollQuery))
+	for id := range sub.PollQuery {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := map[string]string{}
+	for _, id := range ids {
+		f, ok := declared[id]
+		if !ok {
+			return nil, fmt.Errorf("poll_query %s: trigger %s declares no query field %q", id, trig.ID, id)
+		}
+		v := sub.PollQuery[id]
+		if strings.TrimSpace(v) == "" {
+			// A blank value is an unset one: kept out of the identity, so a
+			// field cleared and a field never typed are one poller.
+			continue
+		}
+		if why := f.Refuses(v); why != "" {
+			return nil, fmt.Errorf("poll_query %s: %q %s", id, v, why)
+		}
+		switch f.Type {
+		case "int":
+			if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+				return nil, fmt.Errorf("poll_query %s: %q is not an integer", id, v)
+			}
+		case "bool":
+			if v != "true" && v != "false" {
+				return nil, fmt.Errorf("poll_query %s: %q is not true or false", id, v)
+			}
+		}
+		out[id] = v
+	}
+	for _, f := range trig.Poll.Query {
+		if _, set := out[f.ID]; f.Required && !set {
+			return nil, fmt.Errorf("poll_query %s: trigger %s requires it", f.ID, trig.ID)
+		}
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	return out, nil
+}
+
+// PollQueryValues renders stored query values as a poll's params read them
+// (spec.NewPollParamsContext): an int as an int64, a bool as a bool, a
+// string as typed. The values were checked at save (checkPollQuery); one
+// that no longer parses — its field's type changed since — is refused.
+func PollQueryValues(trig spec.Trigger, query map[string]string) (map[string]any, error) {
+	out := map[string]any{}
+	if trig.Poll == nil {
+		return out, nil
+	}
+	for _, f := range trig.Poll.Query {
+		v, set := query[f.ID]
+		if !set {
+			continue
+		}
+		switch f.Type {
+		case "int":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("query %s: %q is not an integer", f.ID, v)
+			}
+			out[f.ID] = n
+		case "bool":
+			out[f.ID] = v == "true"
+		default:
+			out[f.ID] = v
+		}
+	}
+	return out, nil
 }

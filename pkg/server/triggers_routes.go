@@ -312,6 +312,10 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		sub = judged
+		if status, err := s.activatePolledSubscription(r.Context(), tenant, nil, &sub); err != nil {
+			dispatcher.WriteErr(w, status, err)
+			return
+		}
 	default:
 		dispatcher.WriteErr(w, http.StatusBadRequest,
 			fmt.Errorf("invocation kind %q is not enabled from here — wire it through the forge integration flow", inv.Kind))
@@ -346,6 +350,7 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		writeTriggerExists(w, sub.Invocation, sub.ID)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	dispatcher.WriteJSON(w, http.StatusCreated, sub)
 }
 
@@ -522,13 +527,19 @@ type triggerSubscriptionReq struct {
 	// The connector binding (invocation "connector", ADR-168 §6), validated
 	// at save against the connection, its package and the bot. The match a
 	// connector subscription listens on is the server's, never the request's.
-	ConnectionID string              `json:"connection_id,omitempty"`
-	TriggerID    string              `json:"trigger_id,omitempty"`
-	Poller       string              `json:"poller,omitempty"`
-	Filters      map[string][]string `json:"filters,omitempty"`
-	When         string              `json:"when,omitempty"`
-	VarMap       map[string]string   `json:"var_map,omitempty"`
-	NoLiveRun    string              `json:"no_live_run,omitempty"`
+	ConnectionID string `json:"connection_id,omitempty"`
+	TriggerID    string `json:"trigger_id,omitempty"`
+	// Poller is derived from the query (PollQuery): a request may send
+	// back the one a read answered, and is refused naming another.
+	Poller string `json:"poller,omitempty"`
+	// PollQuery is a polled trigger's query values; Backfill how many of
+	// its poller's past items the subscription receives at activation.
+	PollQuery map[string]string   `json:"poll_query,omitempty"`
+	Backfill  int                 `json:"backfill,omitempty"`
+	Filters   map[string][]string `json:"filters,omitempty"`
+	When      string              `json:"when,omitempty"`
+	VarMap    map[string]string   `json:"var_map,omitempty"`
+	NoLiveRun string              `json:"no_live_run,omitempty"`
 }
 
 // guardOf returns the guard this request asks for, and whether it says
@@ -629,6 +640,10 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub = judged
+	if err := checkRequestedPoller(req.Poller, sub); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// Who may pin before what may be pinned: a create that pins anything is
 	// a team admin's credential decision.
 	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {
@@ -655,6 +670,13 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
+	// Last, once nothing else refuses the save: the poller it ensures is
+	// written only for a subscription that lands (or meets a duplicate,
+	// whose poller is the same one).
+	if status, err := s.activatePolledSubscription(r.Context(), tenant, nil, &sub); err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
 	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
 		// A duplicate connector binding is the request's, not the server's:
 		// one bot listening to one trigger on one connection fires once.
@@ -665,6 +687,7 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, nil, sub)
 	// The pins just landed; close the born-mid-delete window before the
 	// answer — reconcileLandedPins sweeps a record revoked between this
 	// write's validation and its landing, the row the delete's sweep never
@@ -737,6 +760,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next = judged
+	if err := checkRequestedPoller(req.Poller, next); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// Who may pin before what may be pinned, judged on the row the edit
 	// would store against the row it read: changing a pin, or what a pinned
 	// subscription launches, is a team admin's credential decision; pausing
@@ -769,6 +796,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if status, err := s.activatePolledSubscription(r.Context(), tenant, &cur, &next); err != nil {
+		dispatcher.WriteErr(w, status, err)
+		return
+	}
 	next.UpdatedAt = time.Now().UTC()
 	// Update commits against the version this request read. A write that
 	// landed in between — a pin sweep's clear most importantly: a swept pin
@@ -783,6 +814,7 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.wakePolledSubscription(r.Context(), tenant, &cur, next)
 	// Same closure as the create route: the landed pins are re-checked
 	// against their records — a pin that validated while its record lived
 	// but landed after the record's delete sweep listed would otherwise
@@ -849,7 +881,8 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Match = req.Match
 	base.ConnectionID = req.ConnectionID
 	base.TriggerID = req.TriggerID
-	base.Poller = req.Poller
+	base.PollQuery = req.PollQuery
+	base.Backfill = req.Backfill
 	base.Filters = req.Filters
 	base.When = req.When
 	base.VarMap = req.VarMap

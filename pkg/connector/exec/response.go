@@ -25,7 +25,7 @@ func newBody(raw []byte) io.Reader { return bytes.NewReader(raw) }
 // checkpoint that as a success. Only then does a declared result case decide
 // whether the success is complete or merely accepted.
 func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http.Response, body []byte) Result {
-	data, decodeErr := decodeAnswer(op, resp, body)
+	data, decodeErr := decodeAnswer(op, resp, body, e.PreciseNumbers)
 	res := Result{Status: resp.StatusCode, Data: data, Bytes: len(body)}
 
 	if resp.StatusCode >= 400 {

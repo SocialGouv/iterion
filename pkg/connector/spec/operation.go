@@ -112,6 +112,20 @@ func (op Operation) PrimaryResult() ResultCase {
 	return op.Results[0]
 }
 
+// AddressesBaseURL reports whether an operation of the package is sent to
+// the connection's base URL itself (HTTPBinding.AtBaseURL): such a URL is
+// the operator's, byte for byte, and its trailing slash is part of it.
+func (p *Package) AddressesBaseURL() bool {
+	for _, f := range p.Ops {
+		for _, op := range f.Operations {
+			if op.HTTP.AtBaseURL {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HTTPBinding is where the call goes on the wire.
 type HTTPBinding struct {
 	// Method is upper-case ("GET", "POST", …).
@@ -119,6 +133,13 @@ type HTTPBinding struct {
 	// Path is the templated path under the connector's base URL and path
 	// prefix, with `{name}` placeholders matching Params of In "path".
 	Path string `yaml:"path" json:"path"`
+	// AtBaseURL sends the request to the connection's base URL itself — its
+	// path, trailing slash and query exactly as the operator wrote them —
+	// for a vendor whose address IS the resource: a feed URL. Path is empty
+	// then, and neither a path prefix nor a path or query parameter may
+	// reshape what the operator wrote. A flag rather than an empty path, so
+	// a path left out by mistake stays a load error.
+	AtBaseURL bool `yaml:"at_base_url,omitempty" json:"at_base_url,omitempty"`
 	// RequestBody is how the body params are encoded; empty when there are
 	// none. It is REQUIRED as soon as an operation has body/form params,
 	// because "which encoding" is not a detail the executor may guess: the

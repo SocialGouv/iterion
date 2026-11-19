@@ -34,6 +34,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -257,6 +258,9 @@ type Server struct {
 	// connectorIntakes is the connector ingress lane's durable intake; nil
 	// leaves POST /api/webhooks/c/{id} unregistered.
 	connectorIntakes intake.Store
+	// connectorPollers is the pollers' durable state (ADR-168 §7); nil runs
+	// no poller and refuses a subscription to a polled trigger.
+	connectorPollers poller.Store
 	orgUsage         orgusage.Counter
 	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
 	// leaves the /credentials/usage views unregistered.
@@ -1010,6 +1014,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookDeliveries:    cfg.WebhookDeliveries,
 		webhookCounter:       cfg.WebhookCounter,
 		connectorIntakes:     cfg.ConnectorIntakes,
+		connectorPollers:     cfg.ConnectorPollers,
 		webhookDeferred:      cfg.WebhookDeferred,
 		syncDebounce:         webhookSyncDebounceFromEnv(),
 		orgUsage:             cfg.OrgUsage,

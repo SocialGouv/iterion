@@ -62,7 +62,16 @@ export interface TriggerSubscription {
   connection_id?: string;
   trigger_id?: string;
   connector_key?: string;
+  // A polled trigger's binding (ADR-168 §7): poll_query is what the
+  // operator typed for its query fields, backfill how many of the poller's
+  // past items the subscription receives once at activation. poller,
+  // poller_since and backfill_done are server-managed: the poller is derived
+  // from (connection, trigger, poll_query), never sent.
   poller?: string;
+  poll_query?: Record<string, string>;
+  poller_since?: number;
+  backfill?: number;
+  backfill_done?: boolean;
   filters?: Record<string, string[]>;
   when?: string;
   var_map?: Record<string, string>;
@@ -110,7 +119,10 @@ export interface SubscriptionInput {
   // match and the connector_key.
   connection_id?: string;
   trigger_id?: string;
-  poller?: string;
+  // A polled trigger's query values and backfill (≥ 0). No poller: the
+  // server derives it and refuses a request that names one.
+  poll_query?: Record<string, string>;
+  backfill?: number;
   filters?: Record<string, string[]>;
   when?: string;
   var_map?: Record<string, string>;
@@ -129,7 +141,8 @@ export interface SubscriptionInput {
 // toSubscriptionInput projects a subscription onto the full update payload.
 // PUT replaces every request field (only id/origin/timestamps are preserved
 // server-side), so partial edits must start from this projection or they
-// silently clear vars / schedgate policy.
+// silently clear vars / schedgate policy. Server-managed fields stay out:
+// a request naming a poller is refused, the query names it.
 export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput {
   return {
     repo: sub.repo,
@@ -139,7 +152,8 @@ export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput
     match: sub.match,
     connection_id: sub.connection_id,
     trigger_id: sub.trigger_id,
-    poller: sub.poller,
+    poll_query: sub.poll_query,
+    backfill: sub.backfill,
     filters: sub.filters,
     when: sub.when,
     var_map: sub.var_map,
@@ -243,7 +257,11 @@ export interface TriggerPreviewInput {
   when?: string;
   var_map?: Record<string, string>;
   vars?: Record<string, string>;
-  // An OBJECT (the server decodes into a map) — a JSON string is a 400.
+  // A polled trigger's query values, as the subscription would carry them.
+  poll_query?: Record<string, string>;
+  // An OBJECT (the server decodes into a map) — a JSON string is a 400. For
+  // a polled trigger it is ONE ITEM of the operation's answer, not a
+  // delivery, and headers are ignored.
   payload?: unknown;
   headers?: Record<string, string>;
 }

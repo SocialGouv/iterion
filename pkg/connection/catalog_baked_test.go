@@ -49,7 +49,7 @@ func TestTheBakedFloorServesTheShippedPackageWithNoHomeAndNoWorkspace(t *testing
 
 	// And it ADVERTISES what it holds, which is what a near-miss diagnostic
 	// and the studio read.
-	shipped := "alertmanager,forgejo,jira,linear,mattermost,sentry,slack"
+	shipped := "alertmanager,forgejo,jira,linear,mattermost,rss,sentry,slack"
 	if got, err := connection.BakedCatalog().Connectors(); err != nil || strings.Join(got, ",") != shipped {
 		t.Errorf("Connectors() = %v (err=%v), want the shipped packages %s", got, err, shipped)
 	}

@@ -114,8 +114,25 @@ type Subscription struct {
 	TriggerID    string `json:"trigger_id,omitempty" bson:"trigger_id,omitempty"`
 	ConnectorKey string `json:"connector_key,omitempty" bson:"connector_key,omitempty"`
 	// Poller names the poller a polled trigger listens to (ADR-168 §7);
-	// empty listens to the connection's ingresses.
+	// empty listens to the connection's ingresses. Derived at save from the
+	// connection, the trigger and PollQuery, never client-set.
 	Poller string `json:"poller,omitempty" bson:"poller,omitempty"`
+	// PollQuery is what the operator typed for a polled trigger's query
+	// fields: the poller is the query, so two subscriptions asking the same
+	// one of the same connection listen to one poller.
+	PollQuery map[string]string `json:"poll_query,omitempty" bson:"poll_query,omitempty"`
+	// PollerSince is the poller's sequence when the subscription was last
+	// activated (created enabled, enabled again, or moved to another
+	// poller): it receives the intakes above it, so a late-visible item is
+	// still delivered and nothing before the activation is (ADR-168 §7).
+	// Server-managed.
+	PollerSince int64 `json:"poller_since,omitempty" bson:"poller_since,omitempty"`
+	// Backfill makes the last Backfill intakes of its poller at or below
+	// PollerSince — primed ones included — eligible for this subscription
+	// alone; BackfillDone records that the poller paired them.
+	// BackfillDone is server-managed.
+	Backfill     int  `json:"backfill,omitempty" bson:"backfill,omitempty"`
+	BackfillDone bool `json:"backfill_done,omitempty" bson:"backfill_done,omitempty"`
 	// Filters are the chosen values per filter id the trigger declares;
 	// When is an optional expression over `event` that must hold too.
 	Filters map[string][]string `json:"filters,omitempty" bson:"filters,omitempty"`

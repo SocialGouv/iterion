@@ -4050,6 +4050,12 @@
           "args_var": {
             "type": "string"
           },
+          "backfill": {
+            "type": "integer"
+          },
+          "backfill_done": {
+            "type": "boolean"
+          },
           "bot_id": {
             "type": "string"
           },
@@ -4149,8 +4155,17 @@
           "overlap": {
             "type": "string"
           },
+          "poll_query": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "poller": {
             "type": "string"
+          },
+          "poller_since": {
+            "type": "integer"
           },
           "repo": {
             "type": "string"
@@ -5440,16 +5455,21 @@
           "display_name": {
             "type": "string"
           },
+          "password": {
+            "type": "string"
+          },
           "scheme_id": {
             "type": "string"
           },
           "token": {
             "type": "string"
+          },
+          "username": {
+            "type": "string"
           }
         },
         "required": [
-          "connector",
-          "token"
+          "connector"
         ],
         "type": "object"
       },
@@ -5541,6 +5561,9 @@
           "display_name": {
             "type": "string"
           },
+          "password": {
+            "type": "string"
+          },
           "status": {
             "type": "string"
           },
@@ -5548,6 +5571,9 @@
             "type": "string"
           },
           "token": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         },

@@ -233,6 +233,16 @@ func Preview(in *spec.Ingress, trig spec.Trigger, payload map[string]any, header
 	return extract(trig, event, headers, spec.NewDeliveryContext(event, header, visible))
 }
 
+// ReadItem reads one polled item through its trigger as the lane reads a
+// delivery's payload (extract): the item is the event's payload (ADR-168
+// Q2), and a poller has no headers to list. The trigger's loop guard drops
+// it (filtered says why), or the event a subscription is judged against
+// comes back. The poller and the preview share it.
+func ReadItem(trig spec.Trigger, item map[string]any) (json.RawMessage, string, error) {
+	normalizeNumbers(item)
+	return extract(trig, item, map[string]string{}, spec.NewDeliveryContext(item, nil, nil))
+}
+
 // encodeEvent encodes the event without HTML escaping — a "<" stored as
 // six bytes would multiply the event past its bound — and refuses one past
 // MaxEventBytes.

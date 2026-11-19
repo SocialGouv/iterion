@@ -125,7 +125,11 @@ func TestAPollDeclarationNoPollerCouldRunIsRefused(t *testing.T) {
 		}, "query.filter"},
 		{"params reading the cursor beyond its value", func(p *spec.Package) {
 			search(p).Poll.Params["q"] = "cursor.updated"
-		}, "holds value only"},
+		}, "holds value, epoch_ms only"},
+		{"params reading an opaque cursor's milliseconds", func(p *spec.Package) {
+			search(p).Poll.Cursor = &spec.PollCursor{From: "item.key", Kind: spec.CursorOpaque}
+			search(p).Poll.Params["q"] = `query.q + if(cursor.epoch_ms, cursor.epoch_ms, "")`
+		}, "a cursor of kind opaque holds value only"},
 		{"a query field that is not an identifier", func(p *spec.Package) {
 			search(p).Poll.Query = append(search(p).Poll.Query, spec.PollQueryField{ID: "Project"})
 		}, "not a lowercase identifier"},
@@ -439,5 +443,89 @@ func TestTwoWebhookTriggersOnOneEventAreRefused(t *testing.T) {
 	p.Triggers = p.Triggers[:3]
 	if err := p.Validate(); err != nil {
 		t.Fatalf("one webhook trigger beside two polled ones must pass: %v", err)
+	}
+}
+
+// The cursor namespace a tick's params read: the checkpoint moved back by
+// its overlap, as RFC 3339 in UTC and — for a timestamp — as epoch
+// milliseconds, the form a vendor reading a bare number takes in its own
+// clock's terms; every field nil before the first complete scan.
+func TestAPollCheckpointRendersEveryFieldOfItsKind(t *testing.T) {
+	at := time.Date(2026, 11, 18, 21, 30, 15, 250e6, time.FixedZone("CET", 3600))
+	cases := []struct {
+		name       string
+		kind       string
+		checkpoint *spec.PollCheckpoint
+		want       map[string]any
+	}{
+		{"a timestamp", spec.CursorTimestamp, &spec.PollCheckpoint{Kind: spec.CursorTimestamp, At: at},
+			map[string]any{"value": "2026-11-18T20:30:15.25Z", "epoch_ms": "1795033815250"}},
+		{"an opaque token", spec.CursorOpaque, &spec.PollCheckpoint{Kind: spec.CursorOpaque, Token: "c-42"},
+			map[string]any{"value": "c-42", "epoch_ms": nil}},
+		{"a timestamp before the first scan", spec.CursorTimestamp, nil,
+			map[string]any{"value": nil, "epoch_ms": nil}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := spec.NewPollParamsContext(map[string]any{}, tc.kind, tc.checkpoint)
+			for field, want := range tc.want {
+				if got := ctx.Named[spec.NamespaceCursor]([]string{field}); got != want {
+					t.Errorf("cursor.%s = %#v, want %#v", field, got, want)
+				}
+			}
+		})
+	}
+}
+
+// An operation sent to the connection's base URL itself takes nothing that
+// would reshape what the operator wrote, and a path left out stays a load
+// error rather than turning into a request to the base URL.
+func TestAnOperationAtTheBaseURLTakesNothingThatReshapesIt(t *testing.T) {
+	feed := func(p *spec.Package) *spec.Operation { return &p.Ops[0].Operations[len(p.Ops[0].Operations)-1] }
+	cases := []struct {
+		name   string
+		mutate func(*spec.Package)
+		want   string
+	}{
+		{"a path left out", func(p *spec.Package) { feed(p).HTTP.Path = "" }, "missing http path"},
+		{"a path beside the flag", func(p *spec.Package) { feed(p).HTTP.AtBaseURL = true }, "takes no path"},
+		{"a path prefix", func(p *spec.Package) {
+			feed(p).HTTP.Path, feed(p).HTTP.AtBaseURL = "", true
+			p.Connector.BaseURL.PathPrefix = "/api"
+		}, "path_prefix"},
+		{"a query parameter", func(p *spec.Package) {
+			feed(p).HTTP.Path, feed(p).HTTP.AtBaseURL = "", true
+			feed(p).Params = []spec.Param{{Key: "lang", Name: "lang", In: spec.InQuery, Type: "string"}}
+		}, `query parameter "lang"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pollPackage()
+			p.Connector.BaseURL.PathPrefix = ""
+			tc.mutate(p)
+			if err := p.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want a refusal naming %q", err, tc.want)
+			}
+		})
+	}
+	p := pollPackage()
+	p.Connector.BaseURL.PathPrefix = ""
+	feed(p).HTTP.Path, feed(p).HTTP.AtBaseURL = "", true
+	if err := p.Validate(); err != nil {
+		t.Fatalf("a feed read at the base URL is refused: %v", err)
+	}
+}
+
+// A scheme of kind none presents nothing, so it takes nothing that would
+// locate or shape a credential.
+func TestASchemeThatPresentsNothingTakesNoLocation(t *testing.T) {
+	p := pollPackage()
+	p.Connector.Auth = append(p.Connector.Auth, spec.AuthScheme{ID: "public", Kind: spec.AuthNone})
+	if err := p.Validate(); err != nil {
+		t.Fatalf("a package offering kind none is refused: %v", err)
+	}
+	p.Connector.Auth[len(p.Connector.Auth)-1].Name = "Authorization"
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "presents nothing") {
+		t.Fatalf("kind none with a location = %v, want a refusal", err)
 	}
 }

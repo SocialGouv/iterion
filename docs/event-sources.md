@@ -113,7 +113,14 @@ example is a fictional `probe` vendor, loaded as written by
   offset without a colon, and the RFC 822 dates of RSS — a numeric zone, or
   one of the names RFC 822 defines (UT, GMT, EST, EDT, CST, CDT, MST, MDT,
   PST, PDT) at its own offset, never the process's; any other zone name is
-  refused. An `opaque` cursor is a string or number, handed back as is.
+  refused. An `opaque` cursor is a string or number, handed back as is — the
+  last item's, so its operation must answer oldest first. A
+  param reads the checkpoint, moved back by the overlap, as `cursor.value` —
+  RFC 3339 in UTC for a timestamp, the token for an opaque cursor — and a
+  timestamp also as `cursor.epoch_ms`, the epoch milliseconds as a decimal
+  string, for a vendor that reads a bare number in its own clock's terms
+  (JQL reads a quoted date in the searching user's time zone, an unquoted
+  number as epoch milliseconds). Both are nil before the first complete scan.
 - **The interval** is counted in seconds: `min` at least `1s` and at most
   `default`.
 - **Feeds.** An operation with `response_format: feed` reads a successful
@@ -121,8 +128,11 @@ example is a fictional `probe` vendor, loaded as written by
   items: [{id, version, title, link, summary, content, published, updated,
   author, categories}]}`. An item's `id` falls back from its guid (Atom `id`)
   to its link to the digest of its content; its `version` is the digest of
-  every field a reader sees, so an edit is a new revision and whitespace or
-  the order of categories is not. Instants that parse are rewritten as RFC
+  every field a reader sees — the visible text of its title, summary and
+  content, markup stripped — so an edit is a new revision and whitespace, the
+  order of categories, per-render tokens in the HTML or an author the entry
+  inherits from its feed are not. A field the entry does not carry is absent
+  (RSS 2.0 has no `updated`), so an output reading it is unset. Instants that parse are rewritten as RFC
   3339 in UTC; one that does not is kept as written. RSS fields are matched
   in RSS's own (empty) namespace, so an `atom:link`, an `itunes:author` or a
   `media:description` replaces nothing; an Atom entry with no author has the
@@ -143,12 +153,92 @@ example is a fictional `probe` vendor, loaded as written by
   offered and never fire. A trigger that narrows the event does it with its
   filters.
 
-The format, the decoder and the routing are in place; pollers themselves ship
-with L4-2 (#3274). Until then the catalogue offers only the triggers a
-delivery can reach — webhook triggers of a package that declares its
-ingress — an ingress cannot be bound to a package without one, and a
-subscription to a polled trigger, or to a trigger of a package with no
-ingress, is refused at save, naming why, rather than accepted to never fire.
+### Running pollers
+
+- **A poller is a query.** A subscription to a polled trigger names its
+  `poll_query` — the values its trigger declares, the required ones set (a
+  blank value is unset), an `int` an integer, a `bool` true or false, and none
+  matching its field's `not_matching` pattern — and the server derives the poller
+  from (tenant, connection, trigger, query): two subscriptions asking the
+  same query of one connection share one poller. A request may send back the
+  `poller` a read answered, and is refused naming another; the save writes the
+  poller once nothing else refuses it, before the subscription. Polling spends
+  the connection's credential: the save refuses a connection without the
+  `action` grant.
+- **One replica reads.** The poller net (`connector-pollers`) is elected
+  under a lease; each tick takes the poller's next generation by
+  compare-and-swap, and every write it makes — the sequence numbers it hands
+  out, the checkpoint it moves — names that generation, so a holder that
+  overran its lease writes nothing its successor did not. The operation is
+  resolved through the connection resolver by the poller's connection id, as
+  the tenant's own configuration: the connection needs the `action` grant
+  beside `trigger`, and the call goes out on the tier's guarded client, which
+  refuses a private address in cloud.
+- **Accept, then checkpoint.** Every item the poller's seen set does not
+  hold becomes an intake, idempotent on (poller, item id, item version) and
+  numbered by the poller's own sequence; then the seen set records every item
+  observed, and only a complete scan moves the checkpoint — to the latest
+  instant observed, never back, or to the last item's token. A scan that
+  stops early (a page error, the operation's page bound) keeps what it
+  accepted and moves nothing; an item the package cannot read is recorded on
+  the poller and remembered, so it does not stop every later tick. The seen
+  set keeps an item for `ITERION_CONNECTOR_POLL_SEEN_RETENTION` (7 days) after
+  it was last observed.
+- **Enabling never replays.** A new poller's first complete scan records
+  what is already there as `primed` intakes, matched to nothing. A
+  subscription receives the intakes accepted after its activation — saved
+  enabled, resumed, or moved to another query — by iterion's sequence, not the
+  vendor's clock; `backfill: N` pairs, once per activation, the last N intakes
+  its activation and the priming reached, for it alone. A pair is written once
+  per (intake, subscription) and expires with its intake, so a backfill never
+  delivers an item its subscription already received. The first tick after an
+  activation also pairs what its poller accepted between the save and the
+  subscription landing.
+- **Cadence.** A poller ticks at its trigger's `interval.default`;
+  `ITERION_CONNECTOR_POLL_INTERVAL` sets every poller's cadence instead,
+  never below `interval.min` unless `ITERION_CONNECTOR_POLL_MIN_INTERVAL`
+  lowers that floor. A pass ticks `ITERION_CONNECTOR_POLL_CONCURRENCY` pollers
+  at once (4), each scan bounded by `ITERION_CONNECTOR_POLL_TICK_TIMEOUT` (2m),
+  so one slow vendor holds its own poller, not every tenant's; a holder whose
+  passes keep failing to reach their vendors hands the lease over.
+- **Nobody listening.** A poller with no enabled subscription reads nothing
+  and goes dormant: unprimed, its timestamp checkpoint moved to that instant,
+  looked at once a day. A subscription's activation wakes it, and its first
+  scan primes what changed meanwhile, so neither a resume nor a new
+  subscription launches what changed while nobody listened.
+- **Failures are said.** A poller that stops reading — a refused credential,
+  a missing `action` grant, a vendor's 400, a scan cut by the page bound or its
+  deadline — says why on each of its subscriptions' last error (the field
+  `GET /api/v1/triggers` and `iterion remote triggers list` render) and in the
+  server's log, and clears it once it reads again.
+- **The catalogue** lists polled triggers beside webhook ones: each says its
+  delivery (`push` or `poll`), and a polled one its query fields, interval and
+  what polling promises — the revisions it observes, not the history between
+  two reads. The preview reads a pasted item, or the first item of the
+  recorded sample, as the poller would.
+- **Connections that present nothing.** A feed is often public: a package
+  may declare an auth scheme of kind `none`, whose connection holds no
+  credential and whose requests send none, beside `basic` for a protected
+  feed (the connection route takes `username` and `password` for it). An
+  operation `at_base_url: true` is sent to the connection's URL exactly as the
+  operator wrote it — path, trailing slash and query, a key in the query
+  appended to it — and takes no path, prefix or parameter that would reshape
+  it. A connection URL never carries a user and password: they would be stored
+  in the clear; a basic scheme seals them.
+- **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection) and
+  `jira.issue.changed` (a JQL the operator writes, without `ORDER BY`,
+  checkpointed by `updated`; its first scan reads the last day, so a backfill
+  reaches no further back).
+- **Re-binding** a subscription to the query of another, existing poller
+  activates it on that poller's sequence: an item both pollers observe can be
+  delivered once by each.
+
+A webhook trigger of a package that declares no ingress stays refused at save
+and off the catalogue: no delivery can reach it. Two limits are known: a scan
+whose answer needs more pages than its operation's page bound never
+completes — so a poller whose first answer is that large never primes — and
+filters compare one value, so a list-valued output (a feed's categories) is
+mapped, not filtered on.
 
 ## Icons
 

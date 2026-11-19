@@ -331,6 +331,9 @@ func (p *Package) ValidateGenerated() error {
 	seen := map[string]string{}
 	for _, f := range p.Ops {
 		for _, op := range f.Operations {
+			if op.HTTP.AtBaseURL && c.BaseURL.PathPrefix != "" {
+				return fmt.Errorf("connector %q: operation %q: at_base_url sends the operator's URL as written, and the package's path_prefix %q would reshape it", c.ID, op.ID, c.BaseURL.PathPrefix)
+			}
 			if err := op.ValidateStandalone(c.ID, p.Schemas); err != nil {
 				return err
 			}
@@ -360,6 +363,10 @@ func (a AuthScheme) validate(connector string) error {
 			return fmt.Errorf("connector %q auth %q: api_key `in` must be header or query, got %q", connector, a.ID, a.In)
 		}
 	case AuthBearer, AuthBasic:
+	case AuthNone:
+		if a.In != "" || a.Name != "" || a.ValuePrefix != "" || a.AuthURL != "" || a.TokenURL != "" || len(a.SupportedScopes) > 0 || len(a.DefaultScopes) > 0 {
+			return fmt.Errorf("connector %q auth %q: kind none presents nothing, so it takes no location, prefix, endpoint or scope", connector, a.ID)
+		}
 	case AuthOAuth2:
 		if a.AuthURL == "" || a.TokenURL == "" {
 			return fmt.Errorf("connector %q auth %q: oauth2 needs auth_url and token_url", connector, a.ID)
@@ -397,8 +404,20 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	if !AddressableOperationID(op.ID) {
 		return fmt.Errorf("operation %q: not addressable from a workflow — an id reads `connector.resource.verb` and every segment must start with a lowercase letter and hold only [a-z0-9_]", op.ID)
 	}
-	if op.HTTP.Method == "" || op.HTTP.Path == "" {
-		return fmt.Errorf("operation %q: missing http method or path", op.ID)
+	switch {
+	case op.HTTP.Method == "":
+		return fmt.Errorf("operation %q: missing http method", op.ID)
+	case op.HTTP.AtBaseURL && op.HTTP.Path != "":
+		return fmt.Errorf("operation %q: at_base_url sends the request to the connection's base URL itself, so it takes no path (got %q)", op.ID, op.HTTP.Path)
+	case !op.HTTP.AtBaseURL && op.HTTP.Path == "":
+		return fmt.Errorf("operation %q: missing http path (at_base_url: true sends the request to the connection's base URL itself)", op.ID)
+	}
+	if op.HTTP.AtBaseURL {
+		for _, prm := range op.Params {
+			if prm.In == InPath || prm.In == InQuery {
+				return fmt.Errorf("operation %q: at_base_url sends the operator's URL as written, and %s parameter %q would reshape it", op.ID, prm.In, prm.Key)
+			}
+		}
 	}
 	if op.Effect == "" {
 		return fmt.Errorf("operation %q: missing effect (read|create|update|delete)", op.ID)

@@ -491,3 +491,30 @@ func TestAFeedVersionIsWhatAReaderSees(t *testing.T) {
 		t.Error("a change of the updated instant kept the version")
 	}
 }
+
+// An entry's revision is what it says, not the markup that renders it: a
+// publisher stamping per-render tokens into its HTML (WordPress's uniqid()
+// in gallery blocks) keeps one version for an unedited entry, while an edit
+// of its text is a new one.
+func TestAFeedEntryVersionIgnoresPerRenderMarkup(t *testing.T) {
+	render := func(token, text string) string {
+		return `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Blog</title>` +
+			`<item><guid>p-1</guid><title>Post</title><content:encoded><![CDATA[<figure data-wp-context='{"galleryId":"` + token +
+			`"}'><p>` + text + `</p></figure>]]></content:encoded></item></channel></rss>`
+	}
+	version := func(body string) string {
+		t.Helper()
+		data, _, err := callFeed(t, "application/rss+xml", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return feedItems(t, data)[0]["version"].(string)
+	}
+	a, b := version(render("68d1c0a1b2c3d", "Hello &amp; welcome")), version(render("68d1c0f9e8d7c", "Hello &amp;  welcome"))
+	if a != b {
+		t.Fatalf("an unedited entry re-rendered with another token is a new revision: %s vs %s", a, b)
+	}
+	if c := version(render("68d1c0a1b2c3d", "Hello, edited")); c == a {
+		t.Fatal("an edit of the entry's text kept its revision")
+	}
+}

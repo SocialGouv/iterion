@@ -64,6 +64,10 @@ var operatorInfraPrefixes = []string{
 	// and how deep a vendor's answer may decode — an amplification guard a
 	// bot that lifted it would aim at the server's own memory.
 	"ITERION_CONNECTOR_FEED_",
+	// The pollers' cadence, floor and seen-set retention
+	// (pkg/connector/polling): how often iterion spends a tenant's
+	// connection against its vendor — the operator's call.
+	"ITERION_CONNECTOR_POLL_",
 	// Processes and fleet rather than runs: the runner, the board
 	// dispatcher and its MCP capabilities, the studio's alerts, the instance
 	// registry, lifecycle and logs.

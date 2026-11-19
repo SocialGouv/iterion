@@ -10,10 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/binding"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
+	"github.com/SocialGouv/iterion/pkg/connector/polling"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -246,10 +250,8 @@ func TestTriggerCreateRefusesADuplicateBinding(t *testing.T) {
 	}
 }
 
-// A subscription nothing can feed is refused at save: a webhook trigger of a
-// package that declares no ingress (no delivery reaches it), and a polled
-// trigger (no poller runs yet). The catalogue offers neither, and the save
-// agrees with it.
+// A webhook trigger of a package that declares no ingress is refused at
+// save: no delivery reaches it, and the catalogue does not offer it either.
 func TestASubscriptionNothingCanFeedIsRefusedAtSave(t *testing.T) {
 	w := newConnectorTriggerWorld(t)
 	pkg, _, err := w.s.connectorCatalog.Package("chat")
@@ -262,15 +264,156 @@ func TestASubscriptionNothingCanFeedIsRefusedAtSave(t *testing.T) {
 	if rec := w.create(`{` + validConnectorSub + `}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "declares no ingress") {
 		t.Fatalf("a trigger of a package with no ingress: %d %s, want 400 naming it", rec.Code, rec.Body.String())
 	}
-	polled := *pkg
-	polled.Triggers = []spec.Trigger{{ID: "chat.message.posted", Delivery: spec.DeliveryPoll}}
-	w.s.connectorCatalog = connection.NewMemoryCatalog(&polled)
-	rec := w.create(`{` + validConnectorSub + `}`)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "runs no pollers yet") {
-		t.Fatalf("a polled trigger: %d %s, want 400 naming why", rec.Code, rec.Body.String())
+}
+
+// polledChat turns the world's chat trigger into a polled one with a
+// required query, and gives the world a poller store.
+func polledChat(t *testing.T, w *connectorTriggerWorld) {
+	t.Helper()
+	pkg, _, err := w.s.connectorCatalog.Package("chat")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(rec.Body.String(), "L4") || strings.Contains(rec.Body.String(), "#3274") {
-		t.Fatalf("the refusal speaks of the project's lots, not the operator's deployment: %s", rec.Body.String())
+	polled := *pkg
+	trig := pkg.Triggers[0]
+	trig.Event, trig.Delivery = "", spec.DeliveryPoll
+	trig.Poll = &spec.TriggerPoll{Operation: "chat.message.search", Query: []spec.PollQueryField{{ID: "room", Required: true}},
+		Interval: spec.PollInterval{Default: "5m", Min: "1m"}}
+	trig.SampleBody = nil
+	polled.Triggers = []spec.Trigger{trig}
+	w.s.connectorCatalog = connection.NewMemoryCatalog(&polled)
+	w.s.connectorPollers = poller.NewMemoryStore()
+	// Polling spends the connection's credential: the action grant.
+	conn, err := w.conns.Get(context.Background(), "t1", "conn-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Capabilities = []connection.Capability{connection.CapTrigger, connection.CapAction}
+	if err := w.conns.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A subscription to a polled trigger names its query; the server derives
+// the poller, writes it before the subscription, and records the sequence
+// the subscription was activated at — at each activation, never on an edit
+// that keeps it listening.
+func TestAPolledSubscriptionActivatesOnItsPoller(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	ctx := context.Background()
+	query := map[string]string{"room": "ops"}
+	pid := poller.ID(connection.LocalTenant, "conn-chat", "chat.message.posted", query)
+	if pid == poller.ID("t1", "conn-chat", "chat.message.posted", query) {
+		t.Fatal("the fixture cannot tell the tenants apart")
+	}
+
+	// A poller that already accepted items: a new subscription starts after
+	// them.
+	tenant := binding.ConnectionTenant(w.s.triggerTenant(teamT1(httptest.NewRequest(http.MethodGet, "/", nil))))
+	p, _, err := w.s.connectorPollers.Ensure(ctx, poller.Poller{TenantID: tenant, ConnectionID: "conn-chat", TriggerID: "chat.message.posted", Query: query, CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ = w.s.connectorPollers.Acquire(ctx, p.ID, 0, "w", time.Now())
+	if _, err := w.s.connectorPollers.Reserve(ctx, p.ID, p.Generation, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := w.create(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"backfill":2}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a polled subscription = %d %s", rec.Code, rec.Body.String())
+	}
+	var got trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Poller != p.ID || got.PollerSince != 4 || got.Backfill != 2 || got.BackfillDone {
+		t.Fatalf("stored = poller %q since %d backfill %d done %v, want %s since 4 with its backfill owed", got.Poller, got.PollerSince, got.Backfill, got.BackfillDone, p.ID)
+	}
+
+	// Paused, then resumed after more items: the resume is an activation.
+	got.BackfillDone = true
+	if err := w.s.cfg.TriggerStore.Update(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	update := func(body string) trigger.Subscription {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := teamT1(httptest.NewRequest(http.MethodPut, "/api/v1/triggers/"+got.ID, bytes.NewBufferString(body)))
+		req.SetPathValue("id", got.ID)
+		w.s.handleUpdateTrigger(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update %s = %d %s", body, rec.Code, rec.Body.String())
+		}
+		var out trigger.Subscription
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	paused := update(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"backfill":2,"enabled":false}`)
+	if paused.PollerSince != 4 || !paused.BackfillDone {
+		t.Fatalf("a pause = since %d done %v, want both kept", paused.PollerSince, paused.BackfillDone)
+	}
+	// A tick after the save's wake takes the poller's current generation.
+	p, _ = w.s.connectorPollers.Get(ctx, tenant, p.ID)
+	p, _ = w.s.connectorPollers.Acquire(ctx, p.ID, p.Generation, "w", time.Now())
+	if _, err := w.s.connectorPollers.Reserve(ctx, p.ID, p.Generation, 3); err != nil {
+		t.Fatal(err)
+	}
+	resumed := update(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"backfill":2,"enabled":true}`)
+	if resumed.PollerSince != 7 || resumed.BackfillDone {
+		t.Fatalf("a resume = since %d done %v, want 7 and the backfill owed again", resumed.PollerSince, resumed.BackfillDone)
+	}
+	kept := update(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"backfill":2,"enabled":true,"when":"event.prompt != ''"}`)
+	if kept.PollerSince != 7 {
+		t.Fatalf("an edit that keeps it listening moved since to %d", kept.PollerSince)
+	}
+	// Another query is another poller, written before the subscription.
+	moved := update(`{` + validConnectorSub + `,"poll_query":{"room":"dev"},"enabled":true}`)
+	other := poller.ID(tenant, "conn-chat", "chat.message.posted", map[string]string{"room": "dev"})
+	if moved.Poller != other || moved.PollerSince != 0 {
+		t.Fatalf("a new query = poller %q since %d, want %s since 0", moved.Poller, moved.PollerSince, other)
+	}
+	if _, err := w.s.connectorPollers.Get(ctx, tenant, other); err != nil {
+		t.Fatalf("the new query's poller was not written: %v", err)
+	}
+}
+
+func TestAPolledSubscriptionIsRefusedWhatItCannotListenTo(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	for name, tc := range map[string]struct{ body, want string }{
+		"a client-named poller": {validConnectorSub + `,"poll_query":{"room":"ops"},"poller":"pl-mine"`, "derived from it"},
+		"its query unset":       {validConnectorSub, "requires it"},
+	} {
+		if rec := w.create(`{` + tc.body + `}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%s: %d %s, want 400 naming %q", name, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+	w.s.connectorPollers = nil
+	// The server's, not the request's: a 503, like a server with no
+	// connection plane.
+	if rec := w.create(`{` + validConnectorSub + `,"poll_query":{"room":"ops"}}`); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("a server with no poller store: %d %s, want 503", rec.Code, rec.Body.String())
+	}
+	if n, _ := w.s.cfg.TriggerStore.ListByBot(context.Background(), w.s.triggerTenant(teamT1(httptest.NewRequest(http.MethodGet, "/", nil))), "chatbot"); len(n) != 0 {
+		t.Errorf("a subscription no poller can feed was stored: %+v", n)
+	}
+}
+
+// A polled trigger's preview reads an item as its poller would: the item
+// is the event's payload.
+func TestThePreviewReadsAPolledItem(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	rec, got := w.preview(`{"bot_id":"chatbot","connection_id":"conn-chat","trigger_id":"chat.message.posted","poll_query":{"room":"ops"},"payload":{"room":"ops","text":"polled one"}}`)
+	if rec.Code != http.StatusOK || !got.Matched || got.Vars["prompt"] != "polled one" {
+		t.Fatalf("preview = %d %+v, want the item matched and its output in the vars", rec.Code, got)
+	}
+	if _, got := w.preview(`{"bot_id":"chatbot","connection_id":"conn-chat","trigger_id":"chat.message.posted","poll_query":{"room":"ops"},"payload":{"room":"bots","text":"loop"}}`); got.Filtered == "" {
+		t.Fatalf("the loop guard did not drop a polled item: %+v", got)
 	}
 }
 
@@ -290,5 +433,83 @@ func TestTriggerEventNamesListsWhatADeliveryCanCarry(t *testing.T) {
 		if got := triggerEventNames(tc.triggers); got != tc.want {
 			t.Errorf("triggerEventNames(%d triggers) = %q, want %q", len(tc.triggers), got, tc.want)
 		}
+	}
+}
+
+// The refusals the save of a polled subscription owes: a connection without
+// the action grant polling spends, dials that keep the pollers off, a poller
+// other than the derived one — while sending back the one a read answered is
+// an ordinary edit.
+func TestAPolledSaveRefusesWhatWouldNeverFire(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	ctx := context.Background()
+	body := `{` + validConnectorSub + `,"poll_query":{"room":"ops"}}`
+
+	t.Setenv(polling.EnvInterval, "5")
+	if rec := w.create(body); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a save while a dial keeps the pollers off = %d %s, want 503", rec.Code, rec.Body.String())
+	}
+	t.Setenv(polling.EnvInterval, "")
+
+	conn, _ := w.conns.Get(ctx, "t1", "conn-chat")
+	conn.Capabilities = []connection.Capability{connection.CapTrigger}
+	if err := w.conns.Update(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.create(body); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "needs the action grant") {
+		t.Fatalf("a save on a connection without action = %d %s, want 400 naming it", rec.Code, rec.Body.String())
+	}
+	conn, _ = w.conns.Get(ctx, "t1", "conn-chat")
+	conn.Capabilities = []connection.Capability{connection.CapTrigger, connection.CapAction}
+	if err := w.conns.Update(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := w.create(body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body.String())
+	}
+	var got trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := teamT1(httptest.NewRequest(http.MethodPut, "/api/v1/triggers/"+got.ID, bytes.NewBufferString(body)))
+		req.SetPathValue("id", got.ID)
+		w.s.handleUpdateTrigger(rec, req)
+		return rec
+	}
+	if rec := put(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"poller":"` + got.Poller + `","enabled":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("a pause sending back the read row's poller = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if rec := put(`{` + validConnectorSub + `,"poll_query":{"room":"ops"},"poller":"pl-other"}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "derived") {
+		t.Fatalf("an edit naming another poller = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+// The poller is woken once the subscription is written — taking its next
+// generation, which fences off a tick that listed no subscriber before the
+// write — and not for a save that wrote nothing.
+func TestAPolledSaveWakesItsPollerAfterTheWrite(t *testing.T) {
+	w := newConnectorTriggerWorld(t)
+	polledChat(t, w)
+	ctx := context.Background()
+	tenant := binding.ConnectionTenant(w.s.triggerTenant(teamT1(httptest.NewRequest(http.MethodGet, "/", nil))))
+	pid := poller.ID(tenant, "conn-chat", "chat.message.posted", map[string]string{"room": "ops"})
+	body := `{` + validConnectorSub + `,"poll_query":{"room":"ops"}}`
+	if rec := w.create(body); rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body.String())
+	}
+	p, err := w.s.connectorPollers.Get(ctx, tenant, pid)
+	if err != nil || p.Generation != 1 {
+		t.Fatalf("poller after the save = (generation %d, %v), want the wake's generation 1", p.Generation, err)
+	}
+	if rec := w.create(body); rec.Code != http.StatusConflict {
+		t.Fatalf("a duplicate save = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if p, _ := w.s.connectorPollers.Get(ctx, tenant, pid); p.Generation != 1 {
+		t.Fatalf("a save that wrote nothing woke the poller (generation %d)", p.Generation)
 	}
 }

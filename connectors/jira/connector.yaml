@@ -1,8 +1,8 @@
 schema_version: 1
 id: jira
 display_name: Jira
-description: Jira Cloud — issues and comments, from the webhooks API.
-version: 0.1.0
+description: Jira Cloud — issues and comments, from its webhooks or by polling its JQL search.
+version: 0.2.0
 
 # Authored from Jira's published webhooks and REST documentation, not generated
 # from a vendor description. The mark is drawn for this package — a nominative
@@ -20,8 +20,9 @@ base_url:
   path_prefix: /rest/api/3
   operator_supplied: true
 
-# The credential an action operation spends. Inbound deliveries are proved by
-# the ingress's own secret instead (triggers.yaml), minted by iterion.
+# The credential an action operation, and the polled trigger's search, spend.
+# Inbound deliveries are proved by the ingress's own secret instead
+# (triggers.yaml), minted by iterion.
 auth:
   - id: basic
     kind: basic

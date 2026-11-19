@@ -2019,3 +2019,145 @@ func TestADeclaredErrorClassSurvivesAnUnmappedVendorCode(t *testing.T) {
 		t.Errorf("a code the map knows must win over the status declaration: %v", res2.Err)
 	}
 }
+
+// An operation at_base_url is sent to the connection's URL exactly as the
+// operator wrote it: a feed lives at a path, a trailing slash or a query the
+// vendor serves the resource at, and any of them rewritten is another URL —
+// a WordPress `/feed/` without its slash answers a redirect the guarded
+// client refuses to follow.
+func TestAnOperationAtTheBaseURLSendsTheOperatorsURLAsWritten(t *testing.T) {
+	for _, path := range []string{"/blog/feed.xml?lang=fr", "/feed/", "/"} {
+		t.Run(path, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.RequestURI()
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
+			pkg := probe(srv.URL + path)
+			pkg.Connector.BaseURL.PathPrefix = ""
+			op := spec.Operation{
+				ID: "probe.feed.read", Resource: "feed", Verb: "read",
+				HTTP:   spec.HTTPBinding{Method: "GET", AtBaseURL: true},
+				Effect: spec.EffectRead, Deterministic: true,
+				Results: []spec.ResultCase{{Status: 200}}, Anonymous: true,
+			}
+			res, err := e.Call(context.Background(), pkg, op, nil, exec.Credential{})
+			if err != nil || !res.OK() {
+				t.Fatalf("call = (%v, %v)", err, res.Err)
+			}
+			if got != path {
+				t.Errorf("the server received %q, want %q as the operator wrote it", got, path)
+			}
+		})
+	}
+}
+
+// A connection whose scheme presents nothing satisfies an operation that
+// accepts that scheme, and its request carries no credential at all.
+func TestASchemeThatPresentsNothingSendsNothing(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Values("Authorization")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	pkg := probe(srv.URL)
+	pkg.Connector.Auth = append(pkg.Connector.Auth, spec.AuthScheme{ID: "public", Kind: spec.AuthNone})
+	pkg.Connector.DefaultSecurity = []spec.SecurityRequirement{{Terms: []spec.SecurityTerm{{SchemeID: "public"}}}}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		map[string]any{"owner": "acme", "repo": "r", "index": 1}, exec.Credential{SchemeID: "public"})
+	if err != nil || !res.OK() {
+		t.Fatalf("call = (%v, %v)", err, res.Err)
+	}
+	if len(auth) != 0 {
+		t.Fatalf("a scheme of kind none sent Authorization %q", auth)
+	}
+}
+
+// A caller that asks for precise numbers reads an id past 2^53 as the
+// literal the vendor sent; the default keeps the float64 every other
+// consumer reads.
+func TestPreciseNumbersKeepAnIDPastFloatPrecision(t *testing.T) {
+	body := `{"issues":[{"id":9007199254740993}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	pkg := probe(srv.URL)
+	op := opOf(t, pkg, "probe.issue.get")
+	params := map[string]any{"owner": "acme", "repo": "r", "index": 1}
+	id := func(res exec.Result) any {
+		return res.Data.(map[string]any)["issues"].([]any)[0].(map[string]any)["id"]
+	}
+	precise := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), PreciseNumbers: true}
+	res, err := precise.Call(context.Background(), pkg, op, params, creds())
+	if err != nil || !res.OK() {
+		t.Fatalf("call = (%v, %v)", err, res.Err)
+	}
+	if got, ok := id(res).(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("precise id = %#v, want the literal 9007199254740993", id(res))
+	}
+	plain := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
+	res, _ = plain.Call(context.Background(), pkg, op, params, creds())
+	if _, ok := id(res).(float64); !ok {
+		t.Fatalf("default id = %#v, want a float64", id(res))
+	}
+}
+
+// A vendor whose next-page cursor is a number is walked to its last page,
+// read as decoded with precise numbers — not stopped after one and called
+// complete.
+func TestANumericNextCursorIsFollowed(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Query().Get("after"))
+		if r.URL.Query().Get("after") == "" {
+			_, _ = w.Write([]byte(`{"items":[{"n":1}],"next":2}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[{"n":2}]}`))
+	}))
+	defer srv.Close()
+	pkg := probe(srv.URL)
+	op := spec.Operation{
+		ID: "probe.issue.walk", Resource: "issue", Verb: "walk",
+		HTTP:       spec.HTTPBinding{Method: "GET", Path: "/walk"},
+		Params:     []spec.Param{{Key: "after", Name: "after", In: spec.InQuery, Type: "string"}},
+		Pagination: &spec.Pagination{Style: spec.PageCursor, CursorParam: "after", CursorField: "next", ItemsField: "items"},
+		Results:    []spec.ResultCase{{Status: 200}}, Effect: spec.EffectRead, Deterministic: true,
+	}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), PreciseNumbers: true}
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, op, nil, creds())
+	if err != nil || !complete || len(items) != 2 || len(asked) != 2 || asked[1] != "2" {
+		t.Fatalf("walk = (%d items, complete %v, asked %q, %v), want both pages through after=2", len(items), complete, asked, err)
+	}
+}
+
+// A key an at_base_url operation carries in its query is appended to the
+// operator's query as written, which no re-encoding reorders or trims.
+func TestAQueryKeyKeepsTheOperatorsQueryAsWritten(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	pkg := probe(srv.URL + "/feed?b=2&a=1;c=3&flag")
+	pkg.Connector.BaseURL.PathPrefix = ""
+	pkg.Connector.Auth = []spec.AuthScheme{{ID: "token", Kind: spec.AuthAPIKey, In: "query", Name: "token"}}
+	op := spec.Operation{
+		ID: "probe.feed.read", Resource: "feed", Verb: "read",
+		HTTP: spec.HTTPBinding{Method: "GET", AtBaseURL: true}, Effect: spec.EffectRead, Deterministic: true,
+		Results: []spec.ResultCase{{Status: 200}},
+	}
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client())}
+	if res, err := e.Call(context.Background(), pkg, op, nil, creds()); err != nil || !res.OK() {
+		t.Fatalf("call = (%v, %v)", err, res.Err)
+	}
+	if got != "b=2&a=1;c=3&flag&token=s3cret" {
+		t.Fatalf("the vendor received %q, want the operator's query as written and the key appended", got)
+	}
+}

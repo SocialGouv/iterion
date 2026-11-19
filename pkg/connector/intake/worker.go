@@ -222,6 +222,24 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 	// Each pair is keyed by (intake, subscription) and written once, so the
 	// record never depends on the order the matcher answered in.
 	now := w.now()
+	pairs := PairsOf(in, verdicts, now)
+	if err := w.Store.WritePairs(ctx, pairs); err != nil {
+		w.failIntake(ctx, in, fmt.Errorf("write pairs: %w", err))
+		return
+	}
+	if err := w.Store.MarkIntakeMatched(ctx, in.ID, in.Generation, now); err != nil {
+		// Lost or unwritten, the pairs stand: a matcher that takes the
+		// intake again writes nothing they do not already say.
+		w.warn("intake: intake %s matched, but the mark did not land: %v", in.ID, err)
+	}
+}
+
+// PairsOf is what an intake owes the candidates that judged it: a pending
+// pair where a subscription matched, a refused one where its verdict could
+// not be reached, a not_matched one otherwise. The matching worker writes
+// them, and so does a poller's backfill, which judges primed and earlier
+// intakes for one subscription.
+func PairsOf(in Intake, verdicts []Verdict, now time.Time) []Pair {
 	pairs := make([]Pair, 0, len(verdicts))
 	for _, v := range verdicts {
 		p := Pair{
@@ -241,15 +259,7 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 		}
 		pairs = append(pairs, p)
 	}
-	if err := w.Store.WritePairs(ctx, pairs); err != nil {
-		w.failIntake(ctx, in, fmt.Errorf("write pairs: %w", err))
-		return
-	}
-	if err := w.Store.MarkIntakeMatched(ctx, in.ID, in.Generation, now); err != nil {
-		// Lost or unwritten, the pairs stand: a matcher that takes the
-		// intake again writes nothing they do not already say.
-		w.warn("intake: intake %s matched, but the mark did not land: %v", in.ID, err)
-	}
+	return pairs
 }
 
 // checkVerdicts refuses an answer no pair set can record.

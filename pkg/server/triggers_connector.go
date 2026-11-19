@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/binding"
 	"github.com/SocialGouv/iterion/pkg/connector/ingress"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -30,17 +32,81 @@ func isConnectorSubscription(sub trigger.Subscription) bool {
 // judges; an edit that changes none of it (a pause, a pin) is not judged
 // again, so a subscription whose connection is gone stays pausable.
 type connectorBindingView struct {
-	BotID, Invocation, Mode, ConnectionID, TriggerID, Poller, When, NoLiveRun, ArgsVar, Cron string
-	Filters                                                                                  map[string][]string
-	VarMap, Vars                                                                             map[string]string
+	BotID, Invocation, Mode, ConnectionID, TriggerID, When, NoLiveRun, ArgsVar, Cron string
+	Backfill                                                                         int
+	Filters                                                                          map[string][]string
+	VarMap, Vars, PollQuery                                                          map[string]string
 }
 
 func bindingViewOf(s trigger.Subscription) connectorBindingView {
 	return connectorBindingView{
 		BotID: s.BotID, Invocation: string(s.Invocation), Mode: string(s.Mode), ConnectionID: s.ConnectionID,
-		TriggerID: s.TriggerID, Poller: s.Poller, When: s.When, NoLiveRun: s.NoLiveRun, ArgsVar: s.ArgsVar, Cron: s.Cron,
-		Filters: s.Filters, VarMap: s.VarMap, Vars: s.Vars,
+		TriggerID: s.TriggerID, When: s.When, NoLiveRun: s.NoLiveRun, ArgsVar: s.ArgsVar, Cron: s.Cron,
+		Backfill: s.Backfill, Filters: s.Filters, VarMap: s.VarMap, Vars: s.Vars, PollQuery: s.PollQuery,
 	}
+}
+
+// activatePolledSubscription records the activation of a subscription to a
+// polled trigger (ADR-168 §7) — saved enabled, enabled again, or moved to
+// another poller by a new query: it ensures the poller exists, and moves the
+// subscription's PollerSince to the poller's sequence, so it receives the
+// intakes accepted from now on and none before; a backfill is owed again. An
+// edit that activates nothing keeps both. The poller is written before the
+// subscription, so a subscription never names a poller nothing ticks.
+func (s *Server) activatePolledSubscription(ctx context.Context, tenant string, cur *trigger.Subscription, next *trigger.Subscription) (int, error) {
+	if !polledActivation(cur, *next) {
+		if cur != nil && cur.Enabled && next.Poller != "" && cur.Poller == next.Poller {
+			next.PollerSince, next.BackfillDone = cur.PollerSince, cur.BackfillDone
+		}
+		return 0, nil
+	}
+	if why := s.connectorPollersOff(); why != "" {
+		return http.StatusServiceUnavailable, fmt.Errorf("trigger %s is polled, and %s: a subscription to it would never fire", next.TriggerID, why)
+	}
+	now := time.Now()
+	p, _, err := s.connectorPollers.Ensure(ctx, poller.Poller{
+		TenantID: binding.ConnectionTenant(tenant), ConnectionID: next.ConnectionID, TriggerID: next.TriggerID,
+		Query: next.PollQuery, CreatedAt: now,
+	})
+	if err != nil {
+		return http.StatusServiceUnavailable, fmt.Errorf("ensure the poller of trigger %s: %w", next.TriggerID, err)
+	}
+	if p.ID != next.Poller {
+		return http.StatusInternalServerError, fmt.Errorf("the poller of trigger %s is %s, and the subscription derived %s", next.TriggerID, p.ID, next.Poller)
+	}
+	next.PollerSince, next.BackfillDone = p.Sequence, false
+	return 0, nil
+}
+
+// polledActivation reports whether a save activates a subscription on its
+// poller: created enabled, enabled again, or moved to another query.
+func polledActivation(cur *trigger.Subscription, next trigger.Subscription) bool {
+	return next.Poller != "" && next.Enabled && (cur == nil || !cur.Enabled || cur.Poller != next.Poller)
+}
+
+// wakePolledSubscription wakes the poller a subscription was just activated
+// on, once the subscription is written: a dormant poller is read at once,
+// and a tick in flight — one that listed no subscriber before the write and
+// would park the poller for a day — is fenced off. The subscription stands
+// whatever the wake answers; a lost wake costs the dormant recheck, said in
+// the log.
+func (s *Server) wakePolledSubscription(ctx context.Context, tenant string, cur *trigger.Subscription, sub trigger.Subscription) {
+	if !polledActivation(cur, sub) || s.connectorPollers == nil {
+		return
+	}
+	if err := s.connectorPollers.Wake(ctx, binding.ConnectionTenant(tenant), sub.Poller, time.Now()); err != nil && s.logger != nil {
+		s.logger.Warn("connectors: subscription %s is saved, and waking its poller %s failed: %v — it is read at its next recheck", sub.ID, sub.Poller, err)
+	}
+}
+
+// checkRequestedPoller refuses a request that names a poller other than the
+// one its query derives; naming the same one — a GET's row sent back as the
+// edit — is accepted.
+func checkRequestedPoller(requested string, sub trigger.Subscription) error {
+	if requested == "" || requested == sub.Poller {
+		return nil
+	}
+	return fmt.Errorf("poller %q: a subscription names its query in poll_query, and the poller is derived from it (%q)", requested, sub.Poller)
 }
 
 // validateConnectorSubscription resolves what a connector subscription
@@ -59,6 +125,7 @@ func (s *Server) validateConnectorSubscription(ctx context.Context, tenant strin
 type connectorBinding struct {
 	sub     trigger.Subscription
 	trig    spec.Trigger
+	pkg     *spec.Package
 	ingress *spec.Ingress
 	botVars []string
 }
@@ -110,6 +177,13 @@ func (s *Server) resolveConnectorBinding(ctx context.Context, tenant string, sub
 	if trig == nil {
 		return fail(http.StatusBadRequest, fmt.Errorf("the %s package declares no trigger %s", conn.Connector, sub.TriggerID))
 	}
+	if trig.Polled() && !conn.Has(connection.CapAction) {
+		// Polling spends the connection's credential, which the trigger
+		// grant does not authorize (ADR-168 §7): a subscription saved
+		// without it would fail on every tick.
+		return fail(http.StatusBadRequest, fmt.Errorf("trigger %s is polled, and polling spends connection %q's credential, which needs the action grant: %w",
+			trig.ID, conn.Alias, &connection.CapabilityError{Alias: conn.Alias, Want: connection.CapAction, Have: conn.Capabilities}))
+	}
 	if !trig.Polled() && pkg.Ingress == nil {
 		// Prevents: a subscription nothing can ever feed — a webhook trigger
 		// reaches iterion through the package's ingress, and this one has
@@ -137,7 +211,7 @@ func (s *Server) resolveConnectorBinding(ctx context.Context, tenant string, sub
 	if err != nil {
 		return fail(http.StatusBadRequest, err)
 	}
-	return connectorBinding{sub: out, trig: *trig, ingress: pkg.Ingress, botVars: names}, 0, nil
+	return connectorBinding{sub: out, trig: *trig, pkg: pkg, ingress: pkg.Ingress, botVars: names}, 0, nil
 }
 
 // judgeConnectorEdit runs the save validation on an edit that changes a
@@ -175,8 +249,11 @@ type triggerPreviewReq struct {
 	When         string              `json:"when,omitempty"`
 	VarMap       map[string]string   `json:"var_map,omitempty"`
 	Vars         map[string]string   `json:"vars,omitempty"`
-	Payload      json.RawMessage     `json:"payload,omitempty"`
-	Headers      map[string]string   `json:"headers,omitempty"`
+	// PollQuery is a polled trigger's query values, as the subscription
+	// would carry them; Payload is then one ITEM of its operation's answer.
+	PollQuery map[string]string `json:"poll_query,omitempty"`
+	Payload   json.RawMessage   `json:"payload,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 // triggerPreview is what a delivery would do: dropped by the trigger's
@@ -205,11 +282,15 @@ func (s *Server) handleTriggerPreview(w http.ResponseWriter, r *http.Request) {
 	tenant := s.triggerTenant(r)
 	b, status, err := s.resolveConnectorBinding(r.Context(), tenant, trigger.Subscription{
 		TenantID: tenant, BotID: req.BotID, Invocation: bundle.InvocationKindConnector,
-		ConnectionID: req.ConnectionID, TriggerID: req.TriggerID,
+		ConnectionID: req.ConnectionID, TriggerID: req.TriggerID, PollQuery: req.PollQuery,
 		Filters: req.Filters, When: req.When, VarMap: req.VarMap, Vars: req.Vars,
 	})
 	if err != nil {
 		dispatcher.WriteErr(w, status, err)
+		return
+	}
+	if b.trig.Polled() {
+		s.previewPolledItem(w, r, b, req)
 		return
 	}
 	var (
@@ -254,6 +335,13 @@ func (s *Server) handleTriggerPreview(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteJSON(w, http.StatusOK, out)
 		return
 	}
+	s.judgePreview(w, r, b, raw, out)
+}
+
+// judgePreview judges an event read through a subscription — matched, the
+// vars a run would receive; not matched, the reason; refused, the refusal —
+// as the matcher and the launch would, and answers it.
+func (s *Server) judgePreview(w http.ResponseWriter, r *http.Request, b connectorBinding, raw json.RawMessage, out triggerPreview) {
 	out.Event = raw
 	ev, err := binding.DecodeEvent(raw)
 	if err != nil {
@@ -276,4 +364,62 @@ func (s *Server) handleTriggerPreview(w http.ResponseWriter, r *http.Request) {
 		out.Matched = refusal == ""
 	}
 	dispatcher.WriteJSON(w, http.StatusOK, out)
+}
+
+// previewPolledItem reads one item through a polled trigger as its poller
+// would (ingress.ReadItem): a pasted item, or — with none — the first item
+// of the trigger's recorded answer, located the way a scan locates them
+// (spec.PollItems). Then the same judgment and vars as a delivery's.
+func (s *Server) previewPolledItem(w http.ResponseWriter, r *http.Request, b connectorBinding, req triggerPreviewReq) {
+	var (
+		out  triggerPreview
+		item map[string]any
+	)
+	switch {
+	case len(req.Payload) > 0:
+		dec := json.NewDecoder(bytes.NewReader(req.Payload))
+		dec.UseNumber()
+		if err := dec.Decode(&item); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, fmt.Errorf("payload: an item of trigger %s's answer, as a JSON object: %w", b.trig.ID, err))
+			return
+		}
+	case len(b.trig.SampleBody) > 0:
+		var sample spec.SampleResponse
+		dec := json.NewDecoder(bytes.NewReader(b.trig.SampleBody))
+		dec.UseNumber()
+		if err := dec.Decode(&sample); err != nil {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("the trigger's sample: %w", err))
+			return
+		}
+		op, ok := b.pkg.Operation(b.trig.Poll.Operation)
+		if !ok {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("trigger %s polls operation %s, which its package no longer declares", b.trig.ID, b.trig.Poll.Operation))
+			return
+		}
+		items, err := spec.PollItems(op, b.trig.Poll, sample.Response)
+		if err != nil || len(items) == 0 {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("the trigger's sample holds no item: %v", err))
+			return
+		}
+		obj, ok := items[0].(map[string]any)
+		if !ok {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("the trigger's sample's first item is %T, not an object", items[0]))
+			return
+		}
+		item, out.Sample = obj, true
+	default:
+		dispatcher.WriteErr(w, http.StatusBadRequest, fmt.Errorf("no payload, and trigger %s ships no sample — paste an item of its answer", b.trig.ID))
+		return
+	}
+	raw, filtered, err := ingress.ReadItem(b.trig, item)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if filtered != "" {
+		out.Filtered = filtered
+		dispatcher.WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	s.judgePreview(w, r, b, raw, out)
 }

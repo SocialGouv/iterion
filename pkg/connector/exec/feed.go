@@ -8,9 +8,11 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -396,7 +398,7 @@ func (c *rssChannel) normalize() map[string]any {
 			author = it.Creator
 		}
 		items = append(items, feedItem(it.GUID, it.Link, it.Title, it.Description, it.Content,
-			feedInstant(it.PubDate), "", author, it.Categories))
+			feedInstant(it.PubDate), "", author, "", it.Categories))
 	}
 	return map[string]any{
 		"title":   strings.TrimSpace(c.Title),
@@ -493,16 +495,12 @@ func (f atomFeed) normalize() map[string]any {
 	feedAuthor := firstName(f.Authors)
 	items := make([]any, 0, len(f.Entries))
 	for _, e := range f.Entries {
-		author := firstName(e.Authors)
-		if author == "" {
-			author = feedAuthor
-		}
 		cats := make([]string, 0, len(e.Categories))
 		for _, c := range e.Categories {
 			cats = append(cats, c.Term)
 		}
 		items = append(items, feedItem(e.ID, alternate(e.Links), e.Title.value(), e.Summary.value(), e.Content.value(),
-			feedInstant(e.Published), feedInstant(e.Updated), author, cats))
+			feedInstant(e.Published), feedInstant(e.Updated), firstName(e.Authors), feedAuthor, cats))
 	}
 	return map[string]any{
 		"title":   strings.TrimSpace(f.Title.value()),
@@ -512,11 +510,14 @@ func (f atomFeed) normalize() map[string]any {
 	}
 }
 
-// feedItem builds one normalized item. Its version is the digest of what a
-// reader sees — every field, each length-prefixed so two fields cannot trade
-// bytes, categories in sorted order since their order means nothing; its id
-// is the vendor's, else the link, else that digest.
-func feedItem(id, link, title, summary, content, published, updated, author string, categories []string) map[string]any {
+// feedItem builds one normalized item. Its version is the digest of what the
+// entry itself says — every field, each length-prefixed so two fields cannot
+// trade bytes, categories in sorted order since their order means nothing;
+// its id is the vendor's, else the link, else that digest. An entry with no
+// author shows the one it inherits (an Atom feed's), which its version does
+// not hash: a feed-level edit would otherwise be a new revision of every
+// entry, and the whole feed delivered again.
+func feedItem(id, link, title, summary, content, published, updated, author, inherited string, categories []string) map[string]any {
 	id, link = strings.TrimSpace(id), strings.TrimSpace(link)
 	title, author = strings.TrimSpace(title), strings.TrimSpace(author)
 	summary, content = strings.TrimSpace(summary), strings.TrimSpace(content)
@@ -533,7 +534,11 @@ func feedItem(id, link, title, summary, content, published, updated, author stri
 		h.Write(n[:])
 		h.Write([]byte(s))
 	}
-	for _, f := range []string{title, link, summary, content, published, updated, author} {
+	// The TEXT a reader sees, not the markup that renders it: a publisher
+	// that stamps per-render tokens into its HTML (WordPress writes uniqid()
+	// into its gallery and lightbox blocks) would otherwise give an unedited
+	// entry a new revision on every read.
+	for _, f := range []string{visibleText(title), link, visibleText(summary), visibleText(content), published, updated, author} {
 		field(f)
 	}
 	sorted := slices.Clone(cats)
@@ -553,12 +558,21 @@ func feedItem(id, link, title, summary, content, published, updated, author stri
 	for i, c := range cats {
 		listed[i] = c
 	}
-	return map[string]any{
-		"id": id, "version": version,
+	if author == "" {
+		author = strings.TrimSpace(inherited)
+	}
+	item := map[string]any{"id": id, "version": version, "categories": listed}
+	// A field the entry does not carry is absent, not "": an output reading
+	// it is then unset (ADR-168 §9), never a var set to nothing.
+	for k, v := range map[string]string{
 		"title": title, "link": link, "summary": summary, "content": content,
 		"published": published, "updated": updated, "author": author,
-		"categories": listed,
+	} {
+		if v != "" {
+			item[k] = v
+		}
 	}
+	return item
 }
 
 // feedInstant rewrites an instant as RFC 3339 in UTC, through the one
@@ -574,4 +588,14 @@ func feedInstant(s string) string {
 		return t.UTC().Format(time.RFC3339Nano)
 	}
 	return s
+}
+
+// markup matches a tag, its attributes included.
+var markup = regexp.MustCompile(`<[^>]*>`)
+
+// visibleText is what an HTML fragment says once rendered: its tags and
+// attributes dropped, its entities decoded, its runs of white space one
+// space. It versions an entry; the entry itself keeps its markup.
+func visibleText(s string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(markup.ReplaceAllString(s, " "))), " ")
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,6 +75,23 @@ type PollQueryField struct {
 	Type        string `yaml:"type,omitempty" json:"type,omitempty"`
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Required    bool   `yaml:"required,omitempty" json:"required,omitempty"`
+	// NotMatching is a regular expression a value must not match: what the
+	// package's params would turn into a request the vendor refuses on every
+	// tick (a JQL that carries its own ORDER BY). Judged at save.
+	NotMatching string `yaml:"not_matching,omitempty" json:"not_matching,omitempty"`
+}
+
+// Refuses reports why value is refused by the field's NotMatching, or ""
+// when it is not. A pattern that does not compile was refused at load.
+func (f PollQueryField) Refuses(value string) string {
+	if f.NotMatching == "" {
+		return ""
+	}
+	re, err := regexp.Compile(f.NotMatching)
+	if err != nil || !re.MatchString(value) {
+		return ""
+	}
+	return fmt.Sprintf("matches %q, which this field refuses", f.NotMatching)
 }
 
 // PollCursor reads the checkpoint off each item.
@@ -103,15 +121,130 @@ var pollQueryTypes = []string{"string", "int", "bool"}
 // Polled reports whether the trigger is read by a poller.
 func (t Trigger) Polled() bool { return t.Delivery == DeliveryPoll }
 
+// PollCheckpoint is the checkpoint a tick hands its params, already moved
+// back by the cursor's overlap.
+type PollCheckpoint struct {
+	// Kind is the cursor's kind: CursorTimestamp reads At, CursorOpaque
+	// reads Token.
+	Kind  string
+	At    time.Time
+	Token string
+}
+
+// cursorFields are what the `cursor` namespace holds per kind. `value` is the
+// checkpoint in the form most vendors take — RFC 3339 in UTC, or the token as
+// it was read; `epoch_ms` is a timestamp's milliseconds since the epoch, for
+// a vendor that reads a bare number in its own clock's terms (Jira's JQL reads
+// a quoted date in the searching user's time zone, an unquoted number as
+// epoch milliseconds).
+var cursorFields = map[string][]string{
+	CursorTimestamp: {"value", "epoch_ms"},
+	CursorOpaque:    {"value"},
+}
+
+// namespace renders the checkpoint as the `cursor` namespace: every field of
+// its kind, nil before the first complete scan.
+func (c *PollCheckpoint) namespace(kind string) map[string]any {
+	out := map[string]any{}
+	for _, f := range cursorFields[kind] {
+		out[f] = nil
+	}
+	if c == nil {
+		return out
+	}
+	switch c.Kind {
+	case CursorTimestamp:
+		out["value"] = c.At.UTC().Format(time.RFC3339Nano)
+		out["epoch_ms"] = strconv.FormatInt(c.At.UnixMilli(), 10)
+	case CursorOpaque:
+		out["value"] = c.Token
+	}
+	return out
+}
+
 // NewPollParamsContext is the context a poll's params are evaluated under:
-// the operator's query values and the last checkpoint, under `cursor.value`
-// (nil before the first complete scan).
-func NewPollParamsContext(query map[string]any, checkpoint any) *expr.Context {
-	cursor := map[string]any{"value": checkpoint}
+// the operator's query values and the last checkpoint, under the `cursor`
+// fields of its kind (cursorFields), each nil before the first complete scan.
+func NewPollParamsContext(query map[string]any, kind string, checkpoint *PollCheckpoint) *expr.Context {
+	cursor := checkpoint.namespace(kind)
 	return &expr.Context{Named: map[string]func([]string) any{
 		NamespaceQuery:  func(p []string) any { return descend(query, p) },
 		NamespaceCursor: func(p []string) any { return descend(cursor, p) },
 	}}
+}
+
+// PollParams evaluates a poll's params for one tick: the operator's typed
+// query values and the checkpoint moved back by its overlap. A param that
+// evaluates to nil is not sent — the expression said "nothing on this tick"
+// (a cursor absent before the first complete scan).
+func PollParams(poll *TriggerPoll, query map[string]any, checkpoint *PollCheckpoint) (map[string]any, error) {
+	kind := ""
+	if poll.Cursor != nil {
+		kind = poll.Cursor.Kind
+	}
+	ctx := NewPollParamsContext(query, kind, checkpoint)
+	out := map[string]any{}
+	for k, src := range poll.Params {
+		v, err := evalExpr(src, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("poll.params.%s: %w", k, err)
+		}
+		if v != nil {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+// PollItemCursor reads one item's cursor value (poll.cursor.from) as its
+// kind holds it: an instant for a timestamp, the scalar for an opaque token.
+func PollItemCursor(poll *TriggerPoll, response, item any) (time.Time, string, error) {
+	c := poll.Cursor
+	if c == nil {
+		return time.Time{}, "", nil
+	}
+	v, err := evalExpr(c.From, NewPollItemContext(response, item))
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("poll.cursor.from: %w", err)
+	}
+	if c.Kind == CursorTimestamp {
+		at, err := ParsePollTimestamp(v)
+		if err != nil {
+			return time.Time{}, "", fmt.Errorf("poll.cursor.from %q: %w", c.From, err)
+		}
+		return at, "", nil
+	}
+	token, err := pollScalar(v)
+	if err != nil || token == "" {
+		return time.Time{}, "", fmt.Errorf("poll.cursor.from %q reads %v, not a non-empty token (%v)", c.From, v, err)
+	}
+	return time.Time{}, token, nil
+}
+
+// PollOverlap is how far before its checkpoint a timestamp cursor re-reads.
+func PollOverlap(poll *TriggerPoll) time.Duration {
+	if poll.Cursor == nil || poll.Cursor.Overlap == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(poll.Cursor.Overlap)
+	if err != nil || d < 0 {
+		return 0
+	}
+	return d
+}
+
+// PollIntervals reads a poll's cadence: its default and its floor, both
+// validated at load.
+func PollIntervals(poll *TriggerPoll) (def, floor time.Duration, err error) {
+	def, err = time.ParseDuration(poll.Interval.Default)
+	if err != nil {
+		return 0, 0, fmt.Errorf("poll.interval.default %q: %w", poll.Interval.Default, err)
+	}
+	floor, err = time.ParseDuration(poll.Interval.Min)
+	if err != nil {
+		return 0, 0, fmt.Errorf("poll.interval.min %q: %w", poll.Interval.Min, err)
+	}
+	return def, floor, nil
 }
 
 // NewPollItemContext is the context an item's identity, version and cursor
@@ -327,6 +460,11 @@ func validatePoll(p *Package, t Trigger) error {
 			return where("duplicate query field %q", q.ID)
 		}
 		queryIDs[q.ID] = true
+		if q.NotMatching != "" {
+			if _, err := regexp.Compile(q.NotMatching); err != nil {
+				return where("query field %q: not_matching %q is not a regular expression: %v", q.ID, q.NotMatching, err)
+			}
+		}
 		if q.Type != "" && !slices.Contains(pollQueryTypes, q.Type) {
 			return where("query field %q has type %q, not one of %s", q.ID, q.Type, strings.Join(pollQueryTypes, ", "))
 		}
@@ -374,7 +512,11 @@ func validatePoll(p *Package, t Trigger) error {
 			// incomplete, and so never moves the checkpoint.
 			return where("poll.params builds %q, which the pagination walk owns — the walk would read that one page, never complete, and the checkpoint would never move", k)
 		}
-		if err := checkPollRefs(fmt.Sprintf("poll.params.%s", k), src, queryIDs); err != nil {
+		cursorKind := ""
+		if poll.Cursor != nil {
+			cursorKind = poll.Cursor.Kind
+		}
+		if err := checkPollRefs(fmt.Sprintf("poll.params.%s", k), src, queryIDs, cursorKind); err != nil {
 			return where("%v", err)
 		}
 	}
@@ -399,16 +541,18 @@ func validatePoll(p *Package, t Trigger) error {
 	}
 	ticks := []struct {
 		name       string
-		checkpoint any
+		checkpoint *PollCheckpoint
 	}{{"the first tick (no checkpoint yet, optional query fields unset)", nil}}
+	cursorKind := ""
 	if poll.Cursor != nil {
+		cursorKind = poll.Cursor.Kind
 		ticks = append(ticks, struct {
 			name       string
-			checkpoint any
+			checkpoint *PollCheckpoint
 		}{"a later tick (a checkpoint set, optional query fields unset)", pollCursorPlaceholder(poll.Cursor.Kind)})
 	}
 	for _, tick := range ticks {
-		ctx := NewPollParamsContext(firstQuery, tick.checkpoint)
+		ctx := NewPollParamsContext(firstQuery, cursorKind, tick.checkpoint)
 		for k, src := range poll.Params {
 			v, err := evalExpr(src, ctx)
 			if err != nil {
@@ -507,7 +651,8 @@ func validatePoll(p *Package, t Trigger) error {
 func pollQueryPlaceholder(typ string) any {
 	switch typ {
 	case "int":
-		return float64(1)
+		// The type a tick hands its params (binding.PollQueryValues).
+		return int64(1)
 	case "bool":
 		return true
 	}
@@ -515,17 +660,18 @@ func pollQueryPlaceholder(typ string) any {
 }
 
 // pollCursorPlaceholder stands for a checkpoint of the cursor's kind.
-func pollCursorPlaceholder(kind string) any {
+func pollCursorPlaceholder(kind string) *PollCheckpoint {
 	if kind == CursorTimestamp {
-		return "2026-01-01T00:00:00Z"
+		return &PollCheckpoint{Kind: kind, At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	}
-	return "token"
+	return &PollCheckpoint{Kind: kind, Token: "token"}
 }
 
 // checkPollRefs checks a params expression reads `query` and `cursor` only,
-// and names declared query fields: a typo in a query id reads nil on every
-// tick and builds a request the operator never wrote.
-func checkPollRefs(where, src string, queryIDs map[string]bool) error {
+// names declared query fields — a typo in a query id reads nil on every tick
+// and builds a request the operator never wrote — and reads only the cursor
+// fields its kind holds (cursorFields).
+func checkPollRefs(where, src string, queryIDs map[string]bool, cursorKind string) error {
 	if err := checkExpr(where, src, NamespaceQuery, NamespaceCursor); err != nil {
 		return err
 	}
@@ -542,8 +688,18 @@ func checkPollRefs(where, src string, queryIDs map[string]bool) error {
 		if r.Namespace == NamespaceQuery && len(r.Path) > 0 && !queryIDs[r.Path[0]] {
 			return fmt.Errorf("%s: %q reads query.%s, which the poll's query does not declare", where, src, r.Path[0])
 		}
-		if r.Namespace == NamespaceCursor && len(r.Path) > 0 && r.Path[0] != "value" {
-			return fmt.Errorf("%s: %q reads cursor.%s — the cursor holds value only", where, src, r.Path[0])
+		if r.Namespace == NamespaceCursor && len(r.Path) > 0 {
+			// With no cursor: block, or one of a kind this build does not
+			// know, a read of cursor.value is left to the rules that name the
+			// missing block or the unknown kind.
+			held, known := cursorFields[cursorKind]
+			kind := cursorKind
+			if !known {
+				held, kind = cursorFields[CursorOpaque], "declared"
+			}
+			if !slices.Contains(held, r.Path[0]) {
+				return fmt.Errorf("%s: %q reads cursor.%s — a cursor of kind %s holds %s only", where, src, r.Path[0], kind, strings.Join(held, ", "))
+			}
 		}
 	}
 	return nil

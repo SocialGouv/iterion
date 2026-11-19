@@ -44,6 +44,8 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		{Keys: bson.D{{Key: "state", Value: 1}, {Key: "not_before", Value: 1}, {Key: "_id", Value: 1}}, Options: options.Index().SetName("intake_claim")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "state", Value: 1}, {Key: "received_at", Value: -1}}, Options: options.Index().SetName("intake_tenant_state_recent")},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: ttl.SetName("intake_expiry")},
+		// A backfill reads a poller's rows by sequence, highest first.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "poller_id", Value: 1}, {Key: "sequence", Value: -1}}, Options: options.Index().SetName("intake_tenant_poller_sequence")},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("intake: ensure intake indexes: %w", err)
 	}
@@ -117,6 +119,26 @@ func (s *MongoStore) ListIntakes(ctx context.Context, tenantID, state string, li
 	var out []Intake
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, fmt.Errorf("intake: decode intakes: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MongoStore) ListPollerIntakes(ctx context.Context, tenantID, pollerID string, maxSeq int64, limit int) ([]Intake, error) {
+	if pollerID == "" {
+		return nil, nil
+	}
+	filter := bson.M{"tenant_id": tenantID, "poller_id": pollerID, "sequence": bson.M{"$lte": maxSeq}}
+	opts := options.Find().SetSort(bson.D{{Key: "sequence", Value: -1}, {Key: "_id", Value: 1}})
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+	cur, err := s.intakes.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("intake: list poller %s intakes: %w", pollerID, err)
+	}
+	var out []Intake
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("intake: decode poller %s intakes: %w", pollerID, err)
 	}
 	return out, nil
 }
