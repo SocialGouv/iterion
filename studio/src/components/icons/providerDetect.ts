@@ -6,6 +6,9 @@
  *   1. Delegate name (exact matches for known delegates)
  *   2. Model prefix before "/" (e.g. "anthropic/claude-sonnet-4" -> "anthropic")
  *   3. Model keyword/substring (e.g. "${ANTHROPIC_MODEL}" -> "anthropic")
+ * A spec that carries the gateway protocol's name
+ * ("openai_compatible/scaleway/deepseek-v4.1-flash") skips step 2 and reaches
+ * step 3 without it -> "deepseek".
  */
 
 export interface ProviderInfo {
@@ -85,6 +88,14 @@ const KEYWORD_MAP: [string, string][] = [
   ["hf", "huggingface"],
 ];
 
+// The gateway protocol's name says nothing about the vendor, wherever a model
+// spec carries it: as a route's first segment
+// ("openai_compatible/scaleway/deepseek-v4.1-flash"), inside an env default
+// ("${M:-openai_compatible/…}"), or in the name of the variable that holds the
+// route ("${OPENAI_COMPATIBLE_MODEL}"). Left in place, the "openai" keyword
+// claims the model for OpenAI unless an earlier keyword matched first.
+const GATEWAY_PROTOCOL = /openai_compatible\/?/g;
+
 export function detectProvider(model?: string, delegate?: string): ProviderInfo | null {
   // 1. Check delegate (strongest signal)
   if (delegate) {
@@ -97,11 +108,18 @@ export function detectProvider(model?: string, delegate?: string): ProviderInfo 
   }
 
   if (!model) return null;
-  const m = model.toLowerCase();
+  const lower = model.toLowerCase();
+  const m = lower.replace(GATEWAY_PROTOCOL, "");
+  // What follows the protocol in a gateway route is the gateway's own
+  // namespace ("scaleway", "azure"), not a vendor prefix: a spec that carried
+  // the protocol's name skips step 2 and the keywords decide, so the model
+  // keeps the vendor its name carries. A namespace that is itself a keyword
+  // (bedrock, groq) still decides when the model's name carries none.
+  const viaGateway = m !== lower;
 
   // 2. Explicit prefix: "provider/model-id"
   const slashIdx = m.indexOf("/");
-  if (slashIdx > 0) {
+  if (!viaGateway && slashIdx > 0) {
     const prefix = m.slice(0, slashIdx);
     if (PREFIX_MAP[prefix]) return PREFIX_MAP[prefix];
   }
