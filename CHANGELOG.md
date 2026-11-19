@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.19.2](https://github.com/SocialGouv/iterion/compare/v7.19.1...v7.19.2) (2026-11-19)
+
+### Bug Fixes
+
+* **connector:** a polled revision is launched once per subscription, whatever poller carried it ([#3396](https://github.com/SocialGouv/iterion/issues/3396)) ([#3407](https://github.com/SocialGouv/iterion/issues/3407)) ([f0230e1](https://github.com/SocialGouv/iterion/commit/f0230e14f0a1a6b247ead541b7e99aeec5f717a0))
+
+    <details><summary>why</summary>
+
+    A subscription moved to another query joins another poller. When that poller already exists and lags, it can accept a revision the old poller already delivered, and the subscription was paired with it and launched again: two runs of the bot for one item revision.
+
+    </details>
+
 ## [7.19.1](https://github.com/SocialGouv/iterion/compare/v7.19.0...v7.19.1) (2026-11-19)
 
 ### Bug Fixes
