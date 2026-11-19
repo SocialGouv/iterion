@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox/execenv/protocol"
@@ -236,16 +237,44 @@ func waitPID(t *testing.T, path string) int {
 		b, e := os.ReadFile(path)
 		if e == nil {
 			n, e := strconv.Atoi(string(b))
-			if e != nil {
-				t.Fatal(e)
+			// WriteFile creates the file before writing its contents. Its
+			// presence alone is not the fixture's PID publication.
+			if e == nil && n > 0 {
+				return n
 			}
-			return n
 		}
 		select {
 		case <-limit:
-			t.Fatal("client never started")
+			t.Fatal("client never published a valid PID")
 		case <-tick.C:
 		}
+	}
+}
+
+func TestWaitPIDWaitsForAValidRecord(t *testing.T) {
+	for _, initial := range []string{"", "not-yet", "0", "-1"} {
+		t.Run(strconv.Quote(initial), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pid")
+			synctest.Test(t, func(t *testing.T) {
+				if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan struct{})
+				defer func() { <-done }()
+				go func() {
+					defer close(done)
+					// Virtual time advances only after waitPID has read the
+					// incomplete record and blocked on its polling ticker.
+					time.Sleep(25 * time.Millisecond)
+					if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+						t.Error(err)
+					}
+				}()
+				if got := waitPID(t, path); got != 12345 {
+					t.Fatalf("PID = %d, want the completed record's 12345", got)
+				}
+			})
+		})
 	}
 }
 func assertDead(t *testing.T, pid int) {
