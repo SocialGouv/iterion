@@ -57,6 +57,15 @@ Keep cleanup inside the bubble, so it also verifies termination. Tests of
 individual health verdicts and term cancellation do not schedule campaigns and
 retain their existing synchronous witnesses.
 
+Virtual time does not order goroutines. The idle-passes scenario went red once
+on CI ([#3400](https://github.com/SocialGouv/iterion/issues/3400)): at the
+shared `cancel()`, a peer whose acquire was in flight was granted the lease the
+holder had just released, served a term on its cancelled context, and its first
+pass counted as a peer's. `Run` and `TryRun` now serve no term once their
+context is done, and give a late-granted lease back at once.
+`TestRun_aCampaignStoppedWhileItsAcquireIsInFlightServesNoTerm` replays the
+late answer deterministically for both entry points.
+
 ## Parser lookup
 
 PR #3050's race shard also failed `TestBrokenListsParseInLinearTime`: ten times
