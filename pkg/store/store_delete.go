@@ -162,6 +162,10 @@ func (s *FilesystemRunStore) pruneDeletionMarker(ctx context.Context, id string,
 // A failed cleanup can retain run.json beside its marker. Validate its raw
 // header even though ordinary loadRunRaw refuses tombstones. Completed old
 // tombstones have no document; this does not invent a new marker format.
+// Unbound callers (the prune, the CLI, internal deletes) check the format
+// only: the strict header parser refuses shapes the format read accepts. A
+// context carrying a run data binding is compared with the run it would
+// remove, under the same locks (checkBoundDeletionLocked).
 func (s *FilesystemRunStore) checkDeletionHeaderLocked(ctx context.Context, id string) error {
 	if ctx == nil {
 		return ErrInvalidValueFormat
@@ -170,11 +174,18 @@ func (s *FilesystemRunStore) checkDeletionHeaderLocked(ctx context.Context, id s
 		return err
 	}
 	raw, err := os.ReadFile(s.runJSONPath(id))
+	_, bound := RunDataBindingFrom(ctx)
 	format := LegacyValueFormat
 	if err == nil {
 		format, err = RunValueFormatFromJSON(ctx, raw)
+		if err == nil && bound {
+			err = checkBoundDeletionLocked(ctx, id, raw)
+		}
 	} else if os.IsNotExist(err) {
 		err = nil
+		if bound {
+			err = s.boundDeletionAbsence(id)
+		}
 	}
 	if err != nil {
 		return err
@@ -182,4 +193,35 @@ func (s *FilesystemRunStore) checkDeletionHeaderLocked(ctx context.Context, id s
 	r := &Run{ID: id, FormatVersion: int(format)}
 	_, err = CheckRunFormatReplacement(ctx, r, r)
 	return err
+}
+
+// checkBoundDeletionLocked compares a bound delete with the run.json it would
+// remove, as a bound load does (loadRunRawContext): the strict header, the
+// carried binding and the tenant it observed. A successor recreated under the
+// same ID answers ErrRunDataIdentityChanged.
+func checkBoundDeletionLocked(ctx context.Context, id string, raw []byte) error {
+	header, err := RunDataHeaderFromJSON(ctx, raw)
+	if err != nil {
+		return runJSONUndecodable(id, raw, err)
+	}
+	if err := RequireRunDataStorage(header.Protocol); err != nil {
+		return err
+	}
+	if header.RunID != id {
+		return ErrRunDataIdentityChanged
+	}
+	if err := CheckRunDataBinding(ctx, header); err != nil {
+		return err
+	}
+	return checkRunJSONObservation(ctx, raw)
+}
+
+// boundDeletionAbsence answers a bound delete of a run without run.json what a
+// bound load answers: the bound run is no longer there to be removed by this
+// call, deliberately deleted (ErrRunDeleted) or absent (ErrRunNotFound).
+func (s *FilesystemRunStore) boundDeletionAbsence(id string) error {
+	if s.runDeleted(id) {
+		return fmt.Errorf("store: delete run %s: %w", id, ErrRunDeleted)
+	}
+	return fmt.Errorf("store: delete run %s: %w", id, ErrRunNotFound)
 }

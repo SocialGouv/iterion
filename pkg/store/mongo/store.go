@@ -146,6 +146,14 @@ type Store struct {
 	// the window another replica's re-admission of that holder lands in
 	// (cred_slots.go). Nil in production.
 	beforeCredSlotEvict func(runID string)
+	// beforeValueDeletionTxn is a test seam for the window between a delete's
+	// pre-transaction reads of the run and the transaction that tombstones it
+	// (value_delete.go). Nil in production.
+	beforeValueDeletionTxn func(runID string)
+	// afterRunMetadataPrepare is a test seam for the window between a metadata
+	// write's prepared format guard and the conditional write itself
+	// (run_metadata_format.go). Nil in production.
+	afterRunMetadataPrepare func(runID string)
 }
 
 // Registry returns the BSON codec registry the store's Mongo client is

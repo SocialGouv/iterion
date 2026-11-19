@@ -239,11 +239,30 @@ func (s *Store) readRunFormatParent(ctx context.Context, id string) (*store.Run,
 	return parent, nil
 }
 
-// runMetadataFormat holds an operation's original format. It is not execution
-// authority. Preparing again in a retry would incorrectly adopt a successor.
-type runMetadataFormat struct{ original store.RunValueFormat }
+// runMetadataFormat holds an operation's original format and, when its context
+// carries a run data binding, the birth that binding observed. It is not
+// execution authority. Preparing again in a retry would incorrectly adopt a
+// successor.
+type runMetadataFormat struct {
+	original store.RunValueFormat
+	// birth is the bound birth, "" included (the historical empty birth);
+	// bound tells it from an unbound write, which carries no birth predicate.
+	birth string
+	bound bool
+}
 
 func (s *Store) prepareRunMetadataFormat(ctx context.Context, id string) (runMetadataFormat, error) {
+	g, err := s.prepareRunMetadataValueFormat(ctx, id)
+	if err != nil {
+		return runMetadataFormat{}, err
+	}
+	if b, bound := store.RunDataBindingFrom(ctx); bound {
+		g.birth, g.bound = b.Header().BirthID, true
+	}
+	return g, nil
+}
+
+func (s *Store) prepareRunMetadataValueFormat(ctx context.Context, id string) (runMetadataFormat, error) {
 	parent, err := s.valueParent(ctx, id)
 	if err != nil {
 		return runMetadataFormat{}, err
@@ -261,15 +280,26 @@ func (s *Store) prepareRunMetadataFormat(ctx context.Context, id string) (runMet
 	return runMetadataFormat{original: original}, err
 }
 
+// filter evaluates the original format, and under a binding the bound birth,
+// inside the mutating command: a successor recreated under the same ID after
+// the guard's read matches nothing. An unbound write keeps the format
+// predicate alone and lands on whatever run holds the ID.
 func (g runMetadataFormat) filter(ctx context.Context, caller bson.M) bson.M {
+	clauses := bson.A{caller, canonicalValueFormatPredicate(g.original.Format)}
+	if g.bound {
+		clauses = append(clauses, canonicalBirthPredicate(g.birth))
+	}
 	return notDeleted(withTenantFilter(ctx, bson.M{
 		"_id":  g.original.RunID,
-		"$and": bson.A{caller, canonicalValueFormatPredicate(g.original.Format)},
+		"$and": clauses,
 	}))
 }
 
-// checkMiss classifies only the format boundary. A known-format business CAS
-// miss (including a genuinely absent run) retains the caller's old result.
+// checkMiss classifies the format boundary, and under a binding the identity:
+// its read compares the carried binding, so a bound miss on another birth
+// answers ErrRunDataIdentityChanged and a header the parser refuses answers
+// the parser's error. A known-format business CAS miss (including a genuinely
+// absent run) retains the caller's old result.
 func (g runMetadataFormat) checkMiss(ctx context.Context, s *Store) error {
 	parent, err := s.valueParent(ctx, g.original.RunID)
 	if err != nil || parent == nil {
@@ -290,6 +320,9 @@ func (s *Store) updateRunMetadata(ctx context.Context, id string, filter bson.M,
 	guard, err := s.prepareRunMetadataFormat(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if s.afterRunMetadataPrepare != nil {
+		s.afterRunMetadataPrepare(id)
 	}
 	result, err := s.runs.UpdateOne(ctx, guard.filter(ctx, filter), update)
 	if err != nil {
@@ -316,6 +349,9 @@ func (s *Store) findOneAndUpdateRunMetadata(ctx context.Context, id string, filt
 	guard, err := s.prepareRunMetadataFormat(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if s.afterRunMetadataPrepare != nil {
+		s.afterRunMetadataPrepare(id)
 	}
 	result := s.runs.FindOneAndUpdate(ctx, guard.filter(ctx, filter), update, opts...)
 	if err = result.Err(); err != nil {

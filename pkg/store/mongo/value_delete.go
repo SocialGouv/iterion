@@ -36,6 +36,9 @@ func (s *Store) beginValueDeletion(ctx context.Context, id string) (valueDeletio
 	if err != nil {
 		return target, false, err
 	}
+	if s.beforeValueDeletionTxn != nil {
+		s.beforeValueDeletionTxn(id)
+	}
 	session, err := s.client.StartSession()
 	if err != nil {
 		return target, false, err
