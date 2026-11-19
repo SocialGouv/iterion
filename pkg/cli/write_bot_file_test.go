@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/authoringlock"
@@ -121,62 +122,73 @@ func TestAReplacementRefusesWhileASaveHoldsTheLock(t *testing.T) {
 // as refused, and its neighbours are formatted all the same. The wait on
 // the held lock is bounded by the CONTEXT the caller hands RunFmt (#2839):
 // the command's own context, which cobra cancels on SIGINT — an operator's
-// Ctrl-C shortens it. This test stands in for it with a timeout.
+// Ctrl-C shortens it. Virtual time keeps filesystem/setup latency out of
+// that timeout: the free file is formatted before the held lock waits (#3338).
 func TestFmtRefusesAFileASaveHoldsAndFormatsTheRest(t *testing.T) {
-	inTempWorkspace(t)
-	held := writeBot(t, "f/held.bot", looseBot)
-	free := writeBot(t, "f/free.bot", looseBot)
-	lock, err := authoringlock.Take(context.Background(), held)
-	if err != nil {
-		t.Fatalf("stand in for an editor's save: %v", err)
-	}
-	defer func() {
-		if err := lock.Release(); err != nil {
-			t.Errorf("release: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		inTempWorkspace(t)
+		held := writeBot(t, "f/held.bot", looseBot)
+		free := writeBot(t, "f/free.bot", looseBot)
+		lock, err := authoringlock.Take(context.Background(), held)
+		if err != nil {
+			t.Fatalf("stand in for an editor's save: %v", err)
 		}
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+		finished := make(chan struct{})
+		defer func() {
+			if err := lock.Release(); err != nil {
+				t.Errorf("release: %v", err)
+			}
+			// Keep the bubble's root alive until a context-ignoring worker
+			// has retried the released lock, including after the watchdog.
+			<-finished
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
 
-	p, out := humanPrinter()
-	// The command runs in a goroutine so a wait no context bounds fails this
-	// test's own assertion instead of the harness's global timeout: a
-	// one-shot CLI that sits forever behind an editor is the other half of
-	// what the context is for. The deferred release ends the goroutine.
-	type outcome struct {
-		res FmtResult
-		err error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		res, err := RunFmt(ctx, FmtOptions{Paths: []string{"f"}, Printer: p})
-		done <- outcome{res, err}
-	}()
-	var res FmtResult
-	select {
-	case got := <-done:
-		res, err = got.res, got.err
-	case <-time.After(10 * time.Second):
-		t.Fatal("fmt did not come back within 10s though its caller's context ends the wait at 300ms: a command can sit behind an editor's save for as long as the save lasts")
-	}
-	if !errors.Is(err, ErrFmtRefused) {
-		t.Fatalf("fmt over a save in flight = %v, want ErrFmtRefused\n%s", err, out.String())
-	}
-	if len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "authoring lock was not taken") {
-		t.Fatalf("refusals = %v, want the held file named with its cause", res.Refused)
-	}
-	if !strings.Contains(res.Refused[0], "held.bot") {
-		t.Errorf("the refusal does not name the file: %v", res.Refused[0])
-	}
-	if body, _ := os.ReadFile(held); string(body) != looseBot {
-		t.Errorf("the file a save held was formatted anyway:\n%s", body)
-	}
-	if body, _ := os.ReadFile(free); string(body) == looseBot {
-		t.Errorf("one file being saved stopped its neighbour from being formatted")
-	}
-	if len(res.Files) != 1 || res.Files[0].Path != free || !res.Files[0].Written {
-		t.Errorf("written set = %+v, want the free file alone", res.Files)
-	}
+		p, out := humanPrinter()
+		// The command runs in a goroutine so a wait no context bounds fails this
+		// test's own assertion instead of the harness's global timeout: a
+		// one-shot CLI that sits forever behind an editor is the other half of
+		// what the context is for. Cleanup releases the lock and joins it.
+		type outcome struct {
+			res FmtResult
+			err error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			defer close(finished)
+			res, err := RunFmt(ctx, FmtOptions{Paths: []string{"f"}, Printer: p})
+			done <- outcome{res, err}
+		}()
+		var res FmtResult
+		select {
+		case got := <-done:
+			res, err = got.res, got.err
+		case <-time.After(10 * time.Second):
+			t.Fatal("fmt did not come back within 10s though its caller's context ends the wait at 300ms: a command can sit behind an editor's save for as long as the save lasts")
+		}
+		if !errors.Is(err, ErrFmtRefused) {
+			t.Fatalf("fmt over a save in flight = %v, want ErrFmtRefused\n%s", err, out.String())
+		}
+		if len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "authoring lock was not taken") {
+			t.Fatalf("refusals = %v, want the held file named with its cause", res.Refused)
+		}
+		if !strings.Contains(res.Refused[0], "held.bot") {
+			t.Errorf("the refusal does not name the file: %v", res.Refused[0])
+		}
+		if !strings.Contains(res.Refused[0], context.DeadlineExceeded.Error()) {
+			t.Errorf("the refusal lost the caller's deadline: %v", res.Refused[0])
+		}
+		if body, _ := os.ReadFile(held); string(body) != looseBot {
+			t.Errorf("the file a save held was formatted anyway:\n%s", body)
+		}
+		if body, _ := os.ReadFile(free); string(body) == looseBot {
+			t.Errorf("one file being saved stopped its neighbour from being formatted")
+		}
+		if len(res.Files) != 1 || res.Files[0].Path != free || !res.Files[0].Written {
+			t.Errorf("written set = %+v, want the free file alone", res.Files)
+		}
+	})
 }
 
 // botFileWriterAllowed are the files that may call writeFileAtomic without
