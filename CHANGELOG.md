@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.17.0](https://github.com/SocialGouv/iterion/compare/v7.16.0...v7.17.0) (2026-11-19)
+
+### Features
+
+* **connectors:** pollers run — a fenced store, an elected tick, rss and Jira JQL (L4-2, [#3274](https://github.com/SocialGouv/iterion/issues/3274)) ([#3395](https://github.com/SocialGouv/iterion/issues/3395)) ([1322bf7](https://github.com/SocialGouv/iterion/commit/1322bf713fbc32a55ff587701b18a67c529f0def))
+
+    <details><summary>why</summary>
+
+    A trigger with `delivery: poll` is now read (ADR-168 §7, L4-2).
+
+    </details>
+
 ## [7.16.0](https://github.com/SocialGouv/iterion/compare/v7.15.0...v7.16.0) (2026-11-19)
 
 ### Features
