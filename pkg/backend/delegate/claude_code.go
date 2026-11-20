@@ -1950,11 +1950,12 @@ var claudeCodeNoEffortModels = map[string]bool{
 // claudeCodeWireEffort is the effort the claude CLI puts on its requests for
 // model when CLAUDE_CODE_EFFORT_LEVEL says level, as measured on claude CLI
 // 2.1.282 against a recording Anthropic endpoint. The id read is the one the
-// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), resolved
-// the way every registry lookup reads it — alias resolved, a dated snapshot
-// suffix stripped (apikit.NormalizeModelName). A Claude model sends the
-// level its accepted set takes: none for the measured no-effort ids
-// (claudeCodeNoEffortModels), the highest accepted level at or below the one
+// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), normalized
+// by resolving an exact alias and then stripping a dated snapshot suffix
+// (apikit.NormalizeModelName). Bare dated aliases remain bare after stripping
+// and are reported as handed; this is not a canonical registry lookup.
+// A Claude model sends the level its accepted set takes: none for the measured
+// no-effort ids (claudeCodeNoEffortModels), the highest accepted level at or below the one
 // handed otherwise (sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards
 // every level) — the matrix and the rule the claw backend sends by
 // (apikit.EffortCapabilities, effortlevel.Coerce). Any other id (a GLM id on
