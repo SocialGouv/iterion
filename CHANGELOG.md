@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.22.0](https://github.com/SocialGouv/iterion/compare/v7.21.1...v7.22.0) (2026-11-20)
+
+### Features
+
+* **bots:** the catalogue authors literals, not ITERION_VIBE dials ([#2699](https://github.com/SocialGouv/iterion/issues/2699)) ([#3442](https://github.com/SocialGouv/iterion/issues/3442)) ([8adaee5](https://github.com/SocialGouv/iterion/commit/8adaee5a20fd50c7c1c03df6d882a9ba7c43ff6d))
+
+    <details><summary>why</summary>
+
+    Every ${ITERION_VIBE_*:-x} and ${ITERION_MODERNIZE_*:-x} dial in the 13 shipped bots that read one becomes its literal x (ADR-169 decisions 1 and 3). A run with no pin set routes as before. A pin in the pod env, in ITERION_BOT_VARS_ENV_PINS or in a bot-var override no longer moves the bot: a tenant re-targets it with an llmroute override cell.
+
+    </details>
+
+### Bug Fixes
+
+* **cli:** the .env walk-up stops at the git working tree's root ([#3428](https://github.com/SocialGouv/iterion/issues/3428)) ([#3471](https://github.com/SocialGouv/iterion/issues/3471)) ([38fb88e](https://github.com/SocialGouv/iterion/commit/38fb88e6c01a50b3b617e11c08eb38a9bae4cc1a))
+
+    <details><summary>why</summary>
+
+    loadDotEnvFromCwd walked from the working directory to the filesystem root and applied the first .env it found. Run from a git worktree nested in another checkout (<repo>/.claude/worktrees/<name>) with no .env of its own, it applied the enclosing checkout's file: every name envtrust does not refuse was set for a command that runs on another tree, and the refused ones were reported as coming "from the project .env".
+
+    </details>
+
 ## [7.21.1](https://github.com/SocialGouv/iterion/compare/v7.21.0...v7.21.1) (2026-11-20)
 
 ### Bug Fixes
