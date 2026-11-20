@@ -21,7 +21,8 @@ export async function listConnections(
 ): Promise<ConnectorConnection[]> {
   const r = await guard404("connections", () =>
     apiGet("/api/teams/{id}/connections", {
-      params: { id: teamID, ...(connector ? { connector } : {}) },
+      params: { id: teamID },
+      query: { connector: connector || undefined },
     }),
   );
   return (r.connections ?? []) as ConnectorConnection[];
