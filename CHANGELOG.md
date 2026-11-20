@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.22.2](https://github.com/SocialGouv/iterion/compare/v7.22.1...v7.22.2) (2026-11-20)
+
+### Bug Fixes
+
+* **runtime:** a tool node failing identically three times fails for good instead of being redelivered until MaxDeliver ([#3420](https://github.com/SocialGouv/iterion/issues/3420)) ([#3484](https://github.com/SocialGouv/iterion/issues/3484)) ([0b0eddd](https://github.com/SocialGouv/iterion/commit/0b0edddd7e7bd9593cee67cfdaf68cccf8fbdf31))
+
+    <details><summary>why</summary>
+
+    A `command:` / `script:` tool node whose failure is the same every time was classified EXECUTION_FAILED, which the runner reads as transient: it Nak'd at once and the run was resumed on the failed node until the stream's MaxDeliver (8 by default) — seven auto-resumes, a sandbox pod rebuilt each time, about nine minutes, then DLQ_PARKED over the real code. Seen on 2026-11-19 on a run whose `curl` exited 3 every time. producer of TOOL_FAILED_PERMANENT.
+
+    </details>
+* **studio:** the typed client sends query params through an explicit channel ([#3439](https://github.com/SocialGouv/iterion/issues/3439)) ([#3474](https://github.com/SocialGouv/iterion/issues/3474)) ([734ad61](https://github.com/SocialGouv/iterion/commit/734ad6112cb9392abe6025738be5136679c379ad))
+
+    <details><summary>why</summary>
+
+    The plug wizard's account step listed every connection of the team: the typed client's fill() substituted {name} path templates only and dropped every other params key, so listConnections' `connector` never reached GET /api/teams/{id}/connections as ?connector=, which pkg/server filters on.
+
+    </details>
+
 ## [7.22.1](https://github.com/SocialGouv/iterion/compare/v7.22.0...v7.22.1) (2026-11-20)
 
 ### Bug Fixes
