@@ -37,6 +37,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // Subcommand is the hidden iterion sub-command that IS the child. It follows
@@ -391,6 +393,13 @@ type Request struct {
 	// running a script whose capability it cannot serve: see [Proto] for the
 	// half of the handshake this cannot cover.
 	Proto int `json:"proto,omitempty"`
+
+	// Catalog is what `call.describe` and `call.search` answer from (CM-3),
+	// bounded by the parent with [toolindex.Bound]; CatalogOmitted is how many
+	// callable tools that bound left out, which the child cannot count
+	// itself.
+	Catalog        []toolindex.Tool `json:"catalog,omitempty"`
+	CatalogOmitted int              `json:"catalog_omitted,omitempty"`
 }
 
 // Response is the single JSON document the child writes to its stdout. Exactly

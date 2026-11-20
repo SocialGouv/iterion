@@ -828,7 +828,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// declared `on` this backend could not serve before building the task —
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
-		installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
+		if err := installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				// Both directions travel this seam (#3290): the ceiling REDUCES
 				// an over-reaching bound, the floor RAISES one the child could
@@ -840,7 +840,9 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			if b.logger != nil {
 				b.logger.Warn("[%s] %s", task.NodeID, msg)
 			}
-		})
+		}); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
 	}
 
 	// The tool-step budget the node execution shares (claw_step_budget.go):

@@ -8,6 +8,8 @@ import (
 	"io"
 
 	"github.com/dop251/goja"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // Tool-channel descriptor numbers in the CHILD. The parent hands them over at
@@ -55,6 +57,11 @@ type toolBridge struct {
 	// the bridge refuses locally and the channel sees nothing more. Without
 	// the latch a loop would keep paying a round trip per refusal.
 	spent bool
+
+	// index answers `call.describe` and `call.search` (CM-3). It is built in
+	// the child from the request's catalogue, so a lookup costs no round trip
+	// and the parent serves nothing but calls. Nil means an empty index.
+	index *toolindex.Index
 }
 
 func newToolBridge(replies io.Reader, calls io.Writer, limits Limits) *toolBridge {
@@ -81,7 +88,65 @@ var errToolChannelBroken = errors.New("scripthost: the tool channel is broken")
 // arguments or as new frame types, not as a second global: the script surface
 // is part of the prompt cache's prefix, so churning it churns the cache.
 func (b *toolBridge) install(vm *goja.Runtime) error {
-	return vm.Set("call", func(fc goja.FunctionCall) goja.Value {
+	if err := vm.Set("call", b.call(vm)); err != nil {
+		return err
+	}
+	return b.installDiscovery(vm)
+}
+
+// installDiscovery hangs `describe` and `search` on `call` itself (CM-3).
+//
+// Methods of the one global rather than globals of their own, for the reason
+// install states: the script surface is part of the prompt cache's prefix.
+// Both answer from the index the child built from the request's catalogue —
+// the tools the parent's door serves — so a program cannot discover a tool
+// the door would refuse. Their values are strings and fresh objects of
+// strings: no Go value is reflected into the VM.
+func (b *toolBridge) installDiscovery(vm *goja.Runtime) error {
+	index := b.index
+	if index == nil {
+		index = toolindex.New(nil, 0)
+	}
+	call := vm.Get("call").ToObject(vm)
+	if err := call.Set("describe", func(fc goja.FunctionCall) goja.Value {
+		arg := fc.Argument(0)
+		if goja.IsUndefined(arg) || goja.IsNull(arg) || arg.String() == "" {
+			panic(vm.NewTypeError("call.describe(name): the tool name is required"))
+		}
+		name := arg.String()
+		decl, ok := index.Describe(name)
+		if !ok {
+			panic(vm.NewTypeError("call.describe(%q): no tool this program can call is named that — call.search finds one by what it does", name))
+		}
+		return vm.ToValue(decl)
+	}); err != nil {
+		return err
+	}
+	return call.Set("search", func(fc goja.FunctionCall) goja.Value {
+		arg := fc.Argument(0)
+		if goja.IsUndefined(arg) || goja.IsNull(arg) {
+			panic(vm.NewTypeError("call.search(query, limit): the query is required"))
+		}
+		limit := 0
+		if l := fc.Argument(1); !goja.IsUndefined(l) && !goja.IsNull(l) {
+			limit = int(l.ToInteger())
+		}
+		hits := index.Search(arg.String(), limit)
+		out := make([]any, 0, len(hits))
+		for _, h := range hits {
+			obj := vm.NewObject()
+			must(obj.Set("name", h.Name))
+			must(obj.Set("summary", h.Summary))
+			must(obj.Set("declaration", h.Declaration))
+			out = append(out, obj)
+		}
+		return vm.NewArray(out...)
+	})
+}
+
+// call is the binding behind `call(name, input)`.
+func (b *toolBridge) call(vm *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(fc goja.FunctionCall) goja.Value {
 		name := fc.Argument(0).String()
 		if name == "" || goja.IsUndefined(fc.Argument(0)) {
 			panic(vm.NewTypeError("call(name, input): the tool name is required"))
@@ -163,7 +228,7 @@ func (b *toolBridge) install(vm *goja.Runtime) error {
 		must(obj.Set("truncated", out.Truncated))
 		must(obj.Set("remaining", out.Remaining))
 		return obj
-	})
+	}
 }
 
 // roundTrip writes one call and blocks for its result.

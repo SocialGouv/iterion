@@ -39,7 +39,7 @@ func runBounded(t *testing.T, want scripthost.Limits, toolMap map[string]*Genera
 	if err != nil {
 		t.Fatal(err)
 	}
-	return codemodeTool(childHost(), want).Execute(ctx, in)
+	return codemodeTool(childHost(), want, codemodeDescription).Execute(ctx, in)
 }
 
 func TestADeclaredToolCallBoundRefusesTheCallPastIt(t *testing.T) {
@@ -136,7 +136,9 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	}
 
 	var opts GenerationOptions
-	installCodemode(&opts, &scripthost.Limits{ScriptBytes: 10}, nil, nil)
+	if err := installCodemode(&opts, &scripthost.Limits{ScriptBytes: 10}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	if len(opts.Tools) != 1 {
 		t.Fatalf("installCodemode appended %d tool(s), want 1", len(opts.Tools))
 	}
@@ -160,7 +162,9 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	// the spawn, so what this arm asserts is that it is not refused FOR ITS
 	// SIZE — the error, if any, comes from somewhere else.
 	var plain GenerationOptions
-	installCodemode(&plain, nil, nil, nil)
+	if err := installCodemode(&plain, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	_, err = plain.Tools[0].Execute(ctx, in)
 	if err != nil && strings.Contains(err.Error(), scripthost.RefusalScriptBytes) {
 		t.Errorf("nil bounds refused a 200-byte program for its size: %v", err)
