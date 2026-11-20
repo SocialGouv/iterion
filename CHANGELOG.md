@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.23.2](https://github.com/SocialGouv/iterion/compare/v7.23.1...v7.23.2) (2026-11-20)
+
+### Bug Fixes
+
+* stabilize ingress burst witnesses and provider icons ([#3499](https://github.com/SocialGouv/iterion/issues/3499)) ([3f3aeb4](https://github.com/SocialGouv/iterion/commit/3f3aeb4256309c6bd31bc16a2821cd57b6a44ba1)), references [#3413](https://github.com/SocialGouv/iterion/issues/3413) [#3410](https://github.com/SocialGouv/iterion/issues/3410)
+
+    <details><summary>why</summary>
+
+    Freeze the limiter clock in both ingress exhaustion witnesses so slow runners cannot refill their buckets between assertions. Keep production limits and isolation unchanged.
+
+    </details>
+
 ## [7.23.1](https://github.com/SocialGouv/iterion/compare/v7.23.0...v7.23.1) (2026-11-20)
 
 ### Bug Fixes
