@@ -51,7 +51,7 @@ type MongoSource struct {
 	mu       sync.Mutex
 	closed   bool
 	next     uint64
-	active   map[uint64]context.CancelFunc
+	active   map[uint64]context.CancelCauseFunc
 	workers  sync.WaitGroup
 	events   *mongo.Collection
 	runLogs  *mongo.Collection // nil makes SubscribeLogs return ErrLogsUnsupported
@@ -78,12 +78,14 @@ func (m *MongoSource) WithMetrics(reg *metrics.Registry) *MongoSource {
 	return m
 }
 
-// Close cancels and joins subscriptions; the store owns the borrowed client.
+// Close cancels every open subscription with ErrSourceClosed, which each one
+// publishes before it ends, and joins them; the store owns the borrowed
+// client.
 func (m *MongoSource) Close() error {
 	m.mu.Lock()
 	m.closed = true
 	for _, cancel := range m.active {
-		cancel()
+		cancel(ErrSourceClosed)
 	}
 	m.mu.Unlock()
 	m.workers.Wait()
@@ -109,9 +111,11 @@ func (m *MongoSource) SubscribeEventsCursor(ctx context.Context, runID string, c
 		finish()
 		return nil, err
 	}
-	pipe := NewEventPipeWithClose(func() { cancel(); <-done })
+	pipe := NewEventPipeWithClose(func() { cancel(context.Canceled); <-done })
 	go func() {
 		defer finish()
+		defer pipe.Finish(nil)
+		defer failIfSourceClosed(c, pipe.Fail)
 		if selection != nil {
 			m.runSelectedEvents(c, selection, mongoEventPosition{seq: cursor.Seq, after: cursor.After}, pipe)
 		} else {
@@ -125,7 +129,6 @@ func (m *MongoSource) SubscribeEventsCursor(ctx context.Context, runID string, c
 // shared reconnect loop. fromSeq advances past every delivered event so
 // a reconnect neither loses nor re-delivers.
 func (m *MongoSource) runEvents(ctx context.Context, runID string, position mongoEventPosition, pipe EventPipe) {
-	defer pipe.Finish(nil)
 	reconnectLoop(ctx, func(delay time.Duration, err error) {
 		pipe.Warn(fmt.Errorf("runstream/mongo: events stream (will reconnect in %s): %w", delay, err))
 	}, func() (bool, error) {

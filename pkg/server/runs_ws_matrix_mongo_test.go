@@ -56,8 +56,8 @@ type matrixMongoServer struct {
 
 // newMatrixMongoServer builds the cloud wiring over a fresh database. The hook
 // source forwards Close to the MongoSource itself, so a socket that closed the
-// shared source would end every cloud stream as production's would: untyped,
-// MongoSource.Close ending an open stream as a clean terminated. With
+// shared source would end every cloud stream as production's would: typed,
+// MongoSource.Close ending an open stream with runstream.ErrSourceClosed. With
 // observePolls, the selections the source resolves report their terminal
 // reads (matrixPolledSelection).
 func newMatrixMongoServer(t *testing.T, uri string, f store.ValueFormat, observePolls bool) *matrixMongoServer {
@@ -390,8 +390,8 @@ func TestRunWSMatrixLogsAndEventsInBothOrdersNativeMongo(t *testing.T) {
 // never closed by one: once two sockets are live (each received an event),
 // the first closes and the second still receives a new event, and a third
 // subscribes and receives the next. A closed shared source ends the second's
-// stream untyped, as a clean terminated: an error or a terminated envelope
-// before an awaited event fails the row at once.
+// stream typed (event_stream_failed carrying runstream.ErrSourceClosed, WM6):
+// any end before an awaited event fails the row at once.
 func TestRunWSMatrixSharedSourceNativeMongo(t *testing.T) {
 	uri := matrixMongoURI(t)
 	fx := newMatrixMongoServer(t, uri, store.LegacyValueFormat, false)
@@ -423,15 +423,19 @@ func TestRunWSMatrixSharedSourceNativeMongo(t *testing.T) {
 	awaitMatrixLiveEvent(t, second, "third")
 }
 
-// awaitMatrixLiveEvent reads c until the event of node nodeID: an error or a
-// terminated envelope before it — the stream's end — fails at once.
+// awaitMatrixLiveEvent reads c until the event of node nodeID: the stream's
+// end before it — an error envelope (a closed source's is typed), or a clean
+// terminated — fails at once.
 func awaitMatrixLiveEvent(t *testing.T, c *websocket.Conn, nodeID string) {
 	t.Helper()
 	for {
 		env := readEnvelopeWithin(t, c, 10*time.Second)
 		switch env.Type {
-		case wsTypeError, wsTypeTerminated:
-			t.Fatalf("the stream ended before event %s: %s %s", nodeID, env.Type, env.Payload)
+		case wsTypeError:
+			p := errorCodeOf(t, env)
+			t.Fatalf("the stream ended typed before event %s: %s %q", nodeID, p.Code, p.Message)
+		case wsTypeTerminated:
+			t.Fatalf("the stream ended clean before event %s: %s %s", nodeID, env.Type, env.Payload)
 		case wsTypeEvent, wsTypeEventBatch:
 			for _, ev := range decodeEventEnvelope(t, env) {
 				if ev.NodeID == nodeID {
@@ -520,6 +524,49 @@ func TestRunWSMatrixRetenantNativeMongo(t *testing.T) {
 			expectMatrixOriginLost(t, c, "snapshot_failed", `"type":"snapshot"`)
 			if n := fx.hook.eventSubscriptions("r"); n != 1 {
 				t.Fatalf("event subscriptions of r = %d, want only the first", n)
+			}
+		})
+	}
+}
+
+// WM6: a MongoSource close ends every open cloud stream typed — an event
+// stream with event_stream_failed, a log stream with log_stream_failed, both
+// carrying runstream.ErrSourceClosed, never terminated or log_terminated — as
+// a FileSource close does; Close joins its producers and the socket stays
+// open.
+func TestRunWSMatrixSourceCloseEndsTheStreamsTypedNativeMongo(t *testing.T) {
+	uri := matrixMongoURI(t)
+	const originLog = matrixOrigin + " log\n"
+	for _, kind := range []string{"events", "logs"} {
+		t.Run(kind, func(t *testing.T) {
+			fx := newMatrixMongoServer(t, uri, store.LegacyValueFormat, false)
+			fx.seed(t, matrixOrigin, store.RunStatusRunning)
+			c := dialRunWS(t, fx.hs, "r")
+			code := "log_stream_failed"
+			if kind == "events" {
+				code = "event_stream_failed"
+				writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribe})
+				if snap := snapshotOf(t, readEnvelopeWithin(t, c, 10*time.Second)); snap.Run.WorkflowName != matrixOrigin {
+					t.Fatalf("snapshot names %q", snap.Run.WorkflowName)
+				}
+				_, err := fx.ms.AppendEvent(fx.writeAs(t), "r", store.Event{Type: store.EventNodeFinished, NodeID: "live-before-close"})
+				mustWS(t, err)
+				awaitMatrixLiveEvent(t, c, "live-before-close")
+			} else {
+				writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l1"})
+				readUntilAck(t, c, "l1")
+				if got := collectLogText(t, c, "", originLog, 10*time.Second); got != originLog {
+					t.Fatalf("logs of the origin = %q", got)
+				}
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- fx.hook.Close() }()
+			expectMatrixSourceClosed(t, c, code)
+			select {
+			case err := <-closed:
+				mustWS(t, err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("MongoSource.Close did not join its producers")
 			}
 		})
 	}

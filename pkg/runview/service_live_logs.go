@@ -20,12 +20,13 @@ import (
 //
 //   - E1 — the producer's end value, delivered on the lane the subscription
 //     adopted (Terminal: one last drain then the end; Paused: park for the
-//     resume's epoch; Lost: the producer's failure as the stream's error,
-//     never a settle).
+//     resume's epoch; Lost: the producer's failure, typed permanent, as the
+//     stream's error, never a settle).
 //   - E2 — a retained closed epoch: an epoch that closed while the merge was
 //     parked keeps its end, its durability and its cause until observed.
 //   - E3 — no lane and no local producer: a terminal status, a settle window
-//     and one last validated drain. No poll ever ends a live lane.
+//     and one last validated drain, never concluded over a recorded producer
+//     failure. No poll ever ends a live lane.
 //   - The origin's loss: a permanent refusal of the admission's load, of the
 //     retained selection, of a lane's (re)adoption or of the status read with
 //     no lane ends the stream with that refusal, typed. It records no end
@@ -557,6 +558,18 @@ func (m *liveLogMerge) run() {
 				if end != logEndPaused && m.applyEnd(sub.epoch, end, logEndByRetained) {
 					return
 				}
+			}
+			if hook := m.l.beforeLogSettleEnd; hook != nil {
+				hook()
+			}
+			// A producer failure recorded while the window ran — its watch
+			// token may still wait behind this branch — is the stream's end:
+			// the settle never concludes over it, the re-arm applies it.
+			if _, _, failed := m.l.svc.logProducerFailureFor(m.runID); failed {
+				if m.rearm() {
+					return
+				}
+				continue
 			}
 			if m.applyEnd(0, logEndTerminal, logEndBySettle) {
 				return

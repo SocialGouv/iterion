@@ -121,6 +121,14 @@ func (s *Service) InstallLogBufferForTest(runID, birth string, data []byte) func
 	return func() { s.dropRunLog(runID, buf) }
 }
 
+// PrepareRunLogForTest runs a launch's log preparation for runID under ctx —
+// the buffer, its run.log tee and its lane registration (prepareRunLog) —
+// without starting the run. The returned func drops the buffer.
+func (s *Service) PrepareRunLogForTest(ctx context.Context, runID string) func() {
+	buf, _ := s.prepareRunLog(ctx, runID)
+	return func() { s.dropRunLog(runID, buf) }
+}
+
 // logPositionForRun is the callback shape the store uses to stamp
 // Event.LogOffset: returns the current byte total of the per-run log
 // buffer, or 0 when no buffer exists yet (bootstrap events emitted

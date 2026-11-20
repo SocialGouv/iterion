@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -801,4 +802,95 @@ func appendMatrixBudgetWarning(t *testing.T, fx *matrixServer, id, node string) 
 	ev, err := fx.native.AppendEvent(write, id, store.Event{Type: store.EventBudgetWarning, RunID: id, NodeID: node, Data: map[string]any{"dimension": "tokens"}})
 	mustWS(t, err)
 	return ev
+}
+
+// W10: a capture failure of the run's local log producer — run.json
+// unreadable at the capture, or the launch's context cancelled under it,
+// neither cause permanent by itself — ends the bound log stream typed:
+// log_stream_failed carrying the missing capability and the cause, never a
+// clean log_terminated, and the socket stays open. The producer is the real
+// one (PrepareRunLogForTest runs the launch's prepareRunLog).
+func TestRunWSMatrixCaptureFailureEndsTheLogStreamTyped(t *testing.T) {
+	for _, tc := range []struct {
+		name, cause string
+		prepare     func(t *testing.T, fx *matrixServer) (drop func())
+	}{
+		{"run.json unreadable", "permission denied", func(t *testing.T, fx *matrixServer) func() {
+			if os.Geteuid() == 0 {
+				t.Skip("permissions do not bind root")
+			}
+			meta := filepath.Join(fx.srv.cfg.StoreDir, "runs", "r", "run.json")
+			mustWS(t, os.Chmod(meta, 0))
+			restore := sync.OnceFunc(func() {
+				if err := os.Chmod(meta, 0o644); err != nil {
+					t.Errorf("restore permissions of %s: %v", meta, err)
+				}
+			})
+			t.Cleanup(restore)
+			drop := fx.srv.runs.PrepareRunLogForTest(t.Context(), "r")
+			restore()
+			return drop
+		}},
+		{"launch context cancelled", context.Canceled.Error(), func(t *testing.T, fx *matrixServer) func() {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			return fx.srv.runs.PrepareRunLogForTest(ctx, "r")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newMatrixServer(t, matrixOptions{})
+			mustWS(t, seedWSOriginRun(t.Context(), fx.native, "r", matrixOrigin, store.LegacyValueFormat, store.RunStatusRunning, 0))
+			t.Cleanup(tc.prepare(t, fx))
+			c := dialRunWS(t, fx.hs, "r")
+			writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+			env := readEnvelopeWithin(t, c, 10*time.Second, wsTypeError, wsTypeLogTerminated)
+			if env.Type != wsTypeError {
+				t.Fatalf("the log stream ended with %s %s, want log_stream_failed: a capture failure is no clean completion", env.Type, env.Payload)
+			}
+			if p := errorCodeOf(t, env); p.Code != "log_stream_failed" || !strings.Contains(p.Message, store.ErrRunDataCapability.Error()) || !strings.Contains(p.Message, tc.cause) {
+				t.Fatalf("error = %+v, want log_stream_failed carrying %q and %q", p, store.ErrRunDataCapability, tc.cause)
+			}
+			writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "alive"})
+			if pong := readEnvelope(t, c, wsTypePong); pong.AckID != "alive" {
+				t.Fatalf("pong = %+v: the socket did not stay open", pong)
+			}
+		})
+	}
+}
+
+// W11: a producer's failure is never this socket's origin verdict. A
+// producer's capture for ID r found no run (its load answered
+// store.ErrRunNotFound); a run r is then created under the ID — another
+// birth — and a socket bound to it subscribes its logs: log_stream_failed
+// carrying the capture's text, and the socket stays open, no scope_lost.
+func TestRunWSMatrixAProducerFailureIsNotTheSocketsOriginLoss(t *testing.T) {
+	fx := newMatrixServer(t, matrixOptions{})
+	t.Cleanup(fx.srv.runs.PrepareRunLogForTest(t.Context(), "r"))
+	mustWS(t, seedWSOriginRun(t.Context(), fx.native, "r", matrixSuccessor, store.LegacyValueFormat, store.RunStatusRunning, 0))
+	c := dialRunWS(t, fx.hs, "r")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	env := readEnvelopeWithin(t, c, 10*time.Second, wsTypeError, wsTypeLogTerminated)
+	if env.Type != wsTypeError {
+		t.Fatalf("the log stream ended with %s %s, want log_stream_failed", env.Type, env.Payload)
+	}
+	if p := errorCodeOf(t, env); p.Code != "log_stream_failed" || !strings.Contains(p.Message, store.ErrRunNotFound.Error()) {
+		t.Fatalf("error = %+v, want log_stream_failed carrying the capture's %q", p, store.ErrRunNotFound)
+	}
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "alive"})
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		_, raw, err := c.ReadMessage()
+		if err != nil {
+			var ce *websocket.CloseError
+			if errors.As(err, &ce) {
+				t.Fatalf("the socket closed (%d %q) on a producer's failure, which is not its origin verdict", ce.Code, ce.Text)
+			}
+			t.Fatalf("read the pong: %v", err)
+		}
+		var got runWSEnvelope
+		mustWS(t, json.Unmarshal(raw, &got))
+		if got.Type == wsTypePong && got.AckID == "alive" {
+			return
+		}
+	}
 }

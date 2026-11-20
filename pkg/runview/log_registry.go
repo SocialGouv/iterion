@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 
@@ -72,7 +73,8 @@ type logTopic struct {
 	closed  bool
 	end     logEnd
 	durable bool
-	// fail is the typed cause of a logEndLost, when one was recorded.
+	// fail is the cause of a logEndLost, when one was recorded, typed by
+	// permanentLogFailure.
 	fail error
 }
 
@@ -284,6 +286,20 @@ func (r *logRegistry) notifyLocked(runID string) {
 	}
 }
 
+// permanentLogFailure is the one typing of a cause the registry retains: a
+// local producer that failed (its capture, its tee) is gone and no read of
+// the same observation brings its bytes back, so the stream it ends fails
+// permanent (store.ErrRunDataCapability), whatever its own cause. It is never
+// a reader's origin verdict: a cause carrying one (originRefused — the
+// absence, deletion or other birth the producer's own load met) keeps it as
+// text only, so no reader takes it for the loss of the run it is bound to.
+func permanentLogFailure(err error) error {
+	if originRefused(err) {
+		return fmt.Errorf("%v: %w", err, store.ErrRunDataCapability)
+	}
+	return fmt.Errorf("%w: %w", err, store.ErrRunDataCapability)
+}
+
 // recordFailure retains a local producer's capture failure. Against a live
 // topic it is the epoch's end (logEndLost with its cause), published at once
 // and kept by the topic after its bail. Any other state - no topic yet, or a
@@ -301,7 +317,7 @@ func (r *logRegistry) recordFailure(runID string, err error) {
 		delete(r.failures, runID)
 	} else {
 		r.next++
-		r.failures[runID] = &logFailure{err: err, epoch: r.next}
+		r.failures[runID] = &logFailure{err: permanentLogFailure(err), epoch: r.next}
 	}
 	r.notifyLocked(runID)
 }
@@ -445,7 +461,7 @@ func (r *logRegistry) publishEndLocked(tp *logTopic, end logEnd, cause error) {
 	}
 	tp.end = end
 	if cause != nil {
-		tp.fail = cause
+		tp.fail = permanentLogFailure(cause)
 	}
 	tp.closed = true
 	for _, sub := range tp.subs {

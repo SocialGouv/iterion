@@ -2,7 +2,6 @@ package runview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -71,7 +70,8 @@ func classifyLogExit(status store.RunStatus) logEnd {
 // of the log registry, attaching the buffer's wake hook. It returns nil — and
 // no lane — when the store persists no run logs, when the process has no
 // registry, or when the capture fails; a capture failure is RECORDED as the
-// run's typed end (a retained producer failure), never degraded to a settle.
+// run's typed end (a retained producer failure, permanent whatever the
+// capture's own error), never degraded to a settle.
 func (s *Service) registerRunLogOrigin(ctx context.Context, runID string, buf *RunLogBuffer, dur logDurability) *logLane {
 	if s == nil || s.logRegistry == nil || buf == nil {
 		return nil
@@ -92,13 +92,14 @@ func (s *Service) registerRunLogOrigin(ctx context.Context, runID string, buf *R
 		return nil
 	}
 	lane := s.logRegistry.acquire(runID, obs, dur)
-	// The single typing site of a tee failure: the chain carries both the
-	// missing capability and the OS cause, so the stream fails as a permanent
-	// error instead of a silent truncation.
+	// The registry types a tee failure as it types every producer failure it
+	// retains (permanentLogFailure): the chain carries the OS cause and the
+	// missing capability, so the stream fails as a permanent error instead of
+	// a silent truncation.
 	buf.attachLogLane(lane, func(teeErr error) {
 		// The producer already registered: a tee failure after its epoch ended
 		// is late and ignored, never a second end for the same generation.
-		s.recordLogTeeFailure(runID, fmt.Errorf("runview: run %s log tee: %w", runID, errors.Join(store.ErrRunDataCapability, teeErr)))
+		s.recordLogTeeFailure(runID, fmt.Errorf("runview: run %s log tee: %w", runID, teeErr))
 	})
 	return lane
 }

@@ -51,9 +51,11 @@ func (m *MongoSource) SubscribeLogs(ctx context.Context, runID string, fromOffse
 	if fromOffset < 0 {
 		fromOffset = 0
 	}
-	pipe := NewLogPipeWithClose(func() { cancel(); <-done })
+	pipe := NewLogPipeWithClose(func() { cancel(context.Canceled); <-done })
 	go func() {
 		defer finish()
+		defer pipe.Finish(nil)
+		defer failIfSourceClosed(c, pipe.Fail)
 		if selection != nil {
 			m.runSelectedLogs(c, selection, fromOffset, pipe)
 		} else {
@@ -68,7 +70,6 @@ func (m *MongoSource) SubscribeLogs(ctx context.Context, runID string, fromOffse
 // backfill so every chunk persisted before the terminal flip is
 // delivered before the channel closes.
 func (m *MongoSource) runLogStream(ctx context.Context, runID string, fromOffset int64, pipe LogPipe) {
-	defer pipe.Finish(nil)
 	delivered := fromOffset
 	reconnectLoop(ctx, func(delay time.Duration, err error) {
 		pipe.Warn(fmt.Errorf("runstream/mongo: log stream (will reconnect in %s): %w", delay, err))

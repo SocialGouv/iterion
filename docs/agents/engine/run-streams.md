@@ -104,9 +104,8 @@ and deterministic terminal JSON decoding failures are permanent.
 Filesystem selections own their roots; the producer owns and closes returned
 file descriptors. The Source borrows the store. Closing a subscription or
 Source cancels and joins pending initial resolution, the producer and its
-poller before releasing those resources; a `FileSource` close ends its open
-subscriptions with `ErrSourceClosed`, a `MongoSource` close ends them clean
-and untyped (`terminated`, `log_terminated` on the socket).
+poller before releasing those resources; a `FileSource` or `MongoSource`
+close ends its open subscriptions with `ErrSourceClosed`, never a clean end.
 Protocol-one support remains platform-
 dependent and typed-refused where its storage capability is unavailable.
 Historical regular-file opening has its own portable implementation, not a

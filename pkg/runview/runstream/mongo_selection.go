@@ -41,22 +41,22 @@ func NewMongoResolved(resolve MongoResolver, logger *iterlog.Logger) *MongoSourc
 	return m
 }
 
-func (m *MongoSource) register(ctx context.Context) (context.Context, context.CancelFunc, <-chan struct{}, func(), error) {
+func (m *MongoSource) register(ctx context.Context) (context.Context, context.CancelCauseFunc, <-chan struct{}, func(), error) {
 	if ctx == nil {
 		return nil, nil, nil, nil, store.ErrInvalidValueFormat
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, nil, err
 	}
-	c, cancel := context.WithCancel(ctx)
+	c, cancel := context.WithCancelCause(ctx)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		cancel()
+		cancel(context.Canceled)
 		return nil, nil, nil, nil, errMongoSourceClosed
 	}
 	if m.active == nil {
-		m.active = make(map[uint64]context.CancelFunc)
+		m.active = make(map[uint64]context.CancelCauseFunc)
 	}
 	m.next++
 	id := m.next
@@ -67,7 +67,7 @@ func (m *MongoSource) register(ctx context.Context) (context.Context, context.Ca
 	var once sync.Once
 	finish := func() {
 		once.Do(func() {
-			cancel()
+			cancel(context.Canceled)
 			m.mu.Lock()
 			delete(m.active, id)
 			m.mu.Unlock()
@@ -241,7 +241,6 @@ func nextMongoDelay(d time.Duration) time.Duration {
 	return d * 2
 }
 func (m *MongoSource) runSelectedEvents(ctx context.Context, s MongoSelection, pos mongoEventPosition, pipe EventPipe) {
-	defer pipe.Finish(nil)
 	original, observed, err := store.CaptureEventStreamObservation(s)
 	if err != nil {
 		pipe.Fail(err)
@@ -320,7 +319,6 @@ func (m *MongoSource) selectedEventsOnce(ctx context.Context, s MongoSelection, 
 	return false, stream.Err()
 }
 func (m *MongoSource) runSelectedLogs(ctx context.Context, s MongoSelection, from int64, pipe LogPipe) {
-	defer pipe.Finish(nil)
 	delay := 250 * time.Millisecond
 	replay := func(c context.Context) error {
 		var callbackErr error

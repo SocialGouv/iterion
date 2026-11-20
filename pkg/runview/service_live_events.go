@@ -57,6 +57,11 @@ type liveEventStreams struct {
 	//
 	// beforeLogStatusPoll runs before each terminal status read (E3).
 	beforeLogStatusPoll func()
+	// beforeLogSettleEnd runs in the E3 branch once the window is over, the
+	// run re-read terminal and no lane adopted, right before the settle would
+	// conclude: a test records a producer failure there, its watch token
+	// still pending behind the branch.
+	beforeLogSettleEnd func()
 	// beforeLogObserved runs after the watch is installed and before the
 	// initial observation: a test lands a registration and its close in that
 	// window (the observation, or the pending watch token, must still see it).
