@@ -6,7 +6,7 @@
  *   1. Delegate name (exact matches for known delegates)
  *   2. Model prefix before "/" (e.g. "anthropic/claude-sonnet-4" -> "anthropic")
  *   3. Model keyword/substring (e.g. "${ANTHROPIC_MODEL}" -> "anthropic")
- * A spec that carries the gateway protocol's name
+ * A spec that starts with the gateway protocol
  * ("openai_compatible/scaleway/deepseek-v4.1-flash") skips step 2 and reaches
  * step 3 without it -> "deepseek".
  */
@@ -71,12 +71,13 @@ const KEYWORD_MAP: [string, string][] = [
   ["mistral", "mistral"],
   ["mixtral", "mistral"],
   ["deepseek", "deepseek"],
+  // Prefer the whole provider name over its embedded "llama" substring.
+  ["ollama", "ollama"],
   ["llama", "meta"],
   ["cohere", "cohere"],
   ["command-r", "cohere"],
   ["groq", "groq"],
   ["grok", "xai"],
-  ["ollama", "ollama"],
   ["together", "together"],
   ["fireworks", "fireworks"],
   ["bedrock", "bedrock"],
@@ -111,11 +112,12 @@ export function detectProvider(model?: string, delegate?: string): ProviderInfo 
   const lower = model.toLowerCase();
   const m = lower.replace(GATEWAY_PROTOCOL, "");
   // What follows the protocol in a gateway route is the gateway's own
-  // namespace ("scaleway", "azure"), not a vendor prefix: a spec that carried
-  // the protocol's name skips step 2 and the keywords decide, so the model
+  // namespace ("scaleway", "azure"), not a vendor prefix: a spec starting with
+  // the protocol skips step 2 and the keywords decide, so the model
   // keeps the vendor its name carries. A namespace that is itself a keyword
   // (bedrock, groq) still decides when the model's name carries none.
-  const viaGateway = m !== lower;
+  // A protocol-named variable inside a vendor-prefixed spec is not a gateway.
+  const viaGateway = lower.startsWith("openai_compatible/");
 
   // 2. Explicit prefix: "provider/model-id"
   const slashIdx = m.indexOf("/");
