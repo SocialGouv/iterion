@@ -156,11 +156,11 @@ func (r *ModelRegistry) ensureInit() {
 			SupportedReasoningEfforts: anthropicOpus47Effort, DefaultReasoningEffort: "xhigh", ThinkingMode: "adaptive", RejectsSampling: true},
 		{Canonical: "claude-opus-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-4-6"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicOpus46Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
-		// Sonnet 4.7's effort matrix is still not documented by Anthropic
-		// (code.claude.com/docs/en/model-config). Measured, not guessed: the
-		// claude CLI 2.1.282 forwarded every level as handed on recorded
-		// requests (low, medium, high, xhigh, max), so the full ladder is
-		// listed. The API default is unknown — left empty.
+		// This row records claude CLI 2.1.282 forwarding every level as
+		// handed (low, medium, high, xhigh, max) to a recording endpoint;
+		// see delegate's claudeCLIEffortMeasurements. That observation does
+		// not establish that the API accepts this model or these levels.
+		// The API default is unknown — left empty.
 		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-7"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta,
@@ -244,10 +244,12 @@ func stripDatedSuffix(lower string) string {
 	return lower[:len(lower)-9]
 }
 
-// NormalizeModelName resolves a model name or alias the way every lookup
-// reads it: the alias resolved to its canonical form, a trailing snapshot
-// date stripped. Ids the registry does not know come back with the date
-// stripped and otherwise unchanged.
+// NormalizeModelName resolves an exact registered name or alias, then removes
+// one trailing eight-digit snapshot date. It does not resolve again after
+// stripping: "opus-20260101" becomes "opus", unlike LookupModel, which finds
+// the canonical entry. This lexical normalization is not a registry identity.
+// Unknown spellings retain their case, apart from trimming surrounding space
+// and removing the date. A resolved canonical name's date is removed too.
 func NormalizeModelName(nameOrAlias string) string {
 	// stripDatedSuffix only matches '-' and digits, so it reads a name of
 	// any casing.

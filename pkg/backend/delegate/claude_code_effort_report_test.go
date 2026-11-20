@@ -121,6 +121,10 @@ var claudeCLIEffortMeasurements = []struct{ model, level, sent string }{
 	{"claude-opus-5-5-20260101", "xhigh", "xhigh"},
 	{"claude-sonnet-4-5", "medium", ""},
 	{"claude-haiku-4-5-20251001", "high", ""},
+	// Recorded on CLI 2.1.282: bare aliases with a date are sent as handed.
+	// Canonical registry lookup would wrongly report high/none for these.
+	{"sonnet-4-6-20260101", "xhigh", "xhigh"},
+	{"haiku-20260101", "xhigh", "xhigh"},
 }
 
 // claudeCLIEffortPrefixedMeasurements are the id spellings the tree writes
