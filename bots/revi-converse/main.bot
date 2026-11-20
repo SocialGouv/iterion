@@ -492,7 +492,7 @@ agent converse_agent:
   ## cut short rides `unchecked` into the thread (#3283 D8). On
   ## claude_code the same number rides --max-turns.
   tool_max_steps: 20
-  reasoning_effort: "medium"
+  reasoning_effort: medium
   fallbacks:
     glm:
       model: "glm-5.3"

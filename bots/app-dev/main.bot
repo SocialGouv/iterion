@@ -1428,7 +1428,7 @@ agent plan:
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
 
 ## plan_revise — the AUTHOR again, challenging the peer's critique. The
@@ -1444,7 +1444,7 @@ agent plan_revise:
   system: plan_revise_system
   user: plan_revise_user
   session: inherit_if_available
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -1476,7 +1476,7 @@ agent verify_build:
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "medium"
+  reasoning_effort: medium
   interaction: human
 
 ## review — adversarial in-loop self-review (readonly). Runs after the
@@ -1494,7 +1494,7 @@ agent review:
   output: review_output
   system: review_system
   user: review_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
 
 agent finalize_mr:
@@ -1546,7 +1546,7 @@ judge plan_review:
   user: plan_review_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "high"
+  reasoning_effort: high
   fallbacks:
     ## The plan_review_policy switch, expressed as a route gate:
     ## policy "skip" arms this terminal route — a peer failure completes

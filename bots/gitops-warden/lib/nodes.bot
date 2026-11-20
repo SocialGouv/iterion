@@ -11,7 +11,7 @@ agent classify:
   output: classify_output
   system: classify_system
   user: classify_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     ## The same GLM rescue route the reviewer fleet declares, with one

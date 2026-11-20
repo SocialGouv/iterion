@@ -754,7 +754,7 @@ agent campaign:
   system: campaign_system
   user: campaign_user
   capabilities: [board.read, board.create]
-  reasoning_effort: "high"
+  reasoning_effort: high
   interaction: async
 
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
@@ -767,7 +767,7 @@ agent verify_build:
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "medium"
+  reasoning_effort: medium
   interaction: human
 
 ## review — adversarial in-loop self-review (readonly). Runs after the
@@ -787,7 +787,7 @@ agent review:
   output: review_output
   system: review_system
   user: review_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
 
 agent finalize_mr:

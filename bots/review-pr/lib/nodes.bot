@@ -65,7 +65,7 @@ agent converge:
   ## The published run table prints the effort this node was dispatched at
   ## (its `_reasoning_effort_applied`, carried through pr_gate), so a
   ## routing cell over the merge step shows as what it is.
-  reasoning_effort: "medium"
+  reasoning_effort: medium
   ## One firing, after both reviewer branches have settled.
   await: wait_all
   ## No rescue route, like the reviewer: a GLM route belongs to
@@ -129,7 +129,7 @@ judge reviewer_alternate:
   ## shipped uncapped) and the miss path is a soft stop — a truncated but
   ## valid review. Headroom until a live turn count says otherwise.
   tool_max_steps: 60
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     ## GLM, the claude family's other server, when the Anthropic route
@@ -213,7 +213,7 @@ judge reviewer:
   ## path to edit it.
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "high"
+  reasoning_effort: high
 
 ## GLANCE-TIER reviewers (#685). `reasoning_effort:` takes a level or a
 ## quoted `${ENV_VAR:-default}` string, so a `{{vars.x}}` there is a
@@ -239,7 +239,7 @@ judge reviewer_glance:
   user: review_user_gpt
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "medium"
+  reasoning_effort: medium
 
 ## Topology gate. A `condition` router picks a SINGLE target, which is
 ## exactly what single needs; the guard cannot live on `fan`'s own edges

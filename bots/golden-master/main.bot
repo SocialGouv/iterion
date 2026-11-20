@@ -272,7 +272,7 @@ agent oracle_campaign:
   system: campaign_system
   user: campaign_user
   skills: ["golden-master", "surface-discovery", "deterministic-fixture", "canonicalization", "oracle-mutation", "binary-lane"]
-  reasoning_effort: "high"
+  reasoning_effort: high
   interaction: human
 
 ## Isolated on purpose, and a judge rather than an agent: a distinct lens is a

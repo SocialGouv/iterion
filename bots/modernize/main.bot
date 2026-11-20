@@ -399,7 +399,7 @@ agent upgrade_campaign:
   ## withhold WebSearch on claude_code.
   tools: [bash, read_file, glob, grep, write_file, file_edit, notebook_edit, agent, web_fetch, web_search, tool_search, todo_write, skill]
   skills: ["modernize-lots", "plan-contract"]
-  reasoning_effort: "high"
+  reasoning_effort: high
 
 ## ─── Nodes ─────────────────────────────────────────────────────────
 

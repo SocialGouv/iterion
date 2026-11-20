@@ -230,7 +230,7 @@ agent plan:
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     ## Grok is deliberately not listed: its CLI is installed but its account
@@ -251,7 +251,7 @@ agent plan_revise:
   output: plan_revised_output
   system: plan_revise_system
   user: plan_revise_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     kimi_quota:
@@ -281,7 +281,7 @@ agent campaign:
   system: campaign_system
   user: campaign_user
   capabilities: [board.read, board.create]
-  reasoning_effort: "high"
+  reasoning_effort: high
   interaction: async
   ## Kimi cannot carry ask_user_async/await_answers. Keep the campaign on
   ## its async-capable backend; usage-window recovery waits for Claude.
@@ -297,7 +297,7 @@ agent verify_build:
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "medium"
+  reasoning_effort: medium
   interaction: human
   ## No kimi_quota fallback here, on purpose: a synchronous interaction:
   ## is inert on kimi — no ask_user wiring reaches CLI-agent backends
@@ -322,7 +322,7 @@ agent review:
   output: review_output
   system: review_system
   user: review_user
-  reasoning_effort: "high"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     kimi_quota:
