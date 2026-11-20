@@ -208,8 +208,8 @@ func TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead(t *testing.T) {
 // the shipped Revi pair, the pacers and the GLM rescues included, runs on
 // claw against the team's own gateway model. Each node cell fixes the three
 // fields the walk reads (backend, provider, model): the provider cell
-// collapses the slot's own `provider:` dial, so no `${ITERION_VIBE_*}` text
-// is read on any route. Every cell names its bot, so a co-enabled bot's
+// replaces the slot's own `provider:` hint, so no authored route is read on
+// any site. Every cell names its bot, so a co-enabled bot's
 // same-named node stays its own. The node cells also carry the reasoning
 // effort the node runs at (#3283), each with its reason in the fixture's
 // `effort_rationale`; the operator's script applies exactly that block's
@@ -301,7 +301,7 @@ func reviGatewayView(t *testing.T, bot string, wf *ir.Workflow, pol *store.RunLL
 // operator's activation (2026-11-10) read on the bots this repo ships, at
 // the integration level and at the team level: under the block, the walk
 // names the gateway alone, decides every primary site from the cells (the
-// slots' `${ITERION_VIBE_*}` dials are read nowhere), defers and widens
+// slots' authored routes are read nowhere), defers and widens
 // nowhere, and every reader downstream — the call sites the admission keys,
 // the supervisors' runtime specs — sends the gateway model on claw.
 func TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway(t *testing.T) {

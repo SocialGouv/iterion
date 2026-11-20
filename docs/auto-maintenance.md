@@ -239,9 +239,8 @@ produced goes with them. A non-empty list also refuses a launch whose routing
 fields it cannot READ (ADR-129 §5), and this block's own `overrides` cells do
 not repair every such slot: not a node the walk records as fieldless
 (`fieldlessSite` — a `human` node's llm half, a subbot, an agent recovery),
-whose refusal says to replace the node or launch without the list, and not
-`review-pr`'s two `${ITERION_VIBE_PROVIDER_GPT:-}` slots (ADR-129 §7). The
-recipe above carries both — `dep-update-guard`'s `escalate` is
+whose refusal says to replace the node or launch without the list. The
+recipe above carries one — `dep-update-guard`'s `escalate` is
 `interaction: llm_or_human`. So screen EVERY bot the integration enables, not
 the one you are wiring: a refused launch names only ONE unreadable route, the
 head of a list sorted by site then field (`FirstUnreadable`) — a SAMPLE, not

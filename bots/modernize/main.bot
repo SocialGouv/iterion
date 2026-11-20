@@ -374,7 +374,7 @@ schema extend_result:
   acted_blobs: string
 
 agent upgrade_campaign:
-  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: campaign_input
   output: campaign_output
@@ -399,7 +399,7 @@ agent upgrade_campaign:
   ## withhold WebSearch on claude_code.
   tools: [bash, read_file, glob, grep, write_file, file_edit, notebook_edit, agent, web_fetch, web_search, tool_search, todo_write, skill]
   skills: ["modernize-lots", "plan-contract"]
-  reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
+  reasoning_effort: "high"
 
 ## ─── Nodes ─────────────────────────────────────────────────────────
 

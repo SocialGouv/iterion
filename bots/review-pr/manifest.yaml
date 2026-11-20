@@ -1,7 +1,19 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.10.0
+version: 0.11.0
+## 0.11.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
+## The claw reviewers and the merge step carry no empty `provider:` hint
+## any more, and the run table's effort column drops the operator-dial
+## label no route of this bundle can produce.
+##
 ## 0.10.0 — the nodes name ROLES, not vendors (ADR-169): `review_mode` is
 ## `auto | single | paired` (the retired `mono`/`dual` spellings are still
 ## read as `single`/`paired`), `mono_family` is gone, and the reviewer slots

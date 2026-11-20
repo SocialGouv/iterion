@@ -1,7 +1,15 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.7.1
+version: 0.8.0
+## 0.8.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` and `${ITERION_MODERNIZE_*}` dials that read the
+## model, backend, provider and effort from the process environment are
+## gone, each replaced by the default it carried, so a run with no pin set
+## routes exactly as before. A deployment that pinned one (pod env,
+## `ITERION_BOT_VARS_ENV_PINS`, a bot-var override) re-expresses it as a
+## routing cell, an `llmroute` override at the platform, org, team, binding
+## or launch level: the pin alone no longer moves the bot.
 ## 0.7.1 — a lot's wall is 12h and its spend cap 150 $ (they were 4h and
 ## 60 $). Under campaign this bot runs as a subbot, which budgets itself from
 ## its own .bot — no launch override reaches it — and each gate command gets
