@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.23.0](https://github.com/SocialGouv/iterion/compare/v7.22.2...v7.23.0) (2026-11-20)
+
+### Features
+
+* **operatormcp:** remote_status answers the server's version and commit ([#3429](https://github.com/SocialGouv/iterion/issues/3429)) ([#3472](https://github.com/SocialGouv/iterion/issues/3472)) ([00ebc0f](https://github.com/SocialGouv/iterion/commit/00ebc0f7818016abe54bc6c47cabed0966dcbcf7))
+
+    <details><summary>why</summary>
+
+    remote_status (operator MCP) and `iterion remote status` (CLI) now tell what the instance runs, read from its public GET /api/server/info, next to the client's own version. A session deciding whether a prod roll is due no longer has to find that route in the code.
+
+    </details>
+
 ## [7.22.2](https://github.com/SocialGouv/iterion/compare/v7.22.1...v7.22.2) (2026-11-20)
 
 ### Bug Fixes
