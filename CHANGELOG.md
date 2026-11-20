@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.20.0](https://github.com/SocialGouv/iterion/compare/v7.19.2...v7.20.0) (2026-11-20)
+
+### Features
+
+* **connector:** list filters, a connection's scheme kind, and polled setup notes ([#3396](https://github.com/SocialGouv/iterion/issues/3396)) ([#3411](https://github.com/SocialGouv/iterion/issues/3411)) ([7e2c709](https://github.com/SocialGouv/iterion/commit/7e2c70967c3632cbbd0018df26aabd0e23796dd4))
+
+    <details><summary>why</summary>
+
+    Three follow-ups of the event-source catalogue.
+
+    </details>
+
 ## [7.19.2](https://github.com/SocialGouv/iterion/compare/v7.19.1...v7.19.2) (2026-11-19)
 
 ### Bug Fixes
