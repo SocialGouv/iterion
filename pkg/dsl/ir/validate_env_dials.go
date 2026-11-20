@@ -24,6 +24,16 @@ import (
 // group (§6); a third-party `.bot` outside the catalogue keeps its dials and
 // keeps being warned — its reading at the launch gate does not change.
 //
+// The surfaces walked are the ones a run's settings are authored on: every
+// route field (a node's, a fallback route's, a recovery agent's, a
+// supervisor's model, the workflow's default backend), a var default, a
+// shell-bound tool body, a cursor setting and the workflow budget's
+// max_duration. Each is read the way its runtime reader expands it. Left
+// out on purpose, because they configure the host rather than the run:
+// sandbox network rules (the deployment's own hosts, #2099) and an
+// `mcp_server`'s command, args and env (the process-env policy governs
+// them). A bare `$NAME` in a tool body is the child shell's read (ADR-130).
+//
 // Scope, decided on the measured alphabet rather than on a prefix: ANY env
 // name, whatever it is spelled. The ticket's first wording said
 // `${ITERION_*}`. Measured when this guard was written: of the names the
@@ -48,6 +58,27 @@ func (c *compiler) validateEnvDials(w *Workflow) {
 				c.warnfAtProperty(DiagEnvDialInRunSetting, "workflow", w.Name, routeProperty(s.field), msg, s.owner(), s.field, name)
 			default:
 				c.warnfAtProperty(DiagEnvDialInRunSetting, "node", s.nodeID, routeProperty(s.field), msg, s.owner(), s.field, name)
+			}
+		}
+	}
+
+	// A cursor setting is a knob the runtime expands from the environment
+	// before it renders the cursor's calibration (model.resolveCursorFragments,
+	// only when the block is enabled): the same class as a var default.
+	for id, n := range w.Nodes {
+		cn, ok := n.(interface{ GetCursors() *CursorInvocation })
+		if !ok {
+			continue
+		}
+		inv := cn.GetCursors()
+		if inv == nil || !inv.Enabled {
+			continue
+		}
+		for _, set := range inv.Settings {
+			for _, name := range routeEnvNames(set.Value) {
+				c.warnfAtProperty(DiagEnvDialInRunSetting, "node", id, "cursors",
+					"node %q's cursor %q reads the environment: ${%s} — a bot knob's value comes from its authored literal and the levels above it, never from the process environment a run happens to start in (ADR-132 §1). Write the literal here",
+					id, set.Key, name)
 			}
 		}
 	}

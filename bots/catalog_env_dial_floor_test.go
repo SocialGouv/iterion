@@ -278,7 +278,15 @@ func TestCatalogEnvDialFloor(t *testing.T) {
 // Mutation that reddens it: prepend `MODEL=$ITERION_VIBE_MODEL_CLAUDE` to a
 // review-pr tool command — C315 and the floor above stay green, this fails.
 func TestCatalogSpellsNoRetiredDial(t *testing.T) {
-	var files []string
+	// Every shipped `.bot`, declaration fragments (`lib/`) included: the
+	// bundles and examples by walk, then catalogRoots' other roots — the
+	// operator scripts and the dispatcher's embedded fallback.
+	files := []string{dispatchFallbackPath}
+	adhoc, err := filepath.Glob("../scripts/adhoc/*.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, adhoc...)
 	for _, root := range []string{".", "../examples"} {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -293,8 +301,8 @@ func TestCatalogSpellsNoRetiredDial(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(files) == 0 {
-		t.Fatal("no .bot file found — the walk's roots likely moved")
+	if len(adhoc) == 0 || len(files) <= len(adhoc)+1 {
+		t.Fatalf("found %d .bot files (%d under scripts/adhoc) — the walk's roots likely moved", len(files), len(adhoc))
 	}
 	for _, path := range files {
 		raw, err := os.ReadFile(path)

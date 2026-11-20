@@ -382,7 +382,7 @@ const (
 	// Stage 1 changes nothing at runtime, so a deployment's pins keep
 	// working while the catalogue is de-dialled; the hard catalogue floor
 	// arrives with the last de-dialled bot group.
-	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field, var default, tool body) reads the process environment instead of its authored literal and the levels above it (warning)
+	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field incl. a supervisor's model, var default, tool body, cursor setting, budget max_duration) reads the process environment instead of its authored literal and the levels above it (warning)
 
 	// On codex a `tools:` list is not an allowlist: codex runs its built-in
 	// shell outside the SDK's per-name callbacks, so the list buys a SANDBOX
