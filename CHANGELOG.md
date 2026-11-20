@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.22.1](https://github.com/SocialGouv/iterion/compare/v7.22.0...v7.22.1) (2026-11-20)
+
+### Bug Fixes
+
+* **studio:** the plug wizard's account step opens the Connectors tab and returns ([#3432](https://github.com/SocialGouv/iterion/issues/3432)) ([#3473](https://github.com/SocialGouv/iterion/issues/3473)) ([ecc981c](https://github.com/SocialGouv/iterion/commit/ecc981c078e0d1b9b825f4223fe2dafab6d6b9ed))
+
+    <details><summary>why</summary>
+
+    Six items reported on the plug wizard and the connections tab.
+
+    </details>
+
 ## [7.22.0](https://github.com/SocialGouv/iterion/compare/v7.21.1...v7.22.0) (2026-11-20)
 
 ### Features
