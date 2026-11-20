@@ -16,7 +16,7 @@ import (
 // loses a byte to a full channel: the bytes stay in the store and a wake says
 // "read again".
 //
-// A bound stream ends by one of exactly three sources, and no other:
+// A bound stream ends by one of exactly four sources, and no other:
 //
 //   - E1 — the producer's end value, delivered on the lane the subscription
 //     adopted (Terminal: one last drain then the end; Paused: park for the
@@ -25,8 +25,11 @@ import (
 //     parked keeps its end, its durability and its cause until observed.
 //   - E3 — no lane and no local producer: a terminal status, a settle window
 //     and one last validated drain. No poll ever ends a live lane.
+//   - The Service's stop (logEndByStop): StopBackground and Drain cancel every
+//     bound stream — open, being set up or still waiting for its admission —
+//     with ErrSourceClosed, a typed end, never a clean completion.
 //
-// A poll is never a fourth source: on a live lane it only warns once at
+// A poll is never a fifth source: on a live lane it only warns once at
 // logProducerStallWarn.
 
 // Bound log bounds. Vars so a test can tighten them; production reads each
@@ -427,7 +430,7 @@ func (m *liveLogMerge) stopSettle() {
 }
 
 // run merges the retained selection and the run's log lane until one of the
-// three end sources ends it.
+// four end sources ends it.
 func (m *liveLogMerge) run() {
 	chunks, errs := m.inner.Chunks(), m.inner.Errors()
 	ticker := time.NewTicker(m.pollInterval)

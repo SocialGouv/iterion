@@ -34,31 +34,39 @@ bail per holder — the shape of the alert registry, without a payload.
 
 ## The end of a stream
 
-A bound log stream ends on exactly three sources, and no other:
+A bound log stream ends on exactly four sources, and no other:
 
 1. **The producer's own end**, delivered on the lane: terminal (after its
    finalize wrote the last lines), paused (the stream parks; the resume's epoch
-   replaces it), or lost (a typed error, never a clean completion).
+   replaces it), or lost (a typed error, never a clean completion — a local
+   capture failure ends an admitted subscriber's stream with its cause).
 2. **A retained closed epoch** the subscriber observes — the same value, read
    from the registry rather than from the event. The first end of an epoch is
    **sticky**: E1 and E2 can never apply twice.
 3. **No lane and no local producer**: a terminal status plus the settle window
    (500 ms) ends the stream after one last drain. This is the foreign-writer
    promise — a run produced elsewhere on the same host finishes here.
+4. **The Service's stop**: on the native filesystem store, `StopBackground`
+   and `Drain` end every bound log stream — open, being set up or still
+   waiting for its admission — with `runstream.ErrSourceClosed`, never a clean
+   completion. A producer that never renders its own end leaves its stream to
+   this end, never to a silent completion.
 
-A status poll is never a fourth source: on a live lane it only warns once, when
+A status poll is never a fifth source: on a live lane it only warns once, when
 the producer stalls past its grace. The engine persists the terminal status
 *before* its finalize writes the last log lines, so a stream that ended on the
 status would truncate them.
 
 ## What this does not establish
 
-- A lane is not transferred between `Service` instances: after a hot-swap the
-  new Service sees no lane and applies the foreign-writer settle, so a writer
-  still finishing more than the settle window after the status loses its tail.
+- A lane is not transferred between `Service` instances. A hot-swap ends the
+  old Service's bound log streams typed (its stop, above); a client that keeps
+  the run resubscribes from its offset (the studio leaves the run view on a
+  project switch). The new Service sees no lane and applies the
+  foreign-writer settle, so a writer still finishing more than the settle
+  window after the status loses its tail.
 - Cross-store WebSocket connections keep the legacy end model (status-driven),
   and so does any request without a binding.
-- A producer whose capture failed after a subscriber was admitted ends that
-  subscriber's stream with the typed cause; a producer that never renders its
-  own end is ended by `Stop`/`Drain`, never by a silent completion.
-- Cloud log storage stays outside this path (protocol 1 is off).
+- Cloud logs never take this path: the cloud socket reads the change-stream
+  source the server injects, and a store without a root is refused at
+  adoption.

@@ -150,5 +150,7 @@ message is added: older studios, runners and CLIs see the same wire.
   run, expected or not.
 - The socket `answer`'s chat-history failure has no witness: no test surface
   declares `history:`.
+- Mongo's reads of tags, git metadata, turns and route decisions compare no
+  binding yet: their filters carry the run ID and the tenant, never the birth.
 - Authorization: the birth is provenance; standing ticks and the mutation gate
   stay the authority.

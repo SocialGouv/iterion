@@ -201,9 +201,10 @@ func TestRunsWSLogs_MissingLogTerminates(t *testing.T) {
 
 // TestRunsWSLogs_ActiveExternalRunStreamsLive: an ACTIVE run this
 // process did not launch (external `iterion run`, dispatcher) has no
-// in-process buffer — the server must stand up an on-demand run.log
-// tailer and live-stream appended bytes (the EnsureLogSource path; the
-// pre-d4f12e39d bug was a frozen one-shot replay here).
+// in-process buffer. A WS log subscription is bound, so it takes the
+// native log lane — the merge reads run.log through the run's retained
+// selection, never an on-demand tailer (EnsureLogSource) — and must
+// live-stream appended bytes, never a frozen one-shot replay.
 func TestRunsWSLogs_ActiveExternalRunStreamsLive(t *testing.T) {
 	srv, hs := newTestServer(t)
 	st, err := store.New(srv.cfg.StoreDir)

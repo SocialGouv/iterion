@@ -19,9 +19,9 @@ import (
 
 // The bound log path (R54 slice 4, phase 2): a subscription reads the bytes of
 // its retained selection, is woken by its run's log lane, and ends by one of
-// exactly three sources — the producer's end value (E1), a retained closed
-// epoch (E2), or a terminal status with no lane and no local producer (E3). A
-// poll never ends a live lane. These tests drive the production seams:
+// exactly four sources — the producer's end value (E1), a retained closed
+// epoch (E2), a terminal status with no lane and no local producer (E3), or
+// the Service's stop. A poll never ends a live lane. These tests drive the production seams:
 // SubscribeLogs, the registry, the real producers.
 
 // logSink drains one log subscription in the background, accumulating the
@@ -775,9 +775,10 @@ func TestTerminalRunWithoutLaneEndsAfterASettle(t *testing.T) {
 }
 
 // T-HOTSWAP: the lane of the OLD Service is neither transferred nor
-// adoptable. A subscriber of the new Service sees no lane and ends on E3; a
-// write the old producer lands more than the settle window after the status
-// is not delivered. This is the documented limitation of slices 6/7.
+// adoptable. A swap ends the old Service's bound log streams typed (its stop)
+// and a client that keeps the run resubscribes from its offset; a subscriber
+// of the new Service sees no lane and ends on E3, and a write the old producer
+// lands more than the settle window after the status is not delivered.
 func TestHotSwapLaneIsNotAdoptable(t *testing.T) {
 	dir := t.TempDir()
 	native, err := store.New(dir)

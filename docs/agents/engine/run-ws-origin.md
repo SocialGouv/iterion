@@ -73,8 +73,8 @@ filesystem and Mongo stores refuse another birth or tenant under the ID
 (`ErrRunDataIdentityChanged`), a deletion (`ErrRunDeleted`) or an absence
 (`ErrRunNotFound`). Mutating actions keep the unbound `authCtx` unless the
 upgrade was admitted on an expected birth; then they are held to it as
-[run-action-origin.md](run-action-origin.md) says, which the Atomicity item
-below predates. A resume or a child run never inherits the binding.
+[run-action-origin.md](run-action-origin.md) says. A resume or a child run
+never inherits the binding.
 
 ## Source capability
 
@@ -118,16 +118,18 @@ its context) to end with their run; what is still open when the wait ends is
 stopped. A run ID too long for a file name, a symlinked lock or a store root
 that became a file or a link loop refuses the open.
 
-Events of other stores, and logs on every store, keep the path below. For every caller, a permanent refusal of the replay, of the catch-up's run
-load or final replay, or of a persisted log read ends the subscription
+A bound log subscription loads its run first, returning a permanent refusal
+instead of a subscription; after a transient load error its producer retries
+the admission and reads nothing before it. On the native filesystem store it
+takes the log lane ([run-log-origin.md](run-log-origin.md)); other events
+and logs keep the path below. For every caller, a permanent refusal of the
+replay, of the catch-up's run load or final replay, or of a persisted log
+read ends the subscription
 through the producer-only guaranteed `Fail`. `Fail`, `Warn` and `Finish`
 are serialized; a report after `Finish` is dropped. Run metadata that does
 not decode is permanent: both stores wrap it as
 `store.ErrRunMetadataUndecodable`, while an empty `run.json` (a bare
-`io.EOF`, met mid-write) stays transient. A bound log subscription loads its
-run before looking up a buffer or tailer and returns a permanent refusal
-instead of a subscription; after a transient load error its producer retries
-the admission and reads nothing before it. Other transient errors are
+`io.EOF`, met mid-write) stays transient. Other transient errors are
 warnings; a transient final replay keeps tailing and replays again from its
 cursor at the next poll.
 
@@ -173,23 +175,23 @@ The server refusal is the guarantee; the registry is defense in depth.
   reads no foreign store (log, artifacts, files, shell, actions, a child's
   or parent's run and workflow) reads the server's own run of the same ID —
   a class older than the guarantee.
-- Atomicity: routes other than the three bound reads, and every mutation,
-  are admitted, not bound — the run can be replaced before the action; Mongo
-  metadata writes carry no birth predicate.
-- Isolation after admission: alerts, log buffers and tailers stay keyed by
-  run ID, and so do the broker tails of a store other than the native
-  filesystem one, so an open subscription can receive a successor's alerts
-  (there, its in-flight frames) until it ends or a bound read refuses it. A
-  terminal alert a detached sink publishes may miss a stream that ends first;
-  the buffered-alert flush is best effort and the persisted `run_health`
-  twin is the durable carrier.
+- Atomicity: unchecked requests, and checked ones to routes neither bound
+  reads nor mutations, are admitted, not bound; checked mutations:
+  [run-action-origin.md](run-action-origin.md).
+- Isolation after admission: on the native filesystem store, what
+  [run-alert-origin.md](run-alert-origin.md) and
+  [run-log-origin.md](run-log-origin.md) leave keyed by run ID. On another
+  store the Service's own source serves, broker tails, log buffers and
+  tailers stay keyed by ID: a subscription can get a successor's in-flight
+  frames until a bound read refuses. The cloud source checks every live frame.
 - A stale end of events: an episode a resume or rewind reopens only through
   its status (the event not yet written, or never) keeps the previous
   episode's terminal event as read, so its next terminal status ends the
   stream without waiting for its own terminal event.
 - Downloads outside the server (a presigned attachment) and a preview's
   subresources; replication lag under a non-primary read preference.
-- Tenant changes under one birth, or two historical runs.
+- Two historical runs. A tenant changed under one birth is refused by a
+  (re)subscription and the bound reads, not by alert admission.
 - Writers older than birth identities: a v6.0.x writer drops `birth_id`, so
   a newer server reads that run as replaced (a reload recovers). Roll writers
   no later than servers.

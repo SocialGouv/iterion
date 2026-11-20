@@ -172,10 +172,10 @@ implementations.
 
 Every reservation's parent context binds the run the upgrade loaded, so the
 store reads of each subscribe and resubscribe of a socket admit only that
-run, and on the native filesystem store its live events and a registered
-run's alert lane; log buffers and unregistered runs' alerts stay keyed by
-ID ([run-alert-origin.md](run-alert-origin.md)). A redial carries
-the expected birth, compared before upgrade.
+run, and on the native filesystem store its live events, its logs and a
+registered run's alert lane; unregistered runs' alerts stay keyed by ID
+([run-alert-origin.md](run-alert-origin.md)). A redial carries the expected
+birth, compared before upgrade.
 
 ## Event cursor boundaries
 
@@ -183,15 +183,13 @@ the expected birth, compared before upgrade.
 
 ## What this does not establish
 
-A subscription retains its first observation; it cannot bind itself
-retroactively to an earlier HTTP snapshot or authorization check. A WS socket
-binds its later subscriptions to its upgrade's run only by header and format,
-with the limits listed in [run-ws-origin.md](run-ws-origin.md): process-local
-alert, log-buffer and other-store broker keys after admission, Mongo metadata writes,
-tenant changes, unchecked dials. Connection claims, cross-connection
-reconnect and a rendered state for other fatal stream errors remain
-activation obligations. Neither this adapter nor the storage migration
-enables protocol-one admission.
+A subscription retains its first observation; a WS socket binds the run of an
+earlier HTTP snapshot only through the birth its dial carries, compared by the
+gate before the upgrade. Each subscription of a socket is bound to its
+upgrade's observation — header, format and recorded tenant — within the limits
+of [run-ws-origin.md](run-ws-origin.md). A rendered state for fatal stream
+errors other than a lost origin remains an activation obligation. Neither this
+adapter nor the storage migration enables protocol-one admission.
 
 Retained event-origin capture and delivery checks are described in
 [run-event-origins.md](run-event-origins.md), including the observed FS blank-ID
