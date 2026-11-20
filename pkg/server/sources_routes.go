@@ -42,6 +42,10 @@ type sourceEntry struct {
 	// review step — the vendor-side instructions the operator follows
 	// after the binding exists. Empty when the package ships none.
 	Setup string `json:"setup,omitempty"`
+	// SetupPoll is the package's setup-poll.md, shown in place of Setup
+	// when the plugged trigger is polled. Empty when the package ships
+	// none, and the polled flow then shows Setup.
+	SetupPoll string `json:"setup_poll,omitempty"`
 	// Ingress is the package's delivery contract, summarized for the
 	// consent UI: where the credential travels, who mints the secret,
 	// and whether deliveries name an installation. Nil for a package
@@ -192,7 +196,7 @@ func (s *Server) connectorSources(ctx context.Context, cat connection.Catalog, t
 		for _, a := range pkg.Connector.Auth {
 			e.Auth = append(e.Auth, sourceAuthScheme{ID: a.ID, Kind: string(a.Kind), DisplayName: a.DisplayName})
 		}
-		e.Setup = string(pkg.Setup)
+		e.Setup, e.SetupPoll = string(pkg.Setup), string(pkg.SetupPoll)
 		if pkg.Ingress != nil {
 			ing := &sourceIngress{
 				CredentialScheme: pkg.Ingress.Credential.Scheme,

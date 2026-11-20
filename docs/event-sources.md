@@ -52,8 +52,26 @@ link reopens the same step:
 The vendor side is the last manual step: declare the delivery URL and
 the secret on the vendor's webhook settings. When the package ships a
 `setup.md`, the review step shows it verbatim — the package's own
-instructions for that vendor's settings screens. Packages that declare how
-to provision their hook automate this in a later wave (ADR-168 §6).
+instructions for that vendor's settings screens. A package whose
+`setup.md` walks through a webhook may ship a `setup-poll.md` beside it:
+the review step of a polled trigger shows that one instead, and falls back
+to `setup.md` when the package ships none. Each is capped at 32 KiB, and a
+`setup-poll.md` in a package that declares no polled trigger refuses the
+load — nothing would show it. Packages that declare how to provision their
+hook automate this in a later wave (ADR-168 §6).
+
+A **filter** narrows the events a subscription receives to the values the
+operator chose: a `string`, `enum` or `bool` filter reads one value and
+matches when it is one of them; a `list` filter reads a list — a feed
+entry's categories, an issue's labels — and matches when any of its
+elements is. Each value is compared as a launch converts it (a number in
+decimal, a bool as `true`/`false`). The type is declared, not read off each
+event: the wizard picks its input from it (a list filter takes several
+values), and where the package's sample carries the value it must read a
+list for a `list` filter, or the package does not load. An event whose list
+filter reads something other than a list is refused, naming the filter. A
+scalar filter over a list compares the list's JSON text; `type: list` is the
+membership reading.
 
 ## Polled triggers
 
@@ -243,11 +261,13 @@ example is a fictional `probe` vendor, loaded as written by
   appended to it — and takes no path, prefix or parameter that would reshape
   it. A connection URL never carries a user and password: they would be stored
   in the clear; a basic scheme seals them.
-- **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection) and
+- **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection,
+  narrowed by `author` or by a `category` list filter) and
   `jira.issue.changed` (a JQL the operator writes, without `ORDER BY`,
   checkpointed by `updated` and read oldest first, so a scan the page bound
   cuts reads on at the next tick; its first scan reads the last day, so a
-  backfill reaches no further back).
+  backfill reaches no further back; its notes are the package's
+  `setup-poll.md`).
 - **Re-binding** a subscription to the query of another, existing poller
   activates it on that poller's sequence. A revision it already received
   through its first poller is not launched again when the other poller
@@ -264,16 +284,14 @@ example is a fictional `probe` vendor, loaded as written by
   retention delivers the revision again.
 
 A webhook trigger of a package that declares no ingress stays refused at save
-and off the catalogue: no delivery can reach it. Three limits are known: a
+and off the catalogue: no delivery can reach it. Two limits are known: a
 scan whose answer needs more pages than its operation's page bound completes
 only across ticks of an oldest-first timestamp cursor — without
 `order: oldest_first`, or on an opaque cursor, it never completes, so a
-poller whose first answer is that large never primes; an oldest-first scan
-cannot move the checkpoint when every item its page bound holds shares one
-instant, or when more changes fall within one overlap window than the bound
-holds, and reads the same pages on every tick; and filters compare one
-value, so a list-valued output (a feed's categories) is mapped, not filtered
-on.
+poller whose first answer is that large never primes; and an oldest-first
+scan cannot move the checkpoint when every item its page bound holds shares
+one instant, or when more changes fall within one overlap window than the
+bound holds, and reads the same pages on every tick.
 
 ## Icons
 

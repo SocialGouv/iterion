@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v2"
@@ -264,6 +265,11 @@ func validateTriggers(p *Package) error {
 		if err := validateTriggerExtraction(p, t); err != nil {
 			return err
 		}
+	}
+	// Prevents: polled setup notes nothing shows — the wizard reads
+	// setup-poll.md for a polled trigger only.
+	if p.SetupPoll != nil && !slices.ContainsFunc(p.Triggers, Trigger.Polled) {
+		return fmt.Errorf("connector %q: ships %s but declares no polled trigger — the notes are shown for a polled trigger only", p.Connector.ID, SetupPollFile)
 	}
 	return nil
 }

@@ -37,12 +37,17 @@ import (
 // connectionDTO is the API shape of one connection. Built field by field —
 // see the file comment.
 type connectionDTO struct {
-	ID            string     `json:"id"`
-	Connector     string     `json:"connector"`
-	Alias         string     `json:"alias"`
-	DisplayName   string     `json:"display_name,omitempty"`
-	BaseURL       string     `json:"base_url"`
-	SchemeID      string     `json:"scheme_id"`
+	ID          string `json:"id"`
+	Connector   string `json:"connector"`
+	Alias       string `json:"alias"`
+	DisplayName string `json:"display_name,omitempty"`
+	BaseURL     string `json:"base_url"`
+	SchemeID    string `json:"scheme_id"`
+	// SchemeKind is the kind of the credential the connection holds
+	// (spec.AuthKind: api_key, bearer, basic, oauth2, none) — the pinned
+	// placement's, the one a rotation is judged against — so a client picks
+	// the fields a rotation takes without reading Placement, which is prose.
+	SchemeKind    string     `json:"scheme_kind"`
 	Placement     string     `json:"placement"`
 	Capabilities  []string   `json:"capabilities"`
 	GrantedScopes []string   `json:"granted_scopes,omitempty"`
@@ -71,6 +76,7 @@ func connectionDTOOf(c connection.Connection) connectionDTO {
 		DisplayName:   c.DisplayName,
 		BaseURL:       c.BaseURL,
 		SchemeID:      c.SchemeID,
+		SchemeKind:    c.AuthPlacement.Kind,
 		Placement:     c.AuthPlacement.Describe(),
 		Capabilities:  caps,
 		GrantedScopes: c.GrantedScopes,

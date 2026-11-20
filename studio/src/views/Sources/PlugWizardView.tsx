@@ -21,6 +21,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { TagInput } from "@/components/ui/TagInput";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
 import {
   formatPollInterval,
@@ -28,6 +29,7 @@ import {
   pollContractText,
   sourceDeliveryLabel,
   type Source,
+  type SourceFilter,
   type SourceTrigger,
 } from "@/api/sources";
 import { listConnections, patchConnection } from "@/api/connections";
@@ -542,44 +544,59 @@ function StepEvent({
           setPollQuery={setPollQuery}
         />
       )}
-      {selected?.filters?.map((f) => (
-        <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
-          Filtre {f.id}
-          {f.type === "enum" ? (
-            <Select
-              value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) => {
-                const next = { ...filters };
-                if (e.target.value) next[f.id] = [e.target.value];
-                else delete next[f.id]; // untouched and emptied mean the same
-                setFilters(next);
-              }}
-              aria-label={`Filtre ${f.id}`}
-            >
-              {/* The server refills an absent narrowing with the package's
-                  declared default, so "all" is only offered when the
-                  package declares none — otherwise the label would lie. */}
-              {(f.default?.length ?? 0) === 0 && <option value="">— tous —</option>}
-              {(f.options ?? []).map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <Input
-              value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) => {
-                const next = { ...filters };
-                if (e.target.value) next[f.id] = [e.target.value];
-                else delete next[f.id];
-                setFilters(next);
-              }}
-              aria-label={`Filtre ${f.id}`}
-            />
-          )}
-        </label>
-      ))}
+      {selected?.filters?.map((f) =>
+        f.type === "list" ? (
+          <ListFilterField
+            key={`${triggerID}-${f.id}`}
+            inputID={`filter-${triggerID}-${f.id}`}
+            filter={f}
+            values={filters[f.id] ?? []}
+            onChange={(values) => {
+              const next = { ...filters };
+              if (values.length) next[f.id] = values;
+              else delete next[f.id]; // untouched and emptied mean the same
+              setFilters(next);
+            }}
+          />
+        ) : (
+          <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
+            Filtre {f.id}
+            {f.type === "enum" ? (
+              <Select
+                value={filters[f.id]?.[0] ?? ""}
+                onChange={(e) => {
+                  const next = { ...filters };
+                  if (e.target.value) next[f.id] = [e.target.value];
+                  else delete next[f.id]; // untouched and emptied mean the same
+                  setFilters(next);
+                }}
+                aria-label={`Filtre ${f.id}`}
+              >
+                {/* The server refills an absent narrowing with the package's
+                    declared default, so "all" is only offered when the
+                    package declares none — otherwise the label would lie. */}
+                {(f.default?.length ?? 0) === 0 && <option value="">— tous —</option>}
+                {(f.options ?? []).map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <Input
+                value={filters[f.id]?.[0] ?? ""}
+                onChange={(e) => {
+                  const next = { ...filters };
+                  if (e.target.value) next[f.id] = [e.target.value];
+                  else delete next[f.id];
+                  setFilters(next);
+                }}
+                aria-label={`Filtre ${f.id}`}
+              />
+            )}
+          </label>
+        ),
+      )}
       {selected && (
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={onNext} disabled={missingQuery.length > 0}>
@@ -592,6 +609,45 @@ function StepEvent({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ListFilterField narrows on a list the event carries (a feed entry's
+// categories): the operator lists values, and the event matches when any
+// element of its list is one of them. The values are compared as written,
+// case and commas included. A label element would hand its clicks to the
+// first chip's remove button, so the label names the draft input by id.
+function ListFilterField({
+  inputID,
+  filter,
+  values,
+  onChange,
+}: {
+  inputID: string;
+  filter: SourceFilter;
+  values: string[];
+  onChange: (values: string[]) => void;
+}) {
+  // The server refills an emptied narrowing with the package's declared
+  // default, so "empty matches all" is only said when it declares none.
+  const empty =
+    (filter.default?.length ?? 0) === 0
+      ? "vide, tout événement correspond"
+      : "vide, la valeur par défaut du paquet s'applique";
+  return (
+    <div className="flex flex-col gap-1 text-xs text-fg-default">
+      <label htmlFor={inputID}>Filtre {filter.id}</label>
+      <TagInput
+        id={inputID}
+        value={values}
+        onChange={onChange}
+        placeholder="Une valeur, puis Entrée"
+        literalValues
+      />
+      <span className="text-fg-subtle">
+        Correspond si l&apos;événement porte au moins une de ces valeurs ; {empty}.
+      </span>
     </div>
   );
 }
@@ -836,6 +892,9 @@ function StepReview({
 }) {
   const polled = trigger?.delivery === "poll";
   const blocked = missingGrants.length > 0 || (polled && (missingQuery.length > 0 || !backfillValid));
+  // A polled trigger shows the package's polling notes when it ships them:
+  // its setup.md may walk through a webhook the polled flow never adds.
+  const notes = polled ? (source.setup_poll ?? source.setup) : source.setup;
   return (
     <div className="flex flex-col gap-3 text-sm text-fg-default">
       <ul className="flex flex-col gap-1 text-xs text-fg-subtle">
@@ -942,14 +1001,14 @@ function StepReview({
           </p>
         </div>
       )}
-      {source.setup && (
+      {notes && (
         <details className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
           <summary className="cursor-pointer font-medium text-fg-default">
             {polled
               ? `Notes de configuration (${source.display_name})`
               : `Configuration chez le fournisseur (${source.display_name})`}
           </summary>
-          <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{source.setup}</pre>
+          <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{notes}</pre>
         </details>
       )}
       {done ? (
