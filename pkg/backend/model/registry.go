@@ -779,19 +779,26 @@ func (w anthropicEnvWalk) liveCredentials() map[string]string {
 // modelID, in the factory's own order (anthropicEnvWalk), or its typed
 // refusal: the synthesis's, or the subscription switch's.
 //
-// ANTHROPIC_BASE_URL forwards to claw the same redirect the Anthropic SDK and
-// the Claude Code CLI already honour. This is what enables `backend: claw`
-// workflows to reach z.ai's Anthropic-compatible endpoint (GLM-4.5/4.6 via
-// the Coding Plan): set ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic and
-// ANTHROPIC_AUTH_TOKEN (claw's Anthropic provider treats either
-// ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN as auth).
+// The walk reads env credentials only — claw has no login of its own — in
+// this order:
 //
-// ZAI_API_KEY env-fallback: when no Anthropic env auth is present but
-// ZAI_API_KEY is, treat the request as targeting z.ai and synthesise the
-// bearer + base URL automatically. Mirrors the Claude-Code delegate's
-// anthropicCredOptsForCLI so `backend: claw` and `backend: claude_code`
-// behave the same way for desktop users who just dropped a ZAI_API_KEY line
-// in ~/.iterion/env.
+//   - a GLM id, with ZAI_API_KEY set, goes to z.ai on that key whatever
+//     Anthropic credential the env also carries, at ANTHROPIC_BASE_URL when
+//     set, else z.ai's Anthropic-compatible endpoint (glmBaseURL);
+//   - ANTHROPIC_API_KEY is the key, sent to ANTHROPIC_BASE_URL — the
+//     redirect the Anthropic SDK and the Claude Code CLI honour, and the
+//     pair that reaches z.ai or a gateway by key — else to api.anthropic.com;
+//   - with neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN, ZAI_API_KEY
+//     becomes the key and z.ai's endpoint the destination, as in the
+//     claude_code delegate's anthropicCredEnvForCLI, so both backends serve
+//     a desktop user whose ~/.iterion/env holds only that line. A non-GLM id
+//     is refused there unless ANTHROPIC_BASE_URL names another gateway;
+//   - ANTHROPIC_AUTH_TOKEN, or this host's Claude Code credentials when the
+//     env holds none (onto the real Anthropic wire only), rides as the OAuth
+//     bearer when no key precedes it. Toward z.ai's own hosts the bearer
+//     is dropped — a vendor BYOK token is not a subscription bearer — and
+//     the call carries no credential: z.ai is reached by ZAI_API_KEY, or
+//     by ANTHROPIC_API_KEY with the base URL.
 func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvWalk, error) {
 	apiKey := envGetenv(ctx, "ANTHROPIC_API_KEY")
 	baseURL := envGetenv(ctx, "ANTHROPIC_BASE_URL")
