@@ -178,6 +178,22 @@ were the other is the mistake this section exists to prevent. `tools:`
 bounds what *exists*; the policy bounds what may *run*; nothing joins them
 at run time.
 
+**On claw the list is the whole surface, and a rule is not a grant.** A claw
+node holds the tools its `tools:` list names — plus `ask_user` under
+`interaction:`, codemode's tool, and the store tools of a `memory:` block
+where the node declares no `output:` schema (a node that declares one, with
+none of the others, answers through the structured path, whose request sends
+none of them) — and nothing behind them: no `tools:` line there is *no tool at
+all*, the opposite of what it means on claude_code. So `allow: ["Read(**)"]` on a claw node that
+declares no `tools:` approves calls to a tool the node does not hold: the
+model is served nothing to call and the rules bound nothing. **C351** says so
+at compile time, on a route the source sends to claw (a `fallbacks:` route
+included); it stays silent on a node that only inherits the workflow's lists,
+and on a route the source does not decide. A tool node's rung-4 recovery
+agent is the same surface under another name: its `recovery.agent_tools:` list
+is its whole tool list, and **C352** names the agent that declares none on a
+workflow whose `default_backend:` is claw — with or without a gate.
+
 On `claude_code` a `tools:` list is **not** inert. The hard-restrict flag
 `--tools` is deliberately unused (see `pkg/backend/toolcatalog`), but iterion
 turns the list into `claudesdk.WithDisallowedTools`, which the SDK spells as
@@ -831,7 +847,8 @@ decode the native event and spell the native verdict.
 - Diagnostics: **C110** (invalid permission mode), **C111** (a rule list
   that reaches no gated reader — including a workflow list every gated
   reader replaces), **C112** (tool-node `permission:` — parsed but not
-  enforced), **C154** (an entry the gate's parser cannot read, refused at
+  enforced), **C351** (a node's own rule lists on a claw route that serves
+  it no tool), **C352** (a recovery agent served no tool on claw), **C154** (an entry the gate's parser cannot read, refused at
   compile time instead of at dispatch), **C136** / **C176** (a route that
   cannot serve the gate in force for the node, node-declared `ask:` rules
   included).

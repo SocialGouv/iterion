@@ -545,8 +545,8 @@ const (
 type RecoverySpec struct {
 	MaxRepairAttempts int      // rung 3 (self-repair) bound
 	MaxAgentAttempts  int      // rung 4 (agent recovery) bound; 0 = OFF
-	Model             string   // recovery LLM spec (empty = node/workflow default)
-	AgentTools        []string // rung-4 toolset (empty = node capabilities)
+	Model             string   // recovery LLM spec (empty = ITERION_VERIFIED_ACTION_MODEL, else the engine's default)
+	AgentTools        []string // rung-4 toolset, handed verbatim as the synthetic recovery agent's `tools:` (empty = on claw no tool at all, or `codemode` alone under the workflow's `codemode: on`, C352; the backend's own roster elsewhere)
 }
 
 // SubbotNode runs another .bot as a nested run. The runtime resolves With into

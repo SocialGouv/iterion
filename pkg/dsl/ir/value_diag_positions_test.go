@@ -129,6 +129,10 @@ func TestValueDiagnosticsCarryASourcePosition(t *testing.T) {
 		{"agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  ask: [\"Bash(ls)\"]\n  allow: [\"Read(**)\"]\n  a -> done\n", DiagPermissionRulesNoGate, 5, 3, "ask", 0, 0},
 		{"agent a:\n  model: \"m\"\n  ask: [\"Bash(ls)\"]\nworkflow w:\n  entry: a\n  permission: ask\n  ask: [\"Bash(rm)\"]\n  allow: [\"Read(**)\"]\n  a -> done\n", DiagPermissionRulesNoGate, 7, 3, "ask", 0, 0},
 		{"agent a:\n  model: \"m\"\n  permission: off\n  deny: [\"Read(**)\"]\nworkflow w:\n  entry: a\n  permission: ask\n  a -> done\n", DiagPermissionRulesNoGate, 4, 3, "deny", 0, 0},
+		// The node's own list on a claw route that serves it no tool (C351).
+		{"agent a:\n  model: \"m\"\n  backend: \"claw\"\n  permission: deny\n  deny: [\"Read(**)\"]\nworkflow w:\n  entry: a\n  a -> done\n", DiagPermissionRulesNoTools, 5, 3, "deny", 5, 21},
+		// A recovery agent served no tool (C352): the `recovery:` block's line.
+		{"tool t:\n  command: \"./x.sh\"\n  goal: \"g\"\n  postcondition: \"./p.sh\"\n  policy: recover\n  recovery:\n    max_agent_attempts: 1\nworkflow w:\n  entry: t\n  default_backend: \"claw\"\n  t -> done\n", DiagRecoveryAgentNoTools, 6, 3, "recovery", 7, 26},
 		// The workflow's ambient_context (C184 invalid, C185 nothing enforces it).
 		{fmt.Sprintf(wf, "ambient_context", "zz"), DiagInvalidAmbientContext, 5, 3, "ambient_context", 0, 0},
 		// codemode at the workflow level (C337 invalid; C339 is positioned

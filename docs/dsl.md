@@ -657,6 +657,8 @@ tool deploy:
     agent_tools: [read_file, bash]
 ```
 
+`agent_tools:` is the rung-4 agent's whole tool list, handed to it verbatim. On claw the list IS the tool surface, so a rung that declares none dispatches an agent with nothing to call — unless the workflow sets `codemode: on`, which serves it the `codemode` tool ([C352](references/diagnostics.md)); on a CLI backend the same agent keeps that backend's own roster. The agent has no `backend:` of its own: its route is the workflow's `default_backend:`, and the host's choice where the workflow names none.
+
 `parallel_safe: true` is a narrowly scoped assertion for `fan_out_each`: concurrent replays must write only to disjoint item-keyed targets. It does not make a tool generally read-only.
 
 **The third recipe: `action:`** ([ADR-098](adr/098-connector-catalog.md)). A tool node calls a connector operation instead of a shell:
