@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.21.1](https://github.com/SocialGouv/iterion/compare/v7.21.0...v7.21.1) (2026-11-20)
+
+### Bug Fixes
+
+* **dsl:** rules on a claw node that holds no tool are named (C351); C167 stops describing a roster claw does not have ([#3422](https://github.com/SocialGouv/iterion/issues/3422)) ([#3441](https://github.com/SocialGouv/iterion/issues/3441)) ([94a6005](https://github.com/SocialGouv/iterion/commit/94a6005c26da8ba7ab764424d7207515b54c98c4))
+
+    <details><summary>why</summary>
+
+    On claw the declared `tools:` list IS the node's tool surface. An agent or judge that declares its own allow/ask/deny lists and no tool is dispatched with nothing callable: the rules bound nothing, and an `allow:` row, which reads as a grant, grants nothing. `iterion validate` accepted it, and its one diagnostic, C167, said the node "can still call diagnostic_shell, repl" — an ambient built-in set claw does not serve. A bot written by a coding agent shipped exactly this on 2026-11-19; its first…
+
+    </details>
+* **studio:** the source drawer's plug button stays under the studio's base ([#3431](https://github.com/SocialGouv/iterion/issues/3431)) ([#3434](https://github.com/SocialGouv/iterion/issues/3434)) ([23403f5](https://github.com/SocialGouv/iterion/commit/23403f54ff0469bcdf9f12339c17a9416dcfad33))
+
+    <details><summary>why</summary>
+
+    « Brancher sur un bot » navigated with a bare window.location write to /sources/plug, which leaves the studio where the cloud mounts it at /studio (scope.ts: a window.location write must prepend studioBase). It now uses the router's navigation, as the catalogue and the wizard do, so the wizard opens in place, within the base.
+
+    </details>
+
 ## [7.21.0](https://github.com/SocialGouv/iterion/compare/v7.20.1...v7.21.0) (2026-11-20)
 
 ### Features
