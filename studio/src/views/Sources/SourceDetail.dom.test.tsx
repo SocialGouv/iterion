@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
 
 import { SourceDetail } from "./SourceDetail";
 import type { Source } from "@/api/sources";
@@ -39,5 +41,18 @@ describe("SourceDetail", () => {
       "Interrogé toutes les 5 min : voit les versions qu'il observe à chaque lecture",
     );
     expect(polled?.textContent).toContain("Requête : jql *");
+  });
+
+  // The cloud mounts the studio under /studio: the plug button navigates
+  // within that base, never to a path outside the studio.
+  it("plugs into the wizard under the studio's base", () => {
+    const { hook, history } = memoryLocation({ path: "/studio/sources", record: true });
+    render(
+      <Router base="/studio" hook={hook}>
+        <SourceDetail source={MIXED} onClose={() => {}} />
+      </Router>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Brancher sur un bot" }));
+    expect(history[history.length - 1]).toBe("/studio/sources/plug?source=mix");
   });
 });
