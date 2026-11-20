@@ -56,6 +56,9 @@ triggers:
         # An edit is usually typo repair, and a delete rarely deserves a run;
         # a subscription that wants them says so.
         default: [created]
+      # A list filter: a comment on an issue or pull request carrying any of
+      # the chosen label names.
+      - { id: label, from: 'map(payload.issue.labels, l => l.name)', type: list }
     # The loop guard: iterion's own account is the one it comments with, so its
     # comments are dropped before any subscription is read (pkg/forge's
     # project bot is `iterion-bot`).
