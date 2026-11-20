@@ -38,18 +38,18 @@ A bound log stream ends on exactly five sources, and no other:
 
 1. **The producer's own end**, delivered on the lane: terminal (after its
    finalize wrote the last lines), paused (the stream parks; the resume's epoch
-   replaces it), or lost (a typed error, never a clean completion — a local
-   capture failure ends an admitted subscriber's stream with its cause).
+   replaces it), or lost (the producer's failure, as the stream's error; a
+   tee failure is permanent — see the limits below for a capture failure).
 2. **A retained closed epoch** the subscriber observes — the same value, read
    from the registry rather than from the event. The first end of an epoch is
    **sticky**: E1 and E2 can never apply twice.
 3. **No lane and no local producer**: a terminal status plus the settle window
    (500 ms) ends the stream after one last drain. This is the foreign-writer
    promise — a run produced elsewhere on the same host finishes here.
-4. **The origin's loss**: a permanent refusal of the retained selection (a
-   successor, a deletion), of a lane's (re)adoption (a memory-only producer)
-   or of the status read with no lane ends the stream with that refusal,
-   always typed.
+4. **The origin's loss**: a permanent refusal of the admission's load, of
+   the retained selection (a successor, a deletion), of a lane's (re)adoption
+   (a memory-only producer) or of the status read with no lane ends the
+   stream with that refusal, always typed.
 5. **The Service's stop**: on the native filesystem store, `StopBackground`
    ends every bound log stream — open, being set up or still waiting for its
    admission — with `runstream.ErrSourceClosed`, never a clean completion.
@@ -75,7 +75,12 @@ truncate them.
   window after the status loses its tail.
 - A local capture failure is retained by run ID, with no observation: a later
   run under that ID, produced elsewhere, has its bound log subscription
-  refused at setup with that failure, typed.
+  refused at setup with that failure, and an open stream under that ID ends
+  with it. Its cause is permanent only when the capture's own error is (the
+  run read's failure is not): otherwise a socket receives a clean
+  `log_terminated`.
+- With the merge held in delivery past the settle window, the settle (3) can
+  conclude clean over a producer failure recorded in the meantime.
 - Cross-store WebSocket connections keep the legacy end model (status-driven),
   and so does any request without a binding.
 - Cloud logs never take this path: the cloud socket reads the change-stream

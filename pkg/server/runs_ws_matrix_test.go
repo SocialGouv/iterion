@@ -668,9 +668,9 @@ func expectMatrixSourceClosed(t *testing.T, c *websocket.Conn, code string) {
 // with a typed refusal and the scope_lost close; SB receives the successor's
 // alert and nothing of the origin. This row qualifies the production
 // configuration end to end; it is not the witness of its guards: the
-// reservations under the upgrade's binding redden it only on some
-// interleavings (the log parent unbound about two runs in three, the event
-// parent rarely), and W1-W4 witness them deterministically.
+// reservations under the upgrade's binding (the log and the event parent
+// unbound) redden it only on some interleavings, and W1-W4 witness them
+// deterministically.
 func TestRunWSMatrixTwoSocketsAcrossAReplacementWithAlerts(t *testing.T) {
 	fx := newMatrixServer(t, matrixOptions{alerts: true})
 	if fx.srv.runs.AlertManager() == nil {

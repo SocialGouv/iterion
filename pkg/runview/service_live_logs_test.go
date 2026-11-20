@@ -756,11 +756,13 @@ func TestStopEndsAndJoinsAParkedBoundLogStream(t *testing.T) {
 	}
 }
 
-// The origin's loss through the status read: a run with no lane is replaced
-// right before the merge's first status read, which refuses the successor
-// permanently and ends the stream with that refusal — its one error, typed.
-// The stop that follows ends whatever the read left open, so a status read
-// that only warned would leave its warning and the stop's closure instead.
+// The origin's loss with no lane: a run with no lane is replaced right before
+// the merge's first status read. The status read and the retained selection
+// both refuse the successor permanently, and the stream ends with that one
+// refusal, typed. The stop that follows ends whatever the refusal left open,
+// so a status read that only warned would leave its warning and the stop's
+// closure instead; the test does not tell the status read from the
+// selection, which refuses the same successor.
 func TestBoundLogStatusReadRefusalEndsTheStream(t *testing.T) {
 	svc, native := newLogLaneService(t)
 	ctx := t.Context()

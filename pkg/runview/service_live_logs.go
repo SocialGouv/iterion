@@ -20,14 +20,17 @@ import (
 //
 //   - E1 — the producer's end value, delivered on the lane the subscription
 //     adopted (Terminal: one last drain then the end; Paused: park for the
-//     resume's epoch; Lost: a typed error, never a settle).
+//     resume's epoch; Lost: the producer's failure as the stream's error,
+//     never a settle).
 //   - E2 — a retained closed epoch: an epoch that closed while the merge was
 //     parked keeps its end, its durability and its cause until observed.
 //   - E3 — no lane and no local producer: a terminal status, a settle window
 //     and one last validated drain. No poll ever ends a live lane.
-//   - The origin's loss: a permanent refusal of the retained selection, of a
-//     lane's (re)adoption or of the status read with no lane ends the stream
-//     with that refusal, typed. It records no end source.
+//   - The origin's loss: a permanent refusal of the admission's load, of the
+//     retained selection, of a lane's (re)adoption or of the status read with
+//     no lane ends the stream with that refusal, typed. It records no end
+//     source, except another birth's producer failure met at a re-arm, which
+//     records the lane.
 //   - The Service's stop (logEndByStop): StopBackground cancels every bound
 //     stream — open, being set up or still waiting for its admission — with
 //     ErrSourceClosed, a typed end, never a clean completion. Drain lets its
