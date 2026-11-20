@@ -104,10 +104,10 @@ agent campaign:<%template "llm_fields" .%>
 ## as an empty string — a second check here could not fire).
 ## The node's WHOLE stdout is parsed as one JSON object, so the checks'
 ## own output goes to stderr (`>&2`) and stdout carries nothing but the
-## printf: `go test`'s log ahead of it would make the parse fail and the
-## output collapse to `{"result": "<the log>"}` with no `ok` — the gate
-## would then read nil and never converge. stderr still reaches the run
-## log, which is what "see the run log" points at.
+## printf: `go test`'s log ahead of it is not the object `output:`
+## declares, and the node fails there instead of handing the gate its
+## `ok`. stderr still reaches the run log, which is what "see the run
+## log" points at.
 ## The verdict is the checks' real exit code, and `detail` is the tail of
 ## what they printed (the last 4000 characters — a byte bound, since one
 ## line can be a megabyte), which the back-edge hands the next pass: the
@@ -115,8 +115,8 @@ agent campaign:<%template "llm_fields" .%>
 ## log AS IT IS PRODUCED (tee), so a hung or cancelled check still leaves
 ## its partial log. jq builds the whole verdict and the node FAILS when jq
 ## is absent or fails — never a hand-assembled JSON around an empty
-## fragment, which the runtime would wrap as `{"result": …}` in silence
-## and the gate would read as nil forever. A line that could close the
+## fragment, which is not the object `output:` declares and fails the
+## node with a message about its stdout instead of jq. A line that could close the
 ## prompt's fence (``` or ~~~) is prefixed, so the checks' output is data
 ## to the agent, never instructions. jq is pinned in the bundle's
 ## devbox.json (installed on any image that ships devbox) and ships in

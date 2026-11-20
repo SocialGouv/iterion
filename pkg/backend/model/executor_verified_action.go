@@ -269,6 +269,13 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 		return body.shown()
 	}
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
+		// Before the check runs: an output field its producer declared and
+		// did not supply is refused, as in the node's own command — an
+		// oracle that compares against the reference's text answers about
+		// nothing.
+		if err := e.owedOutputRefs(ctx, "postcondition", node.PostcondRefs); err != nil {
+			return toolCommand{}, nil, err
+		}
 		// A postcondition is the AUTHOR's text, like the node's command: its
 		// own references resolve — the env-only class by environment — and
 		// a placeholder that arrived through data stays text.

@@ -616,9 +616,11 @@ print(json.dumps({
 ## verbatim (stage only the listed files; guard against an empty
 ## staged diff so the bot exits cleanly when there's nothing to
 ## commit, e.g. if the human edited the addendum away before
-## confirming).
+## confirming). The node declares `output: commit_result`, so its
+## stdout is that ONE JSON object: git's own summary goes to stderr,
+## and the answer names the commit by its sha.
 tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"
+  command: "git -C {{input.workspace_dir}} add -- {{input.files}} >&2 && if git -C {{input.workspace_dir}} diff --cached --quiet; then printf '{\"success\": true, \"output\": \"nothing to commit\"}'; else git -C {{input.workspace_dir}} commit -m {{input.full_message}} >&2 && SHA=$(git -C {{input.workspace_dir}} rev-parse HEAD) && printf '{\"success\": true, \"output\": \"committed %s\"}' \"$SHA\"; fi"
   input: commit_tool_input
   output: commit_result
 
