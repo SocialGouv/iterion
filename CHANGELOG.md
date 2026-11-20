@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.20.1](https://github.com/SocialGouv/iterion/compare/v7.20.0...v7.20.1) (2026-11-20)
+
+### Bug Fixes
+
+* **studio:** five polish defects on the team pages ([#3418](https://github.com/SocialGouv/iterion/issues/3418)) ([#3430](https://github.com/SocialGouv/iterion/issues/3430)) ([8c7a38a](https://github.com/SocialGouv/iterion/commit/8c7a38afe09f0d876bd7ade6ab57246c13445530)), references [#3426](https://github.com/SocialGouv/iterion/issues/3426)
+
+    <details><summary>why</summary>
+
+    Seen on iterion.cloud while filming a demo on 2026-11-19.
+
+    </details>
+
 ## [7.20.0](https://github.com/SocialGouv/iterion/compare/v7.19.2...v7.20.0) (2026-11-20)
 
 ### Features
