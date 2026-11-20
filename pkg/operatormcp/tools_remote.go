@@ -18,7 +18,7 @@ func remoteTools() []Tool {
 	return []Tool{
 		{
 			Name:        "remote_status",
-			Description: "Show the logged-in remote iterion instance, account and active org/team. Call this first to confirm remote connectivity; if it errors, log in with `iterion remote login <url>` (or set ITERION_REMOTE_URL + ITERION_REMOTE_TOKEN).",
+			Description: "Show the logged-in remote iterion instance, account and active org/team, the client's own version (client_version) and what the instance runs (server.version, server.commit, read from GET /api/server/info). When the instance does not tell its version, server is absent and server_info_error says why; the status still answers. Call this first to confirm remote connectivity; if it errors, log in with `iterion remote login <url>` (or set ITERION_REMOTE_URL + ITERION_REMOTE_TOKEN).",
 			ReadOnly:    true,
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			handler:     handleRemoteStatus,
@@ -337,21 +337,11 @@ func handleRemoteStatus(ctx context.Context, s *Server, raw json.RawMessage) (st
 	if err != nil {
 		return "", false, err
 	}
-	me, err := c.Me(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("reach %s: %w", c.BaseURL(), err)
-	}
-	out, err := marshalText(map[string]any{
-		"instance":       c.BaseURL(),
-		"email":          me.User.Email,
-		"name":           me.User.Name,
-		"is_super_admin": me.User.IsSuperAdmin,
-		"active_org_id":  me.ActiveOrg,
-		"active_team_id": me.ActiveTeam,
-		"orgs":           me.Orgs,
+	out, err := captureJSON(func(p *cli.Printer) error {
+		return cli.RemoteStatusPrint(ctx, c, p)
 	})
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("reach %s: %w", c.BaseURL(), err)
 	}
 	return out, false, nil
 }
