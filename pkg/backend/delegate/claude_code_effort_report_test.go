@@ -100,6 +100,9 @@ func TestClaudeCodeReportsTheEffortItHandsTheCLI(t *testing.T) {
 // model, against a recording Anthropic endpoint (rva-s12-c, 2026-11-16;
 // TestCLILiveClaudeCodeEffort re-measures it): "" is no effort sent.
 var claudeCLIEffortMeasurements = []struct{ model, level, sent string }{
+	{"claude-3-5-haiku-20241022", "high", ""},
+	{"claude-3-5-sonnet-20241022", "high", ""},
+	{"claude-3-5-sonnet-20241022", "max", ""},
 	{"claude-haiku-4-5", "high", ""},
 	{"claude-haiku-4-5", "low", ""},
 	{"claude-sonnet-4-5", "high", ""},
