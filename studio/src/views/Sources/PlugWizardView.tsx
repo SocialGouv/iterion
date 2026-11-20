@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { TagInput } from "@/components/ui/TagInput";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import {
   formatPollInterval,
   listSources,
@@ -42,6 +43,7 @@ import {
 import { createWebhook, listWebhooks, type WebhookWithToken } from "@/api/webhooks";
 import type { ConnectorConnection } from "@/api/connections";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { connectorsTabPath } from "@/views/integrations/connectorsTabPath";
 import type { BotEntryWithSchema } from "@/api/bots";
 import type { UseQueryResult } from "@tanstack/react-query";
 
@@ -84,6 +86,12 @@ export default function PlugWizardView() {
     }
     navigate(`/sources/plug?${next}`, { replace: true });
   };
+  // The Connectors tab, opened on this source's connector, brings the
+  // operator back to this very step — the URL holds every choice made so far.
+  const addConnectionHref = connectorsTabPath({
+    connector: sourceID,
+    returnTo: `/sources/plug?${params}`,
+  });
 
   const sources = useQuery({ queryKey: ["sources"], queryFn: listSources });
   const source: Source | undefined = sources.data?.find(
@@ -339,8 +347,10 @@ export default function PlugWizardView() {
         {step === "account" &&
           (cloud ? (
             <StepAccount
+              source={source}
               connections={connections}
               connectionID={connectionID}
+              addConnectionHref={addConnectionHref}
               onPick={(id) => setParams({ connection: id, step: "event" })}
             />
           ) : (
@@ -409,6 +419,7 @@ export default function PlugWizardView() {
             source={source}
             trigger={trigger}
             connectionID={connectionID}
+            connection={pickedConnection}
             triggerID={triggerID}
             botID={botID}
             pollQuery={serverPollQuery()}
@@ -435,12 +446,16 @@ export default function PlugWizardView() {
 }
 
 function StepAccount({
+  source,
   connections,
   connectionID,
+  addConnectionHref,
   onPick,
 }: {
+  source: Source;
   connections: UseQueryResult<ConnectorConnection[], Error>;
   connectionID: string;
+  addConnectionHref: string;
   onPick: (id: string) => void;
 }) {
   if (connections.isPending) return <Spinner label="Chargement des connexions" />;
@@ -451,33 +466,41 @@ function StepAccount({
     return (
       <EmptyState
         title="Aucune connexion"
-        message="Créez d'abord une connexion pour ce connecteur, depuis la page Intégrations."
+        message={`Créez d'abord une connexion ${source.display_name} : l'onglet Connecteurs des Intégrations s'ouvre sur ce connecteur et vous ramène ici une fois la connexion créée.`}
         action={
-          <Link href="/integrations">
-            <Button variant="secondary">Ouvrir Intégrations</Button>
+          <Link href={addConnectionHref}>
+            <Button variant="secondary">Créer une connexion</Button>
           </Link>
         }
       />
     );
   return (
-    <div className="flex flex-col gap-2" role="radiogroup" aria-label="Connexion">
-      {list.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          role="radio"
-          aria-checked={c.id === connectionID}
-          onClick={() => onPick(c.id)}
-          className={`rounded-[var(--radius-md)] border p-3 text-left text-sm ${
-            c.id === connectionID
-              ? "border-fg-default"
-              : "border-border-default hover:border-fg-subtle"
-          }`}
-        >
-          <span className="font-medium text-fg-default">{c.alias}</span>
-          <span className="text-fg-subtle"> — {c.base_url || c.connector}</span>
-        </button>
-      ))}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" role="radiogroup" aria-label="Connexion">
+        {list.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            role="radio"
+            aria-checked={c.id === connectionID}
+            onClick={() => onPick(c.id)}
+            className={`rounded-[var(--radius-md)] border p-3 text-left text-sm ${
+              c.id === connectionID
+                ? "border-fg-default"
+                : "border-border-default hover:border-fg-subtle"
+            }`}
+          >
+            <span className="font-medium text-fg-default">{c.alias}</span>
+            <span className="text-fg-subtle"> — {c.base_url || c.connector}</span>
+          </button>
+        ))}
+      </div>
+      <Link
+        href={addConnectionHref}
+        className="self-start text-xs text-accent-text underline underline-offset-2"
+      >
+        Créer une autre connexion {source.display_name}
+      </Link>
     </div>
   );
 }
@@ -816,7 +839,10 @@ function StepMapping({
           aria-live="polite"
         >
           {preview.filtered ? (
-            <span className="text-fg-subtle">Filtré : {preview.filtered}</span>
+            <PreviewVerdict
+              sentence="Écarté par le déclencheur avant vos filtres : sa garde anti-boucle ne laisse pas passer cet événement, il ne lancerait rien."
+              detail={preview.filtered}
+            />
           ) : preview.matched ? (
             <>
               <span className="font-medium text-fg-default">
@@ -833,13 +859,48 @@ function StepMapping({
                 </pre>
               )}
             </>
+          ) : preview.refusal ? (
+            <PreviewVerdict
+              sentence="L'abonnement refuserait cet événement : sa configuration (filtres ou mapping) ne s'applique pas à lui, et un nouvel essai n'y changerait rien."
+              detail={[preview.reason, preview.refusal].filter(Boolean).join(" — ")}
+            />
           ) : (
-            <span className="text-fg-subtle">
-              Refusé{preview.reason ? ` : ${preview.reason}` : ""}
-              {preview.refusal ? ` — ${preview.refusal}` : ""}
-            </span>
+            <PreviewVerdict
+              sentence="Cet événement ne passe pas vos filtres : l'abonnement ne lancerait pas le bot."
+              hint={
+                preview.sample
+                  ? "L'échantillon est un exemple fourni par le paquet : vos vrais événements peuvent porter d'autres valeurs."
+                  : undefined
+              }
+              detail={preview.reason}
+            />
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// PreviewVerdict words a preview that launches nothing for the operator, and
+// keeps the server's own account of it — technical, in English — verbatim
+// below, for whoever needs the exact filter and values.
+function PreviewVerdict({
+  sentence,
+  hint,
+  detail,
+}: {
+  sentence: string;
+  hint?: string;
+  detail?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="font-medium text-fg-default">{sentence}</p>
+      {hint && <p className="text-fg-subtle">{hint}</p>}
+      {detail && (
+        <p className="text-fg-subtle">
+          Détail technique : <code className="break-all">{detail}</code>
+        </p>
       )}
     </div>
   );
@@ -849,6 +910,7 @@ function StepReview({
   source,
   trigger,
   connectionID,
+  connection,
   triggerID,
   botID,
   pollQuery,
@@ -871,6 +933,9 @@ function StepReview({
   source: Source;
   trigger?: SourceTrigger;
   connectionID: string;
+  // The picked connection as the account step listed it; absent while the
+  // list loads, or when it does not hold the id the URL names.
+  connection?: ConnectorConnection;
   triggerID: string;
   botID: string;
   pollQuery?: Record<string, string>;
@@ -902,7 +967,18 @@ function StepReview({
           Source : <span className="text-fg-default">{source.display_name}</span>
         </li>
         <li>
-          Connexion : <code>{connectionID}</code>
+          Connexion :{" "}
+          {connection ? (
+            <>
+              <span className="text-fg-default">{connection.alias}</span>
+              {connection.display_name && (
+                <span className="text-fg-default"> — {connection.display_name}</span>
+              )}{" "}
+              <code className="text-fg-muted">({connectionID})</code>
+            </>
+          ) : (
+            <code>{connectionID}</code>
+          )}
         </li>
         <li>
           Événement : <code>{triggerID}</code>
@@ -1008,7 +1084,9 @@ function StepReview({
               ? `Notes de configuration (${source.display_name})`
               : `Configuration chez le fournisseur (${source.display_name})`}
           </summary>
-          <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{notes}</pre>
+          <div className="mt-2">
+            <MarkdownText value={notes} size="sm" />
+          </div>
         </details>
       )}
       {done ? (
