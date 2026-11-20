@@ -94,6 +94,15 @@ describe("sanitizeReturnTo", () => {
     expect(sanitizeReturnTo("//evil.example")).toBeNull();
   });
 
+  // A return target becomes a link's href: what a browser normalizes into
+  // another origin is refused as the plain forms are.
+  it("rejects paths a browser normalizes into another origin", () => {
+    expect(sanitizeReturnTo("/\\evil.example")).toBeNull();
+    expect(sanitizeReturnTo("/%2F%2Fevil.example")).toBeNull();
+    expect(sanitizeReturnTo("/%5cevil.example")).toBeNull();
+    expect(sanitizeReturnTo("javascript:alert(1)")).toBeNull();
+  });
+
   it("rejects empty / missing values", () => {
     expect(sanitizeReturnTo("")).toBeNull();
     expect(sanitizeReturnTo(null)).toBeNull();
