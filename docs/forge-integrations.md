@@ -31,7 +31,11 @@ In the studio, **Integrations → Repositories** (`/integrations`):
    `gate_enabled` pin of
    [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand))
    — offered only for a repo not yet enabled on this connection; an enabled
-   repo changes it on the repo page — and click Enable. The preview says
+   repo changes it on the repo page — optionally name the issue labels that
+   start the bots (**`Start only on these issue labels`**, the integration's
+   `label_allowlist`: empty lets every label a bot reacts to through, and on
+   an enabled repo an untouched field keeps the stored list) and click
+   Enable. The preview says
    `Will deliver to:` and the hook URL about to be registered; the
    connection's **`Webhook delivery`** row above it pins another base for a
    forge that cannot reach this deployment's public URL

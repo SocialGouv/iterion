@@ -167,7 +167,8 @@ describe("EnableRepoPanel — the merge-gate posture", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable" }));
 
     await waitFor(() => expect(enableMock).toHaveBeenCalledTimes(1));
-    // "false" is a string: launch_vars is map[string]string server-side.
+    // "false" is a string: launch_vars is map[string]string server-side. The
+    // trailing undefined is the label filter: an untouched field states none.
     expect(enableMock.mock.calls[0]).toEqual([
       "t1",
       "c1",
@@ -175,6 +176,7 @@ describe("EnableRepoPanel — the merge-gate posture", () => {
       ["review-pr"],
       {},
       { gate_enabled: "false" },
+      undefined,
     ]);
   });
 
