@@ -330,6 +330,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/cloud-troubleshooting.md`](../cloud-troubleshooting.md) | Cloud troubleshooting | Symptoms-first reference for operators running iterion in cloud mode (Helm chart, docker-compose, or any setup using Mongo + NATS +… | — |
 | [`docs/cloud-user.md`](../cloud-user.md) | Iterion cloud — user guide | You signed up for an iterion workspace (or got an invite). | — |
 | [`docs/cloud.md`](../cloud.md) | Cloud Mode | Cloud mode runs iterion as a multi-tenant **control plane for AI agents** — the | — |
+| [`docs/code-architecture.md`](../code-architecture.md) | Code architecture | This page is for contributors: it describes the shape of the code rather than | — |
 | [`docs/comparisons/assets/logos/README.md`](../comparisons/assets/logos/README.md) | Logo and icon provenance | Original assets retrieved on September 11, 2026, stored locally without graphical modification. | — |
 | [`docs/comparisons/feature-inventory.md`](../comparisons/feature-inventory.md) | 🧭 Iterion feature inventory | September 11, 2026 · Capabilities, use cases and limitations of the reviewed version. | — |
 | [`docs/comparisons/feature-matrix.md`](../comparisons/feature-matrix.md) | 🧭 Iterion and alternatives — feature matrix | Documentation reviewed on September 11, 2026. | — |

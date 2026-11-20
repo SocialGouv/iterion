@@ -23,8 +23,8 @@ flowchart LR
 
   subgraph "Data plane"
     NATS[("NATS JetStream<br/>iterion.queue.runs<br/>iterion.queue.runs.dlq<br/>KV iterion-run-locks<br/>pkg/queue/nats")]
-    RUN["iterion runner pool<br/>KEDA-scaled<br/>(pkg/runner)"]
-    SBX["Per-run sandbox pod<br/>(pkg/sandbox<br/>kubernetes driver)"]
+    RUN["iterion runner pool<br/>KEDA-scaled when enabled<br/>(pkg/runner)"]
+    SBX["Per-run sandbox pod,<br/>where the chart enables it:<br/>runner.sandbox.enabled<br/>or a pool's sandbox.enabled<br/>(pkg/sandbox<br/>kubernetes driver)"]
     S3[("S3-compatible blob<br/>artifacts<br/>pkg/store")]
   end
 
@@ -37,7 +37,7 @@ flowchart LR
 
   NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=256)" --> RUN
   RUN -- "claim KV lease<br/>+ heartbeat (~20s)" --> NATS
-  RUN -- "execute" --> SBX
+  RUN -.->|"execute, when enabled"| SBX
   RUN -- "write events / status" --> MONGO
   RUN -- "write artifact bodies" --> S3
 ```
@@ -46,8 +46,10 @@ The two halves are kept deliberately separate:
 
 - The **control plane** (server + Mongo) is the source of truth for
   identity, multi-tenancy, secrets, audit, and run metadata.
-- The **data plane** (NATS + runner pods + sandbox pods + S3) does the
-  expensive work — LLM calls, tool execution, file mutation.
+- The **data plane** (NATS + runner pods + S3, plus a sandbox pod per run
+  where the chart enables the sandbox) does the expensive work — LLM
+  calls, tool execution, file mutation. On the chart's default
+  (`runner.sandbox.enabled: false`) runs execute in the runner pod.
 
 A failure in the data plane (a runner OOMs, NATS reboots, S3 is slow)
 must not lose the run; the control plane keeps the canonical state and

@@ -339,14 +339,14 @@ Three properties worth knowing:
   running a half cycle whose only symptom is a memory that is always empty.
   Docker (bind mount) and unsandboxed runs are unaffected.
 
-  A cloud run is NOT automatically exempt, whatever the sandbox section of
-  [agents/backends](agents/backends/README.md) still
-  says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
-  Measured on the production instance (2026-08-05): the runner's config carries
-  `ITERION_SANDBOX_DEFAULT=auto`, `ITERION_SANDBOX_HOST_STATE=none` and an EMPTY
-  `ITERION_SANDBOX_OVERRIDE` — so a bot that does not opt out gets the
-  kubernetes sandbox and its auto-memory is refused. A cloud bot that wants
-  MEMORY.md declares `sandbox: none` (proven end to end there: one run wrote a
+  A cloud run is exempt only on the chart's default: `runner.sandbox.enabled:
+  false` renders `ITERION_SANDBOX_OVERRIDE=none`, so the agent runs in the
+  runner pod ([sandbox](sandbox.md)). Under `runner.sandbox.enabled`, or a
+  pool's own `sandbox.enabled`, the runner resolves `auto` and a bot that does
+  not opt out gets the kubernetes sandbox, so its auto-memory is refused; the
+  production instance measured on 2026-08-05 was such a deployment
+  (`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY `ITERION_SANDBOX_OVERRIDE`).
+  A cloud bot that wants MEMORY.md there declares `sandbox: none` (proven end to end there: one run wrote a
   note, a second run on a different pod read it back through the store), or
   waits for a read-back seam on the copy-based drivers.
 - `iterion fork` / `rewind` do not carry `--auto-memory`; the bot's DSL
