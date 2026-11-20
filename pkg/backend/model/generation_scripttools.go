@@ -178,6 +178,14 @@ func (s *scriptToolServer) CallTool(_ context.Context, name string, input json.R
 //     quota.
 //   - the script host's own tool, so a script cannot nest another.
 func (s *scriptToolServer) withhold(name string) (string, bool) {
+	return scriptWithheld(name, s.withheld)
+}
+
+// scriptWithheld is the withheld class as a predicate of the tool name and the
+// script host's own name: the ONE rule the server refuses by, the dispatch pin
+// narrows by, and the codemode description and catalogue are composed by
+// (CM-3). A second copy would let the index list a tool the door refuses.
+func scriptWithheld(name, self string) (string, bool) {
 	switch {
 	// The ask channel, from the predicate subagent.go already derives from
 	// the spellings the runtime appends these under — never a fresh list.
@@ -201,7 +209,7 @@ func (s *scriptToolServer) withhold(name string) (string, bool) {
 		return fmt.Sprintf(
 			"tool %q starts a sub-agent, which a script cannot do: a sub-agent spends a budget of its own "+
 				"and must be admitted against the node's reserve. Call it directly instead.", name), true
-	case s.withheld != "" && strings.EqualFold(strings.TrimSpace(name), s.withheld):
+	case self != "" && strings.EqualFold(strings.TrimSpace(name), self):
 		return fmt.Sprintf(
 			"tool %q is the script host itself: a script cannot start another script.", name), true
 	}

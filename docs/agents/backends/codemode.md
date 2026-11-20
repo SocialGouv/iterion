@@ -30,7 +30,7 @@ statements measurement refuted, three of them in this page.
 **And the binding between them**: descriptors 3 and 4, newline-delimited JSON,
 one call in flight. The child writes a call, the parent dispatches it through
 `d.dispatch` and writes the result back; a script sees one host function,
-`call(name, input)`, blocking, because a bare `goja.Runtime` pumps no job queue
+`call(name, input)` (plus `call.describe`/`call.search`), blocking, because a bare `goja.Runtime` pumps no job queue
 and a promise it returned would never settle. `scriptToolServer` lives in
 `pkg/backend/model` because it must: the dispatcher, its context key and its
 fields are unexported, so a broker outside would need the funnel widened —
@@ -52,8 +52,8 @@ so), a typed `ErrCapabilityUnsupported` at dispatch where it is not. That
 refusal ENDS the node — no `fallbacks:` route is tried, as ambient's does not
 either. C338 is retired.
 
-**Not there yet** (claiming it is false): no run-level override, no studio
-form.
+**Discovery** (CM-3): an index in the description, `call.describe`
+and `call.search` in the program — [codemode-discovery](codemode-discovery.md).
 #3155's bench holds; what it still owes is named in
 [posture bench](../testing/deployment-posture-bench.md). Epic
 [#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,

@@ -25,7 +25,11 @@ import (
 // type and reports as a host error — fail-closed, but by the frame check
 // rather than by this number. Said here because it is the half a version
 // handshake does not cover.
-const Proto = 1
+//
+// 2: `call.describe` and `call.search`, answered from the request's catalogue
+// (CM-3). A version-1 child would run a program that uses them into "not a
+// function"; the handshake refuses it as a different build instead.
+const Proto = 2
 
 // Tool-channel frame types. A frame whose type is none of these — including
 // the empty string an old child's bare Response unmarshals to — is a protocol

@@ -64,7 +64,7 @@ func runCodemode(t *testing.T, toolMap map[string]*GenerationTool, source string
 	// load on `race-shard (1)` — the same flake the bko runbook documents
 	// with `gh run rerun` as its remedy. 1 GiB is under scripthost.Ceiling,
 	// so Clamp leaves it alone and no bound under test moves.
-	return codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}).Execute(ctx, in)
+	return codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription).Execute(ctx, in)
 }
 
 // TestCodemodeCallsReachTheNodesOwnDoor is the whole slice in one assertion,
@@ -149,7 +149,7 @@ func TestCodemodeWithoutTheNodesDoorRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := codemodeTool(childHost(), scripthost.Limits{}).Execute(context.Background(), in)
+	out, err := codemodeTool(childHost(), scripthost.Limits{}, codemodeDescription).Execute(context.Background(), in)
 	if err == nil {
 		t.Fatalf("a program ran on a context with no dispatcher, returning %q", out)
 	}
@@ -245,7 +245,7 @@ func TestTwoDispatchesOfTheSameToolDoNotCrossDoors(t *testing.T) {
 	// does not fit in DefaultLimits' 256 MiB. A child dying of memory_exceeded
 	// would be read by the assertion below as a crossing. 1 GiB is under
 	// scripthost.Ceiling, so Clamp leaves it alone.
-	tool := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30})
+	tool := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription)
 
 	var ranA, ranB atomic.Int64
 	_, ctxA := newToolDispatcher(context.Background(), namedTool("ToolA", &ranA), nil, nil, nil, nil, nil)
@@ -331,7 +331,7 @@ func TestADeploymentFailureSaysItIsOne(t *testing.T) {
 
 	// A host that cannot start: the deployment class.
 	broken := scripthost.Host{Binary: filepath.Join(t.TempDir(), "no-such-iterion")}
-	_, hostErr := codemodeTool(broken, scripthost.Limits{}).Execute(ctx, in)
+	_, hostErr := codemodeTool(broken, scripthost.Limits{}, codemodeDescription).Execute(ctx, in)
 	if hostErr == nil {
 		t.Fatal("a Host whose binary does not exist returned no error")
 	}
@@ -386,7 +386,7 @@ func TestACancelledRunIsNotCalledADeploymentFailure(t *testing.T) {
 		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := codemodeTool(childHost(), scripthost.Limits{}).Execute(ctx, in)
+			_, err := codemodeTool(childHost(), scripthost.Limits{}, codemodeDescription).Execute(ctx, in)
 			if err == nil {
 				t.Fatal("an ended context returned no error")
 			}
@@ -691,7 +691,7 @@ func TestAnAskVerdictInsideAProgramDegradesRatherThanPausing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, execErr := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}).Execute(ctx, in)
+	got, execErr := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription).Execute(ctx, in)
 
 	var ask *delegate.ErrAskUser
 	if errors.As(execErr, &ask) {
