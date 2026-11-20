@@ -899,12 +899,12 @@ supervisor persy:
 ## remain the backstop.
 agent plan:
   description: "Author the sweep plan (read-only)"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## plan_revise — the AUTHOR again, challenging the peer's critique. The
@@ -913,14 +913,14 @@ agent plan:
 ## Read-only.
 agent plan_revise:
   description: "Author challenges & integrates the critique"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: plan_revise_input
   output: plan_revised_output
   system: plan_revise_system
   user: plan_revise_user
   session: inherit_if_available
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -935,7 +935,7 @@ agent plan_revise:
 ## mid-run in the message queue) while the blocking ask_user stays for
 ## genuine hard stops (kept rare by the contract).
 agent campaign:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: campaign_input
   output: campaign_output
@@ -945,19 +945,19 @@ agent campaign:
   ## rgaa-audit run filed, listed from here on a manual `--preset rgaa` launch
   ## (a board dispatch hands the issue over as improvement_prompt instead).
   capabilities: [board.read]
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   interaction: async
 
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-site
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
+  reasoning_effort: medium
   interaction: human
 
 agent finalize_mr:
@@ -990,7 +990,7 @@ judge plan_review:
   user: plan_review_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  reasoning_effort: high
   fallbacks:
     ## The plan_review_policy switch, expressed as a route gate:
     ## policy "skip" arms this terminal route — a peer failure completes

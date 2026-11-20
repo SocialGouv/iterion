@@ -41,21 +41,13 @@ func compileCatalogBot(t *testing.T, bot string) *ir.Workflow {
 	return cr.Workflow
 }
 
-// blankReviewPrDials unsets every dial the bot reads, so the run under test is
-// the catalog's own defaults whatever the host exports.
+// blankReviewPrDials unsets the engine settings the bot's supervision reads
+// (its routes are literals), so the run under test is the catalog's own
+// defaults whatever the host exports.
 func blankReviewPrDials(t *testing.T) {
 	t.Helper()
-	for _, dial := range []string{
-		"ITERION_VIBE_MODEL_CLAUDE", "ITERION_VIBE_BACKEND_CLAUDE", "ITERION_VIBE_PROVIDER_CLAUDE",
-		"ITERION_VIBE_MODEL_CLAUDE_GLANCE", "ITERION_VIBE_BACKEND_CLAUDE_GLANCE",
-		"ITERION_VIBE_MODEL_GPT", "ITERION_VIBE_BACKEND_GPT", "ITERION_VIBE_PROVIDER_GPT",
-		"ITERION_VIBE_MODEL_GPT_GLANCE", "ITERION_VIBE_BACKEND_GPT_GLANCE",
-		"ITERION_VIBE_MODEL_EMIT", "ITERION_VIBE_BACKEND_EMIT", "ITERION_VIBE_PROVIDER_EMIT",
-		"ITERION_VIBE_MODEL_EMIT_GPT", "ITERION_VIBE_BACKEND_EMIT_GPT", "ITERION_VIBE_PROVIDER_EMIT_GPT",
-		"ITERION_VIBE_MODEL_SUPERVISOR", "ITERION_VIBE_MODEL_SUPERVISOR_GPT",
-		"ITERION_SUPERVISORS", "ITERION_DEFAULT_SUPERVISOR_MODEL",
-	} {
-		t.Setenv(dial, "")
+	for _, name := range []string{"ITERION_SUPERVISORS", "ITERION_DEFAULT_SUPERVISOR_MODEL"} {
+		t.Setenv(name, "")
 	}
 }
 
@@ -159,15 +151,16 @@ func TestUsageCapPreflight_SingleReviewOnTheReviewPrBot(t *testing.T) {
 		}
 	})
 
-	t.Run("an operator dial still wins on the merge step", func(t *testing.T) {
-		// The merge step's own three dials, moved together onto the capped
-		// wire: an explicit choice is honoured, never silently replaced, and
-		// the pre-flight reads it.
-		t.Setenv("ITERION_VIBE_BACKEND_EMIT_GPT", "claude_code")
-		t.Setenv("ITERION_VIBE_MODEL_EMIT_GPT", "claude-opus-5-5")
-		t.Setenv("ITERION_VIBE_PROVIDER_EMIT_GPT", "anthropic")
-		if err := preflightWithVars(t, soft, ctx, wf, single); err == nil {
-			t.Error("a single review whose merge dials were pointed AT the wire started under a soft cap — the dials must still decide the route")
+	t.Run("a routing cell still wins on the merge step", func(t *testing.T) {
+		// A cell moving the merge step's backend, model and provider together
+		// onto the capped wire: an explicit choice is honoured, never
+		// silently replaced, and the pre-flight reads it.
+		r := capRunner(capTestPolicy(), soft, &capStatusStore{})
+		msg := &queue.RunMessage{RunID: "run-cell", Vars: single, ModelOverrides: []queue.ModelOverride{{
+			Selector: "converge", Backend: "claude_code", Model: "claude-opus-5-5", Provider: "anthropic",
+		}}}
+		if err := r.usageCapPreflight(ctx, wf, msg, iterlog.Nop()); err == nil {
+			t.Error("a single review whose merge step a cell pointed AT the wire started under a soft cap — the cell must still decide the route")
 		}
 	})
 }

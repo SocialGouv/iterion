@@ -369,22 +369,29 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 	}
 }
 
-// The merge step's `backend:` dial serves each backend it names: on claw the
-// declared list IS the node's whole surface and the board capability's append
-// rides it (model.assembleEffectiveTools), so a claw merge must hold the
-// three file tools AND its grant; on a CLI backend the same list narrows the
-// roster instead of leaving the merge listless.
+// The merge step serves each backend a routing cell can move it to: on claw,
+// its authored route, the declared list IS the node's whole surface and the
+// board capability's append rides it (model.assembleEffectiveTools), so a claw
+// merge must hold the three file tools AND its grant; on a CLI backend the
+// same list narrows the roster instead of leaving the merge listless.
 //
 // Asked of the engine, per route, never re-derived: EffectiveBackendName /
 // EffectiveToolNamesOnRoutes, and delegate.BoardToolsFor — the function the
 // append itself calls. A change that stops a route serving the declared
 // surface or the grant reddens here.
-func TestReviewPrTheEmitBackendDialServesEachBackendItNames(t *testing.T) {
-	const dial = "ITERION_VIBE_BACKEND_EMIT_GPT"
-	t.Setenv(dial, "")
-	declared := reviewPrWorkflow(t).Nodes["converge"].(ir.LLMNode).GetLLMFields().Backend
-	if !strings.Contains(declared, "${"+dial) {
-		t.Fatalf("converge declares backend %q — this guard, and the notes it certifies, are about the %s dial", declared, dial)
+func TestReviewPrTheMergeStepServesEachBackendACellCanName(t *testing.T) {
+	wf := reviewPrWorkflow(t)
+	node := wf.Nodes["converge"]
+	if node == nil {
+		t.Fatal("converge is not a node of review-pr")
+	}
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		t.Fatalf("converge is %T, want an LLM node", node)
+	}
+	exec := model.NewProgramExecutor(wf)
+	if route := exec.EffectiveBackendName(node); route != delegate.BackendClaw {
+		t.Fatalf("converge's authored route is %q, want %s — this guard reads claw as the route whose surface is the declared list alone", route, delegate.BackendClaw)
 	}
 
 	reg := delegate.DefaultRegistry(nil)
@@ -394,39 +401,20 @@ func TestReviewPrTheEmitBackendDialServesEachBackendItNames(t *testing.T) {
 	cli := []string{delegate.BackendClaudeCode, delegate.BackendCodex, delegate.BackendPi, delegate.BackendKimi, delegate.BackendGrok, delegate.BackendOpenCode}
 	for _, name := range cli {
 		if _, err := reg.Resolve(name); err != nil {
-			t.Errorf("the merge step's dial may take %q: %v", name, err)
+			t.Errorf("a routing cell may move the merge step to %q: %v", name, err)
 		}
 	}
 
-	owed := func(t *testing.T, id string) (string, []string, []string) {
-		t.Helper()
-		wf := reviewPrWorkflow(t)
-		node := wf.Nodes[id]
-		if node == nil {
-			t.Fatalf("%s is not a node of review-pr", id)
-		}
-		llm, ok := node.(ir.LLMNode)
-		if !ok {
-			t.Fatalf("%s is %T, want an LLM node", id, node)
-		}
+	t.Run("on claw the merge holds its declared surface and its grant", func(t *testing.T) {
 		caps := llm.GetCapabilities()
 		if caps == nil {
 			caps = wf.Capabilities
 		}
 		if !delegate.HasBoardCapability(caps) {
-			t.Fatalf("%s grants no board capability — the surface this guard measures is the one that grant owes", id)
+			t.Fatal("converge grants no board capability — the surface this guard measures is the one that grant owes")
 		}
-		exec := model.NewProgramExecutor(wf)
-		route := exec.EffectiveBackendName(node)
-		return route, delegate.BoardToolsFor(caps), exec.EffectiveToolNamesOnRoutes(node, false, []string{route})
-	}
-
-	t.Run("on claw the merge holds its declared surface and its grant", func(t *testing.T) {
-		t.Setenv(dial, delegate.BackendClaw)
-		route, board, held := owed(t, "converge")
-		if route != delegate.BackendClaw {
-			t.Fatalf("the dial resolved %s, want %s — this arm measures the route the dial names", route, delegate.BackendClaw)
-		}
+		board := delegate.BoardToolsFor(caps)
+		held := exec.EffectiveToolNamesOnRoutes(node, false, []string{delegate.BackendClaw})
 		for _, want := range append([]string{"read_file", "write_file", "glob"}, board...) {
 			if !slices.Contains(held, want) {
 				t.Errorf("converge misses %s on claw (%v) — the route no longer serves the merge's own surface or its grant", want, held)
@@ -435,15 +423,9 @@ func TestReviewPrTheEmitBackendDialServesEachBackendItNames(t *testing.T) {
 	})
 
 	for _, name := range cli {
-		t.Run("the dial reaches "+name, func(t *testing.T) {
-			t.Setenv(dial, name)
-			wf := reviewPrWorkflow(t)
-			node := wf.Nodes["converge"]
-			if route := model.NewProgramExecutor(wf).EffectiveBackendName(node); route != name {
-				t.Errorf("the dial set to %q resolved %q — the note says it moves the merge between the backends", name, route)
-			}
+		t.Run("a cell moving it to "+name, func(t *testing.T) {
 			for _, want := range []string{"read_file", "write_file", "glob"} {
-				if !slices.Contains(node.(ir.LLMNode).GetTools(), want) {
+				if !slices.Contains(llm.GetTools(), want) {
 					t.Errorf("converge declares %q: false — without the three file tools a CLI route narrows past the merge's own work", want)
 				}
 			}

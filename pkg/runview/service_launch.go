@@ -889,7 +889,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// cannot skip it by having been admitted here.
 	//
 	// The engine-injected names are NOT unknowns (#2416): an env-shaped
-	// bot-var name (a provision's stamped ITERION_VIBE_* dials) is answered
+	// bot-var name (a provision's stamped ITERION_* dials) is answered
 	// by the engine's expansion through the bot-vars ladder, so refusing it
 	// refused every API launch of a provisioned bot. The classification is
 	// platformcfg's, shared by every door so the check cannot drift.

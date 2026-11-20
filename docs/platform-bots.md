@@ -424,10 +424,11 @@ iterion remote admin sandbox
 iterion remote admin sandbox set --default-image ghcr.io/…/iterion-sandbox-slim@sha256:…
 iterion remote admin sandbox set --clear-default-image
 
-# Bot-var overrides — ${ITERION_X:-default} resolved from the DB before the pod env
+# Bot-var overrides — ${ITERION_X:-default} knobs (a bound, a threshold, a flag)
+# resolved from the DB before the pod env; a route is an llmroute cell instead
 iterion remote admin vars                        # stored + origin
-iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
-iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE  # back to env/default
+iterion remote admin vars set ITERION_RGAA_MAX_DURATION 4h
+iterion remote admin vars rm  ITERION_RGAA_MAX_DURATION  # back to env/default
 ```
 
 Role overrides apply at every webhook lane that used to read the

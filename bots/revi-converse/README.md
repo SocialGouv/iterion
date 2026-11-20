@@ -61,9 +61,9 @@ converse_health (tool, deterministic — no LLM)
 done
 ```
 
-The agent's model is `${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}` and its
-effort `${ITERION_VIBE_EFFORT_CONVERSE:-medium}`; a routing cell's `effort`
-outranks that dial, and the team-gateway routing block sets `high` (#3283).
+The agent's model is `claude-opus-5-5` and its effort `medium`; a routing
+cell's `effort` outranks that level, and the team-gateway routing block sets
+`high` (#3283).
 Its whole surface is the four tools it declares — `bash`, `read_file`, `glob`,
 `grep` — and no MCP server: the node opts out of the ambient set (`mcp:
 inherit: false`), so neither a plugin's servers nor the repository's

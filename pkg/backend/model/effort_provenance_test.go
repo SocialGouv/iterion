@@ -13,10 +13,11 @@ import (
 // TestTheNodeOutputCarriesTheEffortTheCallRanAt drives a gateway node on
 // claw — the team gateway's route, the platform's `pliage` feed on the run's
 // context — and reads the effort back from the node's OUTPUT, which is where
-// a report reads it. The node's own `reasoning_effort:` is review-pr's
-// reviewer dial, `${ITERION_VIBE_EFFORT_CLAUDE:-high}`, and the environment
-// sets that dial to `max`: a report that read the environment would print
-// `max` whatever the run sent.
+// a report reads it. The node's own `reasoning_effort:` is an env dial,
+// `${ITERION_VIBE_EFFORT_CLAUDE:-high}` (the one review-pr's reviewer read
+// before ADR-169's de-dial; a third-party bot may still read one), and the
+// environment sets that dial to `max`: a report that read the environment
+// would print `max` whatever the run sent.
 //
 //   - a routing cell's `low` wins the dial: the wire carries `low`, the output
 //     says `low` from the cell when the executor knows the launch carried no
