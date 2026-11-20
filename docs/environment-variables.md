@@ -129,6 +129,20 @@ the operator passes through is read live: `.env` is where iterion tells
 people to put run variables, and the hatch itself is read only from the
 inherited environment, so a repository cannot widen its own reach.
 
+### The `.env` walk stops at the git working tree's root
+
+The CLI reads the nearest `.env` walking up from the working directory, and
+the walk stops at the root of the git working tree it starts in: the nearest
+directory whose `.git` git itself accepts — a directory in a primary
+checkout, a `gitdir:` file in a linked worktree or a submodule
+(`pkg/backend/ambient` `IsRepoRoot`, the boundary the bundle lookup shares).
+That root's own `.env` is read; nothing above it is. A worktree nested in
+another checkout (`<repo>/.claude/worktrees/<name>`) with no `.env` of its
+own therefore loads none, rather than the enclosing checkout's, whose values
+configure another tree. Outside any git tree the walk goes on to the
+filesystem root. An empty `.git` placeholder, or a `.git` directory git would
+not open, bounds nothing, as in git's own discovery.
+
 ### Only a human's CLI call loads a workspace `.env`
 
 The auto-load is the CLI's convenience, so it belongs to the invocation a
