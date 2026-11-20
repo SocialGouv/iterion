@@ -15,8 +15,9 @@ import (
 // A Service stop ends every bound subscription it owns on the native
 // filesystem store — open, still being set up, or still waiting for its alert
 // registration or its admission — with runstream.ErrSourceClosed, never a
-// clean end, and joins the waiting ones before it returns. A store other than
-// the native one keeps its admission retry outside the Service.
+// clean end, and joins the waiting ones before it returns; once stopped it
+// refuses a new admission retry. A store other than the native one keeps its
+// admission retry outside the Service.
 
 // alertWaiters counts the alert-registration waits parked on runID.
 func alertWaiters(svc *Service, runID string) int {
@@ -224,6 +225,34 @@ func TestStopEndsABoundLogSubscriptionInItsSetup(t *testing.T) {
 	text, errs := sink.awaitEnd(t, 2*time.Second)
 	if !hasError(errs, runstream.ErrSourceClosed) {
 		t.Fatalf("text %q errors %v, want the typed source closure", text, errs)
+	}
+}
+
+// W8d: a bound log subscription whose admission is transient, opened after
+// StopBackground returned, is refused synchronously with ErrSourceClosed: the
+// stopped Service starts no retry it could no longer join.
+func TestStopRefusesALaterLogAdmissionRetry(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	var calls atomic.Int32
+	svc.logAdmissionHook = func(context.Context, string) error {
+		calls.Add(1)
+		return os.ErrDeadlineExceeded // transient: an admitted retry would follow
+	}
+	bound := boundOriginCtx(t, svc, "r")
+	stopBackgroundWithin(svc, 2*time.Second)
+
+	sub, err := svc.StreamSource().SubscribeLogs(bound, "r", 0)
+	if sub != nil {
+		t.Cleanup(func() { _ = sub.Close() })
+	}
+	if !errors.Is(err, runstream.ErrSourceClosed) {
+		t.Fatalf("SubscribeLogs after the stop = (%v, %v), want ErrSourceClosed", sub, err)
+	}
+	// A retry's next attempt is due 250 ms after the synchronous one.
+	time.Sleep(600 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("admission attempts = %d after the refused subscribe, want the synchronous one only", n)
 	}
 }
 

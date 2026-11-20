@@ -39,7 +39,7 @@ expectation is refused 400 `store_unsupported` (a socket closed with that
 token); without one, every route answers as it would without the gate.
 
 GET of the run, its events and its log read under the admitted origin
-(`store.BindRunObservation`) and answer 409 for a successor. A live log
+and answer 409 for a successor. A live log
 buffer records the birth of the run it was created for — an on-demand
 tailer's, the run it tails, read without the subscriber's binding — and a
 tailer writes only to its own buffer. A bound request or log subscription
@@ -183,7 +183,8 @@ The server refusal is the guarantee; the registry is defense in depth.
   [run-log-origin.md](run-log-origin.md) leave keyed by run ID. On another
   store the Service's own source serves, broker tails, log buffers and
   tailers stay keyed by ID: a subscription can get a successor's in-flight
-  frames until a bound read refuses. The cloud source checks every live frame.
+  frames until it ends or a bound read refuses it. The cloud source checks
+  every live frame.
 - A stale end of events: an episode a resume or rewind reopens only through
   its status (the event not yet written, or never) keeps the previous
   episode's terminal event as read, so its next terminal status ends the

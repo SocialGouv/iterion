@@ -56,7 +56,8 @@ type matrixMongoServer struct {
 
 // newMatrixMongoServer builds the cloud wiring over a fresh database. The hook
 // source forwards Close to the MongoSource itself, so a socket that closed the
-// shared source would end every cloud stream as production's would. With
+// shared source would end every cloud stream as production's would: untyped,
+// MongoSource.Close ending an open stream as a clean terminated. With
 // observePolls, the selections the source resolves report their terminal
 // reads (matrixPolledSelection).
 func newMatrixMongoServer(t *testing.T, uri string, f store.ValueFormat, observePolls bool) *matrixMongoServer {
@@ -386,8 +387,11 @@ func TestRunWSMatrixLogsAndEventsInBothOrdersNativeMongo(t *testing.T) {
 }
 
 // WM3 (R8): the cloud source is the Service's, shared by every socket and
-// never closed by one: after the first of two live sockets closes, the second
-// still receives a new event, and a third subscribes and receives the next.
+// never closed by one: once two sockets are live (each received an event),
+// the first closes and the second still receives a new event, and a third
+// subscribes and receives the next. A closed shared source ends the second's
+// stream untyped, as a clean terminated: an error or a terminated envelope
+// before an awaited event fails the row at once.
 func TestRunWSMatrixSharedSourceNativeMongo(t *testing.T) {
 	uri := matrixMongoURI(t)
 	fx := newMatrixMongoServer(t, uri, store.LegacyValueFormat, false)
@@ -407,13 +411,35 @@ func TestRunWSMatrixSharedSourceNativeMongo(t *testing.T) {
 		mustWS(t, err)
 	}
 	first, second := subscribe(), subscribe()
+	appendLive("before-close")
+	awaitMatrixLiveEvent(t, first, "before-close")
+	awaitMatrixLiveEvent(t, second, "before-close")
 	closeMatrixSocket(t, first)
 	appendLive("after-close")
-	awaitWireEvent(t, second, "after-close", 10*time.Second)
+	awaitMatrixLiveEvent(t, second, "after-close")
 	third := subscribe()
 	appendLive("third")
-	awaitWireEvent(t, third, "third", 10*time.Second)
-	awaitWireEvent(t, second, "third", 10*time.Second)
+	awaitMatrixLiveEvent(t, third, "third")
+	awaitMatrixLiveEvent(t, second, "third")
+}
+
+// awaitMatrixLiveEvent reads c until the event of node nodeID: an error or a
+// terminated envelope before it — the stream's end — fails at once.
+func awaitMatrixLiveEvent(t *testing.T, c *websocket.Conn, nodeID string) {
+	t.Helper()
+	for {
+		env := readEnvelopeWithin(t, c, 10*time.Second)
+		switch env.Type {
+		case wsTypeError, wsTypeTerminated:
+			t.Fatalf("the stream ended before event %s: %s %s", nodeID, env.Type, env.Payload)
+		case wsTypeEvent, wsTypeEventBatch:
+			for _, ev := range decodeEventEnvelope(t, env) {
+				if ev.NodeID == nodeID {
+					return
+				}
+			}
+		}
+	}
 }
 
 // closeMatrixSocket closes c with the close handshake: it returns once the

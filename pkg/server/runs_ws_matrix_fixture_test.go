@@ -27,11 +27,17 @@ import (
 // dials pass the origin gate. Its stream source is the Service's own, behind
 // matrixHookSource, installed after construction: the Service's native live
 // streams are built inside NewService and survive it.
+//
+// The default fixture wires no alert manager, while every production server
+// does (cmd/iterion/server.go, pkg/cli/studio.go, pkg/cli/workspace_studio.go
+// set Config.Alerts): its rows isolate the merge that holds no registry lane,
+// which production reaches whenever a merge holds none. matrixOptions.alerts
+// is the production configuration.
 
 // matrixOptions selects the fixture's variant.
 type matrixOptions struct {
-	// alerts wires the run console's alert manager (Config.Alerts): the
-	// registry lane stands behind the socket.
+	// alerts wires the run console's alert manager (Config.Alerts), as every
+	// production server does: the registry lane stands behind the socket.
 	alerts bool
 	// legacy rebuilds the Service over a store wrapper that endorses itself:
 	// the legacy stream path. Only W0's control arm asks for it.

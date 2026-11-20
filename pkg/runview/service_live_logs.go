@@ -16,7 +16,7 @@ import (
 // loses a byte to a full channel: the bytes stay in the store and a wake says
 // "read again".
 //
-// A bound stream ends by one of exactly four sources, and no other:
+// A bound stream ends by one of exactly five sources, and no other:
 //
 //   - E1 — the producer's end value, delivered on the lane the subscription
 //     adopted (Terminal: one last drain then the end; Paused: park for the
@@ -25,12 +25,17 @@ import (
 //     parked keeps its end, its durability and its cause until observed.
 //   - E3 — no lane and no local producer: a terminal status, a settle window
 //     and one last validated drain. No poll ever ends a live lane.
-//   - The Service's stop (logEndByStop): StopBackground and Drain cancel every
-//     bound stream — open, being set up or still waiting for its admission —
-//     with ErrSourceClosed, a typed end, never a clean completion.
+//   - The origin's loss: a permanent refusal of the retained selection, of a
+//     lane's (re)adoption or of the status read with no lane ends the stream
+//     with that refusal, typed. It records no end source.
+//   - The Service's stop (logEndByStop): StopBackground cancels every bound
+//     stream — open, being set up or still waiting for its admission — with
+//     ErrSourceClosed, a typed end, never a clean completion. Drain lets its
+//     runs end first, so their streams may end on E1; its stop then cancels
+//     what is still open the same way.
 //
-// A poll is never a fifth source: on a live lane it only warns once at
-// logProducerStallWarn.
+// A poll never ends a live lane: there it only warns once at
+// logProducerStallWarn; with no lane it arms E3 or reports the origin's loss.
 
 // Bound log bounds. Vars so a test can tighten them; production reads each
 // once at subscribe time so a later change cannot retune a running stream.
@@ -206,12 +211,18 @@ func (l *liveEventStreams) forgetLog(id uint64) {
 // admission, registered so that a stop cancels it with ErrSourceClosed and
 // joins it like a merge.
 type pendingLogAdmission struct {
-	// ctx is the admission's context, cancelled by stop; once admitted it is
-	// the merge's parent.
+	// ctx is the admission's context, cancelled by stop. An admitted merge
+	// inherits it, so it is never cancelled on success. A stop reaches that
+	// merge two ways, each enough on its own: subscribeLogs refuses under
+	// l.mu once the stop closed the streams (a merge registered before is
+	// in the stop's snapshot), and a merge set up under this cancelled ctx
+	// ends typed.
 	ctx    context.Context
 	cancel context.CancelCauseFunc
-	// end unregisters the admission; its goroutine calls it on return. It
-	// never cancels ctx, which an admitted merge inherits.
+	// end unregisters the admission. Its goroutine defers it, so it runs
+	// once serveBoundLogs returned — the merge registered or refused — and
+	// the stop's join of the admission covers that handoff. It never
+	// cancels ctx.
 	end func()
 }
 
@@ -430,7 +441,7 @@ func (m *liveLogMerge) stopSettle() {
 }
 
 // run merges the retained selection and the run's log lane until one of the
-// four end sources ends it.
+// five end sources ends it.
 func (m *liveLogMerge) run() {
 	chunks, errs := m.inner.Chunks(), m.inner.Errors()
 	ticker := time.NewTicker(m.pollInterval)

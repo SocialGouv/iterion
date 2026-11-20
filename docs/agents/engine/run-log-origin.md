@@ -34,7 +34,7 @@ bail per holder — the shape of the alert registry, without a payload.
 
 ## The end of a stream
 
-A bound log stream ends on exactly four sources, and no other:
+A bound log stream ends on exactly five sources, and no other:
 
 1. **The producer's own end**, delivered on the lane: terminal (after its
    finalize wrote the last lines), paused (the stream parks; the resume's epoch
@@ -46,25 +46,36 @@ A bound log stream ends on exactly four sources, and no other:
 3. **No lane and no local producer**: a terminal status plus the settle window
    (500 ms) ends the stream after one last drain. This is the foreign-writer
    promise — a run produced elsewhere on the same host finishes here.
-4. **The Service's stop**: on the native filesystem store, `StopBackground`
-   and `Drain` end every bound log stream — open, being set up or still
-   waiting for its admission — with `runstream.ErrSourceClosed`, never a clean
-   completion. A producer that never renders its own end leaves its stream to
-   this end, never to a silent completion.
+4. **The origin's loss**: a permanent refusal of the retained selection (a
+   successor, a deletion), of a lane's (re)adoption (a memory-only producer)
+   or of the status read with no lane ends the stream with that refusal,
+   always typed.
+5. **The Service's stop**: on the native filesystem store, `StopBackground`
+   ends every bound log stream — open, being set up or still waiting for its
+   admission — with `runstream.ErrSourceClosed`, never a clean completion.
+   `Drain` lets its runs end first, so their log streams may end on their
+   producer's own end; its stop then ends what is still open the same way. A
+   producer that never renders its own end leaves its stream to this end,
+   never to a silent completion.
 
-A status poll is never a fifth source: on a live lane it only warns once, when
-the producer stalls past its grace. The engine persists the terminal status
-*before* its finalize writes the last log lines, so a stream that ended on the
-status would truncate them.
+A status poll never ends a live lane: there it only warns once, when the
+producer stalls past its grace; with no lane it arms the settle (3) or reports
+a permanent refusal (4). The engine persists the terminal status *before* its
+finalize writes the last log lines, so a stream that ended on the status would
+truncate them.
 
 ## What this does not establish
 
 - A lane is not transferred between `Service` instances. A hot-swap ends the
-  old Service's bound log streams typed (its stop, above); a client that keeps
-  the run resubscribes from its offset (the studio leaves the run view on a
-  project switch). The new Service sees no lane and applies the
-  foreign-writer settle, so a writer still finishing more than the settle
+  old Service's bound log streams typed (its stop, above), and a resubscribe
+  on the same socket is refused the same way: the client redials, and the run
+  is served again only if the new Service's store holds it (the studio leaves
+  the run view on a project switch). The new Service sees no lane and applies
+  the foreign-writer settle, so a writer still finishing more than the settle
   window after the status loses its tail.
+- A local capture failure is retained by run ID, with no observation: a later
+  run under that ID, produced elsewhere, has its bound log subscription
+  refused at setup with that failure, typed.
 - Cross-store WebSocket connections keep the legacy end model (status-driven),
   and so does any request without a binding.
 - Cloud logs never take this path: the cloud socket reads the change-stream

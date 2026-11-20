@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -254,10 +255,13 @@ func TestRunWSMatrixLogsAndEventsInBothOrders(t *testing.T) {
 	}
 }
 
-// W4 (R6): unsubscribe releases what the stream held before its ack — the
-// merge's broker subscription is cancelled and joined — and a resubscribe of
-// either kind serves the origin from its cursor exactly once; after a
-// replacement a resubscribe of each kind is refused typed.
+// W4 (R6): at the unsubscribe ack the merge's broker subscription is gone, and
+// a resubscribe of either kind serves the origin from its cursor exactly once;
+// after a replacement a resubscribe of each kind is refused typed. The wire
+// sees a missing join only when the ack outruns the release, about half the
+// time: the join before the ack is witnessed deterministically by
+// TestWSOwnerUnsubscribeJoinsBothPumps (the socket's unsubscribe) and
+// TestLiveEventsSubscribeAndCloseAreSynchronous (the merge's close).
 func TestRunWSMatrixUnsubscribeReleasesAndResubscribeServesTheOrigin(t *testing.T) {
 	fx := newMatrixServer(t, matrixOptions{})
 	ctx := t.Context()
@@ -290,8 +294,8 @@ func TestRunWSMatrixUnsubscribeReleasesAndResubscribeServesTheOrigin(t *testing.
 	}
 	missed := appendLive("after-unsubscribe")
 	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribe, AckID: "s2", Payload: json.RawMessage(fmt.Sprintf(`{"replay_history":true,"from_seq":%d}`, missed.Seq))})
-	// The unsubscribed stream was joined before its ack: nothing of it can
-	// follow the resubscribe.
+	// Nothing of the unsubscribed stream follows the resubscribe: its first
+	// frame is its own snapshot.
 	if env := readEnvelope(t, c); env.Type != wsTypeSnapshot {
 		t.Fatalf("first frame after the resubscribe = %s %s, want its snapshot", env.Type, env.Payload)
 	}
@@ -446,7 +450,9 @@ func TestRunWSMatrixAlertWhileTheReplayIsInProgress(t *testing.T) {
 
 	// An unstamped alert (the browser sink's shape) and one stamped with the
 	// origin, published while the replay is held; a fence after the release
-	// proves the live loop judged both before the run ends.
+	// proves the live loop judged both before the run ends. No alert manager:
+	// the merge holds no registry lane, the branch where a stamped frame of
+	// the origin ships rather than being dropped as a lane's carrier.
 	t.Run("carriers", func(t *testing.T) {
 		fx := newMatrixServer(t, matrixOptions{})
 		ctx := t.Context()
@@ -558,10 +564,12 @@ func awaitStampedCarrier(t *testing.T, ch <-chan *store.Event, nodeID string, or
 	}
 }
 
-// W6 (R7): with no alert manager the binding filter is the only gate. An
-// alert stamped with a successor's observation, then a fence stamped with the
-// origin on the same broker subscription (FIFO): nothing of the successor
-// reaches the socket before the fence.
+// W6 (R7): with no alert manager the merge holds no registry lane and the
+// binding filter is the only gate — production's case whenever a merge holds
+// no lane; W9 runs the production configuration. An alert stamped with a
+// successor's observation, then a fence stamped with the origin on the same
+// broker subscription (FIFO): nothing of the successor reaches the socket
+// before the fence.
 func TestRunWSMatrixAnotherOriginsAlertNeverShips(t *testing.T) {
 	fx := newMatrixServer(t, matrixOptions{})
 	if fx.srv.runs.AlertManager() != nil {
@@ -650,4 +658,147 @@ func expectMatrixSourceClosed(t *testing.T, c *websocket.Conn, code string) {
 	if pong := readEnvelope(t, c, wsTypePong); pong.AckID != "alive" {
 		t.Fatalf("pong = %+v: the socket did not stay open", pong)
 	}
+}
+
+// W9 (R7, the production configuration): an alert manager is wired, as on
+// every production server. Socket SA streams the origin's events, its log and
+// a registered alert; the origin moves aside and an external successor takes
+// its ID, which socket SB opens and streams while the successor appends
+// budget alerts and log bytes. SA receives nothing of the successor and ends
+// with a typed refusal and the scope_lost close; SB receives the successor's
+// alert and nothing of the origin. This row qualifies the production
+// configuration end to end; it is not the witness of its guards: the
+// reservations under the upgrade's binding redden it only on some
+// interleavings (the log parent unbound about two runs in three, the event
+// parent rarely), and W1-W4 witness them deterministically.
+func TestRunWSMatrixTwoSocketsAcrossAReplacementWithAlerts(t *testing.T) {
+	fx := newMatrixServer(t, matrixOptions{alerts: true})
+	if fx.srv.runs.AlertManager() == nil {
+		t.Fatal("fixture: no alert manager")
+	}
+	ctx := t.Context()
+	storeDir := fx.srv.cfg.StoreDir
+	const originLog = matrixOrigin + " log\n"
+	originAlert := "budget-" + matrixOrigin
+	mustWS(t, seedWSOriginRun(ctx, fx.native, "r", matrixOrigin, store.LegacyValueFormat, store.RunStatusRunning, 1))
+	writeRunLog(t, storeDir, "r", originLog)
+	sa := dialRunWS(t, fx.hs, "r")
+	writeJSONMessage(t, sa, runWSEnvelope{Type: wsTypeSubscribe, AckID: "s"})
+	snapshotOf(t, readEnvelopeWithin(t, sa, 10*time.Second, wsTypeSnapshot, wsTypeError))
+	awaitBrokerSubscriber(t, fx.srv, "r")
+	writeJSONMessage(t, sa, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	appendMatrixBudgetWarning(t, fx, "r", originAlert)
+	sawAlert, logText := false, ""
+	for !sawAlert || logText != originLog {
+		env := readEnvelopeWithin(t, sa, 15*time.Second)
+		switch env.Type {
+		case wsTypeEvent, wsTypeEventBatch:
+			for _, ev := range decodeEventEnvelope(t, env) {
+				if ev.Type == store.EventAlert && ev.NodeID == originAlert {
+					sawAlert = true
+				}
+			}
+		case wsTypeLogChunk:
+			logText += decodeLogChunk(t, env).Text
+		case wsTypeError, wsTypeTerminated, wsTypeLogTerminated:
+			t.Fatalf("SA ended before the replacement: %s %s", env.Type, env.Payload)
+		}
+	}
+
+	// The origin moves aside, as an external writer would, and a running
+	// successor takes the ID.
+	mustWS(t, os.Rename(filepath.Join(storeDir, "runs", "r"), filepath.Join(storeDir, "aside-r")))
+	mustWS(t, seedWSOriginRun(ctx, fx.native, "r", matrixSuccessor, store.LegacyValueFormat, store.RunStatusRunning, 2))
+	successorLog := writeRunLog(t, storeDir, "r", matrixSuccessor+" log\n")
+	sb := dialRunWS(t, fx.hs, "r")
+	writeJSONMessage(t, sb, runWSEnvelope{Type: wsTypeSubscribe, AckID: "s", Payload: json.RawMessage(`{"replay_history":true,"from_seq":0}`)})
+	if snap := snapshotOf(t, readEnvelopeWithin(t, sb, 10*time.Second, wsTypeSnapshot, wsTypeError)); snap.Run.WorkflowName != matrixSuccessor {
+		t.Fatalf("SB snapshot names %q", snap.Run.WorkflowName)
+	}
+	writeJSONMessage(t, sb, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	// The successor's budget alerts are published as the in-process order
+	// would, and its log grows; the pacing spreads them over the detection.
+	for i := 0; i < 3; i++ {
+		ev := appendMatrixBudgetWarning(t, fx, "r", fmt.Sprintf("budget-%s-%d", matrixSuccessor, i))
+		fx.srv.runs.Broker().Publish(*ev)
+		appendRunLog(t, successorLog, fmt.Sprintf("%s more %d\n", matrixSuccessor, i))
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// SA: nothing of the successor, then a typed refusal and the scope_lost
+	// close; no clean end.
+	_ = sa.SetReadDeadline(time.Now().Add(30 * time.Second))
+	var refusals []string
+	for {
+		kind, raw, err := sa.ReadMessage()
+		if err != nil {
+			var ce *websocket.CloseError
+			if !errors.As(err, &ce) {
+				t.Fatalf("SA read until its scope_lost close: %v (refusals %v)", err, refusals)
+			}
+			if ce.Code != websocket.CloseNormalClosure || !strings.HasPrefix(ce.Text, wsCloseScopeLost+": ") {
+				t.Fatalf("SA close = %d %q, want %d %s", ce.Code, ce.Text, websocket.CloseNormalClosure, wsCloseScopeLost)
+			}
+			break
+		}
+		if kind != websocket.TextMessage {
+			continue
+		}
+		if strings.Contains(string(raw), matrixSuccessor) {
+			t.Fatalf("a frame of the successor reached the origin's socket: %s", raw)
+		}
+		var env runWSEnvelope
+		mustWS(t, json.Unmarshal(raw, &env))
+		switch env.Type {
+		case wsTypeSnapshot, wsTypeTerminated, wsTypeLogTerminated:
+			t.Fatalf("SA got %s after the replacement, want a typed refusal: %s", env.Type, raw)
+		case wsTypeError:
+			refusals = append(refusals, errorCodeOf(t, env).Code)
+		}
+	}
+	if len(refusals) == 0 {
+		t.Fatal("SA closed scope_lost without a typed refusal")
+	}
+	for _, code := range refusals {
+		if code != "event_stream_failed" && code != "log_stream_failed" {
+			t.Fatalf("SA refusals = %v, want event_stream_failed or log_stream_failed", refusals)
+		}
+	}
+
+	// SB: the successor's alert, nothing of the origin.
+	_ = sb.SetReadDeadline(time.Now().Add(20 * time.Second))
+	for gotAlert := false; !gotAlert; {
+		_, raw, err := sb.ReadMessage()
+		if err != nil {
+			t.Fatalf("SB never received the successor's alert: %v", err)
+		}
+		if strings.Contains(string(raw), matrixOrigin) {
+			t.Fatalf("a frame of the origin reached the successor's socket: %s", raw)
+		}
+		var env runWSEnvelope
+		mustWS(t, json.Unmarshal(raw, &env))
+		switch env.Type {
+		case wsTypeError, wsTypeTerminated, wsTypeLogTerminated:
+			t.Fatalf("SB ended: %s", raw)
+		case wsTypeEvent, wsTypeEventBatch:
+			for _, ev := range decodeEventEnvelope(t, env) {
+				if ev.Type == store.EventAlert && strings.HasPrefix(ev.NodeID, "budget-"+matrixSuccessor) {
+					gotAlert = true
+				}
+			}
+		}
+	}
+}
+
+// appendMatrixBudgetWarning appends a budget warning to id's events under the
+// run's own format: the alert manager turns it into an alert of node.
+func appendMatrixBudgetWarning(t *testing.T, fx *matrixServer, id, node string) *store.Event {
+	t.Helper()
+	r, err := fx.native.LoadRun(t.Context(), id)
+	mustWS(t, err)
+	write, err := store.BindRunValueFormat(t.Context(), r)
+	mustWS(t, err)
+	ev, err := fx.native.AppendEvent(write, id, store.Event{Type: store.EventBudgetWarning, RunID: id, NodeID: node, Data: map[string]any{"dimension": "tokens"}})
+	mustWS(t, err)
+	return ev
 }

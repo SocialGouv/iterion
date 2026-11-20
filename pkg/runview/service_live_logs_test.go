@@ -19,9 +19,10 @@ import (
 
 // The bound log path (R54 slice 4, phase 2): a subscription reads the bytes of
 // its retained selection, is woken by its run's log lane, and ends by one of
-// exactly four sources — the producer's end value (E1), a retained closed
-// epoch (E2), a terminal status with no lane and no local producer (E3), or
-// the Service's stop. A poll never ends a live lane. These tests drive the production seams:
+// exactly five sources — the producer's end value (E1), a retained closed
+// epoch (E2), a terminal status with no lane and no local producer (E3), the
+// origin's loss (a permanent refusal of a bound read), or the Service's stop.
+// A poll never ends a live lane. These tests drive the production seams:
 // SubscribeLogs, the registry, the real producers.
 
 // logSink drains one log subscription in the background, accumulating the
@@ -755,6 +756,41 @@ func TestStopEndsAndJoinsAParkedBoundLogStream(t *testing.T) {
 	}
 }
 
+// The origin's loss through the status read: a run with no lane is replaced
+// right before the merge's first status read, which refuses the successor
+// permanently and ends the stream with that refusal — its one error, typed.
+// The stop that follows ends whatever the read left open, so a status read
+// that only warned would leave its warning and the stop's closure instead.
+func TestBoundLogStatusReadRefusalEndsTheStream(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	ctx := t.Context()
+	tightenLogLaneWait(t, 100*time.Millisecond)
+	tightenBoundLogPoll(t, time.Hour) // only the merge's first status read runs
+	if err := seedOriginRun(ctx, native, "r", "A", store.LegacyValueFormat, store.RunStatusRunning, 0); err != nil {
+		t.Fatal(err)
+	}
+	var replaced atomic.Bool
+	svc.liveEvents.beforeLogStatusPoll = func() {
+		if !replaced.CompareAndSwap(false, true) {
+			return
+		}
+		if err := replaceOriginRun(context.Background(), native, "r", "B", store.LegacyValueFormat, store.RunStatusRunning, 0); err != nil {
+			t.Errorf("replace the run under the status read: %v", err)
+		}
+	}
+	sub := subscribeBoundLogs(t, svc, "r")
+	sink := newLogSink(sub)
+	awaitCondition(t, 5*time.Second, "the stream's first error", func() bool { return len(sink.errorsSoFar()) > 0 })
+	stopBackgroundWithin(svc, 2*time.Second)
+	text, errs := sink.awaitEnd(t, 2*time.Second)
+	if !replaced.Load() {
+		t.Fatal("the merge never read the status")
+	}
+	if text != "" || len(errs) != 1 || !errors.Is(errs[0], store.ErrRunDataIdentityChanged) {
+		t.Fatalf("text %q errors %v, want the status read's identity refusal alone", text, errs)
+	}
+}
+
 // T7b(b): a terminal run with no lane and no log file ends after the E3
 // settle, without waiting for a first drain (M-E3).
 func TestTerminalRunWithoutLaneEndsAfterASettle(t *testing.T) {
@@ -775,10 +811,12 @@ func TestTerminalRunWithoutLaneEndsAfterASettle(t *testing.T) {
 }
 
 // T-HOTSWAP: the lane of the OLD Service is neither transferred nor
-// adoptable. A swap ends the old Service's bound log streams typed (its stop)
-// and a client that keeps the run resubscribes from its offset; a subscriber
-// of the new Service sees no lane and ends on E3, and a write the old producer
-// lands more than the settle window after the status is not delivered.
+// adoptable. A swap ends the old Service's bound log streams typed (its stop),
+// and a resubscribe through the old Service is refused the same way: a client
+// that keeps the run redials, and only the new Service can serve it. A
+// subscriber of the new Service sees no lane and ends on E3, and a write the
+// old producer lands more than the settle window after the status is not
+// delivered.
 func TestHotSwapLaneIsNotAdoptable(t *testing.T) {
 	dir := t.TempDir()
 	native, err := store.New(dir)

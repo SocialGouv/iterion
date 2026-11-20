@@ -29,6 +29,6 @@ view in [architecture.md](../../architecture.md).
 | [run-alert-origin.md](run-alert-origin.md) | Registered alerts, legacy carrier. |
 | [run-ws-origin.md](run-ws-origin.md) | Expected birth, origin refusals. |
 | [run-action-origin.md](run-action-origin.md) | Bound actions. |
-| [run-log-origin.md](run-log-origin.md) | Bound log lane, four end sources. |
+| [run-log-origin.md](run-log-origin.md) | Bound log lane, five end sources. |
 | [run-cursors.md](run-cursors.md) | Cursor bounds, legacy compatibility. |
 | [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker, Service feeds. |

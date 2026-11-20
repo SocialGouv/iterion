@@ -286,8 +286,9 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 			sub := runstream.NewLogPipe()
 			if l := s.liveEvents; l != nil {
 				// On the native store the retry is the Service's: a stop
-				// cancels it with ErrSourceClosed and joins it, and once
-				// admitted its context is the merge's parent.
+				// cancels it with ErrSourceClosed and joins it. The merge it
+				// admits inherits p.ctx, which no success cancels;
+				// pendingLogAdmission says how a stop reaches that merge.
 				p, perr := l.registerPendingLog(ctx, runID)
 				if perr != nil {
 					return nil, perr
