@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.24.0](https://github.com/SocialGouv/iterion/compare/v7.23.2...v7.24.0) (2026-11-20)
+
+### Features
+
+* **codemode:** discovery — an index in the description, call.describe and call.search in the program (CM-3, [#3443](https://github.com/SocialGouv/iterion/issues/3443)) ([#3496](https://github.com/SocialGouv/iterion/issues/3496)) ([ab9990e](https://github.com/SocialGouv/iterion/commit/ab9990eb7d826840d9ff6371b4554396d92808f7))
+
+    <details><summary>why</summary>
+
+    A codemode program could call the node's tools, but the model had no way to learn them from the tool itself: the description was a constant ("the names are the ones you already have"). CM-3 adds what ADR-165 promised, "one tool plus a discovery index", on the node's DECLARED set.
+
+    </details>
+* **connectors:** Jira, Linear, Forgejo and Sentry declare list filters on their list outputs ([#3427](https://github.com/SocialGouv/iterion/issues/3427)) ([#3470](https://github.com/SocialGouv/iterion/issues/3470)) ([39e2b2d](https://github.com/SocialGouv/iterion/commit/39e2b2d72a8d7f77cc0fe85943e98cf61d34fe80))
+
+    <details><summary>why</summary>
+
+    packages' list outputs now carry the filters an operator narrows on:
+
+    </details>
+
 ## [7.23.2](https://github.com/SocialGouv/iterion/compare/v7.23.1...v7.23.2) (2026-11-20)
 
 ### Bug Fixes
