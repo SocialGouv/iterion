@@ -24,5 +24,12 @@ func init() {
 		// package binds none (the integration's signing secret is the
 		// boundary).
 		eventHeader: "Sentry-Hook-Resource",
+		// A metric alert names its incident's projects as slugs in
+		// `data.metric_alert.projects`.
+		lists: map[string]func(map[string]any) []string{
+			"project": func(p map[string]any) []string {
+				return deliveryStrings(deliveryAt(p, "data", "metric_alert", "projects"), "")
+			},
+		},
 	})
 }
