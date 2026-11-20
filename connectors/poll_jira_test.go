@@ -1,10 +1,12 @@
 package connectors_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"slices"
@@ -14,8 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connector/binding"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
+	"github.com/SocialGouv/iterion/pkg/connector/ingress"
+	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // Jira Cloud's enhanced search, as Atlassian documents it:
@@ -340,6 +346,83 @@ func (v *jiraVendor) wantOutputs(tick int) map[string]map[string]any {
 		want[b.id] = map[string]any{"issue_key": b.key, "subject_state": b.status, "labels": b.labels}
 	}
 	return want
+}
+
+// TestAPolledJiraSubscriptionNarrowsOnTheIssuesLabels: the label filter of
+// the polled trigger, saved on a subscription with its JQL, judged on each
+// issue Jira answers that JQL — read as the poller reads an item, stored and
+// re-read as the lane does — keeps an issue carrying any chosen label and
+// drops one carrying none, an issue with no label at all included. What
+// each issue carries is the vendor's, not the package's.
+func TestAPolledJiraSubscriptionNarrowsOnTheIssuesLabels(t *testing.T) {
+	p, err := overlay.LoadPackage("jira")
+	if err != nil {
+		t.Fatalf("load jira: %v", err)
+	}
+	trig := polledTrigger(t, p, "jira.issue.changed")
+	op, ok := p.Operation(trig.Poll.Operation)
+	if !ok {
+		t.Fatalf("poll.operation %q is not in the package", trig.Poll.Operation)
+	}
+	chosen := []string{"webhooks", "pollers"}
+	sub, err := binding.ValidateSubscription(trigger.Subscription{
+		ID: "s1", BotID: "triage", TriggerID: trig.ID, ConnectionID: "conn-jira",
+		PollQuery: map[string]string{"jql": "project = OPS"},
+		Filters:   map[string][]string{"label": chosen},
+	}, trig, nil)
+	if err != nil {
+		t.Fatalf("save a subscription narrowed on labels: %v", err)
+	}
+	query, err := binding.PollQueryValues(trig, sub.PollQuery)
+	if err != nil {
+		t.Fatalf("the saved query: %v", err)
+	}
+	v := newJiraVendor()
+	srv := httptest.NewServer(v)
+	defer srv.Close()
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), BaseURL: srv.URL}
+	s, err := pollTick(e, p, op, trig, pollCase{query: query, cred: jiraWitnessCred}, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	carries := map[string][]string{}
+	for _, is := range v.issues {
+		carries[is.id] = is.labels
+	}
+	kept, dropped := 0, 0
+	for _, id := range s.ids {
+		labels, known := carries[id]
+		if !known {
+			t.Fatalf("the scan read issue %q, which Jira does not hold", id)
+		}
+		raw, filtered, err := ingress.ReadItem(trig, s.items[id])
+		if err != nil || filtered != "" {
+			t.Fatalf("issue %q: read as an event: %v (dropped: %q)", id, err, filtered)
+		}
+		ev, err := binding.DecodeEvent(raw)
+		if err != nil {
+			t.Fatalf("issue %q: %v", id, err)
+		}
+		verdict, err := binding.Judge(context.Background(), sub, trig, ev)
+		if err != nil {
+			t.Fatalf("issue %q: %v", id, err)
+		}
+		want := false
+		for _, l := range labels {
+			want = want || slices.Contains(chosen, l)
+		}
+		if verdict.Refusal != "" || verdict.Matched != want {
+			t.Errorf("issue %q carrying %q: verdict %+v, want matched=%v under the chosen %q", id, labels, verdict, want, chosen)
+		}
+		if want {
+			kept++
+		} else {
+			dropped++
+		}
+	}
+	if kept == 0 || dropped == 0 {
+		t.Fatalf("the scan held %d issues to keep and %d to drop: both directions must be judged", kept, dropped)
+	}
 }
 
 // jiraRefusal is Jira's own message for a query it refuses, answered as a

@@ -78,9 +78,11 @@ triggers:
       - id: team
         from: 'payload.data.team.key'
         type: string
+      # A list filter: an issue carrying any of the chosen label names.
+      - { id: label, from: 'map(payload.data.labels, l => l.name)', type: list }
     # No loop guard: a webhook names the person or the OAuth client that
     # changed the issue, and this package's own identity has no marker Linear
-    # stamps. A subscription narrows with `team` and `action` instead.
+    # stamps. A subscription narrows with `team`, `action` and `label` instead.
     sample: samples/issue-created.json
 
   - id: linear.comment.created
