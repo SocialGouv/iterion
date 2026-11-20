@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.23.1](https://github.com/SocialGouv/iterion/compare/v7.23.0...v7.23.1) (2026-11-20)
+
+### Bug Fixes
+
+* **runtime:** a schema'd tool that prints beside its JSON, and a reference its producer owed, fail at their node ([#3421](https://github.com/SocialGouv/iterion/issues/3421)) ([#3483](https://github.com/SocialGouv/iterion/issues/3483)) ([c9d7ddf](https://github.com/SocialGouv/iterion/commit/c9d7ddf1babe26c218fe5854bb9d9cc54ddcda68))
+
+    <details><summary>why</summary>
+
+    Two documented leniencies of the tool-node contract chained into a real failure on 2026-11-19: a tool with a declared `output:` printed a line before its JSON, the runtime wrapped the lot as `{"result": …}` and the node finished green; the next command then ran with a literal `{{outputs.publish.pr_number}}`. The operator arbitrated: tighten, narrowly, each rule with an escape hatch. ADR-171 records the decision and why it refuses where the philosophy prefers a warning.
+
+    </details>
+
 ## [7.23.0](https://github.com/SocialGouv/iterion/compare/v7.22.2...v7.23.0) (2026-11-20)
 
 ### Features
