@@ -144,6 +144,10 @@ function ConfigFieldRow({
           size="md"
           type={field.type === "secret" ? "password" : field.type === "int" || field.type === "float" ? "number" : "text"}
           step={field.type === "float" ? "any" : undefined}
+          // A secret field starts blank and a blank submission keeps the
+          // stored value: a saved login filled in by the browser would be
+          // saved over it. "off" is ignored on a password input.
+          autoComplete={field.type === "secret" ? "new-password" : undefined}
           value={value}
           placeholder={
             field.type === "secret"

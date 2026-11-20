@@ -482,7 +482,9 @@ function ReplaceTokenRow({
               type="password"
               value={draft}
               placeholder="glpat-…"
-              autoComplete="off"
+              // "new-password", not "off": a browser ignores "off" on a
+              // password input and fills the saved login's password into it.
+              autoComplete="new-password"
               onChange={(e) => setDraft(e.target.value)}
               disabled={busy}
             />
