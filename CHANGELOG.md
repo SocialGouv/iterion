@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.21.0](https://github.com/SocialGouv/iterion/compare/v7.20.1...v7.21.0) (2026-11-20)
+
+### Features
+
+* **studio:** "Enable a repo" offers the issue-label filter ([#3417](https://github.com/SocialGouv/iterion/issues/3417)) ([#3433](https://github.com/SocialGouv/iterion/issues/3433)) ([874b71d](https://github.com/SocialGouv/iterion/commit/874b71daef4d9c96692136cf8825a1a7ac133a33))
+
+    <details><summary>why</summary>
+
+    A repo integration's `label_allowlist` narrows which freshly applied issue label starts the repo's bots. The server and the CLI could set it; the studio's "Enable a repo" panel had no field for it and never showed the stored value.
+
+    </details>
+
 ## [7.20.1](https://github.com/SocialGouv/iterion/compare/v7.20.0...v7.20.1) (2026-11-20)
 
 ### Bug Fixes
