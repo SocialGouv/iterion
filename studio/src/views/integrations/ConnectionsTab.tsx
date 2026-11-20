@@ -374,7 +374,13 @@ function AddConnectionForm({
               className="mt-1"
               aria-label="Identifiant du connecteur"
               value={connector}
-              onChange={(e) => pickConnector(e.target.value)}
+              // Typing commits to « Autre connecteur »: a field shown because
+              // the requested connector is not in the catalogue would otherwise
+              // vanish once the value is cleared or matches a catalogue id.
+              onChange={(e) => {
+                setOtherConnector(true);
+                pickConnector(e.target.value);
+              }}
               placeholder="identifiant du paquet"
               required
             />

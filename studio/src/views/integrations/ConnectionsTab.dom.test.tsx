@@ -247,6 +247,20 @@ describe("ConnectionsTab — reached from the plug wizard", () => {
     expect(createConnection.mock.calls[0]?.[1]).toMatchObject({ connector: "outbound" });
   });
 
+  it("keeps the id field of a connector the catalogue does not list while it is retyped", async () => {
+    renderAt("tab=connectors&connector=outbound");
+    const select = await connectorSelect();
+    const id = () => screen.getByLabelText("Identifiant du connecteur") as HTMLInputElement;
+    expect(id().value).toBe("outbound");
+    // Cleared, then typed through a catalogue id on the way to a longer one:
+    // the field stays under the cursor and the select stays on « Autre ».
+    for (const value of ["", "feed", "feedback"]) {
+      fireEvent.change(id(), { target: { value } });
+      expect(id().value).toBe(value);
+      expect(select.selectedOptions[0]?.textContent).toBe("Autre connecteur, par identifiant…");
+    }
+  });
+
   it("says the catalogue did not load, and takes the connector's id typed", async () => {
     listTeamSources.mockRejectedValue(new Error("catalogue down"));
     renderAt("tab=connectors&connector=feed");
