@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -30,7 +31,18 @@ workflow api:
 `
 }
 
+// The wording of a tool's stderr decides nothing about a PROVIDER: whatever
+// HTTP client or provider it sounds like, the failure is the TOOL's —
+// classified EXECUTION_FAILED and retried once, never read as a credential, a
+// model or a request the provider refused. That retry fails the same way, so
+// at a limit of two identical failures (pinned here: the scenario is the
+// retry and the repeat) the run ends TOOL_FAILED_PERMANENT, promoted from
+// EXECUTION_FAILED, which no automatic resume re-drives.
+//
+// The texts are 4xx and client errors on purpose: a 5xx, a 429 or a timeout
+// in a tool's own words is an outage, which is never counted.
 func TestR3ToolStderrNeedles(t *testing.T) {
+	t.Setenv(runtime.EnvNodeMaxIdenticalFailures, "2")
 	cases := []string{
 		"AxiosError: Request failed with status code 400",
 		"BadRequestError: invalid payload (http-errors)",
@@ -41,22 +53,20 @@ func TestR3ToolStderrNeedles(t *testing.T) {
 	}
 	for i, stderr := range cases {
 		t.Run(stderr, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			t.Setenv("TMPDIR", t.TempDir())
-			r := r3RunBot(t, r3WriteBot(t, toolFailBot(stderr)), "tool-needle")
-			starts := 0
-			var recov []string
-			for _, ev := range r.events {
-				if ev.Type == store.EventNodeStarted && ev.NodeID == "call_api" {
-					starts++
-				}
-				if strings.Contains(string(ev.Type), "recover") {
-					recov = append(recov, string(ev.Type)+":"+r3ToString(ev.Data["code"])+":"+r3ToString(ev.Data["action"]))
-				}
-			}
+			r, starts, recov := r3ToolNeedleRun(t, stderr)
 			code := r.run.FailureCode
-			if r.err == nil || code != store.FailureExecutionFailed || starts != 2 || !retrypolicy.AutoResumable(code) {
+			if r.err == nil || code != store.FailureToolFailedPermanent || starts != 2 || !retrypolicy.IsDeterministic(code) {
 				t.Errorf("tool failed classification: code=%s starts=%d err=%v", code, starts, r.err)
+			}
+			// The classification under the verdict is what the stderr could
+			// have bent: a retry of EXECUTION_FAILED, then the promotion of
+			// that same code.
+			want := []string{
+				"node_recovery:" + string(store.FailureExecutionFailed) + ":",
+				"node_recovery:" + string(store.FailureToolFailedPermanent) + ":" + string(store.FailureExecutionFailed),
+			}
+			if strings.Join(recov, " | ") != strings.Join(want, " | ") {
+				t.Errorf("recovery events (type:code:promoted_from) = %v, want %v", recov, want)
 			}
 			t.Logf("case %d stderr=%q", i, stderr)
 			t.Logf("  status=%s code=%s disposition=%q autoResumable=%v deterministic=%v tool_starts=%d recovery=%v",
@@ -66,6 +76,46 @@ func TestR3ToolStderrNeedles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// With the identical-failure limit off, the same runs end as they did before
+// it existed: EXECUTION_FAILED after the one retry, a code the auto-resume
+// surfaces re-drive.
+func TestR3ToolStderrNeedlesWithTheIdenticalFailureLimitOff(t *testing.T) {
+	for _, stderr := range []string{
+		"AxiosError: Request failed with status code 400",
+		"API error 401: invalid api key",
+	} {
+		t.Run(stderr, func(t *testing.T) {
+			t.Setenv(runtime.EnvNodeMaxIdenticalFailures, "0")
+			r, starts, recov := r3ToolNeedleRun(t, stderr)
+			code := r.run.FailureCode
+			if r.err == nil || code != store.FailureExecutionFailed || starts != 2 || !retrypolicy.AutoResumable(code) {
+				t.Errorf("tool failed classification: code=%s starts=%d recovery=%v err=%v", code, starts, recov, r.err)
+			}
+		})
+	}
+}
+
+// r3ToolNeedleRun runs toolFailBot(stderr) through the CLI's own entry point
+// and returns the run, how many times the tool node started, and its recovery
+// events as type:code:promoted_from.
+func r3ToolNeedleRun(t *testing.T, stderr string) (r3RunResult, int, []string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	r := r3RunBot(t, r3WriteBot(t, toolFailBot(stderr)), "tool-needle")
+	starts := 0
+	var recov []string
+	for _, ev := range r.events {
+		if ev.Type == store.EventNodeStarted && ev.NodeID == "call_api" {
+			starts++
+		}
+		if strings.Contains(string(ev.Type), "recover") {
+			recov = append(recov, string(ev.Type)+":"+r3ToString(ev.Data["code"])+":"+r3ToString(ev.Data["promoted_from"]))
+		}
+	}
+	return r, starts, recov
 }
 
 func r3ToString(v any) string {

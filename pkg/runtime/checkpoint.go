@@ -46,6 +46,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		SettledIncoming:        cloneIncoming(rs.settledIncoming),
 		Vars:                   rs.vars,
 		NodeAttempts:           serializeNodeAttempts(rs.nodeAttempts),
+		NodeFailureStreaks:     cloneNodeFailureStreaks(rs.nodeFailureStreaks),
 		// Persist run-scoped accounting so resume continues from consumed
 		// budget/spend instead of a fresh allowance (see Checkpoint docs).
 		BudgetTokensUsed:       tokens,

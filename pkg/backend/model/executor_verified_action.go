@@ -184,6 +184,16 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 
 	// required / recover: fail (resumable). The recipe's stderr is the most
 	// useful diagnostic; surface it alongside the unmet-postcondition reason.
+	//
+	// A recipe that itself failed stays in the chain: the postcondition is
+	// what judges the node, and the recipe's own end — the process's exit
+	// status, or the sandbox's word that its end was never proven — is still
+	// a fact a reader of the chain asks for (errors.As), which a recipe that
+	// exited 0 on an unmet goal does not carry.
+	if res.runErr != nil {
+		return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s; the recipe failed: %w\nstdout: %s\nstderr: %s",
+			node.ID, policy, lastRung, res.runErr, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
+	}
 	return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s\nstdout: %s\nstderr: %s",
 		node.ID, policy, lastRung, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
 }

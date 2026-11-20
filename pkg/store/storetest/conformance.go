@@ -66,6 +66,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("SessionLedgerSurvivesTheFailureCheckpoint", func(t *testing.T) { testSessionLedgerSurvivesTheFailureCheckpoint(t, factory(t)) })
+	t.Run("NodeFailureStreaksFollowTheCheckpoint", func(t *testing.T) { testNodeFailureStreaksFollowTheCheckpoint(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
@@ -3695,6 +3696,62 @@ func testSessionLedgerSurvivesTheFailureCheckpoint(t *testing.T, s store.RunStor
 	}
 	if r.Checkpoint == nil || !reflect.DeepEqual(r.Checkpoint.SessionLedger, want) {
 		t.Fatalf("session ledger = %+v, want %+v", r.Checkpoint, want)
+	}
+}
+
+// testNodeFailureStreaksFollowTheCheckpoint: the streak of identical failures
+// a tool node's command left is what makes a resumed run — on any replica —
+// read the next identical failure as a repeat rather than as a first one. It
+// rides the checkpoint a resumable failure persists, so every backend must
+// hand it back as written; and the checkpoint written after it replaces it
+// whole, so a node that then succeeded leaves no count behind.
+func testNodeFailureStreaksFollowTheCheckpoint(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-failure-streaks"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	streaks := func() map[string]store.NodeFailureStreak {
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		if r.Checkpoint == nil {
+			t.Fatal("the run lost its checkpoint")
+		}
+		return r.Checkpoint.NodeFailureStreaks
+	}
+	want := map[string]store.NodeFailureStreak{
+		"merge":  {Fingerprint: "sha256:5f0c1f1b8a4a4d5f8b7b6f5a3c2e1d0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b", Count: 1},
+		"verify": {Fingerprint: "sha256:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9", Count: 4},
+	}
+	cp := &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: want}
+	if err := s.FailRunResumable(ctx, runID, cp, "the runner went away", store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failure streaks after a resumable failure = %+v, want %+v", got, want)
+	}
+
+	// The next checkpoint carries the count the engine reached, not a merge
+	// of the two.
+	next := map[string]store.NodeFailureStreak{"merge": {Fingerprint: want["merge"].Fingerprint, Count: 2}}
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: next},
+		"node \"merge\" execution failed", store.FailureToolFailedPermanent); err != nil {
+		t.Fatalf("FailRunResumable (second): %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, next) {
+		t.Fatalf("failure streaks after the second failure = %+v, want %+v", got, next)
+	}
+
+	// And a checkpoint with none leaves none: a node's success ends its streak
+	// durably.
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "done"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if got := streaks(); len(got) != 0 {
+		t.Fatalf("failure streaks survived a checkpoint that carries none: %+v", got)
 	}
 }
 

@@ -605,13 +605,13 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			Code:    code,
 			NodeID:  currentNodeID,
 			Cause:   execErr,
-			Message: fmt.Sprintf("node %q execution failed: %v", currentNodeID, execErr),
+			Message: nodeExecutionFailedMessage(currentNodeID, execErr),
 		})
 	}
 
-	// Reset per-node retry counters on success so a future failure
-	// starts fresh.
-	delete(rs.nodeAttempts, currentNodeID)
+	// Reset per-node retry counters and the failure streak on success so
+	// a future failure starts fresh.
+	rs.nodeRecovered(currentNodeID)
 	return output, false, nil
 }
 

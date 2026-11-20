@@ -242,6 +242,163 @@ resume stamped stays recorded: resume with that source, or with `--force`.
 The run's `error` ends with the refusal's remedy when it names one
 (`— hint: …`), which the error's own words leave out.
 
+### A tool command that fails the same way again is permanent
+
+A tool node's failure is `EXECUTION_FAILED`, the catch-all a later attempt
+may outlast: the recovery dispatcher re-runs the node once, and in cloud the
+runner hands the run back to the queue. A command that fails *identically*
+again is not that — nothing between two executions of an unchanged command
+says the next will differ. Measured on run `01a1f47f`
+(2026-11-19, [#3420](https://github.com/SocialGouv/iterion/issues/3420)): a
+`curl` exiting 3 on an unresolved template was resumed on its node by every
+redelivery, a sandbox pod rebuilt each time, until an operator cancelled it;
+left alone it ran to the stream's delivery bound, where `DLQ_PARKED`
+overwrites the real code.
+
+So the engine keeps, per tool node, a fingerprint of its last failure and
+how many executions in a row ended on it, in the run's checkpoint
+(`node_failure_streaks`, [persisted-formats.md](persisted-formats.md)). When
+that count reaches the limit (`ITERION_NODE_MAX_IDENTICAL_FAILURES`, below)
+the run fails `TOOL_FAILED_PERMANENT`, a code the table above keeps every
+automatic resume away from: the runner acks the delivery, a redelivery that
+arrives anyway is dropped, `--auto-resume` stops. The timeline says it three
+times: `node_recovery {strategy: identical_tool_failure, code, promoted_from,
+identical_failures, identical_failure_limit, reason, error}`, `run_failed`
+with the code and a `hint`, and the runner's `run_retry_skipped`.
+
+**The limit counts executions, across deliveries.** The in-process retry is
+taken once per node and code: the delivery that launches a run executes a
+failing node twice, and every later delivery — a redelivery, an
+`--auto-resume`, an operator's resume — executes it once. So:
+
+| `ITERION_NODE_MAX_IDENTICAL_FAILURES` | Identical executions before the verdict | Redeliveries spent on the way |
+|---|---|---|
+| `0` (or `off`) | none: the failure stays `EXECUTION_FAILED` | all of them, to the queue's delivery bound |
+| `1` | 1 — the verdict is taken at the first failure, the in-process retry is not | 0 |
+| `2` | 2 — the first execution and its one in-process retry | 0 |
+| `3` (the default) | 3 | 1 |
+| `4` | 4 | 2 |
+| N ≥ 2 | N | N − 2 |
+
+It is read by the process that runs the engine — every run of a runner, no
+per-bot value
+([environment-variables.md](environment-variables.md#runtime-and-runner)).
+
+- **What makes two failures the same.** The exit status and the error's
+  text, which quotes the command's stdout and stderr. The checkpoint holds a
+  SHA-256 of them salted with the run and the node, never the text. One value
+  is read through: the random name of the temp file a `script:` body runs
+  from, which the executor draws per execution and an interpreter quotes in
+  its own errors. Everything else the command prints is the failure — a
+  timestamp, a request id, a temp path of its own makes two executions two
+  failures, and the run keeps the `EXECUTION_FAILED` behaviour it had. That
+  is the limit of a fingerprint, and it errs on the side of retrying.
+- **Which nodes.** A `command:` the shell runs or a `script:` body, on the
+  host or in the sandbox. Never a registry tool name or an `action:` (no exit
+  status, possibly a remote call), never a Verified Action under `policy:
+  recover` (a model's sample sits between two executions), never an agent or
+  a judge. A tool node inside a fan-out branch is not covered — a branch's
+  failure is aggregated by its convergence and never crosses the trunk's
+  recovery path.
+- **Which failures.** Only a command that ran to an exit status the failure
+  itself carries. A `script:` whose file could not be written and a
+  sandboxed command whose exec session ended without its completion line are
+  not counted, and each ends the streak. Under the sandbox the status is the
+  exec client's: a client that propagates it (`docker exec`, `kubectl exec`)
+  is counted like the host; a client that reports success while the
+  completion line says the command exited 3 is **not** counted — the status
+  is known, but only from that line, and the failure keeps its redeliveries.
+  It fails safe. A Verified Action is counted when its recipe really exited
+  non-zero on a goal still unmet. A postcondition unmet after a recipe that
+  exited 0 is the oracle's verdict alone: it is not counted, and the run
+  keeps the whole delivery loop it had — `EXECUTION_FAILED`, redelivered up
+  to the queue's delivery bound.
+- **An outage is not counted either — it keeps the previous behaviour.** A
+  resolver that does not answer, a sink that hangs, a registry answering 503
+  and a rate limit print the same line two seconds later and another one ten
+  minutes later, which is what the redeliveries wait out. A failure whose
+  output names one stays `EXECUTION_FAILED` — the one in-process retry, then
+  the queue's redeliveries — and ends the streak. "Names one" means: carries
+  a wording of **one table**,
+  [`pkg/runtime/transient_outage.go`](../pkg/runtime/transient_outage.go) — a
+  list of the wordings known so far, not a reading of every tool. It holds,
+  by family:
+  - name resolution — `Could not resolve host`, `Temporary failure in name
+    resolution`, `Name or service not known`, `getaddrinfo`. **An
+    unresolvable host keeps the redeliveries whatever its cause**: the words
+    are the same for a resolver that is down and for a name that is wrong —
+    a template that rendered an empty host included;
+  - connecting, and a connection lost midway — `Failed to connect to`,
+    `error connecting to`, `Empty reply from server`, `the remote end hung up
+    unexpectedly`, `early EOF`, `socket hang up`, `ECONNRESET`,
+    `ECONNREFUSED`;
+  - TLS handshakes and reads — `SSL_connect`, `SSL_read`, `EOF occurred in
+    violation of protocol`;
+  - timeouts and hangs — `timed out`, `ETIMEDOUT`, `Client.Timeout
+    exceeded`, and the catalog's own alarms (`did not answer within`,
+    `outlasted its wall clock`);
+  - HTTP 5xx and 429 — `URL returned error: 5xx` / `429`, `HTTP Error 5xx` /
+    `429`, `HTTP 500` / `502` / `503` / `504` / `429`, `Internal Server
+    Error`, `Bad Gateway`, `Service Unavailable`, `Gateway Timeout`, `Too
+    Many Requests`, kubectl's `(ServiceUnavailable)` / `(InternalError)` /
+    `(Timeout)`;
+  - rate limits — `rate limit exceeded`, `secondary rate limit`, `pull rate
+    limit`.
+
+  A refusal is not an outage, and is counted when the tool reports it on a
+  line of its own: a 4xx from `curl -f`, `gh`, urllib or npm (`404`, `401`,
+  `403`, `422`), a certificate that does not verify, and a proxy that answers
+  403 or 407 to a `CONNECT` — iterion's own sandbox proxy does exactly that
+  for a host off the run's allowlist. Only a tunnel the proxy itself failed
+  to open (a 5xx) is in the table. One refusal is **not** counted: the one
+  git meets at the RPC stage of a push, a fetch or a clone. git follows
+  `error: RPC failed; HTTP 403 …` with `fatal: the remote end hung up
+  unexpectedly`, the line it prints for a lost connection, whatever the
+  status — so the table waits it out. A 403 at git's earlier `info/refs`
+  stage (`The requested URL returned error: 403`, nothing after it) is
+  counted.
+
+  Go's own wordings, `connection refused` and `connection reset` are
+  `NETWORK_TRANSIENT` before any of this and keep their longer backoff; the
+  table changes no classification. It is a heuristic over an open alphabet,
+  and its two errors are bounded. An outage it does not know parks the node —
+  an operator's resume, or the bot's next scheduled run, heals it. And a
+  deterministic failure that is *worded* like an outage keeps being
+  redelivered, as every failure was before: a test suite's own `panic: test
+  timed out after 10m0s`, `kubectl`'s `timed out waiting for the condition`,
+  a `subprocess.TimeoutExpired`, a push, fetch or clone git was refused at
+  the RPC stage (its hang-up line, above), or output that merely quotes such
+  words as data (a failing test printing `got "503 Service Unavailable"`).
+  Those are accepted losses, pinned as such in the table's corpus
+  (`pkg/runtime/transient_outage_test.go`).
+- **What still parks at the limit**, because nothing in the output says it
+  would heal: a merge refused (`not mergeable`), a push rejected until
+  someone rebases, a stale `index.lock`, a poll that gave up in its own
+  words (`http 0 after 12 tries`), a bare non-zero exit.
+- **What ends a streak.** The node's success, a failure that is not counted
+  or reads differently, a rewind that replays the node. Not a drain between
+  two executions: the checkpoint carries the count to the runner that
+  resumes the run.
+- **An operator's resume re-executes the node, once.** The streak is the
+  node's, so the resume does not reset it: with the cause fixed the node
+  succeeds and the streak is gone; with the cause still there, the same
+  failure once more is permanent at once — one execution, no retry, no
+  redelivery. Resetting would mean telling an operator's resume from an
+  automatic one on every resume surface, and the delivery that carries an
+  operator's resume is itself redelivered after a Nak: a reset keyed on it
+  would re-open the loop.
+- **The native board dispatcher gives up at once.** A deterministic code is
+  not retried there
+  ([`pkg/dispatcher/commands.go`](../pkg/dispatcher/commands.go)): with a
+  `failed_state` (default `blocked`), a card whose run fails
+  `TOOL_FAILED_PERMANENT` moves to it on that first failure instead of
+  walking its retry ladder (`max_attempts`, 10 by default, backing off up to
+  five minutes between two). The same run failing `EXECUTION_FAILED` went
+  back to `ready` with a retry scheduled.
+- **For a bot's author.** A command must not count on being re-run to wait
+  something out
+  ([pitfalls](workflow_authoring_pitfalls.md#a-redelivery-is-not-a-backoff)).
+
 ## CLI
 
 The source path is optional when it was persisted at launch:

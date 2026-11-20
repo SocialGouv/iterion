@@ -83,6 +83,31 @@ See `docs/resume.md` for the current status, checkpoint, and override semantics.
 The console selects an [immutable attempt snapshot](run-provenance.md); a resume
 with edited source never replaces the previous attempt's graph.
 
+### A tool command that fails the same way again
+
+`handleNodeFailure` (`pkg/runtime/recovery_dispatch.go`) is the one place a
+trunk node's failure is counted, dispatcher wired or not. For a `command:` /
+`script:` tool node classified `EXECUTION_FAILED` it keeps a salted digest of
+the failure (exit status + error text) and its streak in
+`Checkpoint.NodeFailureStreaks`; at `ITERION_NODE_MAX_IDENTICAL_FAILURES`
+(default: the ONE constant `DefaultNodeMaxIdenticalFailures`; `0` off;
+runner-wide) the run fails `TOOL_FAILED_PERMANENT` with
+`*runtime.IdenticalToolFailure` as cause (`identical_failure.go`). The limit
+counts EXECUTIONS across deliveries — two in a run's first delivery, one per
+redelivery. Counted (`countedToolFailure`): the command ran to an exit status
+its failure carries, and its text carries no wording of
+`transient_outage.go`, the ONE table of known outage wordings (a list, judged
+on the corpus in `transient_outage_test.go`; it changes no classification; a
+4xx on a tool's own line and a proxy's 403/407 are refusals, counted — git's
+RPC-stage refusal trails its hang-up line and is not). Success, an uncounted or
+different failure and a rewind end the streak; a resume does not. Never
+counted: agent/judge nodes, registry and `action:` recipes, `policy:
+recover`, a postcondition unmet after a zero exit,
+`sandbox.ErrExecStatusUnknown`, `NETWORK_TRANSIENT`, a tool node inside a
+fan-out branch (branches never cross `handleNodeFailure`). The board
+dispatcher gives up at once on the code (`pkg/dispatcher/commands.go`).
+Operator view: [docs/resume.md](../../resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent).
+
 ### Concurrency
 
 - **Fan-out/convergence**: Router `fan_out_all` spawns parallel branches; downstream nodes aggregate via `await: wait_all` or `await: best_effort`

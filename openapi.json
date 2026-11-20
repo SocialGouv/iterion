@@ -819,6 +819,12 @@
             },
             "type": "object"
           },
+          "node_failure_streaks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeFailureStreak"
+            },
+            "type": "object"
+          },
           "node_id": {
             "type": "string"
           },
@@ -2371,6 +2377,21 @@
           "team_name",
           "team_slug",
           "role"
+        ],
+        "type": "object"
+      },
+      "NodeFailureStreak": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "count"
         ],
         "type": "object"
       },

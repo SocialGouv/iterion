@@ -883,6 +883,58 @@ If a downstream node fails with "expected object, got string" or
 3. Inspect the run's `events.jsonl` for the `tool_called` event — it
    records the resolved command string and raw stdout.
 
+### A redelivery is not a backoff
+
+A `command:` or `script:` that keeps failing the same way — same exit status,
+same output, as many executions in a row as
+`ITERION_NODE_MAX_IDENTICAL_FAILURES` allows — ends its run
+`TOOL_FAILED_PERMANENT`: the engine does not retry it again, the cloud runner
+does not redeliver it, `--auto-resume` leaves it alone, and the board
+dispatcher moves its card to `blocked` at once
+([resume.md](resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent)
+has the count and what it costs in redeliveries). An operator's resume still
+re-executes the node, once.
+
+**What keeps the previous behaviour** — one in-process retry, then the
+queue's redeliveries — is a failure whose output names an outage of what the
+command talks to: a name that does not resolve, a connection or a TLS
+handshake that fails, a timeout (`timed out`), an HTTP 5xx or 429, a rate
+limit. "Names" is literal: the engine reads a list of known wordings
+(`pkg/runtime/transient_outage.go`; resume.md gives its families), so let
+the tool's own error reach stderr. A script that catches a 503 and prints
+only `publish failed` has erased the one thing that told the engine it would
+heal — and a script that arms its own alarm should say so in words the list
+knows (`did not answer within …`). A failure whose output differs between two
+executions, and one where the command never ran to an exit status of its own,
+keep the previous behaviour too.
+
+**What parks at the limit** is everything else. A refusal first: a 4xx the
+tool reports on a line of its own (`curl -f`, `gh`, urllib, npm), and a
+proxy that answers 403 to a `CONNECT` — the sandbox's own egress policy does,
+for a host the run may not reach — are decisions, not outages. One refusal
+does not park: git trails a push, a fetch or a clone refused at the RPC
+stage with `fatal: the remote end hung up unexpectedly`, an outage wording,
+so it keeps the previous behaviour whatever the status. Then a "not yet"
+that is not an outage: a gate that exits non-zero while checks are
+pending, a merge refused until a label lands, a push rejected until someone
+rebases, a poll that gives up in its own words (`http 0 after 12 tries`).
+Each used to get the queue's whole delivery bound, by accident. Put the wait
+where it is declared:
+
+- **inside the command** — poll with a bound (`for i in $(seq 1 30); do …;
+  sleep 10; done`) and exit non-zero only when the bound is spent;
+- **in the graph** — route the "not yet" answer to a bounded loop
+  (`gate -> wait_then_retry when not ready as poll(10)`), so the retry is a
+  path a reader can see and a budget can price;
+- **as an exit status the graph reads** — print the state as JSON and exit 0,
+  and let an edge decide: a non-zero status is for "this cannot work", not
+  for "not yet".
+
+A deployment that needs the old behaviour for every failure sets
+`ITERION_NODE_MAX_IDENTICAL_FAILURES=0` on its runners — runner-wide, there
+is no per-bot value — but that is no design: a backoff nobody wrote down is
+one refactor from disappearing.
+
 ### Why `command:` pins `bash` and `script:` does not
 
 A `command:` is a one-line recipe that authors reach for with bash
