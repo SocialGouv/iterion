@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -116,6 +117,27 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					Cause: amb,
 				}
 			}
+			// A tool-contract refusal needs no agreement either: ONE branch
+			// refused for what its recipe printed or for what its body reads
+			// (model.ToolContractViolation) is refused the same way on every
+			// replay, so a wait_all join can never pass — and the catch-all
+			// below is on the auto-resume allow-list, whose resume re-enters
+			// the router and re-runs every branch's side effects to learn
+			// that again. commonBranchFailureCode cannot answer for it: the
+			// refusal is the executor's typed failure, not a RuntimeError.
+			// The aggregate quotes THAT branch — not the first that failed
+			// by id, which may be a sibling's unrelated exit status — and
+			// wraps it, so the refusal and its remedy are what the run's
+			// error says and what errors.As finds.
+			if refused := firstContractViolationBranchErr(ordered); refused != nil {
+				return "", &RuntimeError{
+					Code: ErrCodeToolFailedPermanent,
+					Message: fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed, and the tool-node contract refused one: %v",
+						convergenceNodeID, len(failedBranches), refused),
+					NodeID: convergenceNodeID,
+					Cause:  refused,
+				}
+			}
 			// When every failed branch carries the SAME typed code, the
 			// aggregate keeps it — a fan-out hitting one deterministic
 			// wall (a ghost node after a source edit) must not launder
@@ -170,8 +192,12 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	// failed/skipped branch leaves a previous pass's output looking current,
 	// both in the join's mappings and in direct outputs.* references later.
 	e.clearConvergedOutputs(rs, convergenceNodeID, seeds)
-	// Merge successful branch outputs into the run state.
-	for _, r := range results {
+	// Merge successful branch outputs into the run state, in branch-id
+	// order: when two branches publish under one node id — every item of a
+	// `fan_out_each` replays the same template — the last BY ID is the one a
+	// later `outputs.<node>` reads, on every run, instead of whichever
+	// branch's goroutine happened to finish last.
+	for _, r := range ordered {
 		if r.err != nil {
 			continue
 		}
@@ -400,6 +426,22 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 			continue
 		}
 		if IsAmbiguousEffect(r.err) {
+			return r.err
+		}
+	}
+	return nil
+}
+
+// firstContractViolationBranchErr returns the error of the first branch a
+// tool-contract refusal ended, nil when none was. Which branch is not the
+// fact read from it — that one exists is.
+func firstContractViolationBranchErr(results []*branchResult) error {
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var violation model.ToolContractViolation
+		if errors.As(r.err, &violation) {
 			return r.err
 		}
 	}

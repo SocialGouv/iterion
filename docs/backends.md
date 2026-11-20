@@ -1262,13 +1262,20 @@ validation succeed as before with their output. COMPUTE conformance remains
 mandatory (#792): integral floats become integers; fractional integers and
 wrong field types fail with `SCHEMA_VALIDATION`, including in advisory mode.
 LLM outputs retain executor validation and bounded correction.
+One shape is refused in that default: a tool node's `command:` / `script:`
+that declares `output:` and prints non-empty stdout that is not a JSON object
+fails its node with `TOOL_FAILED_PERMANENT`, naming the schema and never the
+output ([the output contract](dsl.md#tool)).
 `WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`,
 or deterministic `TOOL_FAILED_PERMANENT` for tools to prevent cloud redelivery
 from repeating side effects). `ITERION_STRICT_OUTPUT_VALIDATION=1` (also `true`,
 `yes`, `y`, `on`, `enabled`, case-insensitive) selects the same strict default
-for run, resume, subbot, studio, runner and dispatcher. An explicit engine option
+for run, resume, subbot, studio, runner and dispatcher. The dial has a third
+position: written out as off (`0`, `false`, `no`, `n`, `off`, `disabled`, or
+`WithOutputValidation(false)`), it also restores the `{"result": "<text>"}`
+wrapper for that non-JSON stdout — unset is not off. An explicit engine option
 overrides the environment; unknown values warn with `OUTPUT_VALIDATION_INVALID`
-and retain advisory validation. Raising the correction budget on resume reopens
+and read as unset. Raising the correction budget on resume reopens
 an exhausted or unchanged episode without resetting spent attempts. Correction
 deadlines apply to corrective calls only;
 expiration of

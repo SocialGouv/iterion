@@ -390,11 +390,11 @@ workflow ci_fix:
 
 **Key points:**
 - A tool node's stdout is its output: print a JSON object matching the
-  `output:` schema (`{"passed": true, "logs": "…"}`). Any other stdout is
-  silently wrapped as `{"result": "…"}` and the declared fields are absent
-  downstream, and a non-zero exit fails the node — hence the wrapper, which
-  turns the exit code into a field and keeps only the log's last 20 000
-  characters (the judge reads that field; nothing else bounds it)
+  `output:` schema (`{"passed": true, "logs": "…"}`) and nothing else. Any
+  other non-empty stdout under a declared `output:` fails the node
+  (`TOOL_FAILED_PERMANENT`), and so does a non-zero exit — hence the
+  wrapper, which turns the exit code into a field and keeps only the log's
+  last 20 000 characters (the judge reads that field; nothing else bounds it)
 
 ---
 

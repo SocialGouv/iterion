@@ -11,8 +11,12 @@ schema check:
   ok: bool
   summary: string
 
+## The node declares `output: note`, so its stdout is that ONE JSON object;
+## the echo goes to stderr. The command OPENS with that echo on purpose: the
+## canvas shows a tool node's first 20 characters, which the editor spec
+## reads (`echo iterion-ui-fixt`).
 tool collect_facts:
-  command: "echo iterion-ui-fixture"
+  command: `echo iterion-ui-fixture >&2; printf '{"value": "iterion-ui-fixture", "summary": "collected by the deterministic fixture"}'`
   output: note
   publish: collected_facts
 

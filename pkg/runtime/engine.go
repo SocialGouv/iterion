@@ -210,6 +210,8 @@ type Engine struct {
 	routingPolicy          *store.RoutingPolicy      // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
 	budgetAsk              *ir.BudgetOverrides       // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs        bool                      // when true, reject runtime schema mismatches instead of warning
+	toolStdoutWrapped      bool                      // the output-validation dial's explicit off: a tool recipe's non-JSON stdout under `output:` is wrapped as {"result": …} instead of failing the node
+	outputRefsOwed         bool                      // a tool body reading an output field its producer declared and did not supply fails the node before the body runs; off renders the hole (EnvOutputRefs)
 	outputCorrectionBudget int                       // bounded invalid-output correction calls per node invocation
 	// parallelSaveWindow coalesces routine fan-out boundary checkpoints into
 	// one durable write per window (#561); zero keeps the legacy synchronous
@@ -456,7 +458,8 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: defaultOutputValidation(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
+	validation := outputValidationFromEnv()
+	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: validation == outputValidationStrict, toolStdoutWrapped: validation == outputValidationOff, outputRefsOwed: defaultOutputRefsOwed(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}
