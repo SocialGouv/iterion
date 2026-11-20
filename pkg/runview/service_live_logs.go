@@ -90,8 +90,9 @@ func (l *liveEventStreams) logStreams() int {
 
 // subscribeLogs registers one bound log merge delivering into out. out is the
 // caller's pipe (serveBoundLogs): a return before the merge goroutine starts
-// leaves out untouched for the caller to fail and close; once the merge runs
-// it closes out itself.
+// leaves out untouched for the caller to fail and close — with
+// ErrSourceClosed when a Service stop interrupted the setup; once the merge
+// runs it closes out itself.
 func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from int64, out runstream.LogPipe) error {
 	s := l.svc
 	if err := ctx.Err(); err != nil {
@@ -151,7 +152,7 @@ func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from
 		cancelWatch()
 		close(entry.done)
 		l.forgetLog(id)
-		return err
+		return closedCauseOr(c, err)
 	}
 	if obs.Header().RunID != "" {
 		m.obs, m.obsKnown = obs, true
@@ -164,7 +165,7 @@ func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from
 		cancelWatch()
 		close(entry.done)
 		l.forgetLog(id)
-		return fmt.Errorf("runview: bound log subscription of %s: %w", runID, ferr)
+		return closedCauseOr(c, fmt.Errorf("runview: bound log subscription of %s: %w", runID, ferr))
 	}
 	// The initial observation AND its retained-failure check have run: a test
 	// parks here to land a change the merge can only learn from its watch.
@@ -180,7 +181,7 @@ func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from
 		}
 		close(entry.done)
 		l.forgetLog(id)
-		return err
+		return closedCauseOr(c, err)
 	}
 	m.inner = inner
 	go func() {
@@ -196,6 +197,43 @@ func (l *liveEventStreams) forgetLog(id uint64) {
 	l.mu.Lock()
 	delete(l.logActive, id)
 	l.mu.Unlock()
+}
+
+// pendingLogAdmission is a bound log subscription still retrying its
+// admission, registered so that a stop cancels it with ErrSourceClosed and
+// joins it like a merge.
+type pendingLogAdmission struct {
+	// ctx is the admission's context, cancelled by stop; once admitted it is
+	// the merge's parent.
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	// end unregisters the admission; its goroutine calls it on return. It
+	// never cancels ctx, which an admitted merge inherits.
+	end func()
+}
+
+// registerPendingLog registers a bound log subscription whose admission is
+// retried, refused with ErrSourceClosed once the Service stopped.
+func (l *liveEventStreams) registerPendingLog(ctx context.Context, runID string) (*pendingLogAdmission, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, runstream.ErrSourceClosed
+	}
+	if l.logPending == nil {
+		l.logPending = make(map[uint64]*liveLogEntry)
+	}
+	c, cancel := context.WithCancelCause(ctx)
+	l.next++
+	id := l.next
+	entry := &liveLogEntry{runID: runID, cancel: cancel, done: make(chan struct{})}
+	l.logPending[id] = entry
+	return &pendingLogAdmission{ctx: c, cancel: cancel, end: func() {
+		l.mu.Lock()
+		delete(l.logPending, id)
+		l.mu.Unlock()
+		close(entry.done)
+	}}, nil
 }
 
 // liveLogMerge is one client's bound log stream: the only producer of out.

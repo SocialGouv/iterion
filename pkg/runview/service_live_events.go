@@ -35,6 +35,9 @@ type liveEventStreams struct {
 	// logActive holds the bound log merges: same registration discipline as
 	// the event entries, joined by stop before the FileSource closes.
 	logActive map[uint64]*liveLogEntry
+	// logPending holds the bound log subscriptions still retrying their
+	// admission: stop cancels and joins them like the merges.
+	logPending map[uint64]*liveLogEntry
 	// logEnds is the instrumented assertion of §3.1: the end source each log
 	// merge applied and how many times it applied it, keyed by run ID.
 	logEnds map[string]logEndRecord
@@ -43,6 +46,11 @@ type liveEventStreams struct {
 	// retained subscription has ended, before the merge decides how its own
 	// stream ends.
 	beforeFinish func(ctx context.Context)
+	// laneFirst, when set (tests), is asked at the top of every merge
+	// iteration while the merge holds a registry lane: true leaves the broker
+	// lane out of that iteration's select, so a closed registry lane is served
+	// before the broker frames queued behind it. nil in production.
+	laneFirst func() bool
 
 	// Test seams of the bound log merge. They run on the merge (or subscribe)
 	// goroutine and are nil in production.
@@ -57,6 +65,9 @@ type liveEventStreams struct {
 	// the merge starts: a test parks there to register and close a short epoch
 	// before the merge ever looks again.
 	afterLogObserved func()
+	// afterLogAdmission runs on a retried admission's goroutine once it was
+	// admitted, before its subscription is served: a test lands a stop there.
+	afterLogAdmission func(ctx context.Context)
 }
 
 // liveEventEntry is one registered merge: the run it streams, its
@@ -82,11 +93,12 @@ func (s *Service) initLiveEventStreams() {
 		return
 	}
 	s.liveEvents = &liveEventStreams{
-		svc:       s,
-		files:     runstream.NewFileSource(native, "", s.logger),
-		active:    make(map[uint64]*liveEventEntry),
-		logActive: make(map[uint64]*liveLogEntry),
-		logEnds:   make(map[string]logEndRecord),
+		svc:        s,
+		files:      runstream.NewFileSource(native, "", s.logger),
+		active:     make(map[uint64]*liveEventEntry),
+		logActive:  make(map[uint64]*liveLogEntry),
+		logPending: make(map[uint64]*liveLogEntry),
+		logEnds:    make(map[string]logEndRecord),
 	}
 	if s.alertRegistry == nil {
 		s.alertRegistry = newAlertRegistry()
@@ -134,12 +146,9 @@ func (l *liveEventStreams) subscribe(ctx context.Context, runID string, position
 		// (typed): alerts disabled honestly, never a legacy degradation.
 		rel, err := s.ensureEventSource(c, runID)
 		if err != nil {
-			if cause := closedCause(c); cause != nil {
-				err = cause
-			}
 			m.cleanup()
 			close(entry.done)
-			return nil, err
+			return nil, closedCauseOr(c, err)
 		}
 		m.release = rel
 	}
@@ -149,12 +158,9 @@ func (l *liveEventStreams) subscribe(ctx context.Context, runID string, position
 	m.observed, m.observedObs = s.observedAlertLane(c, runID, true)
 	inner, err := l.files.SubscribeEventsHinted(c, runID, position, runstream.FileStreamHints{Drain: m.dataWake, Terminal: m.termHint, TerminalPoll: terminalPoll})
 	if err != nil {
-		if cause := closedCause(c); cause != nil {
-			err = cause
-		}
 		m.cleanup()
 		close(entry.done)
-		return nil, err
+		return nil, closedCauseOr(c, err)
 	}
 	m.inner = inner
 	m.out = runstream.NewEventPipeWithClose(func() {
@@ -176,6 +182,16 @@ func closedCause(ctx context.Context) error {
 		return runstream.ErrSourceClosed
 	}
 	return nil
+}
+
+// closedCauseOr returns ErrSourceClosed when the Service stopped ctx, err
+// otherwise: a stop that interrupts a subscription's setup is that stop's
+// typed end, never the setup's own cancellation error.
+func closedCauseOr(ctx context.Context, err error) error {
+	if cause := closedCause(ctx); cause != nil {
+		return cause
+	}
+	return err
 }
 
 // liveEventMerge is one client's stream: the only producer of out.
@@ -234,6 +250,27 @@ func (m *liveEventMerge) shipAlerts(sub *EventSubscription) bool {
 	return true
 }
 
+// admitAlert is the one admission of a broker-lane alert, applied by the live
+// loop, the closed registry lane's drain (closing) and the end flush. A
+// stamped frame is dropped as the registry lane's carrier duplicate — any
+// stamped frame while the lane is held, only the closing lane's own
+// observation at its drain — and, on a bound merge, when its header is not the
+// binding's. An unstamped frame has no registry copy and ships (B-F2): runs
+// nobody registered keep their ID-keyed carrier.
+func (m *liveEventMerge) admitAlert(ev *store.Event, closing bool) bool {
+	stamp, stamped := ev.EventObservation()
+	if !stamped {
+		return true
+	}
+	if m.observed != nil && (!closing || stamp == m.observedObs) {
+		return false
+	}
+	if binding, bound := store.RunDataBindingFrom(m.ctx); bound && stamp.Header() != binding.Header() {
+		return false
+	}
+	return true
+}
+
 // run merges the retained subscription with the broker lane until the
 // retained subscription ends. Every cancellation ends it too (it shares this
 // stream's context), so its end is the merge's only exit besides a refused
@@ -245,6 +282,10 @@ func (m *liveEventMerge) run() {
 	alerts := m.broker.C
 	var fatal error
 	for {
+		brokerLane := alerts
+		if m.observed != nil && m.l.laneFirst != nil && m.l.laneFirst() {
+			brokerLane = nil
+		}
 		select {
 		case batch, ok := <-events:
 			if !ok {
@@ -269,7 +310,7 @@ func (m *liveEventMerge) run() {
 				continue
 			}
 			m.out.Warn(err)
-		case ev, ok := <-alerts:
+		case ev, ok := <-brokerLane:
 			if !ok {
 				// CloseRun: the in-process producer is done with this run ID
 				// (or paused, which never closes it). Check the status now,
@@ -292,21 +333,11 @@ func (m *liveEventMerge) run() {
 			// Alerts are out of band: never deduped, never advancing the cursor.
 			// The registry lane carries the registration's own frames; while it
 			// is live, the legacy carrier of the same alert is dropped (F5).
-			// Without a lane, a bound merge admits a stamped frame only when
-			// its origin matches the binding (R6); unstamped frames — runs
-			// nobody registered — ship as they always did.
-			if m.observed != nil {
-				// Only the lane's OWN carrier duplicate is dropped: an
-				// unstamped frame has no registry copy and would otherwise
-				// be lost (B-F2).
-				if _, stamped := ev.EventObservation(); stamped {
-					continue
-				}
-			}
-			if binding, bound := store.RunDataBindingFrom(m.ctx); bound {
-				if stamp, stamped := ev.EventObservation(); stamped && stamp.Header() != binding.Header() {
-					continue
-				}
+			// A bound merge admits a stamped frame only when its origin matches
+			// the binding (R6); unstamped frames — runs nobody registered —
+			// ship as they always did.
+			if !m.admitAlert(ev, false) {
+				continue
 			}
 			if !m.out.Ship(m.ctx, []*store.Event{ev}) {
 				m.out.Fail(closedCause(m.ctx))
@@ -338,12 +369,16 @@ func (m *liveEventMerge) run() {
 						signal(m.dataWake)
 						continue
 					}
-					// Only THIS lane's own copies are carrier duplicates;
-					// a stamped frame of another epoch (a re-adoption
-					// published while this lane was closing) belongs to a
-					// subscription that does not exist yet and must ship
-					// (codex-F3).
-					if stamp2, stamped := ev2.EventObservation(); stamped && m.observed != nil && stamp2 == m.observedObs {
+					// Only the closing lane's own observation marks a carrier
+					// duplicate here, and a RunObservation has no epoch: the
+					// copy of an alert that a re-adoption of the same
+					// observation published while this lane was closing is
+					// dropped with them, and its registry frame went to the
+					// new epoch before this merge adopted it — that alert
+					// reaches this stream only as its persisted run_health
+					// twin. A frame stamped with another origin is refused
+					// by the binding.
+					if !m.admitAlert(ev2, true) {
 						continue
 					}
 					if !m.out.Ship(m.ctx, []*store.Event{ev2}) {
@@ -416,17 +451,10 @@ func (m *liveEventMerge) finish(errs <-chan error, fatal error) {
 			continue
 		}
 		// The same admission as the live loop: a registry lane still held
-		// dedups the legacy carrier; a bound merge without one admits a
-		// stamped frame only on a matching origin.
-		if m.observed != nil {
-			if _, stamped := ev.EventObservation(); stamped {
-				continue
-			}
-		}
-		if binding, bound := store.RunDataBindingFrom(m.ctx); bound {
-			if stamp, stamped := ev.EventObservation(); stamped && stamp.Header() != binding.Header() {
-				continue
-			}
+		// dedups the legacy carrier; a bound merge admits a stamped frame
+		// only on a matching origin.
+		if !m.admitAlert(ev, false) {
+			continue
 		}
 		if !m.out.Ship(m.ctx, []*store.Event{ev}) {
 			m.out.Fail(closedCause(m.ctx))
@@ -493,8 +521,13 @@ func (l *liveEventStreams) stop(ctx context.Context) error {
 	for _, e := range l.active {
 		entries = append(entries, e)
 	}
-	logs := make([]*liveLogEntry, 0, len(l.logActive))
+	logs := make([]*liveLogEntry, 0, len(l.logActive)+len(l.logPending))
 	for _, e := range l.logActive {
+		logs = append(logs, e)
+	}
+	// A bound log subscription still retrying its admission is the
+	// Service's too: cancelled and joined like a merge, it ends typed.
+	for _, e := range l.logPending {
 		logs = append(logs, e)
 	}
 	l.mu.Unlock()

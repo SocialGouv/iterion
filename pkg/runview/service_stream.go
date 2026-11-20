@@ -264,7 +264,9 @@ func (s *Service) eventTerminalCatchUp(ctx context.Context, runID string, positi
 // instead of a subscription. A transient load error (the same classification
 // as the event path) does not refuse a legitimate subscription: the
 // subscription is returned and its producer retries the admission, publishing
-// each failure as a warning, and reads nothing before the run is admitted.
+// each failure as a warning, and reads nothing before the run is admitted. On
+// the native filesystem store that retry is the Service's: StopBackground and
+// Drain end it with runstream.ErrSourceClosed and join it.
 // Both the synchronous and the retried admission then continue in
 // serveBoundLogs — the ONE producer of a bound subscription, which reads the
 // run's bytes from the store's retained selection and never from the ring.
@@ -282,6 +284,30 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 			return nil, err
 		default:
 			sub := runstream.NewLogPipe()
+			if l := s.liveEvents; l != nil {
+				// On the native store the retry is the Service's: a stop
+				// cancels it with ErrSourceClosed and joins it, and once
+				// admitted its context is the merge's parent.
+				p, perr := l.registerPendingLog(ctx, runID)
+				if perr != nil {
+					return nil, perr
+				}
+				go func() {
+					defer p.end()
+					run, ok := s.retryLogAdmission(p.ctx, runID, sub, err)
+					if !ok {
+						sub.Fail(closedCause(p.ctx))
+						sub.Finish(nil)
+						p.cancel(context.Canceled)
+						return
+					}
+					if hook := l.afterLogAdmission; hook != nil {
+						hook(p.ctx)
+					}
+					s.serveBoundLogs(p.ctx, runID, fromOffset, run, sub)
+				}()
+				return sub, nil
+			}
 			go func() {
 				run, ok := s.retryLogAdmission(ctx, runID, sub, err)
 				if !ok {
@@ -323,9 +349,11 @@ func (s *Service) serveBoundLogs(ctx context.Context, runID string, from int64, 
 	if s.liveEvents != nil {
 		// The native lane path: the bytes are the store's, the wakes the
 		// producer's lane. subscribeLogs owns out once its merge started;
-		// a refusal before that leaves the pipe to this caller.
+		// a refusal before that leaves the pipe to this caller — typed
+		// ErrSourceClosed when a stop already cancelled ctx, a pending
+		// admission's context.
 		if err := s.liveEvents.subscribeLogs(ctx, runID, from, out); err != nil {
-			out.Fail(err)
+			out.Fail(closedCauseOr(ctx, err))
 			out.Finish(nil)
 		}
 		return
