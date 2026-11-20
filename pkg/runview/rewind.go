@@ -981,8 +981,10 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	for _, id := range invalidated {
 		// A re-executed node gets a fresh recovery budget: it is being
 		// replayed because the WORKFLOW changed, so attempts spent
-		// against the old definition should not count against it.
+		// against the old definition should not count against it — nor
+		// the streak of identical failures its old command left.
 		delete(cp.NodeAttempts, id)
+		delete(cp.NodeFailureStreaks, id)
 	}
 	// Any pending interaction belonged to the node the run was parked
 	// on, which is at or downstream of the pivot. Carrying it over would

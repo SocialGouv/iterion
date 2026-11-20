@@ -2329,6 +2329,17 @@ type SessionLedgerEntry struct {
 	Tasks     []string `json:"tasks" bson:"tasks"`
 }
 
+// NodeFailureStreak is one node's entry of Checkpoint.NodeFailureStreaks.
+//
+// Fingerprint is a digest, never the failure's text: a checkpoint holds no
+// command output. It is salted with the run and the node, so two runs that
+// failed alike do not carry the same value.
+type NodeFailureStreak struct {
+	Fingerprint string `json:"fingerprint" bson:"fingerprint"`
+	// Count is how many executions in a row ended on Fingerprint.
+	Count int `json:"count" bson:"count"`
+}
+
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.
 //
@@ -2477,6 +2488,16 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+	// NodeFailureStreaks records, per tool node, the last failure of its
+	// command and how many executions in a row ended on it, so the count a
+	// permanent verdict is taken on (TOOL_FAILED_PERMANENT on an identical
+	// repeat) survives the engine that started it: a resume on another
+	// replica continues it. Keyed by node ID. A node's entry leaves with its
+	// success, with a failure of another kind, and with a rewind that replays
+	// it. Absent on checkpoints written before the field existed, and on
+	// those of an engine whose limit is off: no streak, the pre-field
+	// behaviour.
+	NodeFailureStreaks map[string]NodeFailureStreak `json:"node_failure_streaks,omitempty" bson:"node_failure_streaks,omitempty"`
 	// RecoveryPause marks a pause written by the recovery dispatcher
 	// (RecoveryPauseForHuman) for a node whose execution FAILED. The node
 	// still owes its work: the answer that resumes the run is the

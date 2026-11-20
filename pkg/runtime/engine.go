@@ -707,6 +707,12 @@ type runState struct {
 	// reset them after a successful execution. Keys are created lazily.
 	nodeAttempts map[string]map[ErrorCode]int
 
+	// nodeFailureStreaks holds, per tool node, the fingerprint of its last
+	// command failure and how many executions in a row ended on it — the
+	// count an identical repeat is promoted on (identical_failure.go). It
+	// rides the checkpoint beside nodeAttempts. Keys are created lazily.
+	nodeFailureStreaks map[string]store.NodeFailureStreak
+
 	// retrySessionCosts holds cost readings already booked during an in-place
 	// recovery sequence. Tokens always count calls; only an explicitly
 	// session-total cost with the same backend and session can overlap.
@@ -1043,6 +1049,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		sessionLedger:      delegate.NewSessionLedger(nil),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
+		nodeFailureStreaks: make(map[string]store.NodeFailureStreak),
 		budget:             e.newRunBudget(),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),

@@ -284,6 +284,11 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_NODE_MAX_RETRIES":           true,
 	"ITERION_NODE_MAX_TRANSIENT_RETRIES": true,
 	"ITERION_OUTPUT_CORRECTION_BUDGET":   true,
+	// How many identical failures in a row decide that a tool node's command
+	// fails for good: at 0 the verdict is gone and every such failure is
+	// redelivered to the queue's bound, a sandbox each. The operator's
+	// bound, never a bot's.
+	"ITERION_NODE_MAX_IDENTICAL_FAILURES": true,
 	// The operator's strict output contract is process policy; a bot var
 	// cannot turn a rejection into an advisory warning.
 	"ITERION_STRICT_OUTPUT_VALIDATION":        true,

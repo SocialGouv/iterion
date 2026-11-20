@@ -7495,6 +7495,9 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            node_failure_streaks?: {
+                [key: string]: components["schemas"]["NodeFailureStreak"];
+            };
             node_id: string;
             node_sessions?: {
                 [key: string]: components["schemas"]["NodeSessionSlot"];
@@ -7958,6 +7961,10 @@ export interface components {
             team_id: string;
             team_name: string;
             team_slug: string;
+        };
+        NodeFailureStreak: {
+            count: number;
+            fingerprint: string;
         };
         NodeServed: {
             backend: string;

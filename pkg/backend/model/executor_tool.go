@@ -1033,7 +1033,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 					return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
 				}
 			}
-			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
+			tmpFile, err := os.CreateTemp(scriptDir, toolScriptTempPrefix+"*"+ext)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}
