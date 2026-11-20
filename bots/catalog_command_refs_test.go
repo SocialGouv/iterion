@@ -37,7 +37,7 @@ func TestCatalogToolCommandsResolveTheirRefs(t *testing.T) {
 	// test fixtures beside the shipped corpus.
 	targets := catalogWorkflowFiles(t)
 
-	checked := 0
+	checked, params := 0, 0
 	for _, path := range targets {
 		pr := parseBotUnit(path)
 		if pr.File == nil {
@@ -72,9 +72,43 @@ func TestCatalogToolCommandsResolveTheirRefs(t *testing.T) {
 						"node and read it as {{input.<field>}}.", path, tool.ID, m)
 				}
 			}
+			// The fourth body: an action's `params:`. The engine refuses a
+			// tool node BEFORE its body runs when the body reads an
+			// {{outputs.<node>.<field>}} whose producer ran and whose own
+			// `output:` schema declares the field, and the output does not
+			// carry it (model.UnresolvedOutputRefError, #3421). The three
+			// bodies above hold no such reference at all; a parameter may
+			// read a fan-out item or an untyped output, which that refusal
+			// never judges — and none reads a schema-declared field, so no
+			// shipped tool node can be stopped by it.
+			for _, param := range tool.Params {
+				for _, ref := range param.Refs {
+					if ref == nil || ref.Kind != ir.RefOutputs || len(ref.Path) < 2 {
+						continue
+					}
+					params++
+					producer, field := ref.Path[0], ref.Path[1]
+					schema := cr.Workflow.Schemas[ir.NodeOutputSchema(cr.Workflow.Nodes[producer])]
+					if schema == nil {
+						continue
+					}
+					for _, f := range schema.Fields {
+						if f != nil && f.Name == field {
+							t.Errorf("%s: node %q reads %s in its `params:`, a field node %q declares in `output: %s`: "+
+								"if that producer ever answers without it, this node is refused before its action runs. "+
+								"Map it on the edge into this node and read it as {{input.<field>}}, where the hole is the edge's to explain.",
+								path, tool.ID, ref.Raw, producer, schema.Name)
+						}
+					}
+				}
+			}
 		}
 	}
 	if checked == 0 {
 		t.Fatal("no tool bodies inspected — the IR shape likely changed")
+	}
+	// rgaa-audit's publish_create reads four fields of its fan-out item.
+	if params == 0 {
+		t.Fatal("no action parameter reading {{outputs.…}} inspected — the IR shape likely changed")
 	}
 }

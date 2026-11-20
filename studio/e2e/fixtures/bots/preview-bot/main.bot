@@ -7,8 +7,10 @@
 schema note:
   value: string
 
+## The directive line is the engine's; the JSON object after it is the
+## answer `output: note` declares.
 tool serve_preview:
-  command: "echo '[iterion] preview_url=__PREVIEW_URL__ kind=app scope=external'"
+  command: `echo '[iterion] preview_url=__PREVIEW_URL__ kind=app scope=external'; printf '{"value": "preview announced"}'`
   output: note
 
 workflow preview_fixture:

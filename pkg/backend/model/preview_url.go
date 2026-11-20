@@ -50,17 +50,59 @@ func scanDirectiveLines(output, directive string) [][]string {
 	}
 	var found [][]string
 	for _, raw := range strings.Split(output, "\n") {
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, directive) {
-			continue
+		if tokens := directiveTokens(raw, directive); tokens != nil {
+			found = append(found, tokens)
 		}
-		tokens := strings.Fields(line[len(directive):])
-		if len(tokens) == 0 || tokens[0] == "" {
-			continue
-		}
-		found = append(found, tokens)
 	}
 	return found
+}
+
+// directiveTokens reads ONE line as directive: its tokens, nil when the line
+// is not one — another prefix, or nothing after the `=`. The single reading
+// of "this line is the engine's", shared by the scanners that consume a
+// directive and by withoutDirectiveLines, which takes the same lines out of
+// a node's answer.
+func directiveTokens(line, directive string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, directive) {
+		return nil
+	}
+	tokens := strings.Fields(line[len(directive):])
+	if len(tokens) == 0 || tokens[0] == "" {
+		return nil
+	}
+	return tokens
+}
+
+// toolOutputDirectives are the directives a tool node's output may carry for
+// the ENGINE: every prefix scanDirectiveLines is asked for. A line the engine
+// consumes is an instruction to it, not part of what the node answers
+// (TestEveryDirectiveTheEngineScansIsOutOfTheAnswer holds the list to the
+// scanners' own call sites).
+var toolOutputDirectives = []string{toolAttachmentDirective, previewURLDirective, previewScreenshotDirective}
+
+// withoutDirectiveLines returns stdout without the lines the engine consumes
+// as directives (toolOutputDirectives), every other byte as it was.
+func withoutDirectiveLines(stdout string) string {
+	consumed := false
+	for _, directive := range toolOutputDirectives {
+		consumed = consumed || strings.Contains(stdout, directive)
+	}
+	if !consumed {
+		return stdout
+	}
+	lines := strings.Split(stdout, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		directive := false
+		for _, d := range toolOutputDirectives {
+			directive = directive || directiveTokens(line, d) != nil
+		}
+		if !directive {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // scanPreviewURLs walks the captured stdout of a tool node and returns

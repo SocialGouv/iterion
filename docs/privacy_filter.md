@@ -101,7 +101,7 @@ needed.
 
 ```iter fragment
 tool generate_diff:
-  command: "git diff --cached"
+  command: `git diff --cached | jq -Rs '{text: .}'`
   output: diff_text
 
 tool scan_secrets:
@@ -259,7 +259,7 @@ the placeholder format is overridable if needed.
 
 ```iter fragment
 tool list_artifacts:
-  command: "ls .iterion/runs/$RUN_ID/artifacts/*.json"
+  command: `ls .iterion/runs/$RUN_ID/artifacts/*.json | jq -Rn '{files: [inputs]}'`
   output: file_list
 
 router fan:

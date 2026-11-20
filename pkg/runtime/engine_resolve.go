@@ -889,6 +889,10 @@ func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveSc
 	}
 	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
 	ctx = model.WithSessionLedger(ctx, rs.sessionLedger)
+	// The tool-node contract rides the same wiring point as the snapshot it
+	// is judged against, so no dispatch site holds a node to one without the
+	// other.
+	ctx = model.WithToolContract(ctx, model.ToolContract{JSONStdout: !e.toolStdoutWrapped, OutputRefs: e.outputRefsOwed})
 	return model.WithTemplateData(ctx, e.buildTemplateDataScoped(rs, sc))
 }
 
