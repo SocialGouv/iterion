@@ -6,8 +6,9 @@
 // own defaults whatever the host exports.
 //
 // The default launch (no routing policy) is pinned byte for byte to a golden
-// generated on origin/main before the routing-cells change: whatever the
-// cells learn, a run no cell reaches reads exactly what it read before.
+// of the shipped bots' authored routes: whatever the cells learn, a run no
+// cell reaches reads what the golden records, and a route change is a
+// reviewed diff of it.
 
 package cloudpublisher
 

@@ -2,6 +2,9 @@ package bots
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -17,9 +20,12 @@ import (
 // (ADR-132), and over the shipped workflows the warning is a floor.
 //
 //   - A retired family is read by no shipped workflow, wherever C315 looks (a
-//     route field, a var default, a tool body): `ITERION_VIBE_*` and
+//     node's or a supervisor's route field, a var default, a tool body, the
+//     workflow budget's max_duration): `ITERION_VIBE_*` and
 //     `ITERION_MODERNIZE_*` left the catalogue together (#2699), and a listing
-//     below cannot let one back in.
+//     below cannot let one back in. A shipped `.bot` does not even spell one
+//     (TestCatalogSpellsNoRetiredDial): a bare `$NAME` in a tool body is the
+//     child shell's own read (ADR-130), which C315 leaves alone by design.
 //   - A workflow reads only the names stillDialled lists for it, so a
 //     de-dialled bot cannot grow a dial back and a new workflow ships none —
 //     an unlisted workflow is listed with nothing.
@@ -34,7 +40,8 @@ import (
 // Mutation that reddens it: put back one `${ITERION_VIBE_MODEL_CLAUDE:-…}` in
 // review-pr (retired family), add `${ITERION_X:-y}` to any clean workflow's
 // route (unlisted dial), or de-dial a listed name without removing its line
-// (stale listing).
+// (stale listing). The walk itself is pkg/dsl/ir's
+// (TestEnvDialNamesWhatDispatchReads holds it to what dispatch reads).
 var retiredDialFamilies = []string{"ITERION_VIBE_", "ITERION_MODERNIZE_"}
 
 // stillDialled is the set of environment names each shipped workflow still
@@ -138,7 +145,8 @@ var stillDialled = map[string][]string{
 	"rgaa-audit/main.bot": {
 		"ITERION_RGAA_BACKEND_ADJUDICATE", "ITERION_RGAA_BACKEND_REFUTE",
 		"ITERION_RGAA_EFFORT_ADJUDICATE", "ITERION_RGAA_EFFORT_REFUTE",
-		"ITERION_RGAA_MODEL_ADJUDICATE", "ITERION_RGAA_MODEL_REFUTE",
+		"ITERION_RGAA_MAX_DURATION", "ITERION_RGAA_MODEL_ADJUDICATE",
+		"ITERION_RGAA_MODEL_REFUTE",
 	},
 	"sec-audit-deps/main.bot": {
 		"ITERION_SEC_AUDIT_EFFORT_ENUMERATE", "ITERION_SEC_AUDIT_EFFORT_REVIEW",
@@ -149,22 +157,22 @@ var stillDialled = map[string][]string{
 		"ITERION_SEC_AUDIT_DETECT_MODEL", "ITERION_SEC_AUDIT_EFFORT_CONTEXT",
 		"ITERION_SEC_AUDIT_EFFORT_DETECT", "ITERION_SEC_AUDIT_EFFORT_REPORT",
 		"ITERION_SEC_AUDIT_EFFORT_TRIAGE", "ITERION_SEC_AUDIT_EFFORT_VOTER",
-		"ITERION_SEC_AUDIT_MODEL", "ITERION_SEC_AUDIT_MODEL_CLAUDE",
-		"ITERION_SEC_AUDIT_PROVIDER_CHAIN", "ITERION_SEC_AUDIT_VOTER_V1_MODEL",
-		"ITERION_SEC_AUDIT_VOTER_V2_MODEL", "ITERION_SEC_AUDIT_VOTER_V3_MODEL",
-		"ITERION_SEC_PATCH_EFFORT_AUTHOR", "ITERION_SEC_PATCH_EFFORT_REATTACK",
-		"ITERION_SEC_PATCH_EFFORT_REPORT", "ITERION_SEC_PATCH_EFFORT_REVIEW",
-		"ITERION_SEC_PATCH_MODEL",
+		"ITERION_SEC_AUDIT_MAX_DURATION", "ITERION_SEC_AUDIT_MODEL",
+		"ITERION_SEC_AUDIT_MODEL_CLAUDE", "ITERION_SEC_AUDIT_PROVIDER_CHAIN",
+		"ITERION_SEC_AUDIT_VOTER_V1_MODEL", "ITERION_SEC_AUDIT_VOTER_V2_MODEL",
+		"ITERION_SEC_AUDIT_VOTER_V3_MODEL", "ITERION_SEC_PATCH_EFFORT_AUTHOR",
+		"ITERION_SEC_PATCH_EFFORT_REATTACK", "ITERION_SEC_PATCH_EFFORT_REPORT",
+		"ITERION_SEC_PATCH_EFFORT_REVIEW", "ITERION_SEC_PATCH_MODEL",
 	},
 	"secured-renovacy/main.bot": {
 		"ITERION_RENOVACY_EFFORT_ALIGN", "ITERION_RENOVACY_EFFORT_AUDIT",
 		"ITERION_RENOVACY_EFFORT_BATCH_UPGRADE",
-		"ITERION_RENOVACY_EFFORT_CHANGELOG", "ITERION_RENOVACY_EFFORT_DETECT",
-		"ITERION_RENOVACY_EFFORT_DISCOVER", "ITERION_RENOVACY_EFFORT_FAMILY_ALIGN",
-		"ITERION_RENOVACY_EFFORT_FIX_AFTER", "ITERION_RENOVACY_EFFORT_INSTALL",
-		"ITERION_RENOVACY_EFFORT_REVIEW", "ITERION_RENOVACY_EFFORT_UPGRADE",
-		"ITERION_RENOVACY_EFFORT_VALIDATE", "ITERION_RENOVACY_MODEL_CLAUDE",
-		"RESCUE_PROVIDER",
+		"ITERION_RENOVACY_EFFORT_CHANGELOG", "ITERION_RENOVACY_EFFORT_CLAUDE",
+		"ITERION_RENOVACY_EFFORT_DETECT", "ITERION_RENOVACY_EFFORT_DISCOVER",
+		"ITERION_RENOVACY_EFFORT_FAMILY_ALIGN", "ITERION_RENOVACY_EFFORT_FIX_AFTER",
+		"ITERION_RENOVACY_EFFORT_INSTALL", "ITERION_RENOVACY_EFFORT_REVIEW",
+		"ITERION_RENOVACY_EFFORT_UPGRADE", "ITERION_RENOVACY_EFFORT_VALIDATE",
+		"ITERION_RENOVACY_MODEL_CLAUDE", "RESCUE_PROVIDER",
 	},
 	"supply-shield-cve/main.bot": {
 		"ITERION_FORGE_REPORT_EFFORT", "ITERION_SEC_AUDIT_EFFORT_ENUMERATE",
@@ -257,5 +265,48 @@ func TestCatalogEnvDialFloor(t *testing.T) {
 	sort.Strings(failures)
 	for _, f := range failures {
 		t.Error(f)
+	}
+}
+
+// TestCatalogSpellsNoRetiredDial: no shipped `.bot` names a retired family,
+// in any form. C315 names what the engine's expansion reads; a bare `$NAME`
+// in a tool body is read by the child shell from the environment the engine
+// builds for it (ADR-130's escape hatch, which C315 leaves alone on
+// purpose), and a comment that names a retired dial documents a lever that
+// no longer exists. The retired families are gone from the catalogue's text.
+//
+// Mutation that reddens it: prepend `MODEL=$ITERION_VIBE_MODEL_CLAUDE` to a
+// review-pr tool command — C315 and the floor above stay green, this fails.
+func TestCatalogSpellsNoRetiredDial(t *testing.T) {
+	var files []string
+	for _, root := range []string{".", "../examples"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".bot") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("no .bot file found — the walk's roots likely moved")
+	}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, family := range retiredDialFamilies {
+				if strings.Contains(line, family) {
+					t.Errorf("%s:%d names the retired %s* family (ADR-169): %s", path, i+1, family, strings.TrimSpace(line))
+				}
+			}
+		}
 	}
 }

@@ -13,30 +13,27 @@
 //
 // THE SHAPE THE GREEN HALF HOLDS FOR, said out loud: a program whose
 // routing fields are LITERALS and whose pinned slots carry no `provider:`
-// hint of their own. The catalog this repo ships does NOT have that shape —
-// 34 of its bots template at least one routing field on an env dial, and
-// most of those slots keep a `provider:` hint too. The Revi pair is the
-// measured instance (all six slots carry both), so under the acceptance's
-// own cell every shipped Revi run is refused ON A DEPLOYMENT THAT SETS NONE
-// OF THOSE DIALS, which TestReviIntegrationAcceptance_TheShippedSlotsAreRefused
-// asserts verbatim (its freeze is what fixes that deployment).
+// hint of their own. A dialled program does not have that shape. The Revi
+// pair as it shipped before ADR-169's de-dial is the measured instance
+// (reviDialledShape: all six slots templated on an env dial, and most
+// keeping a `provider:` hint), so under the acceptance's own cell every
+// such run is refused ON A DEPLOYMENT THAT SETS NONE OF THOSE DIALS, which
+// TestReviIntegrationAcceptance_TheShippedSlotsAreRefused asserts (its
+// freeze is what fixes that deployment).
 //
-// The qualification is the whole shape of the remaining delivery work,
-// because a dial's reading belongs to the deployment: `${ITERION_*}` is
-// answered by the platform's stored `bot_vars` first (ir.SetEnvOverlay,
-// installed at cmd/iterion/server.go) and then by the pod environment —
-// `ITERION_VIBE_*` is not a credential-shaped name, so the cloud process-env
-// policy passes it. Two roads therefore reach the acceptance line: de-dial
-// those routing fields and drop their `provider:` hints in the `.bot` texts,
-// per ADR-129 §7-8 ("a literal field is worth more than an env dial now",
-// which today covers only revi-converse's `backend:`); or point the three
-// `ITERION_VIBE_PROVIDER_*` dials at the tenant's own gateway, which reaches
-// it without editing a `.bot` — and gives the tenant's answer to every bot
-// reading those dials, not to Revi alone. A third road needs neither: cells
-// that fix EVERY field the walk reads — backend, provider and model on each
-// slot (a provider cell collapses the slot's own hint), the route-scoped and
-// supervisor selectors on the rescues and the pacers — decide every route
-// from the record (revi_routing_cells_test.go, on the shipped bots).
+// A dial's reading belongs to the deployment: `${ITERION_*}` is answered by
+// the platform's stored `bot_vars` first (ir.SetEnvOverlay, installed at
+// cmd/iterion/server.go) and then by the pod environment. Two roads reach
+// the acceptance line for a dialled program: de-dial its routing fields and
+// drop their empty `provider:` hints in the `.bot` texts, per ADR-129 §7-8
+// and ADR-169 (the road the shipped Revi pair took: its slots are literals
+// now); or point the dials at the tenant's own gateway, which gives the
+// tenant's answer to every bot reading those dials. A third road needs
+// neither: cells that fix EVERY field the walk reads — backend, provider
+// and model on each slot (a provider cell collapses the slot's own hint),
+// the route-scoped and supervisor selectors on the rescues and the pacers —
+// decide every route from the record (revi_routing_cells_test.go, on the
+// shipped bots).
 //
 // Mutants: the policy's override cells dropped at the fold
 // (runview.policyOverrideEntries) → the launch no longer resolves the
@@ -45,7 +42,7 @@
 // the primary refusal derived from a non-narrow-safe walk
 // (providerAccumulator.endRoute) → the hinted slot is no longer refused;
 // the unreadable-route refusal dropped (publisher.go's FirstUnreadable arm)
-// → the shipped slots are no longer refused.
+// → the dialled slots are no longer refused.
 
 package cloudpublisher
 
@@ -365,13 +362,14 @@ func TestReviIntegrationAcceptance_AHintedSlotIsRefusedNeverReRouted(t *testing.
 	}
 }
 
-// reviShippedBot carries the routing field texts of the Revi pair this repo
-// SHIPS, verbatim: bots/review-pr/lib/nodes.bot (converge, reviewer_claude,
-// reviewer_claude_glance, reviewer_gpt, reviewer_gpt_glance) and
-// bots/revi-converse/main.bot (converse_agent). Every slot templates its
-// routing on an `${ITERION_VIBE_*}` dial and keeps a `provider:` hint of its
-// own — the two shapes §4 rule 1 and §5 make load-bearing.
-const reviShippedBot = "agent converge:\n" +
+// reviDialledShape carries the routing field texts of the Revi pair as it
+// shipped before ADR-169's de-dial (review-pr's converge, reviewer_claude,
+// reviewer_claude_glance, reviewer_gpt, reviewer_gpt_glance and
+// revi-converse's converse_agent) — a synthetic dialled program now, the
+// shipped bots carry literals. Every slot templates its routing on an env
+// dial and keeps a `provider:` hint of its own — the two shapes §4 rule 1
+// and §5 make load-bearing.
+const reviDialledShape = "agent converge:\n" +
 	"  model: \"${ITERION_VIBE_MODEL_EMIT:-claude-opus-5-5}\"\n" +
 	"  backend: \"${ITERION_VIBE_BACKEND_EMIT:-claude_code}\"\n" +
 	"  provider: \"${ITERION_VIBE_PROVIDER_EMIT:-anthropic}\"\n" +
@@ -476,8 +474,8 @@ func envDialNames(source string) []string {
 // TestReviIntegrationAcceptance_TheShippedSlotsAreRefused is the third
 // refusal, and the acceptance's own limit: under the SAME cell the green
 // half is asserted with — `providers: [openai_compatible]` and all six slots
-// pinned to claw + the team's gateway — the field texts the repo actually
-// ships are REFUSED. The pins cannot rescue them: the two gpt slots' dial
+// pinned to claw + the team's gateway — the field texts Revi shipped before
+// ADR-169's de-dial (reviDialledShape) are REFUSED. The pins cannot rescue them: the two gpt slots' dial
 // carries an EMPTY default, so the walk cannot read it (§4 rule 1), and the
 // four claude slots' dial reads its own default `anthropic` hint, which IS
 // the route (§5, "refused, never re-routed"). A cell that pins no provider
@@ -486,19 +484,19 @@ func envDialNames(source string) []string {
 // node's chain — is witnessed on the shipped bots themselves
 // (revi_routing_cells_test.go).
 //
-// So a tenant that locks `providers:` gets every Revi run refused today on a
-// deployment whose `bot_vars` and pod environment answer none of these
-// dials, which is the deployment freezeHostDials fixes and the only one this
+// So a tenant that locks `providers:` gets every run of a dialled program
+// refused on a deployment whose `bot_vars` and pod environment answer none
+// of these dials, which is the deployment freezeHostDials fixes and the only one this
 // witness speaks for: point the three `ITERION_VIBE_PROVIDER_*` dials at that
 // tenant's own gateway and the same cell admits the same texts (the file
 // header's second road). The launch names ONE site (the first the walk
 // cannot read); the walk's own inventory is asserted beside it, because the
 // operator has six fields to fix, not one.
 func TestReviIntegrationAcceptance_TheShippedSlotsAreRefused(t *testing.T) {
-	freezeHostDials(t, reviShippedBot)
+	freezeHostDials(t, reviDialledShape)
 	f := newReviAcceptanceFixture(t)
 	pol := integrationRoutingPolicy(t, reviSlots...)
-	err := f.launch(t, "run-revi-shipped", reviShippedBot, pol)
+	err := f.launch(t, "run-revi-dialled", reviDialledShape, pol)
 	if !errors.Is(err, model.ErrRouteUnreadableUnderAllowlist) {
 		t.Fatalf("SubmitLaunch = %v, want the unreadable-route refusal — the gpt slots' `provider:` dial carries no default, and an allowlist makes readability compulsory", err)
 	}
@@ -519,12 +517,12 @@ func TestReviIntegrationAcceptance_TheShippedSlotsAreRefused(t *testing.T) {
 	// The whole inventory, through the same walk the gate reads: four slots
 	// keep the `anthropic` their surviving hint names, and both gpt slots
 	// are unreadable. The launch can only name the first.
-	wf := compileTestSource(t, reviShippedBot)
+	wf := compileTestSource(t, reviDialledShape)
 	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{})), nil, map[string]string(nil), nil)
 	view.AllowedProviders = policyProviders(pol)
 	walk := model.EffectiveProviders(view, walkProviderSet)
 	if walk.OnlyEnvFunded() {
-		t.Error("the shipped texts classify env-funded under the acceptance's cell — the dials would then be free")
+		t.Error("the dialled texts classify env-funded under the acceptance's cell — the dials would then be free")
 	}
 	forbidden := slices.Clone(walk.ForbiddenPrimary["anthropic"])
 	slices.Sort(forbidden)

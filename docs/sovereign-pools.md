@@ -230,18 +230,22 @@ a vendor credential (it holds none of the platform's; the team's own BYOK
 keys travel in the run bundle, see the residuals). So a pool block spells
 **every dial the bots it runs read**, not the three the incident named.
 
-The de-dialled catalogue bots read no environment at all
-([ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md):
-every `ITERION_VIBE_*` and `ITERION_MODERNIZE_*` dial is gone, review-pr's
-included), so neither a pool block nor the record routes them. A pool
-re-targets them the way every tenant does, with `llmroute` override cells at
-the team or binding level naming the gateway route. For review-pr that is
-one cell per role node — `review-pr/reviewer`, `review-pr/reviewer_glance`,
+The catalogue reads no `ITERION_VIBE_*` or `ITERION_MODERNIZE_*` dial any
+more ([ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)),
+so neither a pool block nor the record routes those names. Review-pr,
+revi-converse, gitops-warden and modernize read no environment at all; the
+other bots that read them still read their own families
+(`bots/catalog_env_dial_floor_test.go` lists what each workflow still
+reads), which a pool block keeps pinning. A pool re-targets a de-dialled
+route the way every tenant does, with `llmroute` override cells at the team
+or binding level naming the gateway route. For review-pr that is one cell
+per role node — `review-pr/reviewer`, `review-pr/reviewer_glance`,
 `review-pr/reviewer_alternate`, `review-pr/converge`: model
 `openai_compatible/<gateway model id>`, backend `claw`, provider
-`openai_compatible` — one per supervisor (`review-pr/supervisor:pacer`,
-`review-pr/supervisor:pacer_gpt`) and one for the rescue route
-(`review-pr/reviewer_alternate#glm`). Two consequences the bot's own
+`openai_compatible` — one per supervisor, model only
+(`review-pr/supervisor:pacer`, `review-pr/supervisor:pacer_gpt`: a
+supervisor cell names a model and nothing else), and one for the rescue
+route (`review-pr/reviewer_alternate#glm`). Two consequences the bot's own
 comments spell out:
 
 - the merge step runs on claw BY DEFAULT, and on claw the merge node
