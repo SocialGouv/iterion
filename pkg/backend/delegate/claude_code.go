@@ -1937,14 +1937,15 @@ func reportClaudeCodeEffort(result *Result, task Task, reachedModel bool) {
 
 // claudeCodeNoEffortModels are the Claude ids the claude CLI is measured
 // serving with NO effort on the wire, whatever handed (claude CLI 2.1.282,
-// recorded requests): sonnet-4-5 and the haiku line predate the effort dial
-// and claude-3-5-sonnet-20241022 is out of it. Matched on the id after the
-// spawn's prefix strip and the registry's alias and date normalization —
+// recorded requests): sonnet-4-5, haiku-4-5, and the 20241022 snapshots of
+// claude-3-5-haiku and claude-3-5-sonnet. Matched on the id after the
+// spawn's prefix strip, exact alias resolution and date stripping —
 // claude-haiku-4-5-20251001 lands here as claude-haiku-4-5.
 var claudeCodeNoEffortModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 	"claude-haiku-4-5":  true,
 	"claude-3-5-sonnet": true,
+	"claude-3-5-haiku":  true,
 }
 
 // claudeCodeWireEffort is the effort the claude CLI puts on its requests for
