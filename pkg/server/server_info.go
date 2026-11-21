@@ -21,9 +21,8 @@ type serverInfoResponse struct {
 	// autonomously act on runs or watches. It is deliberately separate from
 	// Mode: the deployment remains local, only its operational behaviour is
 	// constrained for a supervised recovery.
-	RecoveryPassive bool   `json:"recovery_passive"`
-	Version         string `json:"version"`
-	Commit          string `json:"commit,omitempty"`
+	RecoveryPassive bool `json:"recovery_passive"`
+	ServerBuild
 	// AuthRequired is false in local / desktop mode (single-user TTY,
 	// no JWT) and true in cloud mode (multitenant). The SPA short-
 	// circuits its bootstrap when false and renders the studio as a
@@ -144,6 +143,17 @@ type serverInfoResponse struct {
 	Legal legalInfoBlock `json:"legal"`
 }
 
+// ServerBuild is what an instance runs, as GET /api/server/info answers it:
+// the release version and the VCS revision it was built from (absent when
+// the build carries none). Exported so a client decodes these two fields by
+// the server's own tags, and only them: a probe of a server of another
+// release still reads its version when other fields of the answer changed
+// shape.
+type ServerBuild struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
+}
+
 type serverLimitsBlock struct {
 	Upload uploadLimitsBlock `json:"upload"`
 }
@@ -165,8 +175,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	resp := serverInfoResponse{
 		Mode:            mode,
 		RecoveryPassive: s.cfg.RecoveryPassive,
-		Version:         appinfo.Version,
-		Commit:          appinfo.Commit,
+		ServerBuild:     ServerBuild{Version: appinfo.Version, Commit: appinfo.Commit},
 		AuthRequired:    s.authSvc != nil && !s.cfg.DisableAuth,
 		Limits: serverLimitsBlock{
 			Upload: uploadLimitsBlock{

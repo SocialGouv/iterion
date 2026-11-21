@@ -30,7 +30,7 @@ export function ArtifactFilePreviewDialog({
   captionsHref,
   onClose,
 }: Props) {
-  const downloadHref = `${artifactFileURL(runId, preview.path)}?download=1`;
+  const downloadHref = artifactFileURL(runId, preview.path, { download: true });
   const description = (
     <span>
       {formatBytes(preview.size)} · {preview.contentType || "loading…"}

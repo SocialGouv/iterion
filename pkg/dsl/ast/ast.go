@@ -1027,24 +1027,25 @@ type FailDecl struct {
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
 	Name           string
-	Contract       string            // the bot's public contract, a top-level ContractDecl's name (empty = none)
-	Vars           *VarsBlock        // workflow-level variable declarations
-	Attachments    *AttachmentsBlock // workflow-level attachments declarations
-	Entry          string            // entry node name
-	DefaultBackend string            // workflow-level default backend (empty = not set)
-	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
-	Capabilities   []string          // workflow-level default host capabilities (nil = none; a declared `capabilities: []` is kept so the written form round-trips)
-	Skills         []string          // workflow-level default skill-library references (nil = none)
-	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
-	Budget         *BudgetBlock      // execution limits (optional)
-	Resources      *ResourcesBlock   // named counting semaphores (optional)
-	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
-	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
-	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
-	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
-	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
-	AmbientContext string            // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
-	Codemode       *CodemodeBlock    // codemode tool loop default for agent/judge nodes: a mode and its bounds; nil = unset → off (the switch reads no environment, ADR-132)
+	Contract       string               // the bot's public contract, a top-level ContractDecl's name (empty = none)
+	Vars           *VarsBlock           // workflow-level variable declarations
+	Attachments    *AttachmentsBlock    // workflow-level attachments declarations
+	BusinessStores []*BusinessStoreDecl // declared business-store identities; nil means no block
+	Entry          string               // entry node name
+	DefaultBackend string               // workflow-level default backend (empty = not set)
+	ToolPolicy     []string             // workflow-level tool policy patterns (nil = open)
+	Capabilities   []string             // workflow-level default host capabilities (nil = none; a declared `capabilities: []` is kept so the written form round-trips)
+	Skills         []string             // workflow-level default skill-library references (nil = none)
+	MCP            *MCPConfigDecl       // workflow-level MCP activation/filtering
+	Budget         *BudgetBlock         // execution limits (optional)
+	Resources      *ResourcesBlock      // named counting semaphores (optional)
+	Compaction     *CompactionBlock     // session compaction defaults for all nodes (optional)
+	Interaction    *InteractionMode     // workflow-level default interaction mode (nil = not set)
+	Worktree       string               // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Compress       string               // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory     string               // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
+	AmbientContext string               // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset → ITERION_AMBIENT_CONTEXT → workspace)
+	Codemode       *CodemodeBlock       // codemode tool loop default for agent/judge nodes: a mode and its bounds; nil = unset → off (the switch reads no environment, ADR-132)
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
@@ -1070,6 +1071,16 @@ type WorkflowDecl struct {
 	// this declaration, by name (PropertySpans).
 	Properties PropertySpans
 	Span       Span
+}
+
+// BusinessStoreDecl names a business store the workflow expects. The launch
+// authority normalizes these declarations with the inherited execution context.
+type BusinessStoreDecl struct {
+	ID        string
+	Kind      string
+	Namespace string
+	Required  *bool // nil = false; preserve an explicit false through authoring
+	Span      Span
 }
 
 // BudgetBlock represents execution limits for a workflow.
@@ -1198,15 +1209,16 @@ type SandboxBlock struct {
 // empty duration) mean ABSENT, which is what Limits.Clamp already reads as
 // "nobody chose" — so an explicit `tool_calls: 0` is the default, not a ban.
 type CodemodeBlock struct {
-	Mode            string // "on" | "off" | "" (inherit when on a node)
-	ToolCalls       int64  // tool_calls: nested calls one program may make
-	Wall            string // wall: the child's lifetime, e.g. "60s"
-	CPU             string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
-	Memory          int64  // memory: bytes of RLIMIT_DATA
-	ScriptBytes     int64  // script_bytes: bytes of program source
-	ResultBytes     int64  // result_bytes: bytes the program may return
-	ToolResultBytes int64  // tool_result_bytes: bytes of ONE tool result
-	Span            Span
+	Mode                string // "on" | "off" | "" (inherit when on a node)
+	ToolCalls           int64  // tool_calls: nested calls one program may make
+	ConcurrentToolCalls int64  // concurrent_tool_calls: nested calls in flight in one program
+	Wall                string // wall: the child's lifetime, e.g. "60s"
+	CPU                 string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
+	Memory              int64  // memory: bytes of RLIMIT_DATA
+	ScriptBytes         int64  // script_bytes: bytes of program source
+	ResultBytes         int64  // result_bytes: bytes the program may return
+	ToolResultBytes     int64  // tool_result_bytes: bytes of ONE tool result
+	Span                Span
 }
 
 // Bounded reports whether the block declares any bound — i.e. whether it was
@@ -1226,7 +1238,7 @@ func (c *CodemodeBlock) Bounded() bool {
 	if c == nil {
 		return false
 	}
-	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
 		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
 }
 

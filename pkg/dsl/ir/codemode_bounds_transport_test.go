@@ -13,8 +13,7 @@ agent a:
   model: "m"
   backend: "claw"
   codemode:
-    tool_calls: 128
-    wall: "2m"
+    concurrent_tool_calls: 3
 
 workflow w:
   entry: a
@@ -83,7 +82,7 @@ func TestABoundsBlockWithNoModeIsOnThroughBothSourcePaths(t *testing.T) {
 	node := viaJSON.Workflow.Nodes["a"].(*AgentNode)
 
 	// The mode. "" is INHERIT, which resolves to off — so without the
-	// normalisation the transport path runs a node with seven bounds and no
+	// normalisation the transport path runs a node with a bound and no
 	// capability, and C348 cannot say so because it keys on "off", not "".
 	if node.Codemode != viaParser.Codemode {
 		t.Errorf("codemode = %q through the transport and %q through the parser: one declaration, two programs", node.Codemode, viaParser.Codemode)
@@ -93,7 +92,7 @@ func TestABoundsBlockWithNoModeIsOnThroughBothSourcePaths(t *testing.T) {
 	}
 	// And the bounds must still be there — a normalisation that fixed the
 	// mode by dropping the block would trade one silent defect for another.
-	if node.CodemodeBounds == nil || node.CodemodeBounds.ToolCalls != 128 {
-		t.Errorf("bounds = %+v, want ToolCalls 128 carried through the transport", node.CodemodeBounds)
+	if node.CodemodeBounds == nil || node.CodemodeBounds.ConcurrentToolCalls != 3 || viaParser.CodemodeBounds == nil || viaParser.CodemodeBounds.ConcurrentToolCalls != 3 {
+		t.Errorf("bounds = %+v, want ConcurrentToolCalls 3 carried through the transport", node.CodemodeBounds)
 	}
 }

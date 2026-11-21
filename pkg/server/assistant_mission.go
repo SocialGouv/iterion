@@ -286,7 +286,7 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 			return
 		}
 		event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "watch_id": m.WatchID, "actions": m.Policy.Actions, "expires_at": m.Policy.ExpiresAt, "max_actions": m.Policy.MaxActions}
-		if err := c.server.deliverHostEventWithService(mctx, c.runs, assistant.ID, m.Activation.Kind, event, false, m.Activation.ID); err != nil {
+		if err := c.server.deliverHostEventWithService(mctx, c.runs, assistant.ID, m.Activation.Kind, event, false, m.Activation.ID, runview.ActionOrigin{}); err != nil {
 			if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
 				m.Activation.State, m.Activation.Error, m.Activation.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
 				m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("activate the assistant", until)
@@ -554,7 +554,7 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			}
 			r = &m.Receipts[idx]
 			event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "action": r.Action, "action_receipt_id": r.ID, "state": r.State, "error": r.Error, "event_seq": r.EventSeq}
-			if err := c.server.deliverHostEventWithService(ctx, c.runs, assistant.ID, r.ResultDelivery.Kind, event, false, r.ResultDelivery.ID); err != nil {
+			if err := c.server.deliverHostEventWithService(ctx, c.runs, assistant.ID, r.ResultDelivery.Kind, event, false, r.ResultDelivery.ID, runview.ActionOrigin{}); err != nil {
 				if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
 					r.ResultDelivery.State, r.ResultDelivery.Error, r.ResultDelivery.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
 					m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("deliver the action result", until)
@@ -745,12 +745,15 @@ func actionReceiptRecorded(ctx context.Context, runs *runview.Service, runID str
 }
 
 type createAssistantMissionRequest struct {
-	InvocationKey  string   `json:"invocation_key"`
-	WatchID        string   `json:"watch_id,omitempty"`
-	AssistantRunID string   `json:"assistant_run_id,omitempty"`
-	Actions        []string `json:"actions,omitempty"`
-	TTLSeconds     int64    `json:"ttl_seconds,omitempty"`
-	MaxActions     int      `json:"max_actions,omitempty"`
+	InvocationKey  string `json:"invocation_key"`
+	WatchID        string `json:"watch_id,omitempty"`
+	AssistantRunID string `json:"assistant_run_id,omitempty"`
+	// AssistantRunBirth is the birth the caller expects of the mission's
+	// assistant run (checkCarriedBirth), compared right after its load.
+	AssistantRunBirth string   `json:"assistant_run_birth,omitempty"`
+	Actions           []string `json:"actions,omitempty"`
+	TTLSeconds        int64    `json:"ttl_seconds,omitempty"`
+	MaxActions        int      `json:"max_actions,omitempty"`
 }
 
 func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Request) {
@@ -769,8 +772,22 @@ func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Req
 	if !decodeJSONCapped(s, w, r, &req, 32<<10) {
 		return
 	}
+	if err := validateCarriedBirth("assistant_run_birth", req.AssistantRunBirth); err != nil {
+		s.writeCarriedBirthFailure(w, r, err)
+		return
+	}
+	// Under an admitted expectation the mission is created for the target
+	// the gate admitted, or not at all: the target is verified right after
+	// its load, and a failure answers run_origin_lost only for a lost target.
+	origin := s.admittedAction(r, r.PathValue("id"))
 	target, err := s.runs.LoadRunCtx(r.Context(), r.PathValue("id"))
+	if err == nil {
+		err = origin.expect().Verify(target)
+	}
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "target run not found")
 		return
 	}
@@ -815,6 +832,24 @@ func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Req
 			s.httpErrorFor(w, r, http.StatusConflict, "invocation key is already bound to a different mission policy")
 			return
 		}
+		// The birth the request expects of the mission's assistant run is
+		// compared before a reattach, as before a creation.
+		if req.AssistantRunBirth != "" {
+			assistant, aerr := s.runs.LoadRunCtx(r.Context(), existing.AssistantRunID)
+			switch {
+			case aerr == nil:
+				if err := checkCarriedBirth("assistant_run_birth", req.AssistantRunBirth, assistant); err != nil {
+					s.writeCarriedBirthFailure(w, r, err)
+					return
+				}
+			case errors.Is(aerr, store.ErrRunDeleted) && !runBirthCheckOff():
+				s.writeRunOriginLost(w, r, existing.AssistantRunID)
+				return
+			default:
+				s.httpErrorFor(w, r, http.StatusConflict, "assistant run is unavailable")
+				return
+			}
+		}
 		// A permanent invocation binding reattaches even after its watch or
 		// assistant becomes terminal. It never renews TTL or action budget.
 		s.writeJSONFor(w, r, existing)
@@ -831,6 +866,10 @@ func (s *Server) handleCreateAssistantMission(w http.ResponseWriter, r *http.Req
 	assistant, err := s.runs.LoadRunCtx(r.Context(), watch.AssistantRunID)
 	if err != nil || assistantWatchStopsForStatus(assistant.Status) {
 		s.httpErrorFor(w, r, http.StatusConflict, "assistant run is unavailable")
+		return
+	}
+	if err := checkCarriedBirth("assistant_run_birth", req.AssistantRunBirth, assistant); err != nil {
+		s.writeCarriedBirthFailure(w, r, err)
 		return
 	}
 	if _, _, err := s.resolveAssistantChatCapability(r.Context(), assistant); err != nil {

@@ -202,6 +202,7 @@ nodes:
     ambient_context: none
     codemode:
       tool_calls: 256
+      concurrent_tool_calls: 3
       wall: 2m
       cpu: 45s
       memory: 536870912
@@ -392,6 +393,11 @@ workflow:
       default: x
   attachments:
     extra: file
+  business_stores:
+    - id: ledger
+      kind: postgres
+      namespace: finance
+      required: true
   budget:
     max_parallel_branches: 4
     max_duration: 4h

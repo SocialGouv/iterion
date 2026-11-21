@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"slices"
@@ -220,16 +222,18 @@ func cliLaunchTrust() store.RunTrust {
 // run's own id, the launch must not boot the operator's ambient MCP servers
 // or resolve the tenant's connectors first. A fresh id has no document; any
 // other read failure is returned, not guessed.
-func cliRunTrust(ctx context.Context, s store.RunStore, runID string) (store.RunTrust, error) {
+func cliRunTrust(ctx context.Context, s store.RunStore, runID string) (context.Context, store.RunTrust, bool, error) {
 	trust := cliLaunchTrust()
-	r, err := s.LoadRun(ctx, runID)
+	bound, r, err := store.LoadRunWithValueFormat(ctx, s, runID)
 	switch {
-	case errors.Is(err, store.ErrRunNotFound):
-		return trust, nil
+	case errors.Is(err, store.ErrRunNotFound) && errtrack.AllLeafCauses(err, func(cause error) bool {
+		return errors.Is(cause, store.ErrRunNotFound) || errors.Is(cause, fs.ErrNotExist)
+	}):
+		return ctx, trust, false, nil
 	case err != nil:
-		return "", fmt.Errorf("read run %s to settle its workspace trust: %w", runID, err)
+		return ctx, "", false, fmt.Errorf("read run %s to settle its workspace trust: %w", runID, err)
 	}
-	return trust.Lowest(r.Trust), nil
+	return bound, trust.Lowest(r.Trust), true, nil
 }
 
 // skipMCPHealthFromEnv reports whether ITERION_SKIP_MCP_HEALTH is truthy, so
@@ -241,7 +245,7 @@ func skipMCPHealthFromEnv() bool {
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
-func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
+func RunRun(ctx context.Context, opts RunOptions, p *Printer) (retErr error) {
 	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
 	if err != nil {
 		return err
@@ -300,12 +304,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		}
 	}
 
-	telemetry, err := startRunTelemetry(runID, logger)
-	if err != nil {
-		return err
-	}
-	defer telemetry.shutdown()
-
 	// The launch trust settles BEFORE the compile, from a READ-ONLY view of
 	// the store (store.Open creates nothing): `--run-id` can name a run whose
 	// document already exists, and the trust that document holds floors this
@@ -323,7 +321,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// untrusted (cliLaunchTrust); an operator's own `iterion run` carries
 	// nothing and stays trusted; a `--run-id` that names an existing fork run
 	// is lowered to it. One value for the engine and the compile.
-	launchTrust, err := cliRunTrust(ctx, store.Open(storeDir), runID)
+	ctx, launchTrust, existingRun, err := cliRunTrust(ctx, store.Open(storeDir), runID)
 	if err != nil {
 		return err
 	}
@@ -331,12 +329,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		runtime.WithLogger(logger),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 		runtime.WithTrust(launchTrust, ""),
-	}
-	if telemetry.prometheus != nil {
-		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.prometheus.EventObserver()))
-	}
-	if telemetry.otlp != nil {
-		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.otlp.EventObserver()))
 	}
 
 	// Resolve the workflow source: either via recipe (which may
@@ -387,111 +379,42 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		engineOpts = append(engineOpts, runtime.WithWorkspaceTracker(tracker))
 	}
 
-	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
-	// Re-emit the engineOpts entry: the handle changed either way — the
-	// tee's own logger, or the per-run fork the failure path returns — and
-	// this one is the run's (the slot BuildExecutor sets its matcher on).
-	// WithLogger overwrites on each call, so appending is sufficient.
-	engineOpts = append(engineOpts, runtime.WithLogger(logger))
-	if logCloser != nil {
-		defer logCloser.Close()
-	}
-
-	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
-	// event hub onto the engine so each coordinator can observe this run
-	// live. Injection (store-direct) is set up after the store exists.
-	// The shared gate resolves the kill switch (--supervisors →
-	// ITERION_SUPERVISORS → on) and logs the skip — AFTER the tee, so
-	// "why didn't the coach steer?" is answerable from run.log.
-	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
-		superviseHub = supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-	}
-
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot create store: %w", err)
 	}
 
-	// Wrap the concrete pointer in the interface only when non-nil so
-	// the typed-nil gotcha doesn't fire inside buildRunExecutor —
-	// passing a nil *PrometheusExporter directly yields a non-nil
-	// interface value whose method dispatch panics on the first
-	// callback.
-	var exporterHooks exporterEventHooks
-	if telemetry.prometheus != nil {
-		exporterHooks = telemetry.prometheus
-	}
-	var hookObservers []func(store.Event)
-	if superviseHub != nil {
-		hookObservers = []func(store.Event){superviseHub.Publish}
-	}
-	// The connectors resolve for the trust the engine and the compile were
-	// given above: launchTrust, the one value for the whole run.
-	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID, trust: connection.TrustOfRun(launchTrust)}, storeDir, logger,
-		// This run's engine is built below with no WithWorkDir: it fills its
-		// own workDir with the process cwd and roots the run at that
-		// directory's repository, which is what the screen's probe then
-		// resolves from the same cwd.
-		"", exporterHooks,
-		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
-	if err != nil {
-		return err
-	}
-	// The ENGINE's context needs the credentials too, not only the
-	// executor's: declared file secrets are mounted into the sandbox at
-	// run start, from the ctx handed to Run. Without this the mount is
-	// skipped and an optional secret silently never reaches the bot.
-	if localStore, localSealer, lsErr := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger); lsErr != nil {
-		return lsErr
-	} else if stamped, sErr := runview.StampLocalCredentials(ctx, wf, localStore, localSealer, logger); sErr != nil {
-		return sErr
-	} else {
-		ctx = stamped
-	}
 	// The CLI is another launch authority, so it stamps the same context
 	// contract as the service/cloud paths before the engine can execute a
 	// node. The policy is opt-in through ITERION_RELIABILITY_MODE, with
 	// ITERION_EXECUTION_CONTEXT_POLICY kept as the compatibility alias read
 	// only when that is unset (pkg/reliability.ModeFromEnv). Naming just the
 	// alias is what made the documented rollback look inert.
-	cliContext := runview.ResolveExecutionContext(ctx, s, runID, runview.LaunchSpec{
-		FilePath: iterFile,
-		Source:   "",
-		WorkDir:  "",
-	}, wf, wfHash, runview.ExecutionContextPolicyFromEnv(), "")
-	cliContext.LaunchSurface = "cli"
-	engineOpts = append(engineOpts, runtime.WithExecutionContext(cliContext))
-	if c, ok := executor.(io.Closer); ok {
-		defer func() {
-			if cerr := c.Close(); cerr != nil {
-				logger.Warn("executor close: %v", cerr)
+	launchSpec := runview.LaunchSpec{FilePath: iterFile}
+	if opts.Background {
+		// The detached launcher persists the declaration before handoff.
+		// Keep its policy and business stores when the CLI builds its engine.
+		if bound, prior, loadErr := store.LoadRunWithValueFormat(ctx, s, runID); loadErr == nil {
+			ctx = bound
+			launchSpec.ExecutionContext = prior.ExecutionContext
+			launchSpec.ParentRunID = prior.ParentRunID
+			if prior.ExecutionContext != nil {
+				launchSpec.ParentNodeID = prior.ExecutionContext.Lineage.ParentNodeID
 			}
-		}()
-	}
-	if err := runview.MCPHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
-		if opts.SkipMCPHealth || skipMCPHealthFromEnv() {
-			logger.Warn("MCP health-check failed but tolerated (--skip-mcp-health / ITERION_SKIP_MCP_HEALTH): %v", err)
 		} else {
-			return err
+			return fmt.Errorf("load launch context: %w", loadErr)
 		}
 	}
-
-	// Wire the subbot runner so `subbot` nodes can run a child .bot as a
-	// nested run in the same store. Resolved relative to the parent .bot.
-	engineOpts = append(engineOpts, runtime.WithSubbotRunner(
-		subbotRunnerForCLI(iterFile, storeDir, s, logger, opts)))
-
-	eng := buildEngine(wf, s, executor, opts, wfHash, iterFile, runName, bundleHandle, engineOpts)
-
+	cliContext, contextErr := runview.ResolveExecutionContext(ctx, s, runID, launchSpec, wf, wfHash, runview.ExecutionContextPolicyFromEnv(), "")
+	if contextErr != nil {
+		return contextErr
+	}
+	cliContext.LaunchSurface = "cli"
+	engineOpts = append(engineOpts, runtime.WithExecutionContext(cliContext))
 	// Fold the bundle's file-based presets (presets/<name>.md) into the
 	// workflow's preset set so `--preset <name>` resolves them and their var
-	// overrides flow through buildRunInputs. The run's logger carries what
-	// the merge finds — a malformed preset file, a prompt body whose
-	// `{{secrets.X}}` reaches a sink its secret withholds — on the command
-	// that is about to pay for the run, not only on the engine's backstop
-	// pass.
+	// overrides flow through buildRunInputs. The engine re-applies this as a
+	// backstop and logs any malformed preset files.
 	runtime.MergeBundlePresets(wf, bundleHandle, opts.Preset, logger)
 
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars, opts.AllowUnknownInputs)
@@ -519,6 +442,127 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		logger.Info("%s", inj.Summary())
 	}
 
+	var preparation store.RunInvocationPreparation = store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: wf.Name, Inputs: inputs}}
+	if opts.Background || (opts.RunID != "" && existingRun) {
+		preparation = store.ExistingRunInvocation{ID: runID}
+	}
+	invocation, err := store.PrepareRunInvocation(ctx, s, preparation)
+	if invocation.Context != nil {
+		ctx = invocation.Context
+	}
+	if err != nil {
+		return runtime.AbortPreparedRun(ctx, s, invocation, err)
+	}
+	engineHandoff := false
+	defer func() {
+		if !engineHandoff {
+			retErr = runtime.AbortPreparedRun(ctx, s, invocation, retErr)
+		}
+	}()
+
+	telemetry, err := startRunTelemetry(runID, logger)
+	if err != nil {
+		return err
+	}
+	defer telemetry.shutdown()
+
+	if telemetry.prometheus != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.prometheus.EventObserver()))
+	}
+	if telemetry.otlp != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.otlp.EventObserver()))
+	}
+
+	logger, logCloser, logErr := teeRunLogContext(ctx, logger, level, storeDir, runID)
+	if logErr != nil {
+		return fmt.Errorf("open run.log: %w", logErr)
+	}
+	// Re-emit the engineOpts entry: the handle changed either way — the
+	// tee's own logger, or the per-run fork the failure path returns — and
+	// this one is the run's (the slot BuildExecutor sets its matcher on).
+	// WithLogger overwrites on each call, so appending is sufficient.
+	engineOpts = append(engineOpts, runtime.WithLogger(logger))
+	if logCloser != nil {
+		defer logCloser.Close()
+	}
+
+	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
+	// event hub onto the engine so each coordinator can observe this run
+	// live. Injection (store-direct) is set up after the store exists.
+	// The shared gate resolves the kill switch (--supervisors →
+	// ITERION_SUPERVISORS → on) and logs the skip — AFTER the tee, so
+	// "why didn't the coach steer?" is answerable from run.log.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+	}
+
+	// Wrap the concrete pointer in the interface only when non-nil so
+	// the typed-nil gotcha doesn't fire inside buildRunExecutor —
+	// passing a nil *PrometheusExporter directly yields a non-nil
+	// interface value whose method dispatch panics on the first
+	// callback.
+	var exporterHooks exporterEventHooks
+	if telemetry.prometheus != nil {
+		exporterHooks = telemetry.prometheus
+	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+	// The connectors resolve for the trust the engine and the compile were
+	// given above: launchTrust, the one value for the whole run.
+	executor, err := buildRunExecutor(ctx, opts, tiersMatchTheEngine, wf, s, lineage{runID: runID, trust: connection.TrustOfRun(launchTrust)}, storeDir, logger,
+		// This run's engine is built below with no WithWorkDir: it fills its
+		// own workDir with the process cwd and roots the run at that
+		// directory's repository, which is what the screen's probe then
+		// resolves from the same cwd.
+		"", exporterHooks,
+		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
+	if err != nil {
+		return err
+	}
+	executorClosed := false
+	closeExecutor := func() {
+		if executorClosed {
+			return
+		}
+		executorClosed = true
+		if c, ok := executor.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				logger.Warn("executor close: %v", err)
+			}
+		}
+	}
+	defer closeExecutor()
+
+	// The ENGINE's context needs the credentials too, not only the
+	// executor's: declared file secrets are mounted into the sandbox at
+	// run start, from the ctx handed to Run. Without this the mount is
+	// skipped and an optional secret silently never reaches the bot.
+	if localStore, localSealer, lsErr := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger); lsErr != nil {
+		return lsErr
+	} else if stamped, sErr := runview.StampLocalCredentials(ctx, wf, localStore, localSealer, logger); sErr != nil {
+		return sErr
+	} else {
+		ctx = stamped
+	}
+	if err := runview.MCPHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
+		if opts.SkipMCPHealth || skipMCPHealthFromEnv() {
+			logger.Warn("MCP health-check failed but tolerated (--skip-mcp-health / ITERION_SKIP_MCP_HEALTH): %v", err)
+		} else {
+			return err
+		}
+	}
+
+	// Wire the subbot runner so `subbot` nodes can run a child .bot as a
+	// nested run in the same store. Resolved relative to the parent .bot.
+	engineOpts = append(engineOpts, runtime.WithSubbotRunner(
+		subbotRunnerForCLI(iterFile, storeDir, s, logger, opts)))
+
+	eng := buildEngine(wf, s, executor, opts, wfHash, iterFile, runName, bundleHandle, engineOpts)
+
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
@@ -533,6 +577,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
 	defer func() { _ = lock.Unlock() }()
+	defer closeExecutor() // close while the run lock still excludes successors
 
 	// Managed-runner mode: the studio server writes the .pid file on
 	// our behalf at spawn time, so we only need to remove it on exit.
@@ -586,7 +631,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		defer stop()
 	}
 
-	err = eng.Run(ctx, runID, inputs)
+	engineHandoff = true
+	err = eng.RunPrepared(ctx, runID, inputs, invocation)
 	err = runInteractiveResumeLoop(ctx, eng, s, runID, opts.NoInteractive, err)
 	err = autoResumeLoop(ctx, eng, s, runID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 
@@ -619,9 +665,8 @@ func executorOverrides(exec runtime.NodeExecutor) model.ModelOverrides {
 	return model.ModelOverrides{}
 }
 
-// teeRunLog defers to store.TeeRunLog so the dispatcher and any
-// other in-process runner share the same per-run log-file convention.
-// Kept as a thin wrapper for the CLI's call sites; no behavior change.
+// teeRunLog preserves the historical context-free wrapper for existing
+// compatibility tests. Production invocations use teeRunLogContext.
 func teeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID string) (*iterlog.Logger, io.Closer) {
 	return store.TeeRunLog(logger, level, storeRoot, runID)
 }
@@ -667,6 +712,7 @@ type lineage struct {
 }
 
 func buildRunExecutor(
+	ctx context.Context,
 	opts RunOptions,
 	tiers sandboxTiersClaim,
 	wf *ir.Workflow,
@@ -687,6 +733,12 @@ func buildRunExecutor(
 	botID string,
 	hookObservers []func(store.Event),
 ) (runtime.NodeExecutor, error) {
+	if err := store.RequireRunValueFormat(ctx, ln.runID); err != nil {
+		return nil, err
+	}
+	if _, _, err := store.LoadRunWithValueFormat(ctx, s, ln.runID); err != nil {
+		return nil, err
+	}
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
@@ -699,6 +751,7 @@ func buildRunExecutor(
 		return nil, err
 	}
 	execSpec := runview.ExecutorSpec{
+		Ctx:      ctx,
 		Workflow: wf,
 		Vars:     opts.Vars,
 		Store:    s,
@@ -790,10 +843,14 @@ type subbotDepthKey struct{}
 // resolved `with:` data as inputs, and returns the child's terminal node
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
-	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (_ map[string]any, retErr error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
+		}
+		// A child keeps the parent's original intention; a reload is not its source.
+		if err := store.RequireRunValueFormat(ctx, req.ParentRunID); err != nil {
+			return nil, err
 		}
 
 		// The parent's trust decides whether `bot://` may resolve at all:
@@ -813,6 +870,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
 			return out, aerr
 		}
+		// Only a fresh child needs a birth capability; existing-child reads
+		// remain available to an exact parent with its original binding.
+		if _, err := runview.CheckSubbotBirthInvocation(ctx, req.ParentRunID); err != nil {
+			return nil, err
+		}
+
 		childPath := resolvedSource.Path
 		// The child's engine roots at the parent's effective workdir when the
 		// parent passed one, else at the process cwd — the same two cases
@@ -844,9 +907,55 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, err
 		}
-		// Record the child on the parent BEFORE running it, so a restart while
-		// parked below re-attaches instead of spawning fresh.
+		var childContextSeed *store.ExecutionContext
+		if parentCtx, parent, loadErr := store.LoadRunWithValueFormat(ctx, s, req.ParentRunID); loadErr == nil && parent != nil {
+			ctx = parentCtx
+			childContextSeed = parent.ExecutionContext.Clone()
+			if childContextSeed != nil {
+				childContextSeed.Workflow = store.WorkflowContext{}
+				childContextSeed.Lineage = store.LineageContext{}
+			}
+		} else if loadErr != nil && !errors.Is(loadErr, store.ErrRunNotFound) {
+			return nil, fmt.Errorf("load parent %q execution context: %w", req.ParentRunID, loadErr)
+		}
+		childContext, contextErr := runview.ResolveExecutionContext(ctx, s, childRunID, runview.LaunchSpec{
+			FilePath:         childPath,
+			WorkDir:          req.WorkDir,
+			ParentRunID:      req.ParentRunID,
+			ParentNodeID:     req.NodeID,
+			ExecutionContext: childContextSeed,
+		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
+		if contextErr != nil {
+			return nil, contextErr
+		}
+		childContext.LaunchSurface = "cli-subbot"
+		// Record only an admitted child; a restart while parked below then
+		// re-attaches instead of spawning fresh.
+		lease, err := runview.AcquireSubbotLease(ctx, s, req.ParentRunID, childRunID, runview.SubbotLeaseOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = lease.Release() }()
+		childInvocation, err := lease.PrepareInvocation(lease.Context, s, store.RunCreateSpec{ID: childRunID, WorkflowName: childWf.Name, Inputs: req.Vars, Status: store.RunStatusRunning})
+		childValueCtx := ctx
+		if childInvocation.Context != nil {
+			childValueCtx = childInvocation.Context
+		}
+		if err != nil {
+			return nil, runtime.RetirePreparedRun(childValueCtx, s, childInvocation, err)
+		}
+		engineHandoff := false
+		defer func() {
+			if !engineHandoff {
+				retErr = runtime.RetirePreparedRun(childValueCtx, s, childInvocation, retErr)
+			}
+		}()
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
+
+		parkCtx, err := runview.SubbotParkContext(ctx, childInvocation)
+		if err != nil {
+			return nil, err
+		}
 
 		childBotID, _ := runview.SubbotChildBotIdentity(childPath, childBundle)
 		// The child's engine below is built with WithSharedSandbox and
@@ -866,7 +975,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// The child's connectors resolve for the parent's trust, the value
 		// its compile read above: its code came out of the parent's
 		// workspace.
-		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
+		childExec, err := buildRunExecutor(childValueCtx, childRunOpts, tiersUnknownToAChild, childWf, s,
 			lineage{runID: childRunID, parentRunID: req.ParentRunID, trust: connection.TrustOfRun(trust)}, storeDir, childLogger,
 			// The child's engine below is rooted at the parent's effective
 			// workdir when the parent passed one, else at the process cwd —
@@ -876,9 +985,18 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, err
 		}
-		if c, ok := childExec.(io.Closer); ok {
-			defer func() { _ = c.Close() }()
+
+		childClosed := false
+		closeChild := func() {
+			if childClosed {
+				return
+			}
+			childClosed = true
+			if c, ok := any(childExec).(io.Closer); ok {
+				_ = c.Close()
+			}
 		}
+		defer closeChild()
 
 		// Capture what the child emits — the terminal-node output (the last
 		// node before Done) a contractless subbot returns, plus the per-node
@@ -886,22 +1004,6 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// concurrently when the child fans out parallel branches, so the
 		// capture is mutex-guarded.
 		var capture runview.SubbotOutputCapture
-		var childContextSeed *store.ExecutionContext
-		if parent, loadErr := s.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
-			childContextSeed = parent.ExecutionContext.Clone()
-			if childContextSeed != nil {
-				childContextSeed.Workflow = store.WorkflowContext{}
-				childContextSeed.Lineage = store.LineageContext{}
-			}
-		}
-		childContext := runview.ResolveExecutionContext(ctx, s, childRunID, runview.LaunchSpec{
-			FilePath:         childPath,
-			WorkDir:          req.WorkDir,
-			ParentRunID:      req.ParentRunID,
-			ParentNodeID:     req.NodeID,
-			ExecutionContext: childContextSeed,
-		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
-		childContext.LaunchSurface = "cli-subbot"
 		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(childLogger),
 			runtime.WithWorkflowHash(hash),
@@ -972,17 +1074,15 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// interrupt propagates into a mid-flight child here exactly as it does
 		// to the parent. There is thus nothing to register — a Manager here
 		// would have no caller. Per-child control is a studio-only capability.
-		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		childLock, err := s.LockRun(childCtx, childRunID)
-		if err != nil {
-			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
-		}
+		childCtx := context.WithValue(childValueCtx, subbotDepthKey{}, depth+1)
 		runErr := func() error {
 			// Keep the unlock scoped to the active pass: the human-gate park
 			// below must remain unlocked, while a panic recovered by a fan-out
 			// branch must still release the child run lock.
-			defer func() { _ = childLock.Unlock() }()
-			return childEng.Run(childCtx, childRunID, req.Vars)
+			defer func() { _ = lease.Release() }()
+			defer closeChild()
+			engineHandoff = true
+			return childEng.RunPrepared(childCtx, childRunID, req.Vars, childInvocation)
 		}()
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is
@@ -992,7 +1092,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// resume --run-id <child>`) and the child reaches a terminal
 			// state, then pick up its output from the store.
 			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
-				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+				out, aerr := runview.AwaitSubbotTerminal(parkCtx, s, childRunID, logger)
 				if aerr == nil {
 					// Consumed — tidy the record. On error (shutdown mid-park or
 					// a failed child) LEAVE it for the resume-time re-attach.
@@ -1312,4 +1412,16 @@ func withLaunchEngineOverrides(permission, codemode string, bounds *ir.CodemodeB
 		out = append(out, runtime.WithCodemodeOverride(codemode, bounds))
 	}
 	return out
+}
+
+// teeRunLogContext retains the original invocation and historical IO-only fallback.
+func teeRunLogContext(ctx context.Context, logger *iterlog.Logger, level iterlog.Level, root, id string) (*iterlog.Logger, io.Closer, error) {
+	out, closer, err := store.TeeRunLogContext(ctx, logger, level, root, id)
+	if store.RunLogErrorFatal(ctx, err) {
+		return out, closer, err
+	}
+	if err != nil {
+		out.Warn("store: run.log tee refused: %v", err)
+	}
+	return out, closer, nil
 }

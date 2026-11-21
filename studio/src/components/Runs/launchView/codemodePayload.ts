@@ -15,6 +15,7 @@ import type { CodemodeBoundsOverride, CodemodeLimits } from "@/api/runs";
 
 export interface CodemodeFieldValues {
   toolCalls: string;
+  concurrentToolCalls: string;
   wall: string;
   cpu: string;
   memory: string;
@@ -25,6 +26,7 @@ export interface CodemodeFieldValues {
 
 export const emptyCodemodeFieldValues: CodemodeFieldValues = {
   toolCalls: "",
+  concurrentToolCalls: "",
   wall: "",
   cpu: "",
   memory: "",
@@ -68,6 +70,8 @@ export function buildCodemodePayload(
   const bounds: CodemodeBoundsOverride = {};
   const toolCalls = positiveNumber(fields.toolCalls);
   if (toolCalls !== undefined) bounds.tool_calls = toolCalls;
+  const concurrentToolCalls = positiveNumber(fields.concurrentToolCalls);
+  if (concurrentToolCalls !== undefined) bounds.concurrent_tool_calls = concurrentToolCalls;
   // Durations travel VERBATIM (the server owns the parse and 400s a value it
   // cannot read, naming the field) — except a value that PARSES TO ZERO:
   // "0s" reaches the resolver as the unset it looks like, silently reverting
@@ -130,6 +134,7 @@ export function droppableDuration(raw: string): boolean {
 export function unreadableFields(fields: CodemodeFieldValues): string[] {
   const numeric: Array<[string, string]> = [
     ["tool_calls", fields.toolCalls],
+    ["concurrent_tool_calls", fields.concurrentToolCalls],
     ["memory", fields.memory],
     ["script_bytes", fields.scriptBytes],
     ["result_bytes", fields.resultBytes],
@@ -195,6 +200,7 @@ export function overCeiling(
     if (got !== undefined && cap !== undefined && got > cap) over.push(name);
   };
   num("tool_calls", fields.toolCalls, ceil.tool_calls);
+  num("concurrent_tool_calls", fields.concurrentToolCalls, ceil.concurrent_tool_calls);
   dur("wall", fields.wall, ceil.wall);
   dur("cpu", fields.cpu, ceil.cpu);
   num("memory", fields.memory, ceil.memory);

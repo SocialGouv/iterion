@@ -66,8 +66,14 @@ func TestEnsureEventSource_RefcountedTailer(t *testing.T) {
 	}
 
 	// Two holders → one tailer.
-	release1 := svc.ensureEventSource(runID)
-	release2 := svc.ensureEventSource(runID)
+	release1, err := svc.ensureEventSource(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release2, err := svc.ensureEventSource(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc.fileSrcMu.Lock()
 	if h := svc.fileSrcs[runID]; h == nil || h.refs != 2 {
 		svc.fileSrcMu.Unlock()

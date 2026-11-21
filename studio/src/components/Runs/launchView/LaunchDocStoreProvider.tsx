@@ -18,6 +18,9 @@ export default function LaunchDocStoreProvider({ children }: { children: React.R
     () => (activeEditorTabId ? getOrCreateDocumentStore(activeEditorTabId) : null),
     [activeEditorTabId],
   );
-  if (!store) return <>{children}</>;
+  // One tree shape, with or without an active tab: returning the children
+  // bare when the last tab closes would remount the whole launch form — its
+  // typed values, its preset, its focus gone for an editor event that is not
+  // about the launch.
   return <DocumentStoreProvider store={store}>{children}</DocumentStoreProvider>;
 }

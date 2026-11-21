@@ -169,7 +169,11 @@ func TestThrowAwayWorkDir_AChildNeverRecordsItsParentsThrowAway(t *testing.T) {
 	runner := func(ctx context.Context, req SubbotRequest) (map[string]any, error) {
 		handed = req.WorkDir
 		child := New(humanWorkflow(), s, exec, WithWorkDir(req.WorkDir), WithParentRunID(req.ParentRunID), WithContributions(skill))
-		if err := child.Run(ctx, "child-run", nil); err != nil && !errors.Is(err, ErrRunPaused) {
+		invocation, err := prepareResourceInvocation(ctx, s, "child-run", req.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		if err := child.Run(invocation.Context, "child-run", nil); err != nil && !errors.Is(err, ErrRunPaused) {
 			return nil, err
 		}
 		return map[string]any{}, nil

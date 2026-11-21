@@ -666,10 +666,14 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 			logArgs: []any{msg.RunID},
 		}
 	}
+	originalCtx, formatErr := store.BindRunValueFormat(store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID), preRun)
+	if formatErr != nil {
+		return preconditionOutcome{finalStatus: "value_format_refused", op: "term-value-format", action: actionTerm, level: logWarn, logFmt: "runner: run %s original format refused: %v", logArgs: []any{msg.RunID, formatErr}}
+	}
 	loadCtx, loadCancel := context.WithTimeout(
-		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		originalCtx,
 		5*time.Second)
-	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	_, run, err := store.LoadRunWithValueFormat(loadCtx, r.cfg.Store, msg.RunID)
 	loadCancel()
 	if err != nil || run == nil {
 		// The lock is released on the way out; a redelivery re-reads.
@@ -730,7 +734,7 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 		}
 	}
 	casCtx, casCancel := context.WithTimeout(
-		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		originalCtx,
 		5*time.Second)
 	defer casCancel()
 	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
@@ -754,9 +758,9 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 		// Moved between the re-read and the CAS: read once more and take
 		// what the doc says now.
 		reCtx, reCancel := context.WithTimeout(
-			store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+			originalCtx,
 			5*time.Second)
-		moved, merr := r.cfg.Store.LoadRun(reCtx, msg.RunID)
+		_, moved, merr := store.LoadRunWithValueFormat(reCtx, r.cfg.Store, msg.RunID)
 		reCancel()
 		if merr != nil || moved == nil {
 			return preconditionOutcome{
@@ -994,17 +998,15 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, appinfo.Version, execErr},
 		}
 	}
-	// A resume the engine found superseded — its run queued again after
-	// this delivery was published: the newer attempt's own delivery runs it.
-	// Nothing of this one happened, and nothing is retried, released,
-	// banked or announced.
-	if errors.Is(execErr, runtime.ErrResumeSuperseded) {
+	// An attempt stopped at admission produces no execution outcome. A queued
+	// supersession's reoffer window is handled separately by processOne.
+	if stoppedAttempt(execErr) {
 		return execOutcome{
 			finalStatus: "superseded",
 			op:          "ack-superseded",
 			action:      actionAck,
 			level:       logWarn,
-			logFmt:      "runner: run %s: this resume was superseded by a newer one — dropping it (%v)",
+			logFmt:      "runner: run %s: this delivery no longer applies — dropping it (%v)",
 			logArgs:     []any{runID, execErr},
 		}
 	}
@@ -2038,6 +2040,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
+	boundCtx, formatErr := store.BindRunValueFormat(runCtx, pre.preRun)
+	if formatErr != nil {
+		finalStatus = "value_format_refused"
+		logDeliveryErr(logger, "term-value-format", msg.RunID, delivery.Term())
+		return
+	}
+	runCtx = boundCtx
+
 	lock, lockOK, lockStatus := r.acquireRunLock(runCtx, msg, delivery, logger)
 	if !lockOK {
 		finalStatus = lockStatus
@@ -2092,11 +2102,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	var usage *metricsEmitter
 	err := r.executeHoldingLease(runCtx, runCancel, msg, pre.preRun, lock, delivery, &usage)
 
-	// A resume the engine found superseded: nothing of this delivery
-	// happened, and nothing of it is reported, released, parked, promoted or
-	// announced — only its disposition, on the run as it reads now.
-	if errors.Is(err, runtime.ErrResumeSuperseded) {
-		out := r.lastDeliveryDisposition(r.supersededAfterEngine(msg, err), delivery.NumDelivered())
+	// An attempt stopped before execution does not report, release, park,
+	// promote or announce an outcome. Only a queued supersession retains the
+	// existing rollback/reoffer window; a status-only stop acknowledges.
+	if stoppedAttempt(err) {
+		out := preconditionOutcome{finalStatus: "admission_stopped", op: "ack-admission-stopped", action: actionAck, level: logWarn, logFmt: "runner: run %s admission stopped (%v)", logArgs: []any{msg.RunID, err}}
+		if errors.Is(err, runtime.ErrResumeSuperseded) {
+			out = r.lastDeliveryDisposition(r.supersededAfterEngine(msg, err), delivery.NumDelivered())
+		}
 		logAt(logger, out.level, out.logFmt, out.logArgs...)
 		finalStatus = out.finalStatus
 		dispatchPrecondition(logger, delivery, out, msg.RunID)
@@ -2458,7 +2471,7 @@ func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
 // so the err → fires mapping is pinned by a table test next to
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
-	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !errors.Is(execErr, runtime.ErrResumeSuperseded) && !isNakAction(action)
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !stoppedAttempt(execErr) && !isNakAction(action)
 }
 
 // releasedOutcomeFires is outcomeSideEffectsFire once the release of a
@@ -2556,6 +2569,11 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // the runner's post-engine work, which the lease covers within
 // postEngineCeiling when one can (leaseHold).
 func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter, engineReturned func(awaited bool)) (execErr error) {
+	invocation, err := store.PrepareRunInvocation(ctx, r.cfg.Store, store.ExistingRunInvocation{ID: msg.RunID})
+	if err != nil {
+		return r.refuseUnpreparedInvocation(ctx, msg, err)
+	}
+	ctx = invocation.Context
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -2788,7 +2806,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// next run replace this one's matcher mid-flight.
 	runLogger := r.cfg.Logger.WithOwnRedactor()
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
-		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+		idCtx := store.WithIdentity(context.WithoutCancel(ctx), msg.TenantID, msg.OwnerID)
 		seed, serr := ls.RunLogSize(idCtx, msg.RunID)
 		if serr != nil {
 			r.cfg.Logger.Warn("runner: run %s: seed log offset: %v — starting at 0", msg.RunID, serr)
@@ -2819,6 +2837,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if err != nil {
 		return r.refuseBeforeEngine(ctx, msg, "executor", err)
 	}
+	defer closeExecutor(executor)
+
 	if usageOut != nil {
 		*usageOut = usage
 	}
@@ -3198,9 +3218,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// The server pod has no worktree, so this snapshot is the only source
 	// the Commits/Files panels have for a finished cloud run. Best-effort:
 	// a recording failure must never change the run's outcome.
-	if errors.Is(runErr, runtime.ErrResumeSuperseded) {
-		// The run belongs to a newer attempt: this delivery produced nothing,
-		// and records nothing on it.
+	if stoppedAttempt(runErr) {
+		// Admission stopped this delivery before execution. It records no git
+		// outcome on the document that replaced its initial snapshot.
 		return runErr
 	}
 	if workDir != r.cfg.WorkDir {
@@ -3235,7 +3255,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the server pod's Artifacts panel can serve them for this finished
 	// run. Best-effort: a recording failure must never change the run's
 	// outcome. No-op for stores that don't need the bridge.
-	r.uploadRunFiles(ctx, msg)
+	if provider, ok := executor.(interface{ RunFilesGrant() store.RunFilesGrant }); ok {
+		r.uploadRunFilesWithGrant(ctx, msg, provider.RunFilesGrant())
+	} else {
+		r.uploadRunFiles(ctx, msg)
+	}
 
 	// Delete the sealed credentials bundle only on a terminal-clean
 	// outcome (success, or paused-for-resume). On every Nak-for-
@@ -3486,6 +3510,12 @@ func envPositiveFloat(key string) (float64, bool) {
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
 func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runtime.NodeExecutor, *metricsEmitter, error) {
+	if err := store.RequireRunValueFormat(ctx, msg.RunID); err != nil {
+		return nil, nil, err
+	}
+	if _, _, err := store.LoadRunWithValueFormat(ctx, r.cfg.Store, msg.RunID); err != nil {
+		return nil, nil, err
+	}
 	// runview.BuildExecutor stats this directory to root Claw's file tools,
 	// while the engine only creates a missing workspace lazily on its first
 	// write — a run with no repository to clone keeps the pod's base
@@ -3943,4 +3973,10 @@ func (r *Runner) recordTrustRefusal(ctx context.Context, msg *queue.RunMessage, 
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit workspace_trust_withdrawal: %v", msg.RunID, err)
 	}
+}
+
+// stoppedAttempt is the common no-outcome class. Queue disposition still
+// distinguishes supersession from a status-only admission stop.
+func stoppedAttempt(err error) bool {
+	return store.IsValueFormatRefusal(err) || errors.Is(err, runtime.ErrResumeSuperseded) || errors.Is(err, runtime.ErrAdmissionStopped)
 }

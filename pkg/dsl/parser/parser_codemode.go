@@ -102,6 +102,8 @@ func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token) {
 		cb.Mode = p.expectIdent()
 	case "tool_calls":
 		cb.ToolCalls = p.expectInt64()
+	case "concurrent_tool_calls":
+		cb.ConcurrentToolCalls = p.expectInt64()
 	case "wall":
 		cb.Wall = p.expectString()
 	case "cpu":

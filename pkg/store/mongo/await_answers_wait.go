@@ -23,7 +23,7 @@ func (s *Store) SetAwaitAnswersWait(ctx context.Context, runID, token string, wa
 	} else {
 		update["$unset"] = bson.M{key: ""}
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return fmt.Errorf("store/mongo: update await_answers wait: %w", err)
 	}

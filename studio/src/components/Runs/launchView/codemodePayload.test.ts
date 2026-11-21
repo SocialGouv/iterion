@@ -15,6 +15,7 @@ import {
 const limits: CodemodeLimits = {
   default: {
     tool_calls: 64,
+    concurrent_tool_calls: 1,
     wall: "30s",
     cpu: "10s",
     memory: 268435456,
@@ -24,6 +25,7 @@ const limits: CodemodeLimits = {
   },
   ceiling: {
     tool_calls: 4096,
+    concurrent_tool_calls: 4,
     wall: "10m0s",
     cpu: "5m0s",
     memory: 2147483648,
@@ -48,6 +50,7 @@ describe("buildCodemodePayload", () => {
   test("every set bound travels in the DSL orthography", () => {
     const payload = buildCodemodePayload("on", {
       toolCalls: "256",
+      concurrentToolCalls: "3",
       wall: "90s",
       cpu: "2m",
       memory: "1073741824",
@@ -59,6 +62,7 @@ describe("buildCodemodePayload", () => {
       codemode: "on",
       codemode_bounds: {
         tool_calls: 256,
+        concurrent_tool_calls: 3,
         wall: "90s",
         cpu: "2m",
         memory: 1073741824,
@@ -133,6 +137,7 @@ describe("overCeiling", () => {
       {
         ...emptyCodemodeFieldValues,
         toolCalls: "5000", // above 4096
+        concurrentToolCalls: "5",
         wall: "11m", // above 10m
         cpu: "5m", // AT the ceiling — not over
         memory: "2147483648", // AT the ceiling
@@ -140,7 +145,7 @@ describe("overCeiling", () => {
       },
       limits,
     );
-    expect(over).toEqual(["tool_calls", "wall", "result_bytes"]);
+    expect(over).toEqual(["tool_calls", "concurrent_tool_calls", "wall", "result_bytes"]);
   });
 
   test("an unparsable duration is not flagged — the server names it", () => {
@@ -225,11 +230,12 @@ describe("unreadableFields", () => {
       unreadableFields({
         ...emptyCodemodeFieldValues,
         toolCalls: "0",
+        concurrentToolCalls: "0",
         memory: "-5",
         scriptBytes: "1,000",
         resultBytes: "2048",
       }),
-    ).toEqual(["tool_calls", "memory", "script_bytes"]);
+    ).toEqual(["tool_calls", "concurrent_tool_calls", "memory", "script_bytes"]);
   });
 
   test("an unparsable duration is left to the server — it is not a numeric field", () => {

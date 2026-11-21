@@ -172,10 +172,26 @@ func TestMigrateToCloud_TransfersEveryVersionAndIsIdempotent(t *testing.T) {
 		t.Errorf("migrated interaction lost its answer: %+v", in)
 	}
 
+	sourceRun, err := src.LoadRun(ctx, "run-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BirthID == "" || got.BirthID == sourceRun.BirthID {
+		t.Fatal("migration must create a destination-owned birth identity")
+	}
+	destinationBirth := got.BirthID
+
 	// Second pass: idempotent (the doc is upserted, artifact versions are
 	// overwritten in place — an interrupted migration is simply re-run).
 	if err := migrateRun(ctx, src, dst, "run-alpha", false, quietLogger()); err != nil {
 		t.Fatalf("second migrateRun: %v", err)
+	}
+	reimported, err := dst.LoadRun(ctx, "run-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimported.BirthID != destinationBirth {
+		t.Fatal("reimport changed the destination birth identity")
 	}
 	if vs := artifactVersions(t, dst, "run-alpha", "review"); len(vs) != 2 {
 		t.Fatalf("a second pass duplicated artifact versions: %v", vs)

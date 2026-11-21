@@ -5,6 +5,8 @@
 // endpoint, not from here — uploadAttachment for the staged-upload XHR (with progress),
 // and read-back of a promoted run attachment (gate payload previews).
 
+import { runFetch } from "@/lib/lostRuns";
+
 import type { ServerInfo, StagedUpload } from "../types";
 import { apiURL, BASE_URL, extractErrorMessage, request } from "./client";
 import type { UploadOptions } from "./types";
@@ -37,7 +39,7 @@ export async function fetchAttachment(
   runId: string,
   name: string,
 ): Promise<{ blob: Blob; contentType: string }> {
-  const res = await fetch(attachmentURL(runId, name), { credentials: "include" });
+  const res = await runFetch(attachmentURL(runId, name), { credentials: "include" });
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }

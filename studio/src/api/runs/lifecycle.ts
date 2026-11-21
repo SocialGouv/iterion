@@ -3,6 +3,7 @@
 // subscription, fork, resume, rename.
 
 import { ApiError } from "../client";
+import { knownRunBirthWire } from "@/lib/lostRuns";
 import { request } from "./client";
 import type {
   CreateRunRequest,
@@ -71,10 +72,15 @@ export function isRunNotResumableError(err: unknown): boolean {
   return err instanceof ApiError && err.errorCode === RUN_NOT_RESUMABLE_ERROR_CODE;
 }
 
+// createRun: a delegation's source run is carried in the body, so its
+// known birth rides beside it (source_run_birth); the server refuses a
+// source replaced under its ID (409 run_origin_lost).
 export async function createRun(req: CreateRunRequest): Promise<CreateRunResponse> {
+  const sourceBirth = req.source_run_id ? knownRunBirthWire("", req.source_run_id) : undefined;
+  const body = sourceBirth !== undefined && req.source_run_birth === undefined ? { ...req, source_run_birth: sourceBirth } : req;
   return request("/runs", {
     method: "POST",
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
   });
 }
 
@@ -193,9 +199,13 @@ export async function createAssistantRunWatch(
     kinds?: Array<"run.failed" | "run.finished" | "run.cancelled" | "run.stalled" | "run.paused">;
   },
 ): Promise<AssistantRunWatch> {
+  // The assistant run rides in the body: its known birth rides beside it
+  // (assistant_run_birth), compared by the server after its load.
+  const assistantBirth = knownRunBirthWire("", input.assistant_run_id);
+  const body = assistantBirth === undefined ? input : { ...input, assistant_run_birth: assistantBirth };
   return request(`/runs/${encodeURIComponent(targetRunId)}/assistant-watches`, {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify(body),
   });
 }
 

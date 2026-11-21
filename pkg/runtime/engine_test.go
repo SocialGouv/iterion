@@ -733,9 +733,10 @@ func TestContextCancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
+	defer cancel()
 
 	exec := newStubExecutor()
+	exec.on("slow", func(map[string]any) (map[string]any, error) { cancel(); return nil, ctx.Err() })
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
@@ -2577,6 +2578,7 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	rs := eng.newRunState("run-depth-guard", nil)
+	rs.ctx = context.Background()
 	rs.vars = map[string]any{}
 
 	node := wf.Nodes["worker"]

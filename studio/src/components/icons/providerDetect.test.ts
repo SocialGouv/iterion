@@ -13,6 +13,23 @@ describe("detectProvider", () => {
 
   it("lets the delegate win over the model", () => {
     expect(detectProvider("openai/gpt-4o", "claude_code")?.iconId).toBe("Claude");
+    expect(detectProvider("ollama/${OPENAI_COMPATIBLE_MODEL}", "claude_code")?.iconId).toBe("Claude");
+  });
+
+  it.each([
+    ["ollama/${OPENAI_COMPATIBLE_MODEL:-qwen3}", "Ollama"],
+    ["google/${OPENAI_COMPATIBLE_MODEL}", "Gemini"],
+    ["OpenAI-Codex/${OPENAI_COMPATIBLE_MODEL:-gpt-5.6-sol}", "Codex"],
+  ])("keeps the explicit vendor in %s", (model, icon) => {
+    expect(detectProvider(model)?.iconId).toBe(icon);
+  });
+
+  it.each([
+    "openai_compatible/ollama/qwen3",
+    "OPENAI_COMPATIBLE/OLLAMA/llama3:8b",
+    "${X:-ollama/llama3:8b}",
+  ])("does not mistake ollama for its llama substring in %s", (model) => {
+    expect(detectProvider(model)?.iconId).toBe("Ollama");
   });
 
   it("reads past the gateway protocol of a route", () => {
@@ -38,6 +55,9 @@ describe("detectProvider", () => {
     expect(detectProvider("openai_compatible/bedrock/claude-sonnet-4-6")?.iconId).toBe("Claude");
     expect(detectProvider("openai_compatible/azure/gpt-4o")?.iconId).toBe("OpenAI");
     expect(detectProvider("openai_compatible/together/llama-3.3-70b")?.iconId).toBe("Meta");
+    // Known gateway namespaces still decide when no model keyword does.
+    expect(detectProvider("openai_compatible/bedrock/unknown")?.iconId).toBe("Bedrock");
+    expect(detectProvider("openai_compatible/groq/unknown")?.iconId).toBe("Groq");
   });
 
   it("ignores the protocol name every time a spec carries it", () => {

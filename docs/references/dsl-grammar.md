@@ -349,6 +349,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `contract` | ident | The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304) |
 | `vars` | block → [vars](dsl-properties.md#vars) | Workflow-scoped vars (merged with the file's) |
 | `attachments` | block → [attachments](dsl-properties.md#attachments) | Workflow-scoped attachments |
+| `business_stores` | block → [business_stores](dsl-properties.md#business_stores) | Expected business-store identities, normalized at launch and inherited by children |
 | `budget` | block → [budget](dsl-properties.md#budget) | Run caps, each overridable by the matching run flag |
 | `resources` | block → [resources](dsl-properties.md#resources) | Named semaphores and pools nodes lease with needs: |
 | `mcp` | block → [mcp](dsl-properties.md#mcp) | MCP servers active for the run |

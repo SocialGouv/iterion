@@ -28,7 +28,7 @@ func (e *Engine) failRun(ctx context.Context, runID, nodeID, reason string) erro
 // would redeliver it. Any other failure on a done context keeps the cancel's
 // own handling — the status the publisher wrote, the drain's redelivery.
 func persistCtx(ctx context.Context, err error) (context.Context, context.CancelFunc) {
-	if ctx.Err() == nil || !IsAmbiguousEffect(err) {
+	if terminationScope(ctx) != nil || ctx.Err() == nil || !IsAmbiguousEffect(err) {
 		return ctx, func() {}
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -60,6 +60,12 @@ func unpersisted(rtErr *RuntimeError, nodeID, message string, storeErr error) er
 // failRunErr marks a run as failed, preserving a structured error if present.
 // Store/event errors are propagated so callers know whether the failure was persisted.
 func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr error) error {
+	if errors.Is(origErr, errCorrectionOwnershipLost) {
+		return origErr
+	}
+	if store.IsValueFormatRefusal(origErr) {
+		return origErr
+	}
 	ctx, cancel := persistCtx(ctx, origErr)
 	defer cancel()
 	var rtErr *RuntimeError
@@ -296,21 +302,74 @@ func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNode
 // enabling resume from the last completed node. Falls back to a regular
 // (non-resumable) failure if the checkpoint write fails.
 func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
+	return e.withCheckpointFailureWrites(rs, nil, func(writeCtx context.Context) error {
+		return e.publishFailureWithCheckpoint(writeCtx, rs, nodeID, reason)
+	})
+}
+
+// publishFailureWithCheckpoint writes only through the invocation's local
+// sequence. The runState still carries the original execution context.
+func (e *Engine) publishFailureWithCheckpoint(writeCtx context.Context, rs *runState, nodeID, reason string) error {
+	writes := terminationScope(writeCtx)
 	e.captureFailureBoundary(rs, nodeID)
 	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.recordFailureResumable(rs.ctx, rs.runID, cp, reason, ErrCodeExecutionFailed); storeErr != nil {
+	if storeErr := writes.Do(func(c context.Context) error {
+		return e.recordFailureResumable(c, rs.runID, cp, reason, ErrCodeExecutionFailed)
+	}); storeErr != nil {
 		e.logger.Error("failed to persist resumable failure: %v", storeErr)
-		return e.failRun(rs.ctx, rs.runID, nodeID, reason)
+		return writes.Do(func(c context.Context) error { return e.failRun(c, rs.runID, nodeID, reason) })
 	}
-	return e.emitRunFailedAndReturn(rs.ctx, rs.runID, nodeID, reason, ErrCodeExecutionFailed)
+	return writes.Do(func(c context.Context) error {
+		return e.emitRunFailedAndReturn(c, rs.runID, nodeID, reason, ErrCodeExecutionFailed)
+	})
+}
+
+// simpleContextCause recognizes only a context failure under neutral wrappers.
+// A classified runtime error or any joined sibling cause keeps its own outcome.
+func simpleContextCause(err, target error) bool {
+	if IsAmbiguousEffect(err) {
+		return false
+	}
+	for err != nil {
+		if err == target {
+			return true
+		}
+		if rt, ok := err.(*RuntimeError); ok && rt.Code != ErrCodeExecutionFailed {
+			return false
+		}
+		single, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = single.Unwrap()
+	}
+	return false
 }
 
 // failRunErrWithCheckpoint is the checkpoint-aware variant of failRunErr.
 func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr error) error {
+	if errors.Is(origErr, errCorrectionOwnershipLost) {
+		return origErr
+	}
+	if store.IsValueFormatRefusal(origErr) {
+		return origErr
+	}
+	// Non-model nodes can wrap bare cancellation in EXECUTION_FAILED. The
+	// same cancellation handler must persist their terminal state under the
+	// original context values, detached only from the completed request.
+	if rs.ctx != nil && terminationScope(rs.ctx) == nil && rs.ctx.Err() != nil && simpleContextCause(origErr, rs.ctx.Err()) {
+		return e.handleContextDoneWithCheckpoint(rs, nodeID, rs.ctx.Err())
+	}
+
+	return e.withCheckpointFailureWrites(rs, origErr, func(writeCtx context.Context) error {
+		return e.publishFailureErrWithCheckpoint(writeCtx, rs, nodeID, origErr)
+	})
+}
+
+func (e *Engine) publishFailureErrWithCheckpoint(writeCtx context.Context, rs *runState, nodeID string, origErr error) error {
+	writes := terminationScope(writeCtx)
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		ctx, cancel := persistCtx(rs.ctx, origErr)
-		defer cancel()
 		rtErr.Code = recordedCode(rtErr, origErr)
 		// Only on this branch: the fallthrough below goes through
 		// failRunWithCheckpoint, which captures for itself.
@@ -325,9 +384,11 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		}
 		cp := buildCheckpoint(rs, nodeID)
 		remedy := RemedyOf(rtErr)
-		if storeErr := e.recordFailureResumable(ctx, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
+		if storeErr := writes.Do(func(c context.Context) error {
+			return e.recordFailureResumable(c, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code)
+		}); storeErr != nil {
 			e.logger.Error("failed to persist resumable failure: %v", storeErr)
-			return e.failRunErr(ctx, rs.runID, nodeID, origErr)
+			return writes.Do(func(c context.Context) error { return e.failRunErr(c, rs.runID, nodeID, origErr) })
 		}
 		// Preserve the original *RuntimeError identity so callers can
 		// errors.As back to the same value; the helper would otherwise
@@ -343,7 +404,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 			data["duration_refunded_ms"] = refunded.Milliseconds()
 		}
 		remedy.Record(data)
-		if err := e.emit(ctx, rs.runID, store.EventRunFailed, nodeID, data); err != nil {
+		if err := writes.Do(func(c context.Context) error { return e.emit(c, rs.runID, store.EventRunFailed, nodeID, data) }); err != nil {
 			e.logger.Warn("failed to emit run_failed event: %v", err)
 		}
 		if rtErr.NodeID == "" {
@@ -351,7 +412,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		}
 		return rtErr
 	}
-	return e.failRunWithCheckpoint(rs, nodeID, origErr.Error())
+	return e.publishFailureWithCheckpoint(writeCtx, rs, nodeID, origErr.Error())
 }
 
 // ---------------------------------------------------------------------------
@@ -362,82 +423,87 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 // exceeded, preserving the checkpoint so the run can be resumed. rs.ctx is
 // already done when we get here, so we detach for the store writes using
 // context.WithoutCancel — values (tenant/user identity for cloud mode) are
-// preserved but cancellation isn't. Bounded by a 5s timeout, well under the
-// typical k8s pod-termination grace period.
-func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) error {
-	// An operator cancel and a runner drain both stop the run INSIDE a
-	// node, so they leave the same unrecorded production a failure does —
-	// and `cancelled` is a rewindable status, so the rewind that follows
-	// needs the boundary just as much. Inline, ahead of the status write:
-	// see captureStopBoundary on why the order is that way round.
-	e.captureFailureBoundary(rs, nodeID)
-	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), 5*time.Second)
-	defer cancel()
+// preserved but cancellation is not. The write budget defaults to five seconds;
+// WithTerminationWriteTimeout overrides this local budget and the two checkpoint-
+// failure doors; it does not detach the execution context.
+func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) (result error) {
+	defer func() {
+		if result != nil {
+			result = &terminationSettledError{cause: result, owner: rs}
+		}
+	}()
 
+	e.captureFailureBoundary(rs, nodeID)
+	writes := e.newTerminationWrites(rs.ctx, ctxErr)
+	defer writes.Close()
+	cp := buildCheckpoint(rs, nodeID)
 	if errors.Is(ctxErr, context.Canceled) {
-		cp := buildCheckpoint(rs, nodeID)
-		// Infrastructure interruption (runner drain / lost heartbeat): the
-		// caller cancelled with ErrRunInterrupted as the cause. This is NOT
-		// an operator cancel — write failed_resumable + a resumable
-		// run_failed event so the run auto-resumes on a healthy pod, and
-		// return ErrRunInterrupted so the runner naks (not acks) it. Writing
-		// the terminal status here (once, correctly) is why no downstream
-		// CAS or event-suppression is needed.
 		if errors.Is(context.Cause(rs.ctx), ErrRunInterrupted) {
 			reason := fmt.Sprintf("interrupted at node %s (resumable)", nodeID)
-			if storeErr := e.recordFailureResumable(storeCtx, rs.runID, cp, reason, store.FailureInterrupted); storeErr != nil {
-				e.logger.Error("failed to persist resumable interruption: %v", storeErr)
-				return e.failRun(storeCtx, rs.runID, nodeID, reason)
+			if err := writes.Do(func(c context.Context) error {
+				return e.recordFailureResumable(c, rs.runID, cp, reason, store.FailureInterrupted)
+			}); err != nil {
+				e.logger.Error("failed to persist resumable interruption: %v", err)
+				return writes.Result(writes.Do(func(c context.Context) error { return e.failRun(c, rs.runID, nodeID, reason) }))
 			}
-			if err := e.emit(storeCtx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
-				"error":       reason,
-				"code":        string(store.FailureInterrupted),
-				"resumable":   true,
-				"interrupted": true,
+			if err := writes.Do(func(c context.Context) error {
+				return e.emit(c, rs.runID, store.EventRunFailed, nodeID, map[string]any{"error": reason, "code": string(store.FailureInterrupted), "resumable": true, "interrupted": true})
 			}); err != nil {
 				e.logger.Warn("failed to emit run_failed event: %v", err)
 			}
-			return fmt.Errorf("%w: at node %s", ErrRunInterrupted, nodeID)
+			return writes.Result(fmt.Errorf("%w: at node %s", ErrRunInterrupted, nodeID))
 		}
-		// Operator cancel (or plain SIGINT): terminal cancelled.
-		if err := e.store.SaveCheckpoint(storeCtx, rs.runID, cp); err != nil {
+		// A missing checkpoint remains best-effort for operator cancellation, but
+		// an authority refusal prevents every subsequent callback in this sequence.
+		if err := writes.Do(func(c context.Context) error { return e.store.SaveCheckpoint(c, rs.runID, cp) }); err != nil {
 			e.logger.Error("failed to save checkpoint on cancellation: %v", err)
 		}
-		// CAS, not a blind write: in cloud mode the publisher flips the doc to
-		// cancelled WITH a specific reason ("superseded by a newer delivery…",
-		// "cancelled by user") BEFORE the cancel subject reaches this engine.
-		// An unconditional write here would overwrite that reason with the
-		// generic "run cancelled" — which is then what the run list, board
-		// cards and merge-gate synthetic statuses display. Skip the write when
-		// the run is already terminal; the reason recorded first is the truth.
-		cancellable := []store.RunStatus{
-			store.RunStatusRunning,
-			store.RunStatusPausedWaitingHuman,
-			store.RunStatusPausedOperator,
-			store.RunStatusFailedResumable,
+		cancellable := []store.RunStatus{store.RunStatusRunning, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable}
+		changed := false
+		if err := writes.Do(func(c context.Context) error {
+			var err error
+			changed, err = e.recordFailureStatusIf(c, rs.runID, store.RunStatusCancelled, "run cancelled", store.FailureCancelled, cancellable)
+			return err
+		}); err != nil {
+			// A failed status write is not a persisted cancellation.
+			return writes.Result(err)
 		}
-		if changed, err := e.recordFailureStatusIf(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled", store.FailureCancelled, cancellable); err != nil {
-			e.logger.Error("failed to persist cancellation status: %v", err)
-		} else if !changed {
-			e.logger.Debug("run %s already terminal — keeping the recorded cancellation reason", rs.runID)
+		if !changed {
+			// The publisher may already have cancelled this run. Preserve that reason;
+			// a different terminal status must not be announced as our cancellation.
+			var current *store.Run
+			if err := writes.Do(func(c context.Context) error {
+				var err error
+				_, current, err = store.LoadRunWithValueFormat(c, e.store, rs.runID)
+				return err
+			}); err != nil {
+				return writes.Result(err)
+			}
+			if current.Status != store.RunStatusCancelled {
+				return fmt.Errorf("%w: cancellation found status %s", ErrAdmissionStopped, current.Status)
+			}
+			e.logger.Debug("run %s already cancelled — keeping its recorded reason", rs.runID)
 		}
-		if err := e.emit(storeCtx, rs.runID, store.EventRunCancelled, nodeID, map[string]any{
-			"reason": "context cancelled",
+		if err := writes.Do(func(c context.Context) error {
+			return e.emit(c, rs.runID, store.EventRunCancelled, nodeID, map[string]any{"reason": "context cancelled"})
 		}); err != nil {
 			e.logger.Warn("failed to emit run_cancelled event: %v", err)
 		}
-		return fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID)
+		return writes.Result(fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID))
 	}
-	// context.DeadlineExceeded → save checkpoint and mark as resumable.
-	// Inline the failRunWithCheckpoint logic so it runs on storeCtx, not
-	// the already-expired rs.ctx.
 	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
-	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.recordFailureResumable(storeCtx, rs.runID, cp, reason, ErrCodeTimeout); storeErr != nil {
-		e.logger.Error("failed to persist resumable failure: %v", storeErr)
-		return e.failRun(storeCtx, rs.runID, nodeID, reason)
+	if err := writes.Do(func(c context.Context) error {
+		return e.recordFailureResumable(c, rs.runID, cp, reason, ErrCodeTimeout)
+	}); err != nil {
+		e.logger.Error("failed to persist resumable failure: %v", err)
+		return writes.Result(writes.Do(func(c context.Context) error { return e.failRun(c, rs.runID, nodeID, reason) }))
 	}
-	return e.emitRunFailedAndReturn(storeCtx, rs.runID, nodeID, reason, ErrCodeTimeout)
+	if err := writes.Do(func(c context.Context) error {
+		return e.emit(c, rs.runID, store.EventRunFailed, nodeID, map[string]any{"error": reason, "code": string(ErrCodeTimeout), "resumable": true})
+	}); err != nil {
+		e.logger.Warn("failed to emit run_failed event: %v", err)
+	}
+	return writes.Result(&RuntimeError{Code: ErrCodeTimeout, Message: reason, NodeID: nodeID})
 }
 
 // wrapContextErr wraps a context error for branch-level reporting.

@@ -2,15 +2,19 @@ package connectors_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connector/binding"
 	"github.com/SocialGouv/iterion/pkg/connector/ingress"
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // A source package's witness: the package a published binary carries loads,
@@ -62,6 +66,13 @@ type vendorDouble struct {
 	// is posted from. It is the delivery a package's loop guard exists to
 	// drop. Nil for a vendor whose package declares no guard.
 	echo func(payload map[string]any)
+	// lists reads, off the vendor's own delivery, the values each list
+	// filter of the package narrows on — Jira's labels, a Sentry incident's
+	// projects — keyed by filter id. It reads where the VENDOR documents the
+	// list, never through the filter's `from:`, so a filter that reads
+	// another field cannot agree with itself. Every list filter a webhook
+	// trigger declares needs one (TestAShippedSourceNarrowsOnAListItsVendorSends).
+	lists map[string]func(payload map[string]any) []string
 }
 
 // vendorDoubles holds one double per shipped source, registered from the
@@ -206,6 +217,164 @@ func TestAShippedSourceReadsASignedDelivery(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAShippedSourceNarrowsOnAListItsVendorSends: each list filter a webhook
+// trigger declares, saved on a subscription and judged on the vendor's own
+// signed delivery as the lane reads, stores and re-reads it, keeps the
+// delivery for a subscription choosing any element the vendor sent and drops
+// it for one choosing none of them. What the delivery carries is the
+// double's reading of the vendor's shape, not the package's — and a trigger
+// whose delivery carries a list the double reads offers its filter.
+func TestAShippedSourceNarrowsOnAListItsVendorSends(t *testing.T) {
+	judged := 0
+	for id, d := range vendorDoubles {
+		t.Run(id, func(t *testing.T) {
+			p, err := overlay.LoadPackage(id)
+			if err != nil {
+				t.Fatalf("load %q: %v", id, err)
+			}
+			offered := map[string]bool{}
+			for _, trig := range p.Triggers {
+				// A polled trigger is no delivery's: its list filters are
+				// witnessed on its vendor's answer (poll_<id>_test.go).
+				if trig.Polled() || trig.Sample == "" {
+					continue
+				}
+				var s spec.SampleDelivery
+				if err := json.Unmarshal(trig.SampleBody, &s); err != nil {
+					t.Fatalf("%s sample %q: %v", trig.ID, trig.Sample, err)
+				}
+				lists := map[string]spec.TriggerFilter{}
+				for _, f := range trig.Filters {
+					if f.Type != spec.FilterList {
+						continue
+					}
+					lists[f.ID] = f
+					if _, ok := d.lists[f.ID]; !ok {
+						t.Errorf("%q: trigger %s declares the list filter %q, and its vendor double reads no list for it", id, trig.ID, f.ID)
+					}
+				}
+				for fid, read := range d.lists {
+					sent := read(s.Payload)
+					f, ok := lists[fid]
+					if !ok {
+						// A list the vendor sends on this delivery is one an
+						// operator narrows on wherever it travels.
+						if len(sent) > 0 {
+							t.Errorf("%q: trigger %s's delivery carries %s %q, and the trigger declares no %s list filter", id, trig.ID, fid, sent, fid)
+						}
+						continue
+					}
+					offered[fid] = true
+					judged++
+					t.Run(trig.ID+"/"+fid, func(t *testing.T) {
+						judgeListFilter(t, id, p, trig, f, sent)
+					})
+				}
+			}
+			for fid := range d.lists {
+				if !offered[fid] {
+					t.Errorf("%q: the vendor double reads a list for filter %q, which no webhook trigger of the package declares as a list", id, fid)
+				}
+			}
+		})
+	}
+	if judged == 0 {
+		t.Fatal("no shipped webhook trigger declares a list filter — the witness judged nothing")
+	}
+}
+
+// judgeListFilter judges the trigger's vendor-signed sample under list filter
+// f: a subscription choosing only a value the delivery does not carry drops
+// it, and one choosing that value beside any one element the vendor sent
+// keeps it.
+func judgeListFilter(t *testing.T, id string, p *spec.Package, trig spec.Trigger, f spec.TriggerFilter, sent []string) {
+	t.Helper()
+	if len(sent) == 0 {
+		t.Fatalf("the vendor's delivery %q carries no %s: the witness would judge nothing", trig.Sample, f.ID)
+	}
+	const absent = "absent-from-the-delivery"
+	if slices.Contains(sent, absent) {
+		t.Fatalf("the vendor's delivery carries %q, the value the witness chooses as absent", absent)
+	}
+	ev := readSignedEvent(t, id, p, trig)
+	type judgment struct {
+		chosen []string
+		want   bool
+	}
+	cases := []judgment{{[]string{absent}, false}}
+	for _, v := range sent {
+		cases = append(cases, judgment{[]string{absent, v}, true})
+	}
+	for _, c := range cases {
+		sub, err := binding.ValidateSubscription(trigger.Subscription{
+			ID: "s1", BotID: "triage", TriggerID: trig.ID, ConnectionID: "conn-" + id,
+			Filters: map[string][]string{f.ID: c.chosen},
+		}, trig, nil)
+		if err != nil {
+			t.Fatalf("save a subscription narrowed on %s %q: %v", f.ID, c.chosen, err)
+		}
+		verdict, err := binding.Judge(context.Background(), sub, trig, ev)
+		if err != nil {
+			t.Fatalf("judge: %v", err)
+		}
+		if verdict.Refusal != "" || verdict.Matched != c.want {
+			t.Errorf("the delivery carrying %s %q, under the chosen %q: verdict %+v, want matched=%v", f.ID, sent, c.chosen, verdict, c.want)
+		}
+	}
+}
+
+// readSignedEvent is the event the lane stores for the trigger's sample,
+// signed by its vendor, re-read as a subscription is judged against it.
+func readSignedEvent(t *testing.T, id string, p *spec.Package, trig spec.Trigger) binding.Event {
+	t.Helper()
+	body, header, now := signSample(t, id, p, trig)
+	d, err := ingress.Read(ingress.Request{
+		Ingress: p.Ingress, Triggers: p.Triggers, Secret: []byte(witnessSecret),
+		Installation: vendorDoubles[id].installation,
+		Body:         body, Header: header, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("read a vendor-signed delivery: %v", err)
+	}
+	if d.TriggerID != trig.ID || d.Filtered != "" {
+		t.Fatalf("the delivery read as %q (dropped: %q), want %q kept", d.TriggerID, d.Filtered, trig.ID)
+	}
+	ev, err := binding.DecodeEvent(d.Event)
+	if err != nil {
+		t.Fatalf("re-read the stored event: %v", err)
+	}
+	return ev
+}
+
+// deliveryAt descends a decoded delivery by its keys: nil where one is
+// absent.
+func deliveryAt(v any, keys ...string) any {
+	for _, k := range keys {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v = m[k]
+	}
+	return v
+}
+
+// deliveryStrings reads a list of a decoded delivery as its strings: each
+// element itself, or its member at key for a list of objects.
+func deliveryStrings(v any, key string) []string {
+	list, _ := v.([]any)
+	var out []string
+	for _, el := range list {
+		if key != "" {
+			el = deliveryAt(el, key)
+		}
+		if s, ok := el.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // TestAShippedSourceAnswersItsHandshake: a vendor that verifies its endpoint

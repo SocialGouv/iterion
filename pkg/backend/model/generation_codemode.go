@@ -7,26 +7,28 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/scripthost"
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
-// codemodeDescription is what the model reads about the tool.
+// codemodeDescription is the constant preamble of what the model reads about
+// the tool; [codemodeToolDescription] appends the node's index to it.
 //
-// It is a CONSTANT, and that is load-bearing rather than tidy: the tool array
-// sits inside the cached prompt prefix (buildRequest marks it), so a
-// description composed per node — from its tool list, its limits, its
-// workspace — would move bytes the cache is keyed on and re-bill the whole
-// prefix on every turn of every node. CM-3 composes a per-node index with a
-// byte-stable composer for exactly that reason; until it lands, the honest
-// thing is text that does not depend on the node.
+// The tool array sits inside the cached prompt prefix (buildRequest marks it),
+// so the composed description is a pure function of the node's
+// script-callable tools: the preamble does not move, and the index is sorted
+// and holds nothing per-turn — no limits, no counters, no workspace. Two turns
+// of one node read the same bytes, which is what keeps the prefix cached.
 //
 // What it must say, and nothing more: that the input is a program, that the
-// program's only capability is this node's own tools, how one is called, and
-// that what comes back to the model is the last expression. A model told less
-// writes a script that logs; a model told more reads a promise the host does
-// not keep.
+// program's only capability is this node's own tools, how one is called and
+// discovered, and that what comes back to the model is the last expression. A
+// model told less writes a script that logs; a model told more reads a promise
+// the host does not keep.
 const codemodeDescription = `Run a JavaScript program that calls this node's other tools, so a loop, a filter or a large intermediate result stays out of the conversation. Return only what you need: the program's LAST EXPRESSION is what you get back, JSON-encoded.
 
-call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tool names are the ones you already have, MINUS the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. A program cannot open a file, a socket or a process, and holds no credential: tools are its whole world. call() is SYNCHRONOUS: it returns the result, not a promise. Do not write await, and do not declare anything async — there is no event loop to settle a promise, and await is a syntax error that costs you the whole program. There is no console, no require, no process, no timers, and no network.
+call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tools a program can call are listed below. Left out are the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. call.describe(name) returns a tool's TypeScript declaration, and call.search(query) returns the tools that best match what you need, each {name, summary, declaration}; neither is a tool call. A program cannot open a file, a socket or a process, and holds no credential: tools are its whole world. call() is SYNCHRONOUS: it returns the result, not a promise. Do not write await, and do not declare anything async — there is no event loop to settle a promise, and await is a syntax error that costs you the whole program. There is no console, no require, no process, no timers, and no network.
+
+call.parallel([{name, input}, …]) accepts up to four independent calls and returns entries in input order. Each entry has {status, text, isError, truncated, remaining}; status is "ok", "error", or "budget". Tool failures and budget refusals are entries, not exceptions. Every entry reports the same remaining budget after admitting the batch. Like call(), call.parallel() is synchronous. Only audited native glob and workspace_grep can overlap, where policy, hooks and limits allow it; other calls run exclusively. Cancellation does not undo effects that have already started.
 
 Prefer this when the work is many calls, or one call whose output you only need a part of; call a tool directly when you need exactly one result.`
 
@@ -64,12 +66,57 @@ var codemodeInputSchema = json.RawMessage(`{
 // DefaultLimits and holds the rest under Ceiling, and a second opinion here
 // would be a bound with two owners. OnClamp is how a reduction is reported;
 // onWarn carries what the host could not do that leaves the verdict standing.
-func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) {
+//
+// The catalogue is taken HERE, from opts.Tools before codemode joins it: the
+// list is final by now (the step budget pins on it right after), and it is the
+// list the dispatcher's door is built from. The description's index and the
+// catalogue each script receives both come from this one snapshot, through
+// the same withheld predicate the door narrows by, so the index cannot list a
+// tool the door refuses.
+func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
+	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, want)
+}
+
+// installCodemodeOn is installCodemode on a given host: production passes the
+// host above, tests pass one whose child is the test binary — so the wiring a
+// test drives is the wiring that ships, catalogue included.
+func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, want *scripthost.Limits) error {
 	var limits scripthost.Limits
 	if want != nil {
 		limits = *want
 	}
-	opts.Tools = append(opts.Tools, codemodeTool(scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, limits))
+	catalog := scriptCatalog(opts.Tools, ScriptHostToolName)
+	description, err := codemodeToolDescription(catalog)
+	if err != nil {
+		return err
+	}
+	host.Catalog = catalog
+	opts.Tools = append(opts.Tools, codemodeTool(host, limits, description))
+	return nil
+}
+
+// scriptCatalog is the node's tools a program can call, as the catalogue
+// entries discovery answers from.
+func scriptCatalog(tools []GenerationTool, self string) []toolindex.Tool {
+	out := make([]toolindex.Tool, 0, len(tools))
+	for _, t := range tools {
+		if _, withheld := scriptWithheld(t.Name, self); withheld {
+			continue
+		}
+		out = append(out, toolindex.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+	}
+	return out
+}
+
+// codemodeToolDescription is the preamble and the node's index, bounded the
+// way the child's catalogue is — [toolindex.Bound] is deterministic, so the
+// index a model reads and the catalogue a program searches are the same set.
+func codemodeToolDescription(catalog []toolindex.Tool) (string, error) {
+	bounded, omitted, err := toolindex.Bound(catalog)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", ScriptHostToolName, err)
+	}
+	return codemodeDescription + "\n\nTools a program can call:\n" + toolindex.New(bounded, omitted).Lines(), nil
 }
 
 // codemodeTool is the tool whose input is a program.
@@ -90,10 +137,10 @@ func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp f
 // where a declared value is above the ceiling — OnClamp stays the seam that
 // refuses to replace an operator's explicit choice in silence, and is now
 // reachable by an author rather than only by a future lot.
-func codemodeTool(host scripthost.Host, want scripthost.Limits) GenerationTool {
+func codemodeTool(host scripthost.Host, want scripthost.Limits, description string) GenerationTool {
 	return GenerationTool{
 		Name:        ScriptHostToolName,
-		Description: codemodeDescription,
+		Description: description,
 		InputSchema: codemodeInputSchema,
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var args struct {

@@ -66,7 +66,7 @@ workflow child:
 
 	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
-	out, err := runner(context.Background(), runtime.SubbotRequest{
+	out, err := runner(boundLegacySubbotFixture(t, context.Background(), "parent-run"), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"id": "n1"},
 		ParentRunID: "parent-run",
@@ -113,7 +113,7 @@ workflow selfref:
 
 	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
-	_, err = runner(context.Background(), runtime.SubbotRequest{
+	_, err = runner(boundLegacySubbotFixture(t, context.Background(), "parent-run"), runtime.SubbotRequest{
 		Source:      "self.bot",
 		ParentRunID: "parent-run",
 		NodeID:      "again",
@@ -176,7 +176,7 @@ workflow child:
 	}
 	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, iterlog.New(iterlog.LevelError, os.Stderr), RunOptions{NoInteractive: true})
-	out, err := runner(context.Background(), runtime.SubbotRequest{
+	out, err := runner(boundLegacySubbotFixture(t, context.Background(), "parent-run"), runtime.SubbotRequest{
 		Source:      "child.bot",
 		Vars:        map[string]any{"id": "n1"},
 		ParentRunID: "parent-run",

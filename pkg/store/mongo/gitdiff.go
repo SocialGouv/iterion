@@ -18,16 +18,24 @@ const gitDiffBlobBucket = "__gitdiff"
 // to the blob backend without touching the runs.attachments index. Idempotent
 // (same ref → same key → replaced bytes).
 func (s *Store) PutRunDiffBlob(ctx context.Context, runID, ref string, body []byte) error {
-	if err := s.blob.PutAttachment(ctx, runID, gitDiffBlobBucket, ref, "application/json", body); err != nil {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if err := objects.PutAttachment(ctx, runID, gitDiffBlobBucket, ref, "application/json", body); err != nil {
 		return fmt.Errorf("store/mongo: put diff blob %s/%s: %w", runID, ref, err)
 	}
-	return nil
+	return s.checkRunObjects(ctx, runID)
 }
 
 // GetRunDiffBlob implements store.RunDiffBlobStore: stream the diff body back
 // from the blob backend.
 func (s *Store) GetRunDiffBlob(ctx context.Context, runID, ref string) ([]byte, error) {
-	rc, _, err := s.blob.GetAttachment(ctx, runID, gitDiffBlobBucket, ref)
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return nil, runObjectsReadError(err)
+	}
+	rc, _, err := objects.GetAttachment(ctx, runID, gitDiffBlobBucket, ref)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: get diff blob %s/%s: %w", runID, ref, err)
 	}

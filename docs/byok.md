@@ -393,15 +393,25 @@ the stored id on the document (a startup scrub is the doctrinal answer and
 does not exist yet).
 
 **The practical consequence, before you scope a key.** A launch that names no
-bot is refused by any non-empty audience — and the studio's main launch form
-uploads the bundle's bytes as inline `source` without a `bot_id`
-(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`), so that is the
-designed shape of a studio launch. Scoping a key makes it invisible to those
-launches, whatever bot they run, and the wire is filled by the org tier, the
-pool or the platform key instead. Scope keys on teams whose runs are launched
-by `bot_id` — webhooks, triggers, schedules, and the CLI's `--bot` form (a
-CLI file launch names no bot: the CLI refuses `--bot` beside a workflow
-file, so its file runs are unnamed work on the server too).
+bot is refused by any non-empty audience. In cloud the studio launches a bot
+BY NAME — its page's Launch and Test, `/runs/new?bot=<slug>`, the editor's Run
+on a bot's entry file: the form reads the program the server resolves
+(`GET /api/v1/bots/{name}/launch-source`) and posts `bot_id` beside
+`expect_source_sha256`, the identity that read issued, and no source — so the
+run is that bot, and the server refuses the launch (`409 bot_source_changed`)
+if the program changed under the form: its entry, its fragments, its prompts
+and the files they include, its preset files. A child bot's program and the
+skills are outside that identity
+([the pinned launch](cloud-rest-api.md#the-pinned-launch) lists both sides). Two studio launches still name no bot, by
+design: a `?file=` launch and the editor's unsaved buffer, which upload their
+text as inline `source`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). Scoping a key
+makes it invisible to those, whatever they run, and the wire is filled by the
+org tier, the pool or the platform key instead. Scope keys on teams whose runs
+are launched by `bot_id` — webhooks, triggers, schedules, the studio's named
+launch, and the CLI's `--bot` form (a CLI file launch names no bot: the CLI
+refuses `--bot` beside a workflow file, so its file runs are unnamed work on
+the server too).
 
 An audience narrows WHICH key serves, never whether the walk continues: the
 next key of that provider, then the next tier, still get their turn.

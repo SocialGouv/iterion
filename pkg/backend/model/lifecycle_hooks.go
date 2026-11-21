@@ -36,7 +36,7 @@ func NewDefaultLifecycleHooks(_ EventHooks) *hooks.Runner {
 		// catch regressions in DefaultDangerousCommandPatterns().
 		panic(fmt.Sprintf("iterion: built-in safety patterns failed to compile: %v", err))
 	}
-	r.Register(hooks.PreToolUse, hook)
+	r.RegisterConcurrentSafe(hooks.PreToolUse, hook)
 	return r
 }
 

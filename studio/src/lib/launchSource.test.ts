@@ -115,3 +115,39 @@ describe("work directory path boundary", () => {
     expect(isPathWithinWorkDir("main.bot", "project")).toBe(false);
   });
 });
+
+// The third way to name a program (#3416): a bot the server resolves, pinned
+// to the digest of the program the form rendered. Its presence decides the
+// road — a named launch carries a program only once its digest is there,
+// whatever text or path stands beside it.
+describe("launchCarriesProgram for a launch that names its bot", () => {
+  const cloud = { mode: "cloud", work_dir: "" };
+  const source = "workflow x:\n  entry: done\n";
+
+  it("carries a program once the id and its digest are there", () => {
+    const namedBot = { id: "nestor", sha256: "sha-issued" };
+    expect(launchCarriesProgram({ filePath: "", source: null, serverInfo: cloud, namedBot })).toBe(true);
+    expect(launchCarriesProgram({ filePath: "", source, serverInfo: cloud, namedBot })).toBe(true);
+  });
+
+  it("carries none before its read landed, even with the text or a path at hand", () => {
+    expect(launchCarriesProgram({ filePath: "", source, serverInfo: cloud, namedBot: null })).toBe(false);
+    expect(
+      launchCarriesProgram({
+        filePath: "bots/x/main.bot",
+        source,
+        serverInfo: { mode: "local", work_dir: "/w" },
+        namedBot: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("carries none on an id without a digest, or a digest without an id", () => {
+    expect(
+      launchCarriesProgram({ filePath: "", source, serverInfo: cloud, namedBot: { id: "nestor", sha256: "" } }),
+    ).toBe(false);
+    expect(
+      launchCarriesProgram({ filePath: "", source, serverInfo: cloud, namedBot: { id: "", sha256: "sha" } }),
+    ).toBe(false);
+  });
+});

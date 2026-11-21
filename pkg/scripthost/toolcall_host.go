@@ -76,7 +76,9 @@ type serveVerdict struct {
 // would deadlock on the very first tool a script used. The join returns the
 // verdict, so the caller reads one value after Wait rather than racing the
 // goroutine for two.
-func pump(ctx context.Context, c *toolChannel, srv ToolServer, limits Limits) func() serveVerdict {
+func pump(ctx context.Context, c *toolChannel, srv ToolServer, limits Limits, stopChild context.CancelFunc) func() serveVerdict {
+	ctx, cancel := context.WithCancel(ctx)
+	closePipes := context.AfterFunc(ctx, c.close)
 	var (
 		once sync.Once
 		out  serveVerdict
@@ -86,6 +88,10 @@ func pump(ctx context.Context, c *toolChannel, srv ToolServer, limits Limits) fu
 		defer close(done)
 		served, err := serveToolCalls(ctx, c.calls, c.replies, srv, limits)
 		out = serveVerdict{served: served, err: err}
+		if err != nil {
+			stopChild()
+		}
+		c.close()
 	}()
 
 	return func() serveVerdict {
@@ -94,8 +100,9 @@ func pump(ctx context.Context, c *toolChannel, srv ToolServer, limits Limits) fu
 		// with the process, but a pump parked on a read needs the fd shut to
 		// see EOF when the kill raced it.
 		once.Do(func() {
-			_ = c.calls.Close()
+			cancel()
 			<-done
+			closePipes()
 		})
 		return out
 	}

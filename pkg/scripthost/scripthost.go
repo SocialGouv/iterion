@@ -37,6 +37,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // Subcommand is the hidden iterion sub-command that IS the child. It follows
@@ -152,6 +154,9 @@ type Limits struct {
 	// what an operator meets as latency and spend long before it is a refusal.
 	ToolCalls int64 `json:"tool_calls"`
 
+	// ConcurrentToolCalls caps the number of tools executing in a script batch.
+	ConcurrentToolCalls int64 `json:"concurrent_tool_calls,omitempty"`
+
 	// ToolResultBytes caps ONE tool result handed back to a script, cut on a
 	// rune boundary and flagged as cut.
 	//
@@ -176,8 +181,9 @@ func DefaultLimits() Limits {
 		// Sixty-four calls is what a loop over a page of results costs, and
 		// well under where the per-dispatch hook and policy cost becomes the
 		// thing an operator notices.
-		ToolCalls:       64,
-		ToolResultBytes: 64 << 10,
+		ToolCalls:           64,
+		ConcurrentToolCalls: 1,
+		ToolResultBytes:     64 << 10,
 	}
 }
 
@@ -208,13 +214,14 @@ func MemoryFloor() Limits {
 // a value only the deployment may set.
 func Ceiling() Limits {
 	return Limits{
-		Wall:            10 * time.Minute,
-		CPU:             5 * time.Minute,
-		Memory:          2 << 30,
-		ScriptBytes:     4 << 20,
-		ResultBytes:     8 << 20,
-		ToolCalls:       4096,
-		ToolResultBytes: 1 << 20,
+		Wall:                10 * time.Minute,
+		CPU:                 5 * time.Minute,
+		Memory:              2 << 30,
+		ScriptBytes:         4 << 20,
+		ResultBytes:         8 << 20,
+		ToolCalls:           4096,
+		ConcurrentToolCalls: MaxParallelBatch,
+		ToolResultBytes:     1 << 20,
 	}
 }
 
@@ -274,8 +281,9 @@ func (l Limits) Clamp() (Limits, bool) {
 		ScriptBytes: clampInt(l.ScriptBytes, def.ScriptBytes, ceil.ScriptBytes),
 		ResultBytes: clampInt(l.ResultBytes, def.ResultBytes, ceil.ResultBytes),
 
-		ToolCalls:       clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
-		ToolResultBytes: clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
+		ToolCalls:           clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
+		ConcurrentToolCalls: clampInt(l.ConcurrentToolCalls, def.ConcurrentToolCalls, ceil.ConcurrentToolCalls),
+		ToolResultBytes:     clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
 	}, clamped
 }
 
@@ -391,6 +399,13 @@ type Request struct {
 	// running a script whose capability it cannot serve: see [Proto] for the
 	// half of the handshake this cannot cover.
 	Proto int `json:"proto,omitempty"`
+
+	// Catalog is what `call.describe` and `call.search` answer from (CM-3),
+	// bounded by the parent with [toolindex.Bound]; CatalogOmitted is how many
+	// callable tools that bound left out, which the child cannot count
+	// itself.
+	Catalog        []toolindex.Tool `json:"catalog,omitempty"`
+	CatalogOmitted int              `json:"catalog_omitted,omitempty"`
 }
 
 // Response is the single JSON document the child writes to its stdout. Exactly

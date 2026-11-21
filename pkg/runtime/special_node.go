@@ -90,7 +90,7 @@ func (e *Engine) execSpecialNode(
 	if err != nil {
 		return "", err
 	}
-	delete(rs.nodeAttempts, nodeID)
+	rs.nodeRecovered(nodeID)
 	return nextNodeID, nil
 }
 

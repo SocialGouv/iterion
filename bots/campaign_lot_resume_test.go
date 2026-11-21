@@ -306,8 +306,21 @@ func TestCampaignResumedLotStartsOnlyWhereOneCanFinish(t *testing.T) {
 			return nil, errors.New("the lot ran to modernize's wall")
 		}
 		id := fmt.Sprintf("lot-child-%d", children.Add(1))
+		// This stub is the child host: prepare an explicit child birth before
+		// Engine.Run, retaining the caller's cancellation and context values.
+		childCtx, err := store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: id, Format: store.LegacyValueFormat})
+		if err != nil {
+			return nil, err
+		}
+		invocation, err := store.PrepareRunInvocation(childCtx, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{
+			ID: id, WorkflowName: modernize.Name, ParentRunID: req.ParentRunID,
+			Inputs: req.Vars, Format: store.LegacyValueFormat,
+		}})
+		if err != nil {
+			return nil, err
+		}
 		eng := runtime.New(modernize, st, child, runtime.WithBudgetClock(clock.now))
-		if err := eng.Run(ctx, id, req.Vars); err != nil {
+		if err := eng.Run(invocation.Context, id, req.Vars); err != nil {
 			return nil, err
 		}
 		return map[string]any{}, nil

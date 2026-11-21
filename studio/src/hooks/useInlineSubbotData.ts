@@ -17,6 +17,7 @@ import {
   type SubbotSelectionSticky,
 } from "@/lib/subRuns";
 import { makeSubbotChildId } from "@/lib/subbotGraph";
+import { useRunStore } from "@/store/run";
 
 // Data feeds for the run canvas's INLINE subbot expansion
 // (lib/subbotRunGraph) — RECURSIVE: each expanded frame displays ONE
@@ -73,6 +74,10 @@ interface LevelData {
 function useSubbotLevel(
   frames: FrameSpec[],
   pickedByFrame: Map<string, string>,
+  // paused stops every fetch and poll of the level (the cached data stays
+  // shown): the parent run was lost (scope_lost), and the children listed
+  // now may belong to the run that holds its ID.
+  paused: boolean,
 ): LevelData {
   // Effective selection: the user's pick while that child still exists,
   // else the last auto-shown child while the list has not grown and no
@@ -118,6 +123,7 @@ function useSubbotLevel(
       return {
         queryKey: ["run-workflow", id],
         queryFn: () => getRunWorkflow(id),
+        enabled: !paused,
         staleTime: 5 * 60_000,
         // Keep the last IR on screen while a new child key fetches —
         // otherwise auto-reselect blanks expandWireSubbots until the
@@ -150,7 +156,9 @@ function useSubbotLevel(
     queries: selectedIds.map((id) => ({
       queryKey: ["run-children", id],
       queryFn: () => getRunChildren(id),
+      enabled: !paused,
       refetchInterval: (q: { state: { data?: RunSummary[] } }) => {
+        if (paused) return false;
         const ownStatus = statusById.get(id);
         const own = ownStatus !== undefined && !isSettledRunStatus(ownStatus);
         const kids = q.state.data?.some((c) => !isSettledRunStatus(c.status));
@@ -174,7 +182,9 @@ function useSubbotLevel(
     queries: selectedIds.map((id) => ({
       queryKey: ["subrun-exec", id],
       queryFn: () => getRun(id),
+      enabled: !paused,
       refetchInterval: (q: { state: { data?: RunSnapshot } }) => {
+        if (paused) return false;
         const status = q.state.data?.run.status;
         // Poll until the child settles; a settled child's canvas is
         // frozen anyway. Before the first snapshot lands, poll.
@@ -228,17 +238,18 @@ export function useInlineSubbotData(
     [rootChildrenByNode, historical],
   );
 
-  const l1 = useSubbotLevel(level1Frames, pickedByFrame);
+  const paused = useRunStore((s) => s.wsState === "lost");
+  const l1 = useSubbotLevel(level1Frames, pickedByFrame, paused);
   const level2Frames = useMemo(
     () => deriveNextFrames(level1Frames, l1),
     [level1Frames, l1],
   );
-  const l2 = useSubbotLevel(level2Frames, pickedByFrame);
+  const l2 = useSubbotLevel(level2Frames, pickedByFrame, paused);
   const level3Frames = useMemo(
     () => deriveNextFrames(level2Frames, l2),
     [level2Frames, l2],
   );
-  const l3 = useSubbotLevel(level3Frames, pickedByFrame);
+  const l3 = useSubbotLevel(level3Frames, pickedByFrame, paused);
 
   return useMemo(() => {
     if (level1Frames.length === 0) return EMPTY;

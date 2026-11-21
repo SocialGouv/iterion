@@ -53,7 +53,7 @@ func TestRunResolveDocPinsTheExecutingProgramsContract(t *testing.T) {
 	}
 
 	e1 := New(pinWorkflow("pin", pinned("kid")), s, exec, WithWorkflowHash("h1"), WithLogger(iterlog.Nop()))
-	run, err := e1.runResolveDoc(ctx, "run-pin", nil)
+	_, run, err := e1.runResolveDoc(ctx, "run-pin", nil)
 	if err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestRunResolveDocPinsTheExecutingProgramsContract(t *testing.T) {
 	// A resume whose program DROPPED the contract clears the pin: the doc
 	// must never advertise a contract the executing program does not keep.
 	e2 := New(pinWorkflow("pin", nil), s, exec, WithWorkflowHash("h2"), WithLogger(iterlog.Nop()))
-	run2, err := e2.runResolveDoc(ctx, "run-pin", nil)
+	_, run2, err := e2.runResolveDoc(ctx, "run-pin", nil)
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRunResolveDocPinsTheExecutingProgramsContract(t *testing.T) {
 
 	// And a pass that brings a DIFFERENT contract re-pins it.
 	e3 := New(pinWorkflow("pin", pinned("kid2")), s, exec, WithWorkflowHash("h3"), WithLogger(iterlog.Nop()))
-	run3, err := e3.runResolveDoc(ctx, "run-pin", nil)
+	_, run3, err := e3.runResolveDoc(ctx, "run-pin", nil)
 	if err != nil {
 		t.Fatalf("third pass: %v", err)
 	}

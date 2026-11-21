@@ -122,6 +122,17 @@ type ingressFixture struct {
 	conns   *connection.MemoryStore
 }
 
+func (f *ingressFixture) freezeLimiterClock(t *testing.T) {
+	t.Helper()
+	lim, ok := f.s.authLimiter.(*authRateLimiter)
+	if !ok {
+		t.Fatalf("the fixture's limiter is %T", f.s.authLimiter)
+	}
+	// Exhaustion witnesses count requests at one instant: a slow runner must
+	// not refill the bucket while the test is spending its initial burst.
+	lim.now = func() time.Time { return time.Unix(1234, 0) }
+}
+
 func newIngressFixture(t *testing.T, pkgs ...*spec.Package) *ingressFixture {
 	t.Helper()
 	s := newWebhookTestServer(t)
@@ -643,6 +654,7 @@ func TestIngress_ASuspendedTeamWritesNothing(t *testing.T) {
 // ingress's state being touched.
 func TestIngress_ThePerAddressLimitAppliesBeforeTheProof(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
+	f.freezeLimiterClock(t)
 	cfg, _ := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 	var limited bool
 	for i := 0; i <= int(connectorIngressIPBucket.burst); i++ {
@@ -1266,6 +1278,7 @@ func TestIngressCRUD_AStoreOutageIsNotAVerdict(t *testing.T) {
 // from one shared pool of addresses.
 func TestIngress_OneExhaustedIngressLeavesAnotherFromTheSameAddress(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
+	f.freezeLimiterClock(t)
 	a, _ := f.create(t, `{"name":"a","provider":"connector","connector_connection_id":"conn-forge"}`)
 	b, mintedB := f.create(t, `{"name":"b","provider":"connector","connector_connection_id":"conn-forge"}`)
 	for i := 0; i <= int(connectorIngressIPBucket.burst); i++ {

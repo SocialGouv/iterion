@@ -23,7 +23,9 @@ import (
 // the store method runview.Service.LoadRunCtx calls, so the method every
 // handler's tenant gate reaches: a run is only visible to its owning
 // tenant. The rest is a real filesystem store, which knows no tenant, as
-// the blob behind the mongo store does not.
+// the blob behind the mongo store does not. Every read reaches that store
+// with the caller's context, so a bound stream over the guard is endorsed
+// (endorseForwardingStore).
 type tenantGuardStore struct {
 	*store.FilesystemRunStore
 	runTenant string
@@ -53,6 +55,10 @@ func (g *tenantGuardStore) ListRuns(ctx context.Context) ([]string, error) {
 		g.mu.Unlock()
 	}
 	return g.FilesystemRunStore.ListRuns(ctx)
+}
+
+func (g *tenantGuardStore) CheckBoundObservationStore(actual store.RunStore) error {
+	return endorseForwardingStore(g, actual, g.FilesystemRunStore)
 }
 
 // tenantGuardedServer serves one run, run-1, that exists for real and

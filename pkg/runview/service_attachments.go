@@ -50,3 +50,16 @@ func (s *Service) VerifyAttachmentSignature(runID, name, exp, sig string) bool {
 	}
 	return false
 }
+
+// OpenPresignedAttachment delegates local signed reads to the capability that
+// verifies the URL and retains its original format through the actual open.
+func (s *Service) OpenPresignedAttachment(ctx context.Context, runID, name, exp, sig, valueFormat string) (io.ReadCloser, store.AttachmentRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, store.AttachmentRecord{}, store.ErrAttachmentSignature
+	}
+	reader := store.AsPresignedAttachmentReader(s.store)
+	if reader == nil {
+		return nil, store.AttachmentRecord{}, store.ErrAttachmentSignature
+	}
+	return reader.OpenPresignedAttachment(ctx, runID, name, exp, sig, valueFormat)
+}

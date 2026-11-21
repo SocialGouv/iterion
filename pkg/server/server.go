@@ -1430,10 +1430,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// canonicalRedirect sits INSIDE securityHeaders so the 302 carries the
 	// same headers as any other response, and outside everything else: a
 	// navigation to the wrong host has no business reaching the auth gate.
+	// runOriginGate sits inside the auth gate: it compares a request's
+	// expected run birth after scopeRunByID's 404, on the DisableAuth chain
+	// too (run_origin_gate.go). normalizeOwnStore sits outside both: a
+	// `?store=` naming this server's own store is gone before either reads
+	// the request.
 	s.handler = securityHeaders(
 		canonicalRedirect(cfg.CanonicalRedirect, cfg.PublicURL,
 			errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
-				errtrack.HTTPErrorMiddleware(s.logger)(s.authMiddleware(s.mux)),
+				errtrack.HTTPErrorMiddleware(s.logger)(s.normalizeOwnStore(s.authMiddleware(s.runOriginGate(s.mux)))),
 			),
 		),
 	)

@@ -10,6 +10,7 @@ import { botSourceEditorPath } from "@/api/client";
 import { forkBotSource } from "@/api/botSources";
 import { forgeTeamRepoKey } from "@/api/forgeConnections";
 import { useAuth } from "@/auth/AuthContext";
+import HeldControl from "@/components/shared/HeldControl";
 import { Button } from "@/components/ui";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { usePromptText } from "@/hooks/usePromptText";
@@ -21,13 +22,25 @@ import { useUIStore } from "@/store/ui";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
+import type { BotLaunch } from "../botPaths";
+
 export default function ActionsRow({
   entry,
+  launch,
+  formRefusal,
   launchFile,
   testOpen,
   onToggleTest,
 }: {
   entry: BotEntryWithSchema;
+  /** How this bot is launched (botLaunch), null when it cannot be: the
+   *  Launch and Test affordances follow it. */
+  launch: BotLaunch | null;
+  /** Why the launch FORM cannot open for this caller although the bot can be
+   *  launched (botLaunchFormRefusal), null otherwise. It holds Launch, which
+   *  opens the form — never Test, which launches by id and shows no program. */
+  formRefusal: string | null;
+  /** The bot's workspace file, for the editor (local mode). */
   launchFile: string | null;
   testOpen: boolean;
   onToggleTest: () => void;
@@ -55,10 +68,11 @@ export default function ActionsRow({
   const canFork = isCloud && botEditingEnabled && !isTenantBot;
 
   const onLaunch = () => {
-    if (!launchFile) return;
-    // Prefer the clean, shareable slug URL (/runs/new?bot=feed-watch) over the
-    // encoded file path; LaunchView resolves the slug back to launchFile. The
-    // entry name is the catalog slug and is always set.
+    if (!launch || formRefusal) return;
+    // The clean, shareable slug URL (/runs/new?bot=feed-watch) in both modes:
+    // LaunchView launches the slug by name in cloud and resolves it back to
+    // the workflow file locally (botLaunch). The entry name is the catalog
+    // slug and is always set.
     setLocation(`/runs/new?bot=${encodeURIComponent(entry.name)}`);
   };
 
@@ -118,15 +132,21 @@ export default function ActionsRow({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={onLaunch}
-          disabled={!launchFile}
-          title={launchFile ? `Configure and launch ${entry.name}` : noPathTitle}
-        >
-          Launch
-        </Button>
+        {/* Held by the form's refusal, the reason is reachable by keyboard
+            (HeldControl); a bot that cannot be launched at all is disabled. */}
+        <HeldControl reason={launch ? formRefusal : null}>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onLaunch}
+            disabled={!launch}
+            title={
+              formRefusal ? undefined : launch ? `Configure and launch ${entry.name}` : noPathTitle
+            }
+          >
+            Launch
+          </Button>
+        </HeldControl>
         {/* A team-authored bot (or any bot in local mode) opens directly in the
             editor. A read-only baked catalog bot in cloud offers "Duplicate &
             edit" instead — forking it into the team store makes it editable. */}
@@ -169,10 +189,10 @@ export default function ActionsRow({
           variant={testOpen ? "primary" : "secondary"}
           size="sm"
           onClick={onToggleTest}
-          disabled={!launchFile}
+          disabled={!launch}
           aria-expanded={testOpen}
           title={
-            launchFile
+            launch
               ? testOpen
                 ? "Close the test pane"
                 : "Open an embedded test pane (contained run — commits stay on a storage branch, no merge)"

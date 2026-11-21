@@ -9,12 +9,12 @@ The bundles under `bots/`, then the skills they carry.
 
 | Bot | Persona | What it does | Version |
 |---|---|---|---|
-| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.2 |
-| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.3 |
+| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.3 |
+| `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.4 |
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.5.0 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
 | `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.4 |
-| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.4 |
+| `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.5 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.10.0 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.4 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
@@ -25,7 +25,7 @@ The bundles under `bots/`, then the skills they carry.
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.2.0 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.8.0 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.5.0 |
-| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.7.0 |
+| `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.7.1 |
 | `gitops-warden` | 🛡 Warden | GitOps merge gate. | 0.3.0 |
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.2.0 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.3.0 |
@@ -44,7 +44,7 @@ The bundles under `bots/`, then the skills they carry.
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.6 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.5.0 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.2 |
-| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.11 |
+| `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.12 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.6.0 |
 | `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1.0.7 |
 | `workflow-kick` | ⏱️ Kicky | Dispatches one GitHub Actions workflow of the target repository on a schedule — the external trigger for a workflow whose own `schedule:`… | 0.1.0 |

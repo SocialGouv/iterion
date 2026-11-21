@@ -13,6 +13,7 @@ afterEach(cleanup);
 const limits: CodemodeLimits = {
   default: {
     tool_calls: 64,
+    concurrent_tool_calls: 1,
     wall: "30s",
     cpu: "10s",
     memory: 268435456,
@@ -22,6 +23,7 @@ const limits: CodemodeLimits = {
   },
   ceiling: {
     tool_calls: 4096,
+    concurrent_tool_calls: 4,
     wall: "10m0s",
     cpu: "5m0s",
     memory: 2147483648,
@@ -57,7 +59,9 @@ test("the mode select offers inherit, on and off — and reports the choice", ()
 
 test("placeholders come from the served defaults, never from a studio table", () => {
   renderSection();
-  expect(screen.getByLabelText(/tool_calls/i).getAttribute("placeholder")).toBe("64");
+  expect(screen.getByLabelText(/^tool_calls/i).getAttribute("placeholder")).toBe("64");
+  expect(screen.getByLabelText(/^concurrent_tool_calls/i).getAttribute("placeholder")).toBe("inherits");
+  expect(screen.getByText("Platform default: 1 (serial).")).toBeTruthy();
   expect(screen.getByLabelText(/^wall/i).getAttribute("placeholder")).toBe("30s");
   expect(screen.getByLabelText(/^memory/i).getAttribute("placeholder")).toBe(
     "268435456",
@@ -66,7 +70,7 @@ test("placeholders come from the served defaults, never from a studio table", ()
 
 test("without the served limits the placeholders say inherits — no invented numbers", () => {
   renderSection({ limits: undefined });
-  expect(screen.getByLabelText(/tool_calls/i).getAttribute("placeholder")).toBe(
+  expect(screen.getByLabelText(/^tool_calls/i).getAttribute("placeholder")).toBe(
     "inherits",
   );
 });
@@ -81,7 +85,7 @@ test("a bound above the ceiling is NAMED, and the form still submits it", () => 
   expect(warning.textContent).toContain("above the platform ceiling");
   expect(warning.textContent).toContain("tool_calls");
   // The input stays editable: the clamp owns the bound, the form only warns.
-  const input = screen.getByLabelText(/tool_calls/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/^tool_calls/i) as HTMLInputElement;
   expect(input.disabled).toBe(false);
   fireEvent.change(input, { target: { value: "512" } });
   expect(onChange).toHaveBeenCalledWith({ toolCalls: "512" });
@@ -112,7 +116,7 @@ test("a real bound says it overrides the bot", () => {
 
 test("a numeric field holding a droppable value is marked invalid and says so", () => {
   renderSection({ values: { ...emptyCodemodeFieldValues, toolCalls: "1,000" } });
-  const input = screen.getByLabelText(/tool_calls/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/^tool_calls/i) as HTMLInputElement;
   expect(input.getAttribute("aria-invalid")).toBe("true");
   expect(screen.getByText(/not a positive value/)).toBeTruthy();
 });

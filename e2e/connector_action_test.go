@@ -374,7 +374,12 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 		t.Fatalf("CreateRun: %v", err)
 	}
 
+	prepared, err := store.PrepareRunInvocation(t.Context(), s, store.ExistingRunInvocation{ID: runID})
+	if err != nil {
+		t.Fatalf("prepare run: %v", err)
+	}
 	espec := runview.ExecutorSpec{
+		Ctx:      prepared.Context,
 		Workflow: wf,
 		Store:    s,
 		RunID:    runID,
@@ -408,7 +413,7 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 	}
 
 	eng := newEngine(t, wf, s, exec, opts...)
-	runErr := eng.Run(context.Background(), runID, nil)
+	runErr := eng.RunPrepared(prepared.Context, runID, nil, prepared)
 	// The PERSISTED run travels back on BOTH paths. What a failure leaves on
 	// the record — its status and its classification — is the thing a caller
 	// may be here to assert, and returning only the error would hide it.

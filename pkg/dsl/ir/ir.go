@@ -37,6 +37,7 @@ type Workflow struct {
 	Secrets         map[string]*Secret     // secret name → resolved secret declaration
 	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
+	BusinessStores  []BusinessStore        // expected stores, normalized by the launch authority
 	Loops           map[string]*Loop       // loop name → loop definition
 	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
 	Budget          *Budget                // workflow budget (nil if not set)
@@ -123,6 +124,14 @@ type MCPPreparation struct {
 type WithdrawnMCPServer struct {
 	Name   string
 	Source string
+}
+
+// BusinessStore is a workflow declaration, independent of a storage backend.
+type BusinessStore struct {
+	ID        string
+	Kind      string
+	Namespace string
+	Required  bool
 }
 
 // ---------------------------------------------------------------------------

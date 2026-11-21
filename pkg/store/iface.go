@@ -292,14 +292,18 @@ type RunStore interface {
 	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
 	// every exit so a stolen claim cannot consume its successor's), and
 	// claimed=false (with the current status) when someone else holds a
-	// fresh claim or the run is already merged.
-	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// fresh claim or the run is already merged. expect anchors the claim
+	// to the run its caller loaded: a successor recreated under the same
+	// ID is never claimed — (false, "", zero, ErrRunDataIdentityChanged).
+	// A zero expect skips the check.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time, expect ExpectedBirth) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
 	// UpdateRunMergeIf is the compare-and-set exit from the merge state
 	// machine: it persists upd's merge fields iff the current
 	// MergeStatus is in expectedFrom (empty string matches an unset
 	// field). Returns changed=false when the state drifted — the caller
 	// lost its claim or raced another writer — in which case nothing
-	// was written.
+	// was written. A checked upd.ExpectBirth that differs from the stored
+	// birth answers ErrRunDataIdentityChanged and writes nothing.
 	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
@@ -556,6 +560,23 @@ type PIDStore interface {
 // dereferencing — local stores satisfy it, cloud stores do not.
 func AsPIDStore(s RunStore) PIDStore {
 	return capability[PIDStore](s)
+}
+
+// ContextPIDStore supplies PID operations for an existing bound invocation.
+// Every method requires its original format in ctx and compares it under the
+// metadata lock. It does not grant execution authority. Legacy PIDStore remains
+// available for historical orphan-sidecar callers. Cloud stores have neither.
+type ContextPIDStore interface {
+	WritePIDFileContext(context.Context, string, int) error
+	ReadPIDFileContext(context.Context, string) (int, error)
+	RemovePIDFileContext(context.Context, string) error
+	RemovePIDFileIfContext(context.Context, string, int) (bool, error)
+}
+
+// AsContextPIDStore discovers the contextual capability through decorators.
+// A bound invocation must not fall back to PIDStore when it is absent.
+func AsContextPIDStore(s RunStore) ContextPIDStore {
+	return capability[ContextPIDStore](s)
 }
 
 // QueuedRunCreator is the optional interface for stores that can persist

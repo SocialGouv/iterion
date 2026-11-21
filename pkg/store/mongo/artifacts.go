@@ -2,11 +2,11 @@ package mongo
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -23,59 +23,61 @@ import (
 //
 // Plan §F T-18.
 func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
-	body, err := json.Marshal(a)
+	format, err := s.valueWriteFormat(ctx, a.RunID)
 	if err != nil {
-		return fmt.Errorf("store/mongo: marshal artifact: %w", err)
+		return err
 	}
-
-	// Step 1: PUT to S3. Idempotent under the canonical key so a retry
-	// after a partial failure simply rewrites the same bytes.
-	if err := s.blob.PutArtifact(ctx, a.RunID, a.NodeID, a.Version, body); err != nil {
-		return fmt.Errorf("store/mongo: blob put %s/%s/%d: %w", a.RunID, a.NodeID, a.Version, err)
+	if a.WrittenAt.IsZero() {
+		a.WrittenAt = time.Now().UTC()
 	}
-
-	// Step 2: append the artifact_written event so observers (run
-	// console, change-stream subscribers) learn about the new version.
-	// AppendEvent allocates the seq + writes to events; we don't
-	// double-write the body here.
-	_, err = s.AppendEvent(ctx, a.RunID, store.Event{
-		Type:   store.EventArtifactWritten,
-		RunID:  a.RunID,
-		NodeID: a.NodeID,
-		Data: map[string]any{
-			"version":    a.Version,
-			"written_at": a.WrittenAt,
-		},
+	body, err := store.EncodeValueRecordJSON(ctx, format, store.ExactArtifact, a)
+	if err != nil {
+		return err
+	}
+	evt := store.Event{Type: store.EventArtifactWritten, RunID: a.RunID, NodeID: a.NodeID, Timestamp: time.Now().UTC(), Data: map[string]any{"version": a.Version, "written_at": a.WrittenAt}, LogOffset: s.logPositionFor(a.RunID), ActiveMs: s.activeDurationFor(a.RunID)}
+	stampTenantOnEvent(ctx, &evt)
+	doc, err := valueRecordDocument(ctx, format, store.ExactEvent, &evt)
+	if err != nil {
+		return err
+	}
+	// The upload is deliberately outside the retryable transaction, using the
+	// original namespace. A late upload cannot overwrite another format.
+	if err = s.putValueArtifact(ctx, format, a.RunID, a.NodeID, a.Version, body); err != nil {
+		return err
+	}
+	return s.withValueRecordWrite(ctx, a.RunID, func(sc context.Context, _ store.ValueFormat, parent *store.Run) error {
+		if _, err := s.publishValueEvent(sc, a.RunID, doc); err != nil {
+			return err
+		}
+		if parent == nil {
+			return nil
+		}
+		_, err := s.runs.UpdateOne(sc, notDeleted(withTenantFilter(sc, bson.M{"_id": a.RunID})), versionRunUpdate(bson.M{"$max": bson.M{fmt.Sprintf("artifact_index.%s", a.NodeID): a.Version}, "$set": bson.M{"updated_at": a.WrittenAt}}))
+		return err
 	})
-	if err != nil {
-		return fmt.Errorf("store/mongo: append artifact event: %w", err)
-	}
-
-	// Step 3: maintain run.artifact_index so LoadLatestArtifact has a
-	// fast path. Best-effort — the event is the canonical record.
-	_, _ = s.runs.UpdateOne(
-		ctx,
-		withTenantFilter(ctx, bson.M{"_id": a.RunID}),
-		versionRunUpdate(bson.M{
-			"$max": bson.M{fmt.Sprintf("artifact_index.%s", a.NodeID): a.Version},
-			"$set": bson.M{"updated_at": a.WrittenAt},
-		}),
-	)
-	return nil
 }
 
-// LoadArtifact fetches the body from S3 and returns it as a
-// *store.Artifact. Mongo isn't consulted: the blob is authoritative.
 func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
-	body, err := s.blob.GetArtifact(ctx, runID, nodeID, version)
+	format, err := s.valueReadFormat(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	body, err := s.getValueArtifact(ctx, format, runID, nodeID, version)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
 			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found: %w", runID, nodeID, version, os.ErrNotExist)
 		}
 		return nil, fmt.Errorf("store/mongo: blob get %s/%s/%d: %w", runID, nodeID, version, err)
 	}
+	bound, err := store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: runID, Format: format})
+	if err != nil {
+		return nil, err
+	}
+	if _, err = s.valueReadFormat(bound, runID); err != nil {
+		return nil, err
+	}
 	var art store.Artifact
-	if err := json.Unmarshal(body, &art); err != nil {
+	if err := store.DecodeValueRecordJSON(ctx, format, store.ExactArtifact, body, &art); err != nil {
 		return nil, fmt.Errorf("store/mongo: unmarshal artifact %s/%s/v%d: %w", runID, nodeID, version, err)
 	}
 	return &art, nil
@@ -85,14 +87,25 @@ func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version 
 // present, falling back to a blob LIST when the index is empty (e.g.
 // for a run created before the index was populated).
 func (s *Store) LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*store.Artifact, error) {
+	format, err := s.valueReadFormat(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, err = store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: runID, Format: format})
+	if err != nil {
+		return nil, err
+	}
 	r, err := s.LoadRun(ctx, runID)
+	if err != nil && !errors.Is(err, store.ErrRunNotFound) {
+		return nil, err
+	}
 	if err == nil && r.ArtifactIndex != nil {
 		if v, ok := r.ArtifactIndex[nodeID]; ok {
 			return s.LoadArtifact(ctx, runID, nodeID, v)
 		}
 	}
 
-	versions, err := s.blob.ListArtifactVersions(ctx, runID, nodeID)
+	versions, err := s.listValueArtifacts(ctx, format, runID, nodeID)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
 			return nil, fmt.Errorf("store/mongo: no artifacts for %s/%s", runID, nodeID)
@@ -110,72 +123,66 @@ func (s *Store) LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*
 // node. Reads from the blob LIST so the result matches what
 // LoadArtifact can actually return.
 func (s *Store) ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]store.ArtifactVersionInfo, error) {
-	versions, err := s.blob.ListArtifactVersions(ctx, runID, nodeID)
+	format, err := s.valueReadFormat(ctx, runID)
 	if err != nil {
-		if errors.Is(err, blob.ErrArtifactNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("store/mongo: list versions %s/%s: %w", runID, nodeID, err)
+		return nil, err
+	}
+	versions, err := s.listValueArtifacts(ctx, format, runID, nodeID)
+	if errors.Is(err, blob.ErrArtifactNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	sort.Ints(versions)
-
-	// Fold artifact_written events to populate the WrittenAt
-	// timestamps so callers get a consistent shape with the
-	// filesystem store. A missing event is tolerated — we fall back
-	// to zero time, matching the filesystem reader's behaviour.
-	tsByVersion := map[int]any{}
-	cur, err := s.events.Find(ctx, withTenantFilter(ctx, bson.M{
-		"run_id":  runID,
-		"node_id": nodeID,
-		"type":    store.EventArtifactWritten,
-	}), options.Find().SetProjection(bson.M{"data.version": 1, "ts": 1}))
+	bound, err := store.WithRunValueFormat(ctx, store.RunValueFormat{RunID: runID, Format: format})
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("store/mongo: list versions %s/%s: events fold failed (timestamps will be zero): %v", runID, nodeID, err)
-		}
-	} else {
-		defer cur.Close(ctx)
-		for cur.Next(ctx) {
-			var doc struct {
-				Data map[string]any `bson:"data"`
-				TS   any            `bson:"ts"`
-			}
-			if err := cur.Decode(&doc); err != nil {
-				continue
-			}
-			if v, ok := doc.Data["version"]; ok {
-				switch n := v.(type) {
-				case int32:
-					tsByVersion[int(n)] = doc.TS
-				case int64:
-					tsByVersion[int(n)] = doc.TS
-				case int:
-					tsByVersion[n] = doc.TS
-				case float64:
-					tsByVersion[int(n)] = doc.TS
-				}
-			}
-		}
+		return nil, err
 	}
-
+	if _, err = s.valueReadFormat(bound, runID); err != nil {
+		return nil, err
+	}
+	// Data is a frame in2, so decode the complete selected event rather than
+	// projecting a nonexistent data.version field from that frame.
+	times := map[int]time.Time{}
+	cur, err := s.events.Find(ctx, withTenantFilter(ctx, bson.M{"run_id": runID, "node_id": nodeID, "type": store.EventArtifactWritten}), options.Find())
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var evt store.Event
+		if err = decodeValueBSON(ctx, format, store.ExactEvent, cur.Current, &evt); err != nil {
+			if format == store.ExactValueFormat {
+				return nil, err
+			}
+			continue
+		}
+		var v int
+		switch n := evt.Data["version"].(type) {
+		case int:
+			v = n
+		case int32:
+			v = int(n)
+		case int64:
+			v = int(n)
+		case float64:
+			v = int(n)
+		default:
+			continue
+		}
+		times[v] = evt.Timestamp
+	}
+	if err = cur.Err(); err != nil {
+		return nil, err
+	}
 	out := make([]store.ArtifactVersionInfo, 0, len(versions))
 	for _, v := range versions {
-		info := store.ArtifactVersionInfo{Version: v}
-		if t, ok := tsByVersion[v].(bson.DateTime); ok {
-			info.WrittenAt = t.Time().UTC()
-		}
-		out = append(out, info)
+		out = append(out, store.ArtifactVersionInfo{Version: v, WrittenAt: times[v]})
 	}
 	return out, nil
 }
 
-// LockRun delegates to the configured LockProvider when present so a
-// runner-side store gets a real distributed lease (NATS KV TTL +
-// CAS), and falls back to a no-op lock for server-side instances
-// where the runtime engine never executes runs and locking is
-// pointless. The plan §F T-26 contract is "fail-fast on contention" —
-// if the provider returns an error (the lease is held elsewhere),
-// surface it to the caller so the engine refuses to proceed.
 func (s *Store) LockRun(ctx context.Context, runID string) (store.RunLock, error) {
 	if s.lockProv == nil {
 		return noopLock{}, nil

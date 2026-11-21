@@ -131,7 +131,12 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 			if !loaded[parts[0]] {
 				resolved, err := s.resolveBotTieredRaw(ctx, teamID, parts[0], "")
 				if err != nil {
-					return nil, fmt.Errorf("%w: resolve child %s: %v", errBotSnapshotResolve, parts[0], err)
+					if isTierReadRefusal(err) {
+						return nil, err
+					}
+					// The cause stays in the chain: a caller tells a tier
+					// that did not answer from a child that does not resolve.
+					return nil, fmt.Errorf("%w: resolve child %s: %w", errBotSnapshotResolve, parts[0], err)
 				}
 				if resolved == nil {
 					return nil, fmt.Errorf("bundle snapshot: child bundle %q not found", parts[0])

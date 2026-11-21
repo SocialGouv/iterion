@@ -57,22 +57,24 @@ func TestNeitherRungDeclaringBoundsResolvesToNothing(t *testing.T) {
 func TestTheCeilingCensusNamesEveryFieldAboveIt(t *testing.T) {
 	t.Parallel()
 	ceil := scripthost.Ceiling()
-	// Every one of the seven, one past its ceiling at once: the census has
+	// Every one of the bounds, one past its ceiling at once: the census has
 	// to name them all, not stop at the first. A `return` on the first
-	// finding would leave six fields clamped with nothing said.
+	// finding would leave the remaining fields clamped with nothing said.
 	over := CodemodeBoundsAboveCeiling(&CodemodeBounds{
-		ToolCalls:       ceil.ToolCalls + 1,
-		Wall:            ceil.Wall + time.Second,
-		CPU:             ceil.CPU + time.Second,
-		Memory:          ceil.Memory + 1,
-		ScriptBytes:     ceil.ScriptBytes + 1,
-		ResultBytes:     ceil.ResultBytes + 1,
-		ToolResultBytes: ceil.ToolResultBytes + 1,
+		ToolCalls:           ceil.ToolCalls + 1,
+		Wall:                ceil.Wall + time.Second,
+		CPU:                 ceil.CPU + time.Second,
+		Memory:              ceil.Memory + 1,
+		ScriptBytes:         ceil.ScriptBytes + 1,
+		ResultBytes:         ceil.ResultBytes + 1,
+		ToolResultBytes:     ceil.ToolResultBytes + 1,
+		ConcurrentToolCalls: ceil.ConcurrentToolCalls + 1,
 	})
-	if len(over) != 7 {
-		t.Fatalf("named %d fields above the ceiling, want all 7: %v", len(over), over)
+	wants := []string{"tool_calls", "concurrent_tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
+	if len(over) != len(wants) {
+		t.Fatalf("named %d fields above the ceiling, want %d: %v", len(over), len(wants), over)
 	}
-	for _, want := range []string{"tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"} {
+	for _, want := range wants {
 		found := false
 		for _, phrase := range over {
 			if strings.HasPrefix(phrase, want+" ") {
@@ -110,7 +112,7 @@ func TestTheDefaultsAreUnderTheCeiling(t *testing.T) {
 }
 
 // The one-type decision, asserted at COMPILE time because that is when it can
-// be broken. If CodemodeBounds is ever made a parallel struct, the seven
+// be broken. If CodemodeBounds is ever made a parallel struct, the
 // numbers acquire a second spelling and the `wall_ms` defect the host's own
 // field doc records — a hand-written bound enforced a million times tighter —
 // becomes available again. Two distinct named struct types are not assignable
@@ -118,9 +120,9 @@ func TestTheDefaultsAreUnderTheCeiling(t *testing.T) {
 // the alias is replaced by a copy.
 var _ scripthost.Limits = CodemodeBounds{}
 
-// The seven bounds are seven HAND-WRITTEN entries in four places — the
+// Each bound has HAND-WRITTEN entries in four places — the
 // parser's switch, ast.CodemodeBlock.Bounded, ResolveCodemodeBounds's literal
-// and CodemodeBoundsAboveCeiling's calls. An eighth field added to
+// and CodemodeBoundsAboveCeiling's calls. A new field added to
 // scripthost.Limits would be accepted by none of them, and
 // ResolveCodemodeBounds would ERASE it: it builds its result from a field
 // literal, so a value a node set would come back zero on every codemode node.
@@ -189,22 +191,23 @@ func TestAWorkflowRungAloneReachesANodeThatDeclaresNothing(t *testing.T) {
 }
 
 // The census ORDER, which the function's own doc promises ("in the order the
-// DSL block lists them"). Measured as unwitnessed: reversing the seven calls
+// DSL block lists them"). Measured as unwitnessed: reversing the calls
 // survived ./pkg/dsl/..., because the sibling test checks set membership by
 // prefix and never the sequence. A promise a doc makes is an oracle.
 func TestTheCeilingCensusNamesFieldsInTheBlocksOwnOrder(t *testing.T) {
 	t.Parallel()
 	ceil := scripthost.Ceiling()
 	over := CodemodeBoundsAboveCeiling(&CodemodeBounds{
-		ToolCalls:       ceil.ToolCalls + 1,
-		Wall:            ceil.Wall + time.Second,
-		CPU:             ceil.CPU + time.Second,
-		Memory:          ceil.Memory + 1,
-		ScriptBytes:     ceil.ScriptBytes + 1,
-		ResultBytes:     ceil.ResultBytes + 1,
-		ToolResultBytes: ceil.ToolResultBytes + 1,
+		ToolCalls:           ceil.ToolCalls + 1,
+		Wall:                ceil.Wall + time.Second,
+		CPU:                 ceil.CPU + time.Second,
+		Memory:              ceil.Memory + 1,
+		ScriptBytes:         ceil.ScriptBytes + 1,
+		ResultBytes:         ceil.ResultBytes + 1,
+		ToolResultBytes:     ceil.ToolResultBytes + 1,
+		ConcurrentToolCalls: ceil.ConcurrentToolCalls + 1,
 	})
-	want := []string{"tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
+	want := []string{"tool_calls", "concurrent_tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
 	if len(over) != len(want) {
 		t.Fatalf("named %d fields, want %d: %v", len(over), len(want), over)
 	}

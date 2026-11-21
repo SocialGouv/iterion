@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
+import { useMaybeAuth } from "@/auth/AuthContext";
 import { useBotsStore } from "@/store/bots";
-import { botLaunchFile } from "@/views/Bots/botPaths";
+import { useTabsStore } from "@/store/tabs";
 import BotIdentity from "@/components/shared/BotIdentity";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
@@ -12,6 +13,7 @@ import { useServerInfoStore } from "@/store/serverInfo";
 
 import AttachmentsSection from "./launchView/AttachmentsSection";
 import BotOptionsSection from "./launchView/BotOptionsSection";
+import { resolveBotSlug } from "./launchView/botSlugTarget";
 import EngineOptionsSection from "./launchView/EngineOptionsSection";
 import LaunchBar from "./launchView/LaunchBar";
 import { applyLaunchHints } from "./launchView/launchHints";
@@ -33,11 +35,30 @@ import VarFieldsSection from "./launchView/VarFieldsSection";
 // launchView/ hooks (document + values, presets, attachments, repo
 // target, run overrides, submission flow); this component wires them to
 // the section components.
+// One form per TARGET. Everything the form holds is about one launch — the
+// values typed, the preset, the engine options folded out of sight, the
+// attachments, the banner — so the form is keyed by what it launches, the
+// team included, and a move to another target starts from nothing rather
+// than carry any of it where the operator cannot see it. Under a file or a
+// bot the editor is not part of the target (an editor event is no reason to
+// reset the form); the unsaved buffer's form is its editor tab's.
 export default function LaunchView() {
+  const search = useSearch();
+  const teamScope = useMaybeAuth()?.activeTeamID ?? "";
+  const bufferTab = useTabsStore((s) => s.activeEditorTabId) ?? "";
+  const params = new URLSearchParams(search);
+  const file = params.get("file") ?? "";
+  const bot = file ? "" : (params.get("bot") ?? "");
+  const target =
+    file || bot ? `${teamScope}\u0000${file}\u0000${bot}` : `${teamScope}\u0000buffer\u0000${bufferTab}`;
+  return <LaunchForm key={target} />;
+}
+
+function LaunchForm() {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const allBots = useBotsStore((s) => s.bots);
-  const fetchBots = useBotsStore((s) => s.fetch);
+  const botsError = useBotsStore((s) => s.error);
   const { fileParam, botParam } = useMemo(() => {
     const params = new URLSearchParams(search);
     return {
@@ -45,30 +66,64 @@ export default function LaunchView() {
       botParam: params.get("bot") ?? "",
     };
   }, [search]);
+  const { serverInfo, serverInfoPending } = useLaunchServerInfo();
   // `?bot=<slug>` is the clean, shareable launch URL (e.g.
-  // /runs/new?bot=feed-watch) — resolve the catalog slug to its workflow file
-  // so the rest of the form is byte-identical to the ?file= path. Load the
-  // catalog when a slug actually needs resolving. `?file=` still wins when
-  // both are present (explicit path beats slug).
-  useEffect(() => {
-    if (botParam && !fileParam) void fetchBots();
-  }, [botParam, fileParam, fetchBots]);
-  const filePath = useMemo(() => {
-    if (fileParam) return fileParam;
-    if (!botParam) return "";
-    const entry = allBots?.find((b) => b.name === botParam);
-    return (entry && botLaunchFile(entry)) || "";
-  }, [fileParam, botParam, allBots]);
+  // /runs/new?bot=feed-watch). `?file=` still wins when both are present
+  // (explicit path beats slug). What the slug names is resolveBotSlug's
+  // decision: the bot by name in cloud — the form renders the program the
+  // server resolves and the launch posts the bot's id, pinned to it — its
+  // workflow file locally, and otherwise a wait or a refusal by name. Under a
+  // bot's URL the form never renders the editor's buffer in its place.
+  // The catalog a local slug resolves against is the one useBotPresets asks
+  // for whenever it is not there.
+  const botSlug = fileParam ? "" : botParam;
+  const slugTarget = useMemo(
+    () =>
+      resolveBotSlug({
+        slug: botSlug,
+        serverInfo,
+        serverInfoPending,
+        bots: allBots,
+        botsError,
+      }),
+    [botSlug, serverInfo, serverInfoPending, allBots, botsError],
+  );
+  const namedSlug = slugTarget.state === "bot" ? slugTarget.bot : "";
+  const filePath = fileParam || (slugTarget.state === "file" ? slugTarget.file : "");
+  // Waiting or refused, the form holds: it loads nothing and arms no submit.
+  const slugHeld = slugTarget.state === "pending" || slugTarget.state === "refused";
 
   // Page-level error banner — fed by both document loading and the
   // launch submission (which clears it before each attempt).
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setError] = useState<string | null>(null);
+  // Set when the server refused the launch because the bot changed under the
+  // form: the banner then offers to read the bot's program again.
+  const [programChanged, setProgramChanged] = useState(false);
+  // Where to look before launching again, after a launch that drew no answer
+  // about its run.
+  const [unansweredRuns, setUnansweredRuns] = useState<string | null>(null);
+  // An error is about ONE launch: when the URL moves to another program, the
+  // banner of the one before — and the reload it offered — goes with it.
+  // Discarded during the render that sees the move (React's
+  // adjust-state-when-a-prop-changes shape), so the load of the new target
+  // reports into a clean slate.
+  const targetKey = `${fileParam}\u0000${botSlug}`;
+  const [errorTarget, setErrorTarget] = useState(targetKey);
+  if (errorTarget !== targetKey) {
+    setErrorTarget(targetKey);
+    setError(null);
+    setProgramChanged(false);
+    setUnansweredRuns(null);
+  }
+  const error = slugTarget.state === "refused" ? slugTarget.reason : loadError;
 
-  const serverInfo = useLaunchServerInfo();
   const {
     doc,
     noSource,
     currentSource,
+    namedBot,
+    namedPresets,
+    reload,
     confirmedDiskPath,
     values,
     setValues,
@@ -76,9 +131,19 @@ export default function LaunchView() {
     attachmentFields,
     llmNodes,
     worktreeOn,
-  } = useLaunchDoc(filePath, setError);
+    load,
+  } = useLaunchDoc(filePath, setError, { bot: namedSlug, pending: slugHeld });
   const { bot, presets, selectedPreset, selectedPresetMeta, applyPreset } =
-    useBotPresets(filePath, doc, setValues);
+    useBotPresets(
+      filePath,
+      doc,
+      setValues,
+      // A named launch's presets are the ones the server read with its
+      // program; the registry entry supplies the bot's identity, its launch
+      // hints and its repository requirement — nothing a launch runs.
+      namedBot && namedPresets ? { botID: namedBot.id, presets: namedPresets } : null,
+      load,
+    );
   // Progressive-disclosure buckets, folding in the resolved bot's launch
   // hints (manifest `launch:` block): hint-forced primaries lead, hidden
   // vars never render, everything else falls back to the varClassify
@@ -107,6 +172,11 @@ export default function LaunchView() {
     filePath,
     doc,
     currentSource,
+    // A launch by name posts the bot's id and the digest its read issued —
+    // `null` until that read lands, which carries no program.
+    namedBot: namedSlug ? namedBot : undefined,
+    onProgramChanged: setProgramChanged,
+    onUnanswered: setUnansweredRuns,
     confirmedDiskPath,
     serverInfo,
     fields,
@@ -133,12 +203,12 @@ export default function LaunchView() {
         {/* "Unsaved workflow" only when there IS a workflow (in-memory
             doc without a file). With nothing to launch at all, a
             subtitle would contradict the empty state below. */}
-        {(filePath || doc) && (
+        {(filePath || namedSlug || doc) && (
           <span
             className="text-xs text-fg-subtle font-mono truncate max-w-md"
-            title={filePath || "Unsaved workflow"}
+            title={filePath || namedSlug || "Unsaved workflow"}
           >
-            {filePath || "Unsaved workflow"}
+            {filePath || namedSlug || "Unsaved workflow"}
           </span>
         )}
       </>
@@ -167,7 +237,35 @@ export default function LaunchView() {
           lsKey="iterion.launch.mobile-optin"
         >
         {error && (
-          <InlineBanner tone="danger" layout="inline" className="mb-3">
+          <InlineBanner
+            tone="danger"
+            layout="inline"
+            className="mb-3"
+            action={
+              // The remedy of a launch refused because the bot changed: read
+              // the bot's program again, on the operator's own gesture — the
+              // fields they filled are about to be replaced.
+              programChanged && namedSlug ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setError(null);
+                    setProgramChanged(false);
+                    reload();
+                  }}
+                >
+                  Reload the bot
+                </Button>
+              ) : unansweredRuns ? (
+                // No answer said whether the run exists: the way to look,
+                // before a second click starts a second one.
+                <Button variant="secondary" size="sm" onClick={() => setLocation(unansweredRuns)}>
+                  Open its runs
+                </Button>
+              ) : undefined
+            }
+          >
             {error}
           </InlineBanner>
         )}
@@ -221,6 +319,7 @@ export default function LaunchView() {
                     createError={repoTarget.repoTargetCreateError}
                     submitting={submitting}
                     filePath={filePath}
+                    botSlug={namedSlug}
                   />
                 </div>
               )}

@@ -51,7 +51,11 @@ func (s *Store) RecordPreEngineRefusal(ctx context.Context, id string, q store.P
 	var after struct {
 		Status store.RunStatus `bson:"status"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, statusTransitionPipeline(set), options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"status": 1})).Decode(&after)
+	result, err := s.findOneAndUpdateRunMetadata(ctx, id, filter, statusTransitionPipeline(set), options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"status": 1}))
+	if err != nil {
+		return store.PreEngineRefusalResult{}, err
+	}
+	err = result.Decode(&after)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return store.PreEngineRefusalResult{}, nil
 	}

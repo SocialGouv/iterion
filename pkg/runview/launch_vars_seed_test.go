@@ -107,7 +107,7 @@ func TestBuildExecutorSeedsLaunchVarsAtTheirDeclaredType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor, err := BuildExecutor(ExecutorSpec{
+	executor, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Ctx:             context.Background(),
 		Store:           st,
 		RunID:           "run-launch-vars-seed",
@@ -116,7 +116,7 @@ func TestBuildExecutorSeedsLaunchVarsAtTheirDeclaredType(t *testing.T) {
 		Vars:            map[string]string{"labels": "a11y,rgaa", "cfg": `{"backend":"claw"}`},
 		Connectors:      newLabelResolver(srv.URL),
 		ConnectorClient: exec.MarkGuarded(srv.Client()),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}

@@ -186,6 +186,10 @@ type RewindSpec struct {
 	ExpectedPivot string
 	// ReceiptID correlates this mutation with a durable assistant mission.
 	ReceiptID string
+	// ExpectOrigin is the origin a checked surface admitted for RunID: the
+	// run Rewind loads is verified against it before anything is claimed or
+	// written. The zero value is unchecked.
+	ExpectOrigin ActionOrigin
 }
 
 // RewindPivot is the non-mutating, final pivot selected for a rewind. NodeID
@@ -384,6 +388,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	run, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
+	}
+	if err := spec.ExpectOrigin.Verify(run); err != nil {
+		return nil, fmt.Errorf("runview: rewind: %w", err)
 	}
 	if run.Worktree && spec.RestoreScope == RestoreScopeProduced && !spec.KeepFiles {
 		// Refused UP FRONT, before anything is claimed or written. git is
@@ -981,8 +988,10 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	for _, id := range invalidated {
 		// A re-executed node gets a fresh recovery budget: it is being
 		// replayed because the WORKFLOW changed, so attempts spent
-		// against the old definition should not count against it.
+		// against the old definition should not count against it — nor
+		// the streak of identical failures its old command left.
 		delete(cp.NodeAttempts, id)
+		delete(cp.NodeFailureStreaks, id)
 	}
 	// Any pending interaction belonged to the node the run was parked
 	// on, which is at or downstream of the pivot. Carrying it over would
