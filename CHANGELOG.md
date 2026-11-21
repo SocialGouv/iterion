@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.24.1](https://github.com/SocialGouv/iterion/compare/v7.24.0...v7.24.1) (2026-11-21)
+
+### Bug Fixes
+
+* stabilize workspace-copy witnesses and report Claude 3.5 effort ([#3501](https://github.com/SocialGouv/iterion/issues/3501)) ([7df7464](https://github.com/SocialGouv/iterion/commit/7df74643e39996571858799ab7bae09b3f4bbddf))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 local (announced 3, ceiling 5)
+
+    </details>
+
 ## [7.24.0](https://github.com/SocialGouv/iterion/compare/v7.23.2...v7.24.0) (2026-11-20)
 
 ### Features
