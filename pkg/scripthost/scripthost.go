@@ -154,6 +154,9 @@ type Limits struct {
 	// what an operator meets as latency and spend long before it is a refusal.
 	ToolCalls int64 `json:"tool_calls"`
 
+	// ConcurrentToolCalls caps the number of tools executing in a script batch.
+	ConcurrentToolCalls int64 `json:"concurrent_tool_calls,omitempty"`
+
 	// ToolResultBytes caps ONE tool result handed back to a script, cut on a
 	// rune boundary and flagged as cut.
 	//
@@ -178,8 +181,9 @@ func DefaultLimits() Limits {
 		// Sixty-four calls is what a loop over a page of results costs, and
 		// well under where the per-dispatch hook and policy cost becomes the
 		// thing an operator notices.
-		ToolCalls:       64,
-		ToolResultBytes: 64 << 10,
+		ToolCalls:           64,
+		ConcurrentToolCalls: 1,
+		ToolResultBytes:     64 << 10,
 	}
 }
 
@@ -210,13 +214,14 @@ func MemoryFloor() Limits {
 // a value only the deployment may set.
 func Ceiling() Limits {
 	return Limits{
-		Wall:            10 * time.Minute,
-		CPU:             5 * time.Minute,
-		Memory:          2 << 30,
-		ScriptBytes:     4 << 20,
-		ResultBytes:     8 << 20,
-		ToolCalls:       4096,
-		ToolResultBytes: 1 << 20,
+		Wall:                10 * time.Minute,
+		CPU:                 5 * time.Minute,
+		Memory:              2 << 30,
+		ScriptBytes:         4 << 20,
+		ResultBytes:         8 << 20,
+		ToolCalls:           4096,
+		ConcurrentToolCalls: MaxParallelBatch,
+		ToolResultBytes:     1 << 20,
 	}
 }
 
@@ -276,8 +281,9 @@ func (l Limits) Clamp() (Limits, bool) {
 		ScriptBytes: clampInt(l.ScriptBytes, def.ScriptBytes, ceil.ScriptBytes),
 		ResultBytes: clampInt(l.ResultBytes, def.ResultBytes, ceil.ResultBytes),
 
-		ToolCalls:       clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
-		ToolResultBytes: clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
+		ToolCalls:           clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
+		ConcurrentToolCalls: clampInt(l.ConcurrentToolCalls, def.ConcurrentToolCalls, ceil.ConcurrentToolCalls),
+		ToolResultBytes:     clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
 	}, clamped
 }
 

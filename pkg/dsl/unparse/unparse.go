@@ -1975,6 +1975,9 @@ func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
 	if cb.ToolCalls != 0 {
 		fmt.Fprintf(b, "%stool_calls: %d\n", inner, cb.ToolCalls)
 	}
+	if cb.ConcurrentToolCalls != 0 {
+		fmt.Fprintf(b, "%sconcurrent_tool_calls: %d\n", inner, cb.ConcurrentToolCalls)
+	}
 	if cb.Wall != "" {
 		writeStrProp(b, inner, "wall", cb.Wall)
 	}

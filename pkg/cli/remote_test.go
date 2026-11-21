@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -250,9 +251,10 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}))
 	p, buf := remotePrinter(cli.OutputHuman)
 	err := cli.RemoteRunsLaunch(context.Background(), c, p, cli.RemoteRunsLaunchOptions{
-		FilePath: botPath,
-		Vars:     map[string]string{"k": "v"},
-		Backend:  "claw",
+		FilePath:       botPath,
+		Vars:           map[string]string{"k": "v"},
+		Backend:        "claw",
+		CodemodeBounds: &ir.CodemodeBounds{ConcurrentToolCalls: 3},
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -262,6 +264,10 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 	}
 	if got["backend"] != "claw" {
 		t.Errorf("backend = %v", got["backend"])
+	}
+	bounds, _ := got["codemode_bounds"].(map[string]any)
+	if len(bounds) != 1 || bounds["concurrent_tool_calls"] != float64(3) {
+		t.Errorf("codemode_bounds = %v, want only concurrent_tool_calls: 3", got["codemode_bounds"])
 	}
 	vars, _ := got["vars"].(map[string]any)
 	if vars["k"] != "v" {

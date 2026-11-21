@@ -88,7 +88,7 @@ type previewCostResponse struct {
 	CodemodeLimits *previewCodemodeLimits `json:"codemode_limits,omitempty"`
 }
 
-// previewCodemodeLimits carries the seven codemode bounds twice: the
+// previewCodemodeLimits carries the codemode bounds twice: the
 // defaults (what an unset field runs under) and the platform ceiling (what
 // no tenant can raise past). Durations in the DSL's own orthography
 // ("30s"), sizes and counts as raw integers.
@@ -104,25 +104,27 @@ type previewCodemodeLimits struct {
 }
 
 type previewCodemodeBounds struct {
-	ToolCalls       int64  `json:"tool_calls"`
-	Wall            string `json:"wall"`
-	CPU             string `json:"cpu"`
-	Memory          int64  `json:"memory"`
-	ScriptBytes     int64  `json:"script_bytes"`
-	ResultBytes     int64  `json:"result_bytes"`
-	ToolResultBytes int64  `json:"tool_result_bytes"`
+	ToolCalls           int64  `json:"tool_calls"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls"`
+	Wall                string `json:"wall"`
+	CPU                 string `json:"cpu"`
+	Memory              int64  `json:"memory"`
+	ScriptBytes         int64  `json:"script_bytes"`
+	ResultBytes         int64  `json:"result_bytes"`
+	ToolResultBytes     int64  `json:"tool_result_bytes"`
 }
 
 // previewCodemodeBoundsOf projects a scripthost Limits onto the wire shape.
 func previewCodemodeBoundsOf(l scripthost.Limits) previewCodemodeBounds {
 	return previewCodemodeBounds{
-		ToolCalls:       l.ToolCalls,
-		Wall:            l.Wall.String(),
-		CPU:             l.CPU.String(),
-		Memory:          l.Memory,
-		ScriptBytes:     l.ScriptBytes,
-		ResultBytes:     l.ResultBytes,
-		ToolResultBytes: l.ToolResultBytes,
+		ToolCalls:           l.ToolCalls,
+		ConcurrentToolCalls: l.ConcurrentToolCalls,
+		Wall:                l.Wall.String(),
+		CPU:                 l.CPU.String(),
+		Memory:              l.Memory,
+		ScriptBytes:         l.ScriptBytes,
+		ResultBytes:         l.ResultBytes,
+		ToolResultBytes:     l.ToolResultBytes,
 	}
 }
 

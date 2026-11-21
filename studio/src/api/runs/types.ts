@@ -1058,6 +1058,7 @@ export interface CodemodeBoundsOverride {
   script_bytes?: number;
   result_bytes?: number;
   tool_result_bytes?: number;
+  concurrent_tool_calls?: number;
 }
 
 export interface PreviewCostNode {

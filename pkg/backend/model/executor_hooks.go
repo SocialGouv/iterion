@@ -351,10 +351,11 @@ type EventHooks struct {
 	// (waiting → settled, or finalizing / abandoned). The store hook
 	// persists it as a delegate_background event, metered by the runner
 	// per backend/phase.
-	OnBackgroundWork func(nodeID string, info BackgroundWorkInfo)
-	OnLLMCompacted   func(nodeID string, info LLMCompactInfo)
-	OnToolStarted    func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall       func(nodeID string, info LLMToolCallInfo)
+	OnBackgroundWork     func(nodeID string, info BackgroundWorkInfo)
+	OnLLMCompacted       func(nodeID string, info LLMCompactInfo)
+	OnToolStarted        func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall           func(nodeID string, info LLMToolCallInfo)
+	toolObserversAudited bool
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
@@ -495,6 +496,7 @@ func chainCb6[A, B, C, D, E, F any](a, b func(A, B, C, D, E, F)) func(A, B, C, D
 // fails on the first field this list forgets.
 func ChainHooks(a, b EventHooks) EventHooks {
 	return EventHooks{
+		toolObserversAudited: a.auditedToolObservers() && b.auditedToolObservers(),
 		OnLLMRequest:         chainCb2(a.OnLLMRequest, b.OnLLMRequest),
 		OnLLMPrompt:          chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
 		OnLLMResponse:        chainCb2(a.OnLLMResponse, b.OnLLMResponse),
@@ -523,4 +525,8 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnTrustWithdrawal:         chainCb2(a.OnTrustWithdrawal, b.OnTrustWithdrawal),
 		OnNodeFinished:            chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
+}
+
+func (h EventHooks) auditedToolObservers() bool {
+	return h.toolObserversAudited || (h.OnToolStarted == nil && h.OnToolCall == nil)
 }

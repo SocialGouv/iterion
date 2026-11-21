@@ -649,6 +649,7 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 |---|---|---|
 | `mode` | ident — `on`, `off` | on or off — the short form's value, written out (C337 on another word) |
 | `tool_calls` | int | How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal |
+| `concurrent_tool_calls` | int | How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget |
 | `wall` | string | How long the child may live, e.g. "60s" (default "30s", ceiling "10m") — the parent's backstop, including for a child that never starts |
 | `cpu` | string | The child's CPU-seconds ceiling, e.g. "30s" (default "10s", ceiling "5m"); RLIMIT_CPU's unit is seconds, so the value is rounded UP |
 | `memory` | int | Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement |

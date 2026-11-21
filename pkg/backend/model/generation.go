@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
@@ -144,11 +145,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	// contract in the executor: an announced, malformed or denied call is
 	// not an executed tool. Chain the observer rather than replacing it.
 	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
-	executedTool := false
+	observerless := opts.OnToolStarted == nil && opts.OnToolCall == nil
+	var executedTool atomic.Bool
 	if requireExecutedTool {
 		observer := opts.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {
-			executedTool = true
+			executedTool.Store(true)
 			if observer != nil {
 				observer(info)
 			}
@@ -230,7 +232,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = append(messages, assistantToolUseMessage(agg.text, agg.toolUses))
 
 		// Execute tools and append tool_result message.
-		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission, opts.toolObserversAudited || (requireExecutedTool && observerless))
 		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
@@ -248,7 +250,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
-	if requireExecutedTool && !executedTool {
+	if requireExecutedTool && !executedTool.Load() {
 		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
 	}
 	return result(), nil

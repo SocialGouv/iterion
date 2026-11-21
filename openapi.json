@@ -897,6 +897,9 @@
       },
       "CodemodeBoundsRequest": {
         "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
           "cpu": {
             "type": "string"
           },
@@ -7041,6 +7044,9 @@
       },
       "previewCodemodeBounds": {
         "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
           "cpu": {
             "type": "string"
           },
@@ -7065,6 +7071,7 @@
         },
         "required": [
           "tool_calls",
+          "concurrent_tool_calls",
           "wall",
           "cpu",
           "memory",

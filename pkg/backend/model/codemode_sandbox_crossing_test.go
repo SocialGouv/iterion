@@ -47,7 +47,7 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 		// them silently re-makes an operator's choice". Measured as
 		// unwitnessed — mutants dropping the field in ToIOTask and in
 		// FromIOTask each survived delegate + model + ir + queue.
-		CodemodeBounds: &scripthost.Limits{ToolCalls: 256, Wall: 2 * time.Minute},
+		CodemodeBounds: &scripthost.Limits{ToolCalls: 256, Wall: 2 * time.Minute, ConcurrentToolCalls: 3},
 		WorkDir:        dir,
 		Sandbox: &scriptedSandbox{
 			script: "IFS= read -r line\nprintf '%s' \"$line\" > \"$1\"\nexit 1\n",
@@ -95,6 +95,9 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 	// that spelling was once enforced a million times tighter).
 	if got := bounds["tool_calls"]; got != float64(256) {
 		t.Errorf("codemode_bounds.tool_calls = %v, want 256", got)
+	}
+	if got := bounds["concurrent_tool_calls"]; got != float64(3) {
+		t.Errorf("codemode_bounds.concurrent_tool_calls = %v, want 3", got)
 	}
 	if got := bounds["wall_ns"]; got != float64(2*time.Minute) {
 		t.Errorf("codemode_bounds.wall_ns = %v, want %d", got, 2*time.Minute)

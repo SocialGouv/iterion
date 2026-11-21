@@ -143,6 +143,8 @@ type ExecutorSpec struct {
 	// below). Engine-level events reach the same observers through
 	// runtime.WithEventObserver; the two event sets are disjoint.
 	EventObservers []func(store.Event)
+	// EventBroker is the runtime-owned, non-reentrant live event fan-out.
+	EventBroker *EventBroker
 	// Inbox, when non-nil, wires the operator chatbox plumbing into
 	// the claw backend so queued messages are delivered between
 	// agent-loop iterations. Nil disables the inbox (CLI mode +
@@ -292,8 +294,8 @@ type ExecutorSpec struct {
 	// highest-priority rung of ir.ResolveCodemode (ADR-165): it wins over
 	// node and workflow DSL in both directions, and there is deliberately no
 	// environment rung. CodemodeBounds is the launch's field-by-field bounds
-	// raise (the seven scripthost.Limits numbers; a zero field means the
-	// launch did not choose). Both travel on the queue message (schema v33) —
+	// raise (the scripthost.Limits numbers; a zero field means the
+	// launch did not choose). Both travel on the queue message (schema v33 onward) —
 	// a stale runner ignoring an explicit off would run the capability the
 	// operator asked away: the knob failing open.
 	Codemode       string
@@ -684,7 +686,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// The recorder rides INSIDE the hooks constructor: the capability
 	// detection must see the store's own interfaces, and the wrap lands
 	// between the redaction boundary and the store.
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
+	var publish func(store.Event)
+	if spec.EventBroker != nil {
+		publish = spec.EventBroker.Publish
+	}
+	hooks := model.NewStoreEventHooksWithBroker(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, publish, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}

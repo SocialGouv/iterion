@@ -663,3 +663,17 @@ tool the door refuses therefore cannot appear in the index.
 
 The details, the bounds table and the 11 mutants seen red are in
 [codemode-discovery](../agents/backends/codemode-discovery.md).
+
+## Amendment — 2026-11-21: explicit, bounded tool batches (CM-9/CM-10)
+
+`call.parallel` is a synchronous join over a short batch, not a new global or
+an event loop. The parent reserves the call budget before dispatch and runs
+only explicitly audited tools concurrently. The zero-value tool capability
+is exclusive; `concurrent_tool_calls` defaults to one and is clamped to four.
+Batches preserve input order even when work completes out of order. The same
+node dispatcher still applies scope, permission and lifecycle hooks.
+
+The launcher keeps reading events and session captures while tools run, with
+bounded admission and reply queues. Placement and policy remain its decisions;
+the runner does not attest concurrency eligibility. This does not certify
+codemode's sandbox crossing (CM-6). See [the batch contract](../agents/backends/codemode-concurrency.md).

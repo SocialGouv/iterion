@@ -2243,6 +2243,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		mirror(snapshot)
 	}
 	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
+	// Let the post-Wait pipe reaper report a reply write cut first.
+	mux.SetReplyDrainTimeout(2 * clawPipeDrainGrace)
 	// The raw line a decode error quotes crosses the run's pass before its
 	// 256-byte cut, or a value straddling the cut publishes its head into
 	// the node's error (iterion#2822).
@@ -4159,10 +4161,11 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 	tools := make([]GenerationTool, len(defs))
 	for i, d := range defs {
 		tools[i] = GenerationTool{
-			Name:        d.Name,
-			Description: d.Description,
-			InputSchema: d.InputSchema,
-			Execute:     d.Execute,
+			Name:           d.Name,
+			Description:    d.Description,
+			InputSchema:    d.InputSchema,
+			Execute:        d.Execute,
+			concurrentSafe: d.ConcurrentSafe,
 		}
 	}
 	return tools

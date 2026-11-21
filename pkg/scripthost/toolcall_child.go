@@ -91,6 +91,9 @@ func (b *toolBridge) install(vm *goja.Runtime) error {
 	if err := vm.Set("call", b.call(vm)); err != nil {
 		return err
 	}
+	if err := vm.Get("call").ToObject(vm).Set("parallel", b.parallel(vm)); err != nil {
+		return err
+	}
 	return b.installDiscovery(vm)
 }
 
@@ -229,6 +232,120 @@ func (b *toolBridge) call(vm *goja.Runtime) func(goja.FunctionCall) goja.Value {
 		must(obj.Set("remaining", out.Remaining))
 		return obj
 	}
+}
+
+// parallel joins one bounded batch without exposing the VM to worker goroutines.
+func (b *toolBridge) parallel(vm *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(fc goja.FunctionCall) goja.Value {
+		list, ok := fc.Argument(0).(*goja.Object)
+		if !ok || list.ClassName() != "Array" {
+			panic(vm.NewTypeError("call.parallel expects an array of {name, input} entries"))
+		}
+		n := list.Get("length").ToInteger()
+		if n > MaxParallelBatch {
+			panic(vm.NewTypeError("call.parallel accepts at most %d entries", MaxParallelBatch))
+		}
+		if n == 0 {
+			return vm.NewArray()
+		}
+		batch := make([]Frame, n)
+		for i := range batch {
+			item, ok := list.Get(fmt.Sprint(i)).(*goja.Object)
+			if !ok || item == nil {
+				panic(vm.NewTypeError("call.parallel entry %d must be an object", i))
+			}
+			name, ok := item.Get("name").(goja.String)
+			if !ok || name.String() == "" {
+				panic(vm.NewTypeError("call.parallel entry %d requires a non-empty string name", i))
+			}
+			input := "{}"
+			if arg := item.Get("input"); arg != nil && !goja.IsUndefined(arg) && !goja.IsNull(arg) {
+				var err error
+				input, err = encodeValue(vm, arg)
+				if err != nil {
+					panic(vm.NewTypeError("call.parallel entry %d input cannot be encoded: %s", i, safeErrorText(err)))
+				}
+			}
+			if len(input) > MaxToolInputBytes {
+				panic(vm.NewTypeError("call.parallel entry %d exceeds the %d-byte input bound", i, MaxToolInputBytes))
+			}
+			batch[i] = Frame{Type: FrameCall, Name: name.String(), Input: json.RawMessage(input)}
+		}
+		// Getters and JSON serialization can themselves call tools. Assign IDs
+		// only now, after the last opportunity for JavaScript reentry.
+		for i := range batch {
+			batch[i].ID = b.nextID + int64(i) + 1
+		}
+		frame := Frame{Type: FrameBatch, Calls: batch}
+		payload, err := json.Marshal(frame)
+		if err != nil {
+			panic(vm.NewTypeError("call.parallel cannot encode its batch: %s", safeErrorText(err)))
+		}
+		if int64(len(payload)) > callFrameCap() {
+			panic(vm.NewTypeError("call.parallel batch exceeds the %d-byte framed input bound", callFrameCap()))
+		}
+		results, err := b.parallelTrip(batch, payload)
+		if err != nil {
+			vm.Interrupt(err)
+			panic(vm.NewGoError(err))
+		}
+		out := make([]any, len(results))
+		for i, r := range results {
+			item := vm.NewObject()
+			status := "ok"
+			switch {
+			case r.Type == FrameBudget:
+				status = "budget"
+			case r.IsError:
+				status = "error"
+			}
+			must(item.Set("tool", batch[i].Name))
+			must(item.Set("status", status))
+			must(item.Set("text", r.Text))
+			must(item.Set("isError", r.IsError))
+			must(item.Set("truncated", r.Truncated))
+			must(item.Set("remaining", r.Remaining))
+			out[i] = item
+		}
+		return vm.NewArray(out...)
+	}
+}
+
+func (b *toolBridge) parallelTrip(batch []Frame, payload []byte) ([]Frame, error) {
+	answers := make([]Frame, len(batch))
+	if b.spent {
+		for i, item := range batch {
+			answers[i] = budgetFrame(item.ID, b.limits.ToolCalls)
+		}
+		return answers, nil
+	}
+	if _, err := b.out.Write(append(payload, '\n')); err != nil {
+		return nil, fmt.Errorf("%w: writing batch: %v", errToolChannelBroken, err)
+	}
+	snapshot := int64(-1)
+	for range batch {
+		line, err := readFrameLine(b.in, resultFrameCap(b.limits))
+		if err != nil {
+			return nil, fmt.Errorf("%w: reading batch reply: %v", errToolChannelBroken, err)
+		}
+		var r Frame
+		if err := json.Unmarshal(line, &r); err != nil {
+			return nil, fmt.Errorf("%w: decoding batch reply: %v", errToolChannelBroken, err)
+		}
+		i := r.ID - batch[0].ID
+		if i < 0 || i >= int64(len(batch)) || answers[i].Type != "" || (r.Type != FrameResult && r.Type != FrameBudget) {
+			return nil, fmt.Errorf("%w: unexpected batch reply %q with id %d", errToolChannelBroken, r.Type, r.ID)
+		}
+		if r.Remaining < 0 || r.Remaining > b.remaining || (snapshot >= 0 && snapshot != r.Remaining) || (r.Type == FrameBudget && (r.Remaining != 0 || !r.IsError)) {
+			return nil, fmt.Errorf("%w: inconsistent remaining budget in reply %d", errToolChannelBroken, r.ID)
+		}
+		snapshot = r.Remaining
+		answers[i] = r
+	}
+	b.nextID += int64(len(batch))
+	b.remaining = snapshot
+	b.spent = snapshot == 0
+	return answers, nil
 }
 
 // roundTrip writes one call and blocks for its result.

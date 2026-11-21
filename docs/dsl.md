@@ -434,6 +434,7 @@ agent surveyor:
   backend: "claw"
   codemode:
     tool_calls: 256          ## nested calls ONE program may make (default 64)
+    concurrent_tool_calls: 2 ## nested calls in flight per program (default 1, ceiling 4)
     wall: "2m"               ## the child's lifetime (default "30s")
     cpu: "45s"               ## its CPU-seconds ceiling (default "10s")
     memory: 536870912        ## bytes of heap ROOM above the host's own (default 268435456)
@@ -444,10 +445,12 @@ agent surveyor:
 
 A duration is **quoted**, the spelling `timeout:` uses; a byte size and a
 count are **bare integers**, because this DSL has no byte-size value form and
-inventing one is its own lot. **A bound of `0` is the DEFAULT, not a ban** —
-`Limits.Clamp` reads any non-positive bound as "nobody chose", so
-`tool_calls: 0` is sixty-four calls. There is deliberately no way to spell a
-ban: a node that must run no program declares `codemode: off`. `memory:` is **room, not a total**: the
+inventing one is its own lot. **A bound of `0` means inherit**: when no
+rung chooses `tool_calls`, the default is sixty-four calls. Similarly,
+`concurrent_tool_calls` defaults to serial execution (`1`); it limits the calls
+in flight, not the total number a program may make. The launch flag
+`--codemode-concurrent-tool-calls` overrides it for one run. A node that must
+run no program declares `codemode: off`. `memory:` is **room, not a total**: the
 kernel's `RLIMIT_DATA` is the data segment the script host already holds
 (~86 MiB for the shipped binary, before the program runs) plus this number, so
 it does not shrink as the binary grows (#3383). And there is a **floor** on
@@ -461,15 +464,15 @@ a bound you were RAISING and looser than one you were LOWERING — a mistyped
 C349 is what makes either visible.
 
 Every bound has a **platform ceiling a tenant cannot raise**
-(`scripthost.Ceiling`: 4096 calls, 10m wall, 5m CPU, 2 GiB, 4 MiB of source,
+(`scripthost.Ceiling`: 4096 calls, 4 in flight, 10m wall, 5m CPU, 2 GiB, 4 MiB of source,
 8 MiB returned, 1 MiB per tool result). The parent clamps the request where it
 spawns the program and reports the reduction, so a declaration above the
 ceiling describes something that will not happen: **C347** at compile says so.
 Philosophy 1 forbids a bound with no override; cloud multi-tenancy forbids an
 override with no ceiling.
 
-The rungs resolve **field by field**: the node's value where it set one, else
-the workflow's, else the default. A workflow that raises `tool_calls` for a
+The rungs resolve **field by field**: the launch override, else the node's
+value, else the workflow's, else the default. A workflow that raises `tool_calls` for a
 whole bot is therefore not erased by a node that only wanted a longer `wall`
 — the workflow rung is a default, and this is the same per-field filling the
 clamp already does one rung down. Still no environment rung, for the bounds as

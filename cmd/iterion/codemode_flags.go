@@ -10,21 +10,22 @@ import (
 
 // codemodeFlagSet carries the run-level codemode override flags (CM-5e,
 // #3345), shared by run, resume and the remote launch: the mode, and one
-// flag per bound the launch may raise — the seven the `codemode:` block
+// flag per bound the launch may raise — those the `codemode:` block
 // declares, with its orthography (durations parse as Go durations, sizes and
 // counts are raw integers). A zero/empty flag means "this launch did not
 // choose" and the authored value stands; every value still passes
 // scripthost.Clamp at spawn (ceiling, memory floor, OnClamp report), so a
 // flag can warn but never bypass a bound by asking.
 type codemodeFlagSet struct {
-	codemode        string
-	wall            time.Duration
-	cpu             time.Duration
-	memory          int64
-	scriptBytes     int64
-	resultBytes     int64
-	toolCalls       int64
-	toolResultBytes int64
+	codemode            string
+	wall                time.Duration
+	cpu                 time.Duration
+	memory              int64
+	scriptBytes         int64
+	resultBytes         int64
+	toolCalls           int64
+	concurrentToolCalls int64
+	toolResultBytes     int64
 }
 
 func (c *codemodeFlagSet) register(f *pflag.FlagSet) {
@@ -35,6 +36,7 @@ func (c *codemodeFlagSet) register(f *pflag.FlagSet) {
 	f.Int64Var(&c.scriptBytes, "codemode-script-bytes", 0, "Raise the codemode script-size bound for this run, in bytes (0 = inherit)")
 	f.Int64Var(&c.resultBytes, "codemode-result-bytes", 0, "Raise the codemode result-size bound for this run, in bytes (0 = inherit)")
 	f.Int64Var(&c.toolCalls, "codemode-tool-calls", 0, "Raise the codemode tool-call budget for this run (0 = inherit). This is the bound the model is told to ask the operator to raise when a script spends it.")
+	f.Int64Var(&c.concurrentToolCalls, "codemode-concurrent-tool-calls", 0, "Override the number of codemode tool calls in flight per program (0 = inherit; default 1, platform ceiling 4)")
 	f.Int64Var(&c.toolResultBytes, "codemode-tool-result-bytes", 0, "Raise the per-tool-result bound handed to codemode programs for this run, in bytes (0 = inherit)")
 }
 
@@ -48,6 +50,7 @@ func (c *codemodeFlagSet) negativeField() string {
 		v    int64
 	}{
 		{"--codemode-tool-calls", c.toolCalls},
+		{"--codemode-concurrent-tool-calls", c.concurrentToolCalls},
 		{"--codemode-memory", c.memory},
 		{"--codemode-script-bytes", c.scriptBytes},
 		{"--codemode-result-bytes", c.resultBytes},
@@ -71,16 +74,17 @@ func (c *codemodeFlagSet) negativeField() string {
 // declaration.
 func (c *codemodeFlagSet) bounds() *ir.CodemodeBounds {
 	if c.wall <= 0 && c.cpu <= 0 && c.memory <= 0 && c.scriptBytes <= 0 &&
-		c.resultBytes <= 0 && c.toolCalls <= 0 && c.toolResultBytes <= 0 {
+		c.resultBytes <= 0 && c.toolCalls <= 0 && c.concurrentToolCalls <= 0 && c.toolResultBytes <= 0 {
 		return nil
 	}
 	return &ir.CodemodeBounds{
-		Wall:            c.wall,
-		CPU:             c.cpu,
-		Memory:          c.memory,
-		ScriptBytes:     c.scriptBytes,
-		ResultBytes:     c.resultBytes,
-		ToolCalls:       c.toolCalls,
-		ToolResultBytes: c.toolResultBytes,
+		Wall:                c.wall,
+		CPU:                 c.cpu,
+		Memory:              c.memory,
+		ScriptBytes:         c.scriptBytes,
+		ResultBytes:         c.resultBytes,
+		ToolCalls:           c.toolCalls,
+		ConcurrentToolCalls: c.concurrentToolCalls,
+		ToolResultBytes:     c.toolResultBytes,
 	}
 }
