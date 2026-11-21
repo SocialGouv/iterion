@@ -796,17 +796,28 @@ decode the native event and spell the native verdict.
   off-policy call to the operator, so nothing off-policy ever executes
   silently. To resolve the pause, the operator just **answers the
   approval question** with `allow`, `allow always`, or `deny` — on any of the
-  three gated backends. The pause carries a structured marker (tool + input
-  + rule); the runtime maps the answer to a grant rule
-  (`allow` = argument-scoped, `allow always` = whole-tool) and feeds it
-  back into the resolved policy, so the agent's re-issued call passes the
-  gate and executes after the generic `[PERMISSION GRANTED]` resume reminder.
-  For a search tool the argument scope is the **directory**
-  (`Grep(path:/work/pkg)`), not the pattern the model chose: an approved
-  search cannot be replayed against another directory, and inside the
-  approved one the pattern may vary.
-  `deny` refuses the call and the agent adapts. The `--permission-allow`
-  flags on `resume` remain available for scripted/headless approval.
+  three gated backends. The pause carries a structured marker (tool, input,
+  and rule).
+  - **Claw outside a sandbox:** `allow` authorizes the exact pending call.
+    The engine records consumption before dispatch and returns the actual
+    tool result to the model. A failure after dispatch can leave the outcome
+    unknown; a single-use authorization is not a guarantee of exactly-once
+    external effects. Approval answers to a new claw pause include
+    `_approval_interaction_id` from the question alongside the decision;
+    Studio sends it automatically. For headless resume, pass `--answers-file`
+    with `{"ask_user_response":"allow","_approval_interaction_id":"<id from the pending question>"}`.
+    Sandboxed claw still refuses permission policies that can ask. When an
+    approved dispatch's outcome is unknown (a failure after the call ran),
+    every resume is refused until `resume --force` acknowledges it: the node
+    re-runs from its checkpoint, claw asks the permission again under a fresh
+    interaction ID, and answering it dispatches the call once more — the
+    double effect is the operator's explicit decision.
+  - **CLI permission adapters:** `allow` supplies an argument-scoped rule
+    for the resumed invocation, and the model reissues the call. For a
+    search tool the argument scope is the **directory** (for example,
+    `Grep(path:/work/pkg)`), not the pattern.
+  - `allow always` remains a whole-tool grant for the rest of the run.
+    `deny` refuses the pending call and lets the agent adapt.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
 - **Backend scope:** `claw`, `claude_code`, and pi RPC support `ask` and

@@ -1013,6 +1013,7 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	cp.BackendSessionID = ""
 	cp.BackendSessionFingerprint = ""
 	cp.BackendConversation = nil
+	cp.BackendPermissionInput = nil
 	cp.BackendPendingToolUseID = ""
 	cp.BackendSessionStranded = false
 	cp.BackendSessionStateRef = ""

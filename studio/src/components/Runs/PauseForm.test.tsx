@@ -91,6 +91,20 @@ describe("PauseForm force resume", () => {
     });
   });
 
+  it("shows the exact approval arguments without rounding or abbreviating", () => {
+    const exact = '{"path":"labels.json","weight":9007199254740993}';
+    render(
+      <PauseForm
+        runId="run-1"
+        questions={{
+          _permission: { tool: "choose_label", input: { path: "labels.json" }, exact_input_json: exact },
+        }}
+        sourceOverride={null}
+      />,
+    );
+    expect(screen.getByText(exact).textContent).toBe(exact);
+  });
+
   it("replays the original one-click permission decision", async () => {
     resumeRun
       .mockRejectedValueOnce(forceRequiredError())
@@ -101,6 +115,7 @@ describe("PauseForm force resume", () => {
         runId="run-1"
         questions={{
           _permission: { tool: "Bash", input: { command: "pwd" } },
+          _approval_interaction_id: "approval-1",
           ask_user_response: "Allow this command?",
         }}
         sourceOverride={null}
@@ -115,7 +130,7 @@ describe("PauseForm force resume", () => {
 
     await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(2));
     expect(resumeRun).toHaveBeenNthCalledWith(2, "run-1", {
-      answers: { ask_user_response: "allow" },
+      answers: { ask_user_response: "allow", _approval_interaction_id: "approval-1" },
       source: undefined,
       force: true,
     });

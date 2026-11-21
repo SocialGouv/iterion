@@ -1524,6 +1524,15 @@ type Run struct {
 	// `permission: deny` made the gate a hard block, so an approval given
 	// on a permissive node would silently unlock a strict one.
 	PermissionGrants map[string][]string `json:"permission_grants,omitempty" bson:"permission_grants,omitempty"`
+
+	// SpentToolApprovals records interaction IDs consumed before dispatch.
+	// Only SpendToolApproval can append; metadata saves preserve the ledger.
+	SpentToolApprovals []string `json:"spent_tool_approvals,omitempty" bson:"spent_tool_approvals,omitempty"`
+	// ToolApprovalClaim binds one paused interaction to its active resume.
+	ToolApprovalClaim *ToolApprovalClaim `json:"tool_approval_claim,omitempty" bson:"tool_approval_claim,omitempty"`
+	// UnresolvedToolApproval survives attempt loss until a durable continuation
+	// proves the approved invocation does not need to be replayed.
+	UnresolvedToolApproval string `json:"unresolved_tool_approval,omitempty" bson:"unresolved_tool_approval,omitempty"`
 	// RetryPolicy is the retry contract RESOLVED AT LAUNCH from every
 	// layer that can own one (per-run override → launch surface → bot
 	// manifest → machine default, then clamped by the platform ceiling).
@@ -2509,6 +2518,8 @@ type Checkpoint struct {
 	// and appends a tool_result block answering BackendPendingToolUseID,
 	// avoiding a stateless restart from system+user prompts.
 	BackendConversation json.RawMessage `json:"backend_conversation,omitempty" bson:"backend_conversation,omitempty"`
+	// BackendPermissionInput carries the validated argument object from the gate.
+	BackendPermissionInput json.RawMessage `json:"backend_permission_input,omitempty" bson:"backend_permission_input,omitempty"`
 	// BackendPendingToolUseID is the ID of the tool_use block awaiting
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.

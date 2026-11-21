@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -2432,6 +2433,81 @@ func TestInteractionCustomAnswerRelayedToExecutorPrompt(t *testing.T) {
 // the opaque blob in the checkpoint and re-injects it into nodeInput on
 // resume so the executor can route the Task into the backend's resume
 // path. This avoids losing the LLM's mid-loop state across pauses.
+func TestClawPermissionPausePersistsExactInput(t *testing.T) {
+	ctx := context.Background()
+	wf := interactionWorkflow(ir.InteractionHuman)
+	exec := newStubExecutor()
+	const input = `{"weight":9007199254740993}`
+	exec.on("worker", func(map[string]any) (map[string]any, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID: "worker", Backend: delegate.BackendClaw,
+			Questions:        map[string]any{delegate.AskUserQuestionKey: "Approve the label?", "_permission": map[string]any{"tool": "choose_label"}},
+			PermissionInput:  json.RawMessage(input),
+			Conversation:     json.RawMessage(`[{"role":"assistant","content":[{"type":"tool_use","id":"choose-label","name":"choose_label","input":` + input + `}]}]`),
+			PendingToolUseID: "choose-label",
+		}
+	})
+	s := tmpStore(t)
+	const id = "run-exact-permission-pause"
+	if err := New(wf, s, exec).Run(ctx, id, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("checkpoint missing after permission pause")
+	}
+	var args struct {
+		Weight json.Number `json:"weight"`
+	}
+	if err := json.Unmarshal(r.Checkpoint.BackendPermissionInput, &args); err != nil || args.Weight != "9007199254740993" {
+		t.Fatalf("checkpoint permission input = %s, decode error = %v", r.Checkpoint.BackendPermissionInput, err)
+	}
+	firstID := r.Checkpoint.InteractionID
+	if err := New(wf, s, exec).Resume(ctx, id, map[string]any{delegate.AskUserQuestionKey: "deny"}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Resume: got %v, want a second permission pause", err)
+	}
+	r, err = s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.InteractionID == "" || r.Checkpoint.InteractionID == firstID {
+		t.Fatal("the second permission pause did not get its own interaction")
+	}
+}
+
+// A claw permission pause checkpointed before exact approvals carries no
+// captured input: a plain "allow" cannot authorize the exact call anymore,
+// and must be refused with the workable answers instead of reaching the
+// model as a denial.
+func TestClawLegacyPermissionPauseRefusesBareAllow(t *testing.T) {
+	ctx := context.Background()
+	wf := interactionWorkflow(ir.InteractionHuman)
+	exec := newStubExecutor()
+	calls := 0
+	exec.on("worker", func(map[string]any) (map[string]any, error) {
+		calls++
+		return nil, &model.ErrNeedsInteraction{
+			NodeID: "worker", Backend: delegate.BackendClaw,
+			Questions: map[string]any{
+				delegate.AskUserQuestionKey:     "Approve the label?",
+				permission.InteractionMarkerKey: permission.Marker("choose_label", map[string]any{"label": "cyan"}, ""),
+			},
+		}
+	})
+	s := tmpStore(t)
+	const id = "run-legacy-claw-pause"
+	if err := New(wf, s, exec).Run(ctx, id, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	err := New(wf, s, exec).Resume(ctx, id, map[string]any{delegate.AskUserQuestionKey: "allow"})
+	if err == nil || !strings.Contains(err.Error(), "allow always") || calls != 1 {
+		t.Fatalf("bare allow = %v (node calls %d), want a refusal naming 'allow always' without re-running the node", err, calls)
+	}
+}
+
 func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionHuman)
 

@@ -88,6 +88,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
 	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
+	t.Run("ToolApprovalSpend", func(t *testing.T) { testToolApprovalSpend(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })

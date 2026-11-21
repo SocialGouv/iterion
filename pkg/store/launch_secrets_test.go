@@ -206,6 +206,23 @@ func TestRedactCheckpoint_MasksACopyAndKeepsTheResumeState(t *testing.T) {
 	}
 }
 
+func TestRedactRunForOutputKeepsApprovalAuthorityPrivate(t *testing.T) {
+	r := &Run{
+		ToolApprovalClaim: &ToolApprovalClaim{InteractionID: "approval-1", Token: "fixture-claim"},
+		Checkpoint: &Checkpoint{
+			InteractionID:          "approval-1",
+			BackendPermissionInput: json.RawMessage(`{"label":"cyan"}`),
+		},
+	}
+	out := RedactRunForOutput(r)
+	if out.ToolApprovalClaim != nil || len(out.Checkpoint.BackendPermissionInput) != 0 {
+		t.Fatal("public copy retained internal approval authority")
+	}
+	if out.Checkpoint.InteractionID != "approval-1" || r.ToolApprovalClaim == nil || len(r.Checkpoint.BackendPermissionInput) == 0 {
+		t.Fatal("redaction removed the public interaction ID or altered the persisted record")
+	}
+}
+
 // A whole-record dump masks both places the grant lives, whichever of the
 // two holds it, and leaves the record it was given intact.
 func TestRedactRunForOutput_MasksInputsAndCheckpointOnACopy(t *testing.T) {

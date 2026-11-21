@@ -225,15 +225,15 @@ func DropServerMintedVars[V any](vars map[string]V) map[string]V {
 	return out
 }
 
-// RedactCheckpoint is cp for a read surface: a shallow copy whose vars mask
-// the server-minted secret vars, or cp itself when it holds none. cp is never
-// mutated — the engine resumes from it.
+// RedactCheckpoint masks server-minted vars and removes approval authority
+// from read surfaces without mutating the engine's resume state.
 func RedactCheckpoint(cp *Checkpoint) *Checkpoint {
-	if cp == nil || !HasServerMintedSecret(cp.Vars) {
+	if cp == nil || (len(cp.BackendPermissionInput) == 0 && !HasServerMintedSecret(cp.Vars)) {
 		return cp
 	}
 	out := *cp
 	out.Vars = RedactLaunchVars(cp.Vars)
+	out.BackendPermissionInput = nil
 	return &out
 }
 
@@ -241,11 +241,16 @@ func RedactCheckpoint(cp *Checkpoint) *Checkpoint {
 // dump): a shallow copy with its inputs and checkpoint vars masked, or r
 // itself when neither holds a server-minted secret var. r is never mutated.
 func RedactRunForOutput(r *Run) *Run {
-	if r == nil || !HasServerMintedSecret(r.Inputs) && (r.Checkpoint == nil || !HasServerMintedSecret(r.Checkpoint.Vars)) {
+	if r == nil {
+		return nil
+	}
+	checkpoint := RedactCheckpoint(r.Checkpoint)
+	if r.ToolApprovalClaim == nil && checkpoint == r.Checkpoint && !HasServerMintedSecret(r.Inputs) {
 		return r
 	}
 	out := *r
 	out.Inputs = RedactLaunchVars(r.Inputs)
-	out.Checkpoint = RedactCheckpoint(r.Checkpoint)
+	out.Checkpoint = checkpoint
+	out.ToolApprovalClaim = nil
 	return &out
 }

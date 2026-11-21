@@ -520,6 +520,21 @@ type QueuedFlipper interface {
 	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
 }
 
+// RevisionQueuedFlipper binds a queue transition to the exact run revision
+// whose pending interaction the publisher validated.
+type RevisionQueuedFlipper interface {
+	QueuedFlipper
+	FlipRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+	// FlipAcknowledgedRevisionToQueued is the forced-resume variant: the
+	// operator has acknowledged an unresolved approved dispatch, so the
+	// stale marker does not hold the flip. The revision CAS still does.
+	FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error)
+}
+
+func AsRevisionQueuedFlipper(s RunStore) RevisionQueuedFlipper {
+	return capability[RevisionQueuedFlipper](s)
+}
+
 // AsQueuedFlipper returns the flip capability, or nil for a store that has
 // none.
 func AsQueuedFlipper(s RunStore) QueuedFlipper {

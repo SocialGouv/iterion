@@ -1712,6 +1712,10 @@ type ErrAskUser struct {
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
 
+	// PermissionInput preserves the validated argument object before the
+	// conversation or display marker decodes numbers into interface values.
+	PermissionInput json.RawMessage
+
 	// AwaitPending is set (non-empty) when this suspension is an
 	// await_answers escalation (ADR-081): the agent asked to sync while
 	// async questions were still unanswered. It carries the pending
@@ -1922,6 +1926,18 @@ func (e *ErrTransient) Error() string {
 // {{input.ask_user_response}} in their prompts if they want explicit
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
+
+// CheckApprovalAnswer binds an approval reply to the current exact pause.
+// An untagged denial can close the pause but cannot authorize an action.
+func CheckApprovalAnswer(answers map[string]any, exactPause bool, interactionID string) error {
+	answer, _ := answers[AskUserQuestionKey].(string)
+	id, _ := answers[permission.ApprovalInteractionKey].(string)
+	allow, _ := permission.ParseExactApprovalAnswer(answer)
+	if (id != "" && (!exactPause || id != interactionID)) || (exactPause && allow && id == "") {
+		return fmt.Errorf("approval does not match the pending interaction; refresh the question before answering")
+	}
+	return nil
+}
 
 // Presentation keys stamped alongside AskUserQuestionKey when the LLM
 // called ask_user with structured options. Reserved (underscore) keys:
@@ -2162,6 +2178,10 @@ type Result struct {
 	// persist conversation state (CLI-based: claude_code, codex) leave
 	// this nil and rely on the [PRIOR INTERACTION] prompt-side fallback.
 	PendingConversation json.RawMessage
+
+	// PendingPermissionInput is captured by the in-process permission gate.
+	// Sandbox results do not carry this trusted field.
+	PendingPermissionInput json.RawMessage `json:"-"`
 
 	// PendingToolUseID is the ID of the tool_use block awaiting an
 	// answer in PendingConversation. Required when PendingConversation

@@ -80,10 +80,19 @@ func ValidateResumeWorkflowHash(runID, persistedHash, currentHash string, force 
 	)
 }
 
-// Resume resumes a paused or failed-resumable run. For paused runs, human
-// answers are recorded and execution continues from the human node. For
-// failed-resumable runs, execution restarts from the node after the last
-// successfully completed one (re-executing the failed node).
+// CheckApprovalReplay refuses to resume an invocation whose approved tool
+// may have acted but has no durable continuation. The operator's way past
+// it is an explicit force resume, which re-runs the node from its
+// checkpoint and asks the permission again under a fresh interaction.
+func CheckApprovalReplay(r *store.Run) error {
+	if r.UnresolvedToolApproval != "" {
+		return &RuntimeError{Code: ErrCodeAmbiguousEffect, Message: "approved tool may have run without a durable continuation; refusing to replay — resume with --force to acknowledge and re-run the node"}
+	}
+	return nil
+}
+
+// Resume records answers for a paused run or restarts a failed-resumable run
+// from its checkpoint.
 func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) error {
 	return e.ResumeWithHostInputs(ctx, runID, answers, nil)
 }
@@ -129,6 +138,9 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	// this engine's to resume: refused before anything of the resume —
 	// admission, recorded answers, a replay's flip — touches the run.
 	if err := e.supersededBy(r); err != nil {
+		return err
+	}
+	if err := CheckApprovalReplay(r); err != nil && !e.forceResume {
 		return err
 	}
 	// A resumed attempt is judged by the same isolation floor (#1959) the
@@ -1206,12 +1218,41 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	// the form before POSTing — both are left untouched (only strings are
 	// converted).
 	answers = e.coerceAnswersToSchema(humanNodeID, answers)
+	if err := delegate.CheckApprovalAnswer(answers, len(cp.BackendPermissionInput) != 0, cp.InteractionID); err != nil {
+		return fmt.Errorf("runtime: %w", err)
+	}
 	awaitRefs := delegate.ParseAwaitPending(cp.InteractionQuestions[delegate.AwaitPendingInteractionsKey])
 
 	// A delivery's resume claims the run before it writes (claimsFirst):
 	// every refusal the path makes before its writes is read first, with
 	// nothing written, so a refused resume leaves the run as it was.
-	claimFirst := e.claimsFirst(r)
+	var exactClaim *store.ToolApprovalClaim
+	claimResume := func() error {
+		if cp.BackendName != delegate.BackendClaw || len(cp.BackendPermissionInput) == 0 {
+			return e.claimPause(ctx, r, cp, nil)
+		}
+		spender := store.AsToolApprovalSpender(e.store)
+		if spender == nil {
+			return fmt.Errorf("runtime: store does not support exact tool approvals")
+		}
+		if e.expectedResumeStatus != "" && r.Status != e.expectedResumeStatus {
+			return fmt.Errorf("runtime: exact tool approval resume expected status %q, got %q", e.expectedResumeStatus, r.Status)
+		}
+		if err := e.supersededBy(r); err != nil {
+			return err
+		}
+		claim := store.ToolApprovalClaim{InteractionID: cp.InteractionID, Token: newSessionRef()}
+		won, err := spender.ClaimToolApprovalResume(ctx, r.ID, claim, r.Status, r.CASVersion)
+		if err != nil {
+			return fmt.Errorf("runtime: claim exact tool approval: %w", err)
+		}
+		if !won {
+			return e.lostQueuedMove(ctx, r.ID, fmt.Errorf("runtime: exact tool approval resume is stale or already consumed"))
+		}
+		exactClaim = &claim
+		return e.markResumed(ctx, r.ID, nil)
+	}
+	claimFirst := e.claimsFirst(r) || len(cp.BackendPermissionInput) != 0
 	if claimFirst {
 		if len(awaitRefs) > 0 {
 			if err := e.refuseUnansweredAwait(ctx, runID, humanNodeID, awaitRefs, answers); err != nil {
@@ -1224,7 +1265,7 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 		if err := e.refuseMissingHumanNode(humanNodeID); err != nil {
 			return err
 		}
-		if err := e.claimPause(ctx, r, cp, nil); err != nil {
+		if err := claimResume(); err != nil {
 			return err
 		}
 	}
@@ -1300,12 +1341,15 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 	artifactRevisions := artifactState.revisions
 	artifacts := artifactState.artifacts
 	artifactOwners := artifactState.owners
-	artifactVersions, err = e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
-	if err != nil {
-		return err
-	}
-	if pub := nodePublish(e.workflow.Nodes[humanNodeID]); pub != "" {
-		artifactOwners[pub] = humanNodeID
+	// A tool approval is not the node output; only the resumed result publishes.
+	if exactClaim == nil {
+		artifactVersions, err = e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp)
+		if err != nil {
+			return err
+		}
+		if pub := nodePublish(e.workflow.Nodes[humanNodeID]); pub != "" {
+			artifactOwners[pub] = humanNodeID
+		}
 	}
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
@@ -1362,12 +1406,35 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 			SessionFingerprint: cp.BackendSessionFingerprint,
 			Backend:            cp.BackendName,
 			Conversation:       cp.BackendConversation,
+			PermissionInput:    cp.BackendPermissionInput,
 			PendingToolUseID:   cp.BackendPendingToolUseID,
 			SessionStranded:    cp.BackendSessionStranded,
 			SessionStateRef:    cp.BackendSessionStateRef,
 			CommandNarrowing:   decodeCommandNarrowing(cp.BackendCommandNarrowing),
 		}
-		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
+		resumeCtx := ctx
+		if exactClaim != nil {
+			answer, _ := answers[delegate.AskUserQuestionKey].(string)
+			allow, always := permission.ParseExactApprovalAnswer(answer)
+			if allow && answers[permission.ApprovalInteractionKey] != exactClaim.InteractionID {
+				return e.failRunWithCheckpoint(rs, humanNodeID, "approval does not match the pending interaction")
+			}
+			if allow && !always {
+				tool, _, _, valid := permission.ParseMarker(ni.Questions[permission.InteractionMarkerKey])
+				if !valid {
+					return e.failRunWithCheckpoint(rs, humanNodeID, "exact approval has no valid permission marker")
+				}
+				spender := store.AsToolApprovalSpender(e.store)
+				resumeCtx = model.WithExactClawApproval(ctx, r.ID, humanNodeID, tool, ni.PermissionInput, func(callCtx context.Context) (bool, error) {
+					won, err := spender.SpendToolApproval(callCtx, r.ID, *exactClaim)
+					if !won && err == nil {
+						return false, fmt.Errorf("%w: approval claim is no longer spendable", ErrResumeSuperseded)
+					}
+					return won, err
+				})
+			}
+		}
+		loopErr := e.reInvokeBackend(resumeCtx, rs, humanNodeID, node, ni, answers, 0, exactClaim)
 		e.evictRunSessions(runID, loopErr)
 		// A delegate-pause resume drives the rest of the graph to a terminal
 		// node here, so it needs the SAME worktree finalization the normal
@@ -3336,7 +3403,7 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 	}
 
 	// Re-invoke the backend with the LLM-generated answers.
-	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth)
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth, nil)
 }
 
 // handleInteractionLLMOrHuman invokes the interaction model to decide whether
@@ -3363,7 +3430,7 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 	}
 
 	// LLM auto-responded — re-invoke the backend.
-	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth)
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth, nil)
 }
 
 // reInvokeBackend re-invokes the delegate backend with the LLM-provided
@@ -3375,7 +3442,35 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // framing; arbitrary `_interaction_questions` maps need the same continuity,
 // otherwise their answers exist in the checkpoint/input but are invisible to
 // a prompt that did not explicitly reference the model-chosen field names.
-func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
+func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int, claim *store.ToolApprovalClaim) error {
+	fail := func(cause error) error {
+		if claim == nil {
+			return e.failRunErrWithCheckpoint(rs, nodeID, cause)
+		}
+		var rtErr *RuntimeError
+		if errors.As(cause, &rtErr) {
+			copy := *rtErr
+			rtErr = &copy
+		} else {
+			rtErr = wrapNodeFailure(nodeID, cause.Error(), cause)
+		}
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), resumeParkWriteBudget)
+		defer cancel()
+		code, err := store.AsToolApprovalSpender(e.store).FailOwnedToolApproval(writeCtx, rs.runID, *claim,
+			buildCheckpoint(rs, nodeID), e.recordedFailureText(rtErr.Message), recordedCode(rtErr, cause))
+		if err != nil {
+			return errors.Join(cause, fmt.Errorf("runtime: persist owned approval failure: %w", err))
+		}
+		if code == "" {
+			return fmt.Errorf("%w: approval failure lost its resume claim", ErrResumeSuperseded)
+		}
+		rtErr.Code = code
+		_ = e.emit(writeCtx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
+			"error": e.recordedFailureText(rtErr.Message), "code": string(code), "resumable": code != store.FailureAmbiguousEffect,
+		})
+		return rtErr
+	}
+
 	// CLOSE the stop window before re-invoking. This path does not go
 	// through markPreNodeBoundary — the node never re-enters the dispatch
 	// loop, it picks up mid-conversation — so without this the workspace
@@ -3391,6 +3486,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
 	for k, v := range answers {
+		if k == permission.GrantInputKey || k == permission.RunGrantsInputKey || k == permission.ApprovalInteractionKey {
+			continue // Only the runtime can supply permission grants.
+		}
 		nodeInput[k] = v
 	}
 	if q, ok := ni.Questions[delegate.AskUserQuestionKey]; ok {
@@ -3418,9 +3516,39 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	if marker, ok := ni.Questions[permission.InteractionMarkerKey]; ok {
 		if tool, input, _, ok := permission.ParseMarker(marker); ok {
 			answer, _ := answers[delegate.AskUserQuestionKey].(string)
-			if rule, approved := permission.GrantFromAnswer(answer, tool, input); approved {
-				if _, always := permission.ParseAnswer(answer); always {
-					e.recordPermissionGrant(rs, nodeID, rule)
+			allow, always := permission.ParseAnswer(answer)
+			if ni.Backend == delegate.BackendClaw {
+				allow, always = permission.ParseExactApprovalAnswer(answer)
+				// A claw pause checkpointed before exact approvals carries no
+				// captured input: a plain "allow" cannot authorize the exact
+				// call, and forwarding it would reach the model as a denial.
+				// Name the answers that work instead.
+				if allow && !always && len(ni.PermissionInput) == 0 {
+					return fmt.Errorf("this claw pause was checkpointed before exact approvals: a plain \"allow\" cannot be honored safely — answer \"allow always\" to grant the tool, or \"deny\"")
+				}
+			}
+			if allow && (ni.Backend != delegate.BackendClaw || always) {
+				rule := permission.GrantRuleFor(tool, input, always)
+				if always {
+					if claim != nil {
+						grants := cloneMap(rs.permissionGrants)
+						if grants == nil {
+							grants = make(map[string][]string)
+						}
+						if !slices.Contains(grants[nodeID], rule) {
+							grants[nodeID] = append(slices.Clone(grants[nodeID]), rule)
+						}
+						won, err := store.AsToolApprovalSpender(e.store).GrantOwnedToolPermission(ctx, rs.runID, *claim, grants)
+						if err != nil {
+							return fmt.Errorf("runtime: save owned approval grant: %w", err)
+						}
+						if !won {
+							return fmt.Errorf("%w: permission grant lost its approval resume claim", ErrResumeSuperseded)
+						}
+						rs.permissionGrants = grants
+					} else {
+						e.recordPermissionGrant(rs, nodeID, rule)
+					}
 				}
 				// GrantInputKey keeps its original meaning: THIS pause was
 				// approved. The resume framing reads it to tell the model
@@ -3493,12 +3621,22 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
 	execCtx = e.execContext(execCtx, rs, nodeID)
 	execStart := time.Now()
-	output, err := e.executeCorrectionInvocation(execCtx, rs, nodeID, rs.runID, node, nodeInput)
-	if errors.Is(err, errCorrectionOwnershipLost) {
-		return err
+	var output map[string]any
+	var err error
+	if claim == nil {
+		output, err = e.executeCorrectionInvocation(execCtx, rs, nodeID, rs.runID, node, nodeInput)
+		if errors.Is(err, errCorrectionOwnershipLost) {
+			return err
+		}
+	} else {
+		output, err = e.executeWithResources(execCtx, rs, node, nodeInput)
 	}
+	ctx = model.WithoutExactClawApproval(ctx)
 	stampNodeDuration(output, execStart)
 	if err != nil {
+		if errors.Is(err, ErrResumeSuperseded) {
+			return err
+		}
 		// Check for another interaction request (recursive). depth+1
 		// so the maxInteractionDepth guard in handleNeedsInteraction
 		// fires before a runaway LLM chains escalations to budget
@@ -3508,6 +3646,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			// Still not booked: the call parks again and the NEXT
 			// re-invocation reports the session, exactly as the first one
 			// deferred to this one.
+			if claim != nil {
+				return e.pauseForBackendInteraction(rs, nodeID, needsInput, claim)
+			}
 			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput, depth+1)
 		}
 		// Terminal, and the end of the chain the main loop's interaction exit
@@ -3517,29 +3658,41 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		// sessions, not one. Booked before failRunWithCheckpoint, which
 		// writes the checkpoint a resume reads its budget carry from.
 		e.recordFailedNodeSpend(rs, nodeID, output)
-		return e.failRunErrWithCheckpoint(rs, nodeID, wrapNodeFailure(nodeID,
+		return fail(wrapNodeFailure(nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err), err))
 	}
 
-	// Validate/correct before committing session state, so a discarded invalid
-	// payload cannot leave a durable slot that describes it.
-	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
-	output = validatedOutput
-	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+	// Validate before committing session state. A fresh correction call must
+	// not replay an approved invocation.
+	var validationErr error
+	if claim != nil {
+		validationErr = e.validateNodeOutput(rs, nodeID, node, output)
+	} else {
+		output, validationErr = e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	}
+	if claim != nil {
+		if err := e.recordAndDeferBudget(rs, nodeID, output); err != nil {
+			return fail(err)
+		}
+	} else if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
 		return err
 	}
 	if validationErr != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+		if ctxErr := ctx.Err(); claim == nil && ctxErr != nil && errors.Is(validationErr, ctxErr) {
 			return e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
 		}
-		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
+		return fail(validationErr)
 	}
 
-	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
+	if err := e.commitPersistSlot(ctx, rs, node, output, claim != nil); err != nil {
 		return err
 	}
 	if llm, ok := node.(ir.LLMNode); !ok || llm.GetSession() != ir.SessionPersist {
-		e.clearPauseRefAfterSuccess(ctx, rs, nodeID)
+		if claim == nil {
+			e.clearPauseRefAfterSuccess(ctx, rs, nodeID)
+		} else {
+			rs.pauseSessionRef = ""
+		}
 	}
 
 	// Store the output and continue execution normally.
@@ -3577,17 +3730,30 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		e.onNodeFinished(rs.ctx, rs.runID, nodeID, output)
 	}
 
-	// Checkpoint.
-	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
-		e.logger.Error("failed to save checkpoint after re-invocation of node %q: %v", nodeID, err)
+	// An approved invocation needs a checkpoint that starts at its successor,
+	// not at the node whose side effects may already have landed.
+	if claim == nil {
+		if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+			e.logger.Error("failed to save checkpoint after re-invocation of node %q: %v", nodeID, err)
+		}
 	}
 
 	// Select next edge.
 	nextNodeID, err := e.selectEdgeRS(rs, nodeID, output)
 	if err != nil {
-		return e.failRunErrWithCheckpoint(rs, nodeID, err)
+		return fail(err)
 	}
 
+	if claim != nil {
+		spender := store.AsToolApprovalSpender(e.store)
+		won, err := spender.CommitToolApprovalContinuation(ctx, rs.runID, *claim, buildCheckpoint(rs, nextNodeID))
+		if err != nil {
+			return fmt.Errorf("runtime: commit approval continuation: %w", err)
+		}
+		if !won {
+			return fmt.Errorf("%w: approval continuation lost its resume claim", ErrResumeSuperseded)
+		}
+	}
 	loopErr := e.execLoop(ctx, rs, nextNodeID)
 	e.evictRunSessions(rs.runID, loopErr)
 	return loopErr
@@ -3609,7 +3775,14 @@ func interactionFields(node ir.Node) ir.InteractionFields {
 
 // pauseForBackendInteraction creates an interaction record and pauses the
 // workflow, saving the backend's session ID for re-invocation on resume.
-func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
+func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction, claims ...*store.ToolApprovalClaim) error {
+	var claim *store.ToolApprovalClaim
+	if len(claims) != 0 {
+		claim = claims[0]
+		if ni.Backend != delegate.BackendClaw || len(ni.Conversation) == 0 {
+			return &RuntimeError{Code: ErrCodeAmbiguousEffect, NodeID: nodeID, Message: "approved invocation has no durable conversation to resume"}
+		}
+	}
 	eventExtra := map[string]any{
 		"source":  "delegate",
 		"backend": ni.Backend,
@@ -3619,8 +3792,10 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		BackendSessionFingerprint: ni.SessionFingerprint,
 		BackendName:               ni.Backend,
 		BackendConversation:       ni.Conversation,
+		BackendPermissionInput:    ni.PermissionInput,
 		BackendPendingToolUseID:   ni.PendingToolUseID,
 		BackendSessionStranded:    ni.SessionStranded,
+		ApprovalClaim:             claim,
 	}
 	if ni.CommandNarrowing != nil {
 		if raw, err := json.Marshal(ni.CommandNarrowing); err == nil {
@@ -3673,6 +3848,7 @@ type toolStepBudgetEnder interface {
 // the backend with the original session ID (CLI backends) or replay the
 // persisted conversation (claw).
 type pauseInfo struct {
+	ApprovalClaim    *store.ToolApprovalClaim
 	BackendSessionID string
 	// BackendSessionFingerprint is the provider fingerprint of
 	// BackendSessionID: without it a `session: fork` resume is refused
@@ -3681,6 +3857,7 @@ type pauseInfo struct {
 	BackendSessionFingerprint string
 	BackendName               string
 	BackendConversation       json.RawMessage
+	BackendPermissionInput    json.RawMessage
 	BackendPendingToolUseID   string
 	// BackendCommandNarrowing is the marshalled delegate.CommandNarrowingState
 	// the paused generation held (#1717): checkpointed beside the
@@ -3827,6 +4004,11 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	// multiple loops: {plan=2, kit=1} and {plan=2, kit=2} both collapse to
 	// iteration 2 and the second pause overwrites the first interaction.
 	interactionID := e.interactionIDForPause(rs.runID, nodeID, rs.loopCounters)
+	if len(info.BackendPermissionInput) != 0 {
+		// Each exact call needs a distinct approval, even when the same
+		// node pauses again before leaving this execution.
+		interactionID += "_approval_" + newSessionRef()
+	}
 	// Drain operator-queued chatbox messages and stamp them onto the
 	// interaction questions under a reserved key. The resume path
 	// reads the same key and folds the messages into the system
@@ -3839,6 +4021,9 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 			questions = map[string]any{}
 		}
 		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
+	}
+	if len(info.BackendPermissionInput) != 0 {
+		questions[permission.ApprovalInteractionKey] = interactionID
 	}
 	interaction := &store.Interaction{
 		ID:          interactionID,
@@ -3870,12 +4055,24 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.BackendSessionFingerprint = info.BackendSessionFingerprint
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
+	cp.BackendPermissionInput = info.BackendPermissionInput
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
 	cp.BackendCommandNarrowing = info.BackendCommandNarrowing
 	cp.BackendSessionStranded = info.BackendSessionStranded
 	cp.BackendSessionStateRef = info.BackendSessionStateRef
 	cp.RecoveryPause = info.RecoveryPause
 	cp.RecoveryCode = string(info.RecoveryCode)
+	if info.ApprovalClaim != nil {
+		spender := store.AsToolApprovalSpender(e.store)
+		won, err := spender.CommitToolApprovalContinuation(rs.ctx, rs.runID, *info.ApprovalClaim, cp)
+		if err != nil {
+			return fmt.Errorf("runtime: commit approval pause: %w", err)
+		}
+		if !won {
+			return fmt.Errorf("%w: approval pause lost its resume claim", ErrResumeSuperseded)
+		}
+		return nil
+	}
 	if err := e.store.PauseRun(rs.ctx, rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}

@@ -466,6 +466,9 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "pre_engine_refusal")
 	delete(doc, "error")
 	delete(doc, "routing_policy")
+	delete(doc, "spent_tool_approvals")
+	delete(doc, "unresolved_tool_approval")
+	delete(doc, "tool_approval_claim")
 	delete(doc, "execution_epoch")
 	delete(doc, "birth_id")
 	// Removed from the literal half so the computed clause above decides
@@ -509,8 +512,11 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		docError = bson.M{"$literal": r.Error}
 	}
 	computed := bson.M{
-		"pre_engine_refusal": bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
-		"error":              bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
+		"spent_tool_approvals":     bson.M{"$ifNull": bson.A{"$spent_tool_approvals", "$$REMOVE"}},
+		"unresolved_tool_approval": bson.M{"$ifNull": bson.A{"$unresolved_tool_approval", "$$REMOVE"}},
+		"tool_approval_claim":      bson.M{"$cond": bson.A{bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", store.RunStatusRunning}}, r.Status == store.RunStatusRunning}}, bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}, "$$REMOVE"}},
+		"pre_engine_refusal":       bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
+		"error":                    bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
 		"execution_epoch": executionEpochExpr(bson.M{"$or": bson.A{statusChanged,
 			bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", string(store.RunStatusQueued)}}, r.Status == store.RunStatusQueued,
 				bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, bson.M{"$literal": r.QueuedAt}}}}},
@@ -1394,8 +1400,10 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 	}
 	set["execution_epoch"] = executionEpochExpr(bson.M{"$or": bson.A{statusChanged, status == store.RunStatusQueued}})
 	if status == store.RunStatusRunning {
+		set["tool_approval_claim"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}}}
 		set["await_answers_waits"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$await_answers_waits", "$$REMOVE"}}}}
 	} else {
+		set["tool_approval_claim"] = "$$REMOVE"
 		set["await_answers_waits"] = "$$REMOVE"
 	}
 	// The error message: a transition always states its own (empty
@@ -1803,6 +1811,18 @@ type queuedFlipPriorDoc struct {
 // replaced — see store.QueuedFlipper. The document before the update is the
 // prior, read by the same FindOneAndUpdate.
 func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, nil, false)
+}
+
+func (s *Store) FlipRevisionToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version int64) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, &version, false)
+}
+
+func (s *Store) FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version int64) (store.QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, &version, true)
+}
+
+func (s *Store) flipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version *int64, acknowledged bool) (store.QueuedFlip, bool, error) {
 	if at.IsZero() {
 		return store.QueuedFlip{}, false, fmt.Errorf("store/mongo: flip %s to queued without an attempt marker", id)
 	}
@@ -1813,7 +1833,17 @@ func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatu
 	// (store.Run.AwaitsCredSlotAdmission). A boolean is a literal in a
 	// pipeline stage.
 	set["cred_admission_pending"] = true
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from, "unresolved_tool_approval": bson.M{"$exists": false}}))
+	if acknowledged {
+		delete(filter, "unresolved_tool_approval")
+	}
+	if version != nil {
+		if *version == 0 {
+			filter["version"] = bson.M{"$in": bson.A{0, nil}}
+		} else {
+			filter["version"] = *version
+		}
+	}
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
 		SetProjection(bson.M{"status": 1, "queued_at": 1, "error": 1, "failure_code": 1, "end_reason": 1,
@@ -1961,7 +1991,17 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		set := bson.M{"status": string(store.RunStatusPausedWaitingHuman), "checkpoint": bson.M{"$literal": whole}, "updated_at": now,
 			"version":         bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 			"execution_epoch": executionEpochExpr(bson.M{"$ne": bson.A{"$status", string(store.RunStatusPausedWaitingHuman)}}),
-			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE"}
+			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE"}
+		// A fresh exact pause re-arms the approval cycle: its own claim/spend
+		// identity is the durable continuation of the cycle it replaces, so a
+		// marker an earlier ambiguous dispatch left (the force-resume path)
+		// must not block answering THIS pause.
+		if cp != nil && len(cp.BackendPermissionInput) != 0 {
+			// $$REMOVE, not "": inside a pipeline $set an empty string would
+			// STORE the field, and every claim/flip filter matches on the
+			// field being absent.
+			set["unresolved_tool_approval"] = "$$REMOVE"
+		}
 		update := statusTransitionPipeline(set)
 		return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 			fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))

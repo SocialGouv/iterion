@@ -65,11 +65,26 @@ func AskPrompt(toolName string, input map[string]any, rule string) string {
 // case-insensitively and trimmed; "allow always" / "always" map to
 // AnswerAllowAlways. Anything unrecognized is treated as a denial
 // (fail-safe).
+// ApprovalInteractionKey identifies the exact pause an operator answered.
+const ApprovalInteractionKey = "_approval_interaction_id"
+
 const (
 	AnswerAllowOnce   = "allow"
 	AnswerAllowAlways = "allow always"
 	AnswerDeny        = "deny"
 )
+
+// ParseExactApprovalAnswer accepts only the decision tokens for an exact pause.
+func ParseExactApprovalAnswer(s string) (allow bool, always bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case AnswerAllowOnce, "allow once":
+		return true, false
+	case AnswerAllowAlways:
+		return true, true
+	default:
+		return false, false
+	}
+}
 
 // ParseAnswer classifies an operator's free-text reply to an AskPrompt.
 // Returns (allow, always). A reply that doesn't clearly approve is a

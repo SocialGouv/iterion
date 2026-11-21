@@ -146,6 +146,9 @@ type GenerationOptions struct {
 	// runner, which carries no guard.
 	ScreenModelText func(string) string
 
+	// RedactApprovalText checks whether exact tool arguments can be displayed.
+	RedactApprovalText func(string) string
+
 	// NamesSecret, when non-nil, reports whether a tool call's input carries
 	// the placeholder of a secret that resolves at some sink — the proxy's
 	// on the wire included — so a workspace reader's output is turned back

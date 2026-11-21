@@ -213,6 +213,8 @@ type ErrNeedsInteraction struct {
 	// from system+user prompts. Backends that cannot persist conversation
 	// state (CLI: claude_code, codex) leave this nil.
 	Conversation json.RawMessage
+	// PermissionInput is the exact in-process gate input, not the UI marker.
+	PermissionInput json.RawMessage `json:"-"`
 	// PendingToolUseID is the ID of the tool_use block in Conversation
 	// that is awaiting an answer. Required when Conversation is non-nil.
 	PendingToolUseID string
