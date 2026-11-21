@@ -41,6 +41,9 @@ type ToolDef struct {
 
 	// Origin tracks where this tool came from.
 	Origin Origin
+
+	// concurrentSafe is set only by audited native registration sites.
+	concurrentSafe bool
 }
 
 // Origin describes the provenance of a tool.
@@ -93,6 +96,10 @@ func NewRegistry() *Registry {
 // RegisterBuiltin adds a built-in tool. The name must not contain dots.
 // Returns an error if the name collides with an existing registration.
 func (r *Registry) RegisterBuiltin(name string, desc string, schema json.RawMessage, exec func(ctx context.Context, input json.RawMessage) (string, error)) error {
+	return r.registerBuiltin(name, desc, schema, exec, false)
+}
+
+func (r *Registry) registerBuiltin(name string, desc string, schema json.RawMessage, exec func(context.Context, json.RawMessage) (string, error), concurrentSafe bool) error {
 	if strings.Contains(name, ".") {
 		return fmt.Errorf("tool: builtin name %q must not contain dots", name)
 	}
@@ -101,11 +108,12 @@ func (r *Registry) RegisterBuiltin(name string, desc string, schema json.RawMess
 	}
 
 	td := &ToolDef{
-		QualifiedName: name,
-		Description:   desc,
-		InputSchema:   schema,
-		Execute:       exec,
-		Origin:        Origin{Kind: OriginBuiltin},
+		QualifiedName:  name,
+		Description:    desc,
+		InputSchema:    schema,
+		Execute:        exec,
+		Origin:         Origin{Kind: OriginBuiltin},
+		concurrentSafe: concurrentSafe,
 	}
 	return r.register(td)
 }

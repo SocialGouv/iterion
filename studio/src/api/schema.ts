@@ -7547,6 +7547,7 @@ export interface components {
             };
         };
         CodemodeBoundsRequest: {
+            concurrent_tool_calls?: number;
             cpu?: string;
             memory?: number;
             result_bytes?: number;
@@ -9384,6 +9385,7 @@ export interface components {
             warning?: string;
         };
         previewCodemodeBounds: {
+            concurrent_tool_calls: number;
             cpu: string;
             memory: number;
             result_bytes: number;

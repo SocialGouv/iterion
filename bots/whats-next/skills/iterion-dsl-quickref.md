@@ -292,7 +292,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
 - `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
-- `codemode` (`codemode:` in workflow, agent, judge) — mode on|off · tool_calls int · wall str · cpu str · memory int · script_bytes int · result_bytes int · tool_result_bytes int
+- `codemode` (`codemode:` in workflow, agent, judge) — mode on|off · tool_calls int · concurrent_tool_calls int · wall str · cpu str · memory int · script_bytes int · result_bytes int · tool_result_bytes int
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]

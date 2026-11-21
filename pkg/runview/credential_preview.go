@@ -324,18 +324,19 @@ func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Work
 }
 
 // CodemodeBoundsRequest is the launch request's bounds raise (ADR-165), with
-// the codemode: block's own seven properties for names — one spelling, so an
+// the codemode: block's own properties for names — one spelling, so an
 // API caller reads the same vocabulary the DSL documents. Durations parse
 // with time.ParseDuration ("500ms" rounds up the way RLIMIT_CPU's unit
 // demands); a value the platform cannot read is a 400, never an inherit.
 type CodemodeBoundsRequest struct {
-	ToolCalls       int64  `json:"tool_calls,omitempty"`
-	Wall            string `json:"wall,omitempty"`
-	CPU             string `json:"cpu,omitempty"`
-	Memory          int64  `json:"memory,omitempty"`
-	ScriptBytes     int64  `json:"script_bytes,omitempty"`
-	ResultBytes     int64  `json:"result_bytes,omitempty"`
-	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+	ToolCalls           int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                string `json:"wall,omitempty"`
+	CPU                 string `json:"cpu,omitempty"`
+	Memory              int64  `json:"memory,omitempty"`
+	ScriptBytes         int64  `json:"script_bytes,omitempty"`
+	ResultBytes         int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
 }
 
 // toBounds converts the request shape to the resolver's, parsing the two
@@ -350,19 +351,16 @@ func (b *CodemodeBoundsRequest) ToBounds() (*ir.CodemodeBounds, error) {
 	// parse; the durations check on their parsed values, so "-5s" is named
 	// exactly like a raw negative. The launch surface never silently
 	// inverts an input into an inherit.
-	if name := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
-		ToolCalls: b.ToolCalls, Memory: b.Memory,
-		ScriptBytes: b.ScriptBytes, ResultBytes: b.ResultBytes,
-		ToolResultBytes: b.ToolResultBytes,
-	}); name != "" {
-		return nil, fmt.Errorf("codemode_bounds.%s: a bound is negative — a bound is a size or a count, not a signal", name)
-	}
 	out := &ir.CodemodeBounds{
-		ToolCalls:       b.ToolCalls,
-		Memory:          b.Memory,
-		ScriptBytes:     b.ScriptBytes,
-		ResultBytes:     b.ResultBytes,
-		ToolResultBytes: b.ToolResultBytes,
+		ToolCalls:           b.ToolCalls,
+		ConcurrentToolCalls: b.ConcurrentToolCalls,
+		Memory:              b.Memory,
+		ScriptBytes:         b.ScriptBytes,
+		ResultBytes:         b.ResultBytes,
+		ToolResultBytes:     b.ToolResultBytes,
+	}
+	if name := ir.CodemodeBoundsNegativeField(out); name != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: a bound is negative — a bound is a size or a count, not a signal", name)
 	}
 	// Ordered, never a map: two invalid durations in one request must name
 	// the SAME field on every retry (a 400 that changes its mind between

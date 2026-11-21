@@ -240,7 +240,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	join := func() serveVerdict { return serveVerdict{} }
 	if channel != nil {
 		channel.closeChildEnds()
-		join = pump(ctx, channel, h.Tools, limits)
+		join = pump(ctx, channel, h.Tools, limits, cancel)
 	}
 
 	waitErr := cmd.Wait()

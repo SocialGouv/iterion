@@ -529,9 +529,10 @@ func buildHybridToolDefs(
 			}
 			localExec := local.Execute
 			out[i] = delegate.ToolDef{
-				Name:        name,
-				Description: td.Description, // keep launcher's description verbatim — it carries any per-recipe wording
-				InputSchema: td.InputSchema, // and the launcher's schema is the contract the LLM was prompted against
+				ConcurrentSafe: local.ToDelegateDef().ConcurrentSafe,
+				Name:           name,
+				Description:    td.Description, // keep launcher's description verbatim — it carries any per-recipe wording
+				InputSchema:    td.InputSchema, // and the launcher's schema is the contract the LLM was prompted against
 				Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 					return localExec(ctx, input)
 				},

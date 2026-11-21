@@ -242,6 +242,7 @@ export const iterDslPropertiesByKind = {
     "warn_tokens"
   ],
   "codemode": [
+    "concurrent_tool_calls",
     "cpu",
     "memory",
     "mode",

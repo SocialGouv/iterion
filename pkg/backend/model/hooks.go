@@ -1754,6 +1754,21 @@ func (h *storeHooks) onToolNodeDeliverables(nodeID string, output string) error 
 // backend-hook layer — the dispatcher's stall-heartbeat seam for the
 // high-frequency tool events that bypass the engine's WithEventObserver.
 func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, observers ...func(store.Event)) EventHooks {
+	return newStoreEventHooks(ctx, emitter, runID, logger, guard, handoff, nil, observers)
+}
+
+// NewStoreEventHooksWithBroker adds the runtime's non-reentrant event broker.
+// Other observers stay unclassified and prevent concurrent tool dispatch.
+func NewStoreEventHooksWithBroker(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, publish func(store.Event), observers ...func(store.Event)) EventHooks {
+	return newStoreEventHooks(ctx, emitter, runID, logger, guard, handoff, publish, observers)
+}
+
+func newStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, publish func(store.Event), observers []func(store.Event)) EventHooks {
+	audited := len(observers) == 0
+	if publish != nil {
+		observers = append(append([]func(store.Event){}, observers...), publish)
+	}
+
 	// Capability detection must happen on the ORIGINAL emitter — the
 	// wrappers below only implement AppendEvent.
 	attachmentSink, _ := emitter.(AttachmentWriter)
@@ -1804,6 +1819,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnBackgroundWork:     h.onBackgroundWork,
 		OnLLMTurnCapture:     h.onLLMTurnCapture,
 		OnLLMCompacted:       h.onLLMCompacted,
+		toolObserversAudited: audited,
 		OnToolStarted:        h.onToolStarted,
 		OnToolCall:           h.onToolCall,
 		OnDelegateStarted:    h.onDelegateStarted,

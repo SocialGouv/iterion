@@ -287,7 +287,12 @@ import (
 // but the mode's off direction alone decides the bump. Runner-first
 // rollout — its precondition holds by construction, the minimum does not
 // move — and MinSchemaVersion stays 27.
-const SchemaVersion = 33
+// v=34: compiled codemode bounds and the launch override can carry
+// concurrent_tool_calls (CM-9/10). A v33 runner dropping the field would
+// silently replace the configured concurrency with serial execution. Roll
+// runners first; v27–v33 messages remain readable and inherit the default
+// when the field is absent.
+const SchemaVersion = 34
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its

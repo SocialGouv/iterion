@@ -46,7 +46,7 @@ var CodemodeValues = []string{"on", "off"}
 // (`wall_ns`, `memory_bytes`, …) are the ones the host enforces, so the
 // `wall_ms` bug its own field doc records — a hand-written `"wall_ms":30000`
 // enforced as 30µs — cannot be reintroduced by a second declaration of the
-// same seven numbers. It is also what the repository asks for in general:
+// same limits. It is also what the repository asks for in general:
 // read the vocabulary where it is defined rather than keep a copy.
 //
 // A zero field means UNSET, which is exactly what Limits.Clamp already reads
@@ -105,13 +105,14 @@ func ResolveCodemodeBounds(run, node, workflow *CodemodeBounds) *CodemodeBounds 
 		w = *workflow
 	}
 	out := CodemodeBounds{
-		Wall:            pickDur(r.Wall, n.Wall, w.Wall),
-		CPU:             pickDur(r.CPU, n.CPU, w.CPU),
-		Memory:          pick(r.Memory, n.Memory, w.Memory),
-		ScriptBytes:     pick(r.ScriptBytes, n.ScriptBytes, w.ScriptBytes),
-		ResultBytes:     pick(r.ResultBytes, n.ResultBytes, w.ResultBytes),
-		ToolCalls:       pick(r.ToolCalls, n.ToolCalls, w.ToolCalls),
-		ToolResultBytes: pick(r.ToolResultBytes, n.ToolResultBytes, w.ToolResultBytes),
+		Wall:                pickDur(r.Wall, n.Wall, w.Wall),
+		CPU:                 pickDur(r.CPU, n.CPU, w.CPU),
+		Memory:              pick(r.Memory, n.Memory, w.Memory),
+		ScriptBytes:         pick(r.ScriptBytes, n.ScriptBytes, w.ScriptBytes),
+		ResultBytes:         pick(r.ResultBytes, n.ResultBytes, w.ResultBytes),
+		ToolCalls:           pick(r.ToolCalls, n.ToolCalls, w.ToolCalls),
+		ConcurrentToolCalls: pick(r.ConcurrentToolCalls, n.ConcurrentToolCalls, w.ConcurrentToolCalls),
+		ToolResultBytes:     pick(r.ToolResultBytes, n.ToolResultBytes, w.ToolResultBytes),
 	}
 	return &out
 }
@@ -143,6 +144,7 @@ func CodemodeBoundsAboveCeiling(b *CodemodeBounds) []string {
 		}
 	}
 	num("tool_calls", b.ToolCalls, ceil.ToolCalls)
+	num("concurrent_tool_calls", b.ConcurrentToolCalls, ceil.ConcurrentToolCalls)
 	dur("wall", b.Wall, ceil.Wall)
 	dur("cpu", b.CPU, ceil.CPU)
 	num("memory", b.Memory, ceil.Memory)
@@ -167,7 +169,7 @@ func ValidCodemode(v string) bool {
 func CodemodeBoundsSet(b *CodemodeBounds) bool {
 	return b != nil && (b.Wall > 0 || b.CPU > 0 || b.Memory > 0 ||
 		b.ScriptBytes > 0 || b.ResultBytes > 0 ||
-		b.ToolCalls > 0 || b.ToolResultBytes > 0)
+		b.ToolCalls > 0 || b.ConcurrentToolCalls > 0 || b.ToolResultBytes > 0)
 }
 
 // CodemodeBoundsNegativeField names the first property of b set BELOW zero,
@@ -193,6 +195,7 @@ func CodemodeBoundsNegativeField(b *CodemodeBounds) string {
 	}
 	for _, name := range []string{
 		checkInt("tool_calls", b.ToolCalls),
+		checkInt("concurrent_tool_calls", b.ConcurrentToolCalls),
 		checkDur("wall", b.Wall),
 		checkDur("cpu", b.CPU),
 		checkInt("memory", b.Memory),
