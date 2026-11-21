@@ -53,12 +53,15 @@ export function useRepoTarget(
     !!repoRequirement && serverInfo?.mode === "cloud" && repoContextEnabled;
 
   // Initialise / re-initialise the repo-target state when the bot changes.
-  // Deliberately keyed on the bot's rel_path + the useActiveRepo loading
+  // Deliberately keyed on the bot's name + the useActiveRepo loading
   // flag so operator edits aren't clobbered by every useActiveRepo refetch,
   // but the initial pick doesn't miss "Use <active repo>" just because the
-  // repos query hadn't landed yet. The activeRepo / teamRepos snapshot is
-  // captured via closure at the moment the effect fires.
-  const botKey = bot?.rel_path ?? "";
+  // repos query hadn't landed yet. The name, not the workspace path: a
+  // stored bot (a team's own, a platform override) has no path, and two of
+  // them would share one key — the choice made for the first would be the
+  // second's. The activeRepo / teamRepos snapshot is captured via closure at
+  // the moment the effect fires.
+  const botKey = bot?.name ?? "";
   useEffect(() => {
     if (!repoRequirement) {
       setRepoTargetState(null);

@@ -108,6 +108,28 @@ export function unitRefusal(unit: UnitInfo | null | undefined): string | null {
 }
 
 /**
+ * Why a bot's program, as the server answered it for a launch BY NAME, may
+ * not be launched from the form — or null when it can. It is the fact
+ * launchRefusal refuses the editor's buffer on (a salvage: the document is
+ * the program MINUS what the reader could not read), said for a form with no
+ * canvas to repair it in: the form would show part of a program whose files
+ * the launch runs whole.
+ */
+export function namedProgramRefusal(program: {
+  bindable?: boolean;
+  read_refusal?: ReadRefusal;
+}): string | null {
+  if (program.read_refusal) {
+    const { message, hint } = program.read_refusal;
+    return `The server did not read this bot whole (${message}), so this form would show only part of the program the launch runs.${hint ? ` ${hint}` : ""} Then reload this form.`;
+  }
+  if (program.bindable === false) {
+    return "This bot's program does not parse, so this form would show only what could be read of it while the launch runs its files as they are stored. Repair the bot, then reload this form.";
+  }
+  return null;
+}
+
+/**
  * Why the editor's document cannot be launched, or null when it can. One
  * rule for the two surfaces that offer the launch — the toolbar's Run button
  * (disabled, with this as its title) and the launch view's inline path (this

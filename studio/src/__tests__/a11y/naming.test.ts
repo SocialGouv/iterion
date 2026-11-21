@@ -312,7 +312,7 @@ const ROW_ACTION_LEDGER: RowActionRow[] = [
   { path: "/src/views/orgs/GovernanceTab.tsx", sites: 2 },
   { path: "/src/views/orgs/OrgPage.tsx", sites: 2 },
   { path: "/src/views/ProjectSwitcher/index.tsx", sites: 1 },
-  { path: "/src/views/RepoDetail/index.tsx", sites: 3 },
+  { path: "/src/views/RepoDetail/index.tsx", sites: 2 },
   { path: "/src/views/SettingsDialog/ProjectsTab.tsx", sites: 3 },
   { path: "/src/views/teams/tabs/BindingsTab.tsx", sites: 4 },
   { path: "/src/views/teams/tabs/integrations/OAuthAppsSection.tsx", sites: 3 },
