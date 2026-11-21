@@ -32,8 +32,6 @@ type MongoSelection interface {
 }
 type MongoResolver func(context.Context, string) (MongoSelection, error)
 
-var errMongoSourceClosed = errors.New("runstream: Mongo source is closed")
-
 func NewMongoResolved(resolve MongoResolver, logger *iterlog.Logger) *MongoSource {
 	m := NewMongo(nil, nil, nil, logger)
 	m.resolver = resolve
@@ -52,8 +50,8 @@ func (m *MongoSource) register(ctx context.Context) (context.Context, context.Ca
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		cancel(context.Canceled)
-		return nil, nil, nil, nil, errMongoSourceClosed
+		cancel(ErrSourceClosed)
+		return nil, nil, nil, nil, ErrSourceClosed
 	}
 	if m.active == nil {
 		m.active = make(map[uint64]context.CancelCauseFunc)
@@ -77,7 +75,12 @@ func (m *MongoSource) register(ctx context.Context) (context.Context, context.Ca
 	}
 	return c, cancel, done, finish, nil
 }
-func (m *MongoSource) selectStream(ctx context.Context, id string) (MongoSelection, error) {
+func (m *MongoSource) selectStream(ctx context.Context, id string) (selection MongoSelection, err error) {
+	defer func() {
+		if errors.Is(context.Cause(ctx), ErrSourceClosed) {
+			selection, err = nil, ErrSourceClosed
+		}
+	}()
 	if m.resolved {
 		if m.resolver == nil {
 			return nil, store.ErrRunDataCapability

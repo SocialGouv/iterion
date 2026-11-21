@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestPermanentStreamErrorClassification(t *testing.T) {
@@ -18,7 +19,7 @@ func TestPermanentStreamErrorClassification(t *testing.T) {
 			}
 		}
 	}
-	for _, err := range []error{nil, context.Canceled, context.DeadlineExceeded, errors.New("reconnect transport"), ErrLogsUnsupported, errMongoSourceClosed, errors.Join(context.Canceled, errors.New("IO"))} {
+	for _, err := range []error{nil, context.Canceled, context.DeadlineExceeded, errors.New("reconnect transport"), ErrLogsUnsupported, errors.Join(context.Canceled, errors.New("IO"))} {
 		if IsPermanentError(err) {
 			t.Errorf("non-permanent classified: %v", err)
 		}

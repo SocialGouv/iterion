@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -99,7 +100,7 @@ func (s *Service) registerRunLogOrigin(ctx context.Context, runID string, buf *R
 	buf.attachLogLane(lane, func(teeErr error) {
 		// The producer already registered: a tee failure after its epoch ended
 		// is late and ignored, never a second end for the same generation.
-		s.recordLogTeeFailure(runID, fmt.Errorf("runview: run %s log tee: %w", runID, teeErr))
+		s.recordLogTeeFailure(lane, fmt.Errorf("runview: run %s log tee: %w", runID, teeErr))
 	})
 	return lane
 }
@@ -112,8 +113,8 @@ func (s *Service) registerRunLogOrigin(ctx context.Context, runID string, buf *R
 //
 // It returns a nil subscription when the caller is unbound (the legacy
 // carrier serves it) or when no epoch lands in the window. A lane of another
-// header or a memory-only lane is a typed refusal: adoption checks identity
-// and durability at EVERY adoption, not only the first.
+// header is ignored if the reader's bound run still exists. A lane of the
+// bound birth must be durable at every adoption.
 func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) (*LogWakeSubscription, store.RunObservation, error) {
 	if s == nil || s.logRegistry == nil {
 		return nil, store.RunObservation{}, nil
@@ -126,15 +127,14 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 	for {
 		if obs, _, ok := s.logRegistry.currentFor(runID); ok {
 			if binding.Header() != obs.Header() {
-				return nil, obs, fmt.Errorf("runview: log lane of %s does not belong to the bound birth: %w", runID, store.ErrRunDataIdentityChanged)
+				_, err := s.store.LoadRun(ctx, runID)
+				return nil, store.RunObservation{}, err
 			}
 			// A retained end belongs to the epoch before the one starting now:
 			// when a later failure took that epoch over, adopting its value
 			// would announce a clean end for a run whose producer failed.
 			if s.logRegistry.supersededByFailure(runID) {
-				if _, ferr, ok := s.logRegistry.failureFor(runID); ok {
-					return nil, obs, fmt.Errorf("runview: log lane of %s: the current producer failed: %w", runID, ferr)
-				}
+				return nil, obs, s.boundLogProducerFailure(ctx, runID)
 			}
 			if sub, ok := s.logRegistry.subscribe(obs); ok {
 				if err := s.admitLogLane(sub, binding); err != nil {
@@ -197,26 +197,41 @@ func (s *Service) recordLogProducerFailure(runID string, err error) {
 	s.logRegistry.recordFailure(runID, err)
 }
 
-// logProducerFailureFor is localLogProducerFailure with the observation the
-// cause belongs to: a reader bound to another birth refuses a known mismatch,
-// because a successor's failed producer is not this stream's end.
-func (s *Service) logProducerFailureFor(runID string) (store.RunObservation, error, bool) {
-	if s == nil || s.logRegistry == nil {
-		return store.RunObservation{}, nil, false
+// boundLogProducerFailure distinguishes a producer failure from the reader's
+// origin verdict. A known foreign epoch cannot end an admitted reader.
+func (s *Service) boundLogProducerFailure(ctx context.Context, runID string) error {
+	obs, cause, ok := s.logRegistry.failureFor(runID)
+	if !ok {
+		return nil
 	}
-	return s.logRegistry.failureFor(runID)
+	return s.checkLogProducerFailure(ctx, runID, obs, cause)
+}
+
+func (s *Service) checkLogProducerFailure(ctx context.Context, runID string, obs store.RunObservation, cause error) error {
+	binding, bound := store.RunDataBindingFrom(ctx)
+	foreign := bound && obs.Header().RunID != "" && obs.Header() != binding.Header()
+	var needsCheck *logFailureNeedsOriginCheck
+	if foreign || errors.As(cause, &needsCheck) {
+		if _, err := s.store.LoadRun(ctx, runID); err != nil {
+			return err
+		}
+	}
+	if foreign {
+		return nil
+	}
+	return cause
 }
 
 // recordLogTeeFailure is recordLogProducerFailure for a producer that already
 // registered: its failure ends the open epoch, and a late one is dropped.
-func (s *Service) recordLogTeeFailure(runID string, err error) {
-	if s == nil || s.logRegistry == nil || err == nil {
+func (s *Service) recordLogTeeFailure(lane *logLane, err error) {
+	if lane == nil || err == nil {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Warn("runview: run %s log tee stopped: %v", runID, err)
+		s.logger.Warn("runview: run %s log tee stopped: %v", lane.runID, err)
 	}
-	s.logRegistry.recordFailureOfOpenEpoch(runID, err)
+	lane.reg.recordFailureOfOpenEpoch(lane, err)
 }
 
 // localLogProducerFailure returns the retained failure of runID's local log

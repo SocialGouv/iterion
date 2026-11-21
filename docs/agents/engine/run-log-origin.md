@@ -74,10 +74,11 @@ truncate them.
   the run view on a project switch). The new Service sees no lane and applies
   the foreign-writer settle, so a writer still finishing more than the settle
   window after the status loses its tail.
-- A local capture failure is retained by run ID, with no observation: a later
-  run under that ID, produced elsewhere, has its bound log subscription
-  refused at setup with that failure, and an open stream under that ID ends
-  with it — typed, but never as that run's origin loss: its socket stays open.
+- A local capture failure can leave the producer writing `run.log` even though
+  a new bound log subscription receives no bytes and fails until a new local
+  registration replaces the failure. A failure retained without an observation
+  can also refuse a later run under the same ID. The socket stays open if its
+  own bound read succeeds; only that read can establish origin loss.
 - Cross-store WebSocket connections keep the legacy end model (status-driven),
   and so does any request without a binding.
 - Cloud logs never take this path: the cloud socket reads the change-stream

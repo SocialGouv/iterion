@@ -216,6 +216,52 @@ func TestACaptureThatFoundNoRunIsNotTheSuccessorsOriginLoss(t *testing.T) {
 	}
 }
 
+func TestCaptureFailureRefusesBoundReplayEvenWhenTheProducerWrites(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	ctx := t.Context()
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	buf, _ := svc.prepareRunLog(cancelled, "r")
+	t.Cleanup(func() { svc.dropRunLog("r", buf) })
+	requireCaptureFailed(t, svc, context.Canceled)
+	if _, err := buf.Write([]byte("persisted\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(native.Root(), "runs", "r", "run.log"))
+	if err != nil || string(data) != "persisted\n" {
+		t.Fatalf("run.log = %q, %v; want persisted bytes", data, err)
+	}
+	text, errs := newLogSink(subscribeBoundLogs(t, svc, "r")).awaitEnd(t, 5*time.Second)
+	if text != "" || !errors.Is(permanentEnd(errs), store.ErrRunDataCapability) {
+		t.Fatalf("bound replay = %q, %v; want no bytes and a capability refusal", text, errs)
+	}
+}
+
+func TestCaptureFailureRechecksTheDeletedBoundRun(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	ctx := t.Context()
+	tightenBoundLogPoll(t, time.Hour)
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	writeNativeRunLog(t, native, "r", "before\n")
+	// Hold a real epoch so the status poll cannot independently refuse the
+	// stream; the failed capture ends that epoch and delivers its own cause.
+	original, _ := svc.prepareRunLog(ctx, "r")
+	t.Cleanup(func() { svc.dropRunLog("r", original) })
+	sink := newLogSink(subscribeBoundLogs(t, svc, "r"))
+	sink.awaitText(t, "before\n", 5*time.Second)
+	if err := native.DeleteRun(ctx, "r"); err != nil {
+		t.Fatal(err)
+	}
+	if lane := svc.registerRunLogOrigin(ctx, "r", &RunLogBuffer{}, logDurable); lane != nil {
+		t.Fatal("capture unexpectedly registered a lane after deletion")
+	}
+	_, errs := sink.awaitEnd(t, 5*time.Second)
+	if end := permanentEnd(errs); !originRefused(end) {
+		t.Fatalf("end = %v, want the reader's own origin refusal", end)
+	}
+}
+
 // The typing is the bound reader's: an unbound subscription to the producer
 // whose capture failed reads its live buffer as before and ends clean when
 // the buffer is dropped.

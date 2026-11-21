@@ -191,7 +191,7 @@ func TestMongoResolvedReplayTailAndSourceClose(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("Source.Close did not join")
 				}
-				if _, err = src.SubscribeEvents(ctx, r.ID, 0); !errors.Is(err, errMongoSourceClosed) {
+				if _, err = src.SubscribeEvents(ctx, r.ID, 0); !errors.Is(err, ErrSourceClosed) {
 					t.Fatalf("subscribe after close %v", err)
 				}
 				if _, err = st.LoadRun(bound, r.ID); err != nil {
@@ -219,8 +219,11 @@ func TestMongoResolvedPureLifetimeAndErrors(t *testing.T) {
 	if err := src.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
+	if err := <-result; !errors.Is(err, ErrSourceClosed) || !IsPermanentError(err) {
+		t.Fatalf("subscribe during close = %v, want permanent ErrSourceClosed", err)
+	}
+	if _, err := src.SubscribeLogs(t.Context(), "r", 0); !errors.Is(err, ErrSourceClosed) || !IsPermanentError(err) {
+		t.Fatalf("subscribe after close = %v, want permanent ErrSourceClosed", err)
 	}
 	if err := src.Close(); err != nil {
 		t.Fatal(err)

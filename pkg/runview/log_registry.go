@@ -40,7 +40,10 @@ const (
 
 // LogWake is what a lane publishes: a payload-free wake (End == logEndNone)
 // or the epoch's one end value. The channel closes right after the end.
-type LogWake struct{ End logEnd }
+type LogWake struct {
+	End   logEnd
+	cause error
+}
 
 type logRegistry struct {
 	mu      sync.Mutex
@@ -184,7 +187,7 @@ func (r *logRegistry) subscribe(obs store.RunObservation) (*LogWakeSubscription,
 			end = logEndLost
 		}
 		ch := make(chan LogWake, 1)
-		ch <- LogWake{End: end}
+		ch <- LogWake{End: end, cause: tp.fail}
 		close(ch)
 		return &LogWakeSubscription{C: ch, Durable: tp.durable, Closed: true, obs: obs, epoch: tp.epoch, cancel: func() {}}, true
 	}
@@ -286,16 +289,21 @@ func (r *logRegistry) notifyLocked(runID string) {
 	}
 }
 
-// permanentLogFailure is the one typing of a cause the registry retains: a
-// local producer that failed (its capture, its tee) is gone and no read of
-// the same observation brings its bytes back, so the stream it ends fails
-// permanent (store.ErrRunDataCapability), whatever its own cause. It is never
-// a reader's origin verdict: a cause carrying one (originRefused — the
-// absence, deletion or other birth the producer's own load met) keeps it as
-// text only, so no reader takes it for the loss of the run it is bound to.
+// logFailureNeedsOriginCheck carries the producer's diagnostic without
+// exposing its origin verdict as the reader's verdict.
+type logFailureNeedsOriginCheck struct{ cause error }
+
+func (e *logFailureNeedsOriginCheck) Error() string {
+	return fmt.Sprintf("%v: %v", e.cause, store.ErrRunDataCapability)
+}
+
+func (*logFailureNeedsOriginCheck) Unwrap() error { return store.ErrRunDataCapability }
+
+// permanentLogFailure types a retained capture or tee failure. A capture
+// failure refuses bound streaming even if the producer still writes run.log.
 func permanentLogFailure(err error) error {
 	if originRefused(err) {
-		return fmt.Errorf("%v: %w", err, store.ErrRunDataCapability)
+		return &logFailureNeedsOriginCheck{cause: err}
 	}
 	return fmt.Errorf("%w: %w", err, store.ErrRunDataCapability)
 }
@@ -326,19 +334,18 @@ func (r *logRegistry) recordFailure(runID string, err error) {
 // registered: with its epoch open the failure ends it, and with the epoch
 // already ended the failure is LATE and ignored - the first end of a
 // generation wins. It never opens a generation of its own.
-func (r *logRegistry) recordFailureOfOpenEpoch(runID string, err error) {
-	if err == nil {
-		return
-	}
+func (r *logRegistry) recordFailureOfOpenEpoch(lane *logLane, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	tp := r.current[runID]
-	if tp == nil || tp.end != logEndNone {
+	tp := lane.topic
+	if lane.released || tp.end != logEndNone {
 		return
 	}
 	r.publishEndLocked(tp, logEndLost, err)
-	delete(r.failures, runID)
-	r.notifyLocked(runID)
+	if r.current[lane.runID] == tp {
+		delete(r.failures, lane.runID)
+		r.notifyLocked(lane.runID)
+	}
 }
 
 // failure returns the retained producer failure of runID. The newer generation
@@ -473,7 +480,7 @@ func (r *logRegistry) publishEndLocked(tp *logTopic, end logEnd, cause error) {
 		case <-sub.ch:
 		default:
 		}
-		sub.ch <- LogWake{End: end}
+		sub.ch <- LogWake{End: end, cause: tp.fail}
 		sub.closed = true
 		close(sub.ch)
 	}

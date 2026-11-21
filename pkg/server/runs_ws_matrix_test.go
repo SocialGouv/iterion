@@ -858,6 +858,62 @@ func TestRunWSMatrixCaptureFailureEndsTheLogStreamTyped(t *testing.T) {
 	}
 }
 
+func TestRunWSMatrixRetainedPredecessorDoesNotEndSuccessorLogs(t *testing.T) {
+	fx := newMatrixServer(t, matrixOptions{})
+	ctx := t.Context()
+	mustWS(t, seedWSOriginRun(ctx, fx.native, "r", matrixOrigin, store.LegacyValueFormat, store.RunStatusRunning, 0))
+	drop := fx.srv.runs.PrepareRunLogForTest(ctx, "r")
+	mustWS(t, fx.native.UpdateRunStatus(ctx, "r", store.RunStatusFinished, ""))
+	drop()
+	mustWS(t, replaceWSOriginRun(ctx, fx.native, "r", matrixSuccessor, store.LegacyValueFormat, store.RunStatusFinished, 0))
+	writeRunLog(t, fx.srv.cfg.StoreDir, "r", "successor log\n")
+	c := dialRunWS(t, fx.hs, "r")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	var text string
+	for {
+		env := readEnvelopeWithin(t, c, 10*time.Second, wsTypeLogChunk, wsTypeError, wsTypeLogTerminated)
+		if env.Type == wsTypeLogChunk {
+			text += decodeLogChunk(t, env).Text
+			continue
+		}
+		if env.Type != wsTypeLogTerminated || text != "successor log\n" {
+			t.Fatalf("successor log end = %s %s with %q, want persisted bytes and clean end", env.Type, env.Payload, text)
+		}
+		break
+	}
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "alive"})
+	if pong := readEnvelopeWithin(t, c, 10*time.Second, wsTypePong); pong.AckID != "alive" {
+		t.Fatalf("pong ack = %q, want alive", pong.AckID)
+	}
+}
+
+func TestRunWSMatrixCaptureFailureConfirmsOwnDeletion(t *testing.T) {
+	fx := newMatrixServer(t, matrixOptions{})
+	ctx := t.Context()
+	mustWS(t, seedWSOriginRun(ctx, fx.native, "r", matrixOrigin, store.LegacyValueFormat, store.RunStatusRunning, 0))
+	writeRunLog(t, fx.srv.cfg.StoreDir, "r", "before\n")
+	c := dialRunWS(t, fx.hs, "r")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	readUntilAck(t, c, "l")
+	if got := collectLogText(t, c, "", "before\n", 10*time.Second); got != "before\n" {
+		t.Fatalf("log = %q, want before deletion", got)
+	}
+	mustWS(t, fx.native.DeleteRun(ctx, "r"))
+	t.Cleanup(fx.srv.runs.PrepareRunLogForTest(ctx, "r"))
+	expectMatrixOriginLost(t, c, "log_stream_failed", matrixSuccessor)
+}
+
+func TestRunWSMatrixLocalSuccessorDoesNotKeepPredecessorSocketOpen(t *testing.T) {
+	fx := newMatrixServer(t, matrixOptions{})
+	ctx := t.Context()
+	mustWS(t, seedWSOriginRun(ctx, fx.native, "r", matrixOrigin, store.LegacyValueFormat, store.RunStatusRunning, 0))
+	c := dialRunWS(t, fx.hs, "r")
+	mustWS(t, replaceWSOriginRun(ctx, fx.native, "r", matrixSuccessor, store.LegacyValueFormat, store.RunStatusRunning, 0))
+	t.Cleanup(fx.srv.runs.PrepareRunLogForTest(ctx, "r"))
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribeLogs, AckID: "l"})
+	expectMatrixOriginLost(t, c, "log_stream_failed", matrixSuccessor)
+}
+
 // W11: a producer's failure is never this socket's origin verdict. A
 // producer's capture for ID r found no run (its load answered
 // store.ErrRunNotFound); a run r is then created under the ID — another

@@ -458,6 +458,33 @@ func TestRecordedFailureSurvivesTheProducerBail(t *testing.T) {
 	late.Cancel()
 }
 
+func TestLateTeeFailureDoesNotEndReplacementEpoch(t *testing.T) {
+	svc, native := newLogLaneService(t)
+	ctx := t.Context()
+	seedLogLaneRun(t, native, "r", store.RunStatusRunning)
+	readOnly, err := os.OpenFile(filepath.Join(t.TempDir(), "run.log"), os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	old := &RunLogBuffer{ring: make([]byte, 0, runLogRingCap), file: readOnly}
+	svc.registerRunLogOrigin(ctx, "r", old, logDurable)
+	old.releaseLogLane()
+	current, _ := svc.prepareRunLog(ctx, "r")
+	t.Cleanup(func() { svc.dropRunLog("r", current) })
+	_, topic, ok := svc.logRegistry.currentFor("r")
+	if !ok || current.lane == nil || topic != current.lane.topic {
+		t.Fatal("replacement epoch was not registered")
+	}
+	_, _ = old.Write([]byte("late\n"))
+	if !errors.Is(old.fileErr, syscall.EBADF) {
+		t.Fatalf("late tee error = %v, want EBADF", old.fileErr)
+	}
+	if _, _, end := epochState(svc.logRegistry, topic); end != logEndNone {
+		t.Fatalf("late tee ended the replacement epoch: %v", end)
+	}
+}
+
 // T-FAIL(d): arbitrage is first-end-wins. A tee failure recorded after the
 // epoch's end is ignored (the producer already registered), and a failure
 // recorded first is not replaced by a later end.
@@ -472,8 +499,9 @@ func TestALateFailureNeverReplacesAnAppliedEnd(t *testing.T) {
 	if !ok {
 		t.Fatal("no epoch was registered")
 	}
+	lane := buf.lane
 	svc.dropRunLog("ended", buf)
-	svc.recordLogTeeFailure("ended", fmt.Errorf("runview: run ended log tee: %w", store.ErrRunDataCapability))
+	svc.recordLogTeeFailure(lane, fmt.Errorf("runview: run ended log tee: %w", store.ErrRunDataCapability))
 
 	if got := svc.localLogProducerFailure("ended"); got != nil {
 		t.Fatalf("a late failure replaced an applied end: %v", got)
@@ -495,7 +523,7 @@ func TestALateFailureNeverReplacesAnAppliedEnd(t *testing.T) {
 		t.Fatal("no epoch was registered")
 	}
 	typed := fmt.Errorf("runview: run failed log tee: %w", store.ErrRunDataCapability)
-	svc.recordLogTeeFailure("failed", typed)
+	svc.recordLogTeeFailure(buf2.lane, typed)
 	svc.dropRunLog("failed", buf2)
 
 	if got := svc.localLogProducerFailure("failed"); !errors.Is(got, typed) {

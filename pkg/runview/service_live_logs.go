@@ -159,25 +159,18 @@ func (l *liveEventStreams) subscribeLogs(ctx context.Context, runID string, from
 		settle:       logTerminalSettle, settleEvery: logTerminalSettleEvery, stallWarn: logProducerStallWarn,
 	}
 
-	lane, obs, err := s.observedLogLane(c, runID, true)
+	lane, _, err := s.observedLogLane(c, runID, true)
+	if err == nil && lane == nil {
+		err = s.boundLogProducerFailure(c, runID)
+	}
 	if err != nil {
 		cancelWatch()
 		close(entry.done)
 		l.forgetLog(id)
 		return closedCauseOr(c, err)
 	}
-	if obs.Header().RunID != "" {
-		m.obs, m.obsKnown = obs, true
-	}
 	if lane != nil {
 		m.adoptLane(lane)
-	} else if ferr := s.localLogProducerFailure(runID); ferr != nil {
-		// No epoch and a retained local capture failure: the run's log stream
-		// is dead (D2) — refused typed, never parked on it.
-		cancelWatch()
-		close(entry.done)
-		l.forgetLog(id)
-		return closedCauseOr(c, fmt.Errorf("runview: bound log subscription of %s: %w", runID, ferr))
 	}
 	// The initial observation AND its retained-failure check have run: a test
 	// parks here to land a change the merge can only learn from its watch.
@@ -272,10 +265,6 @@ type liveLogMerge struct {
 	// endAt is when that end was applied: the inner still has to close for the
 	// stream to be over, and one that never closes is unblocked past the grace.
 	endAt time.Time
-	// obs is the observation the merge adopted; a producer failure recorded for
-	// another birth is not this stream's end.
-	obs      store.RunObservation
-	obsKnown bool
 
 	watch       <-chan struct{}
 	cancelWatch func()
@@ -301,13 +290,15 @@ type liveLogMerge struct {
 
 // retainedEnd reads the value a retained closed subscription carries. A closed
 // channel without a readable value is a lost stream, never an implicit end.
-func retainedEnd(sub *LogWakeSubscription) logEnd {
+func retainedEnd(sub *LogWakeSubscription) LogWake {
 	select {
-	case w := <-sub.C:
-		return w.End
+	case w, ok := <-sub.C:
+		if ok {
+			return w
+		}
 	default:
-		return logEndLost
 	}
+	return LogWake{End: logEndLost}
 }
 
 // laneC is the lane's channel, nil when the merge holds none: a nil channel
@@ -350,8 +341,12 @@ func (m *liveLogMerge) parkLane() {
 
 // applyEnd applies one epoch's end value, unless that epoch's end was already
 // applied (first end wins). It reports whether the merge must stop now.
-func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) (stop bool) {
-	if end == logEndNone {
+func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) bool {
+	return m.applyWake(epoch, LogWake{End: end}, by)
+}
+
+func (m *liveLogMerge) applyWake(epoch uint64, wake LogWake, by string) (stop bool) {
+	if wake.End == logEndNone {
 		return false
 	}
 	if !m.endAt.IsZero() {
@@ -369,7 +364,7 @@ func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) (stop bool)
 		m.endedEpoch = epoch
 	}
 	m.stopSettle()
-	switch end {
+	switch wake.End {
 	case logEndPaused:
 		// The producer parked on a human wait: the lane stays readable for the
 		// resume's epoch, which the watch announces.
@@ -383,9 +378,15 @@ func (m *liveLogMerge) applyEnd(epoch uint64, end logEnd, by string) (stop bool)
 		return false
 	case logEndLost:
 		m.recordEnd(by)
-		cause := m.l.svc.localLogProducerFailure(m.runID)
+		cause := m.l.svc.checkLogProducerFailure(m.ctx, m.runID, store.RunObservation{}, wake.cause)
 		if cause == nil {
-			cause = fmt.Errorf("runview: log lane of %s ended without a producer verdict: %w", m.runID, runstream.ErrSourceClosed)
+			// A replacement can release the old lane before its new capture
+			// completes. Only this reader's bound read can establish loss.
+			if _, err := m.l.svc.store.LoadRun(m.ctx, m.runID); originRefused(err) {
+				cause = err
+			} else {
+				cause = fmt.Errorf("runview: log lane of %s ended without a producer verdict: %w", m.runID, runstream.ErrSourceClosed)
+			}
 		}
 		m.out.Fail(cause)
 		return true
@@ -510,7 +511,7 @@ func (m *liveLogMerge) run() {
 			if m.laneRetained {
 				by = logEndByRetained
 			}
-			if m.applyEnd(m.laneEpoch, w.End, by) {
+			if m.applyWake(m.laneEpoch, w, by) {
 				return
 			}
 		case <-m.watch:
@@ -555,7 +556,7 @@ func (m *liveLogMerge) run() {
 				// PAUSE is not — the run was just re-read as terminal, so the
 				// settle concludes instead of parking on an epoch whose producer
 				// ended on another replica.
-				if end != logEndPaused && m.applyEnd(sub.epoch, end, logEndByRetained) {
+				if end.End != logEndPaused && m.applyWake(sub.epoch, end, logEndByRetained) {
 					return
 				}
 			}
@@ -565,11 +566,10 @@ func (m *liveLogMerge) run() {
 			// A producer failure recorded while the window ran — its watch
 			// token may still wait behind this branch — is the stream's end:
 			// the settle never concludes over it, the re-arm applies it.
-			if _, _, failed := m.l.svc.logProducerFailureFor(m.runID); failed {
-				if m.rearm() {
-					return
-				}
-				continue
+			if err := m.l.svc.boundLogProducerFailure(m.ctx, m.runID); err != nil {
+				m.recordEnd(logEndByLane)
+				m.out.Fail(err)
+				return
 			}
 			if m.applyEnd(0, logEndTerminal, logEndBySettle) {
 				return
@@ -593,13 +593,8 @@ func (m *liveLogMerge) rearm() bool {
 		// an error the client has no stream left to read.
 		return false
 	}
-	if fobs, err, ok := m.l.svc.logProducerFailureFor(m.runID); ok {
+	if err := m.l.svc.boundLogProducerFailure(m.ctx, m.runID); err != nil {
 		m.recordEnd(logEndByLane)
-		if m.obsKnown && fobs.Header().RunID != "" && fobs.Header() != m.obs.Header() {
-			// Another birth's producer failed: that is not this stream's end.
-			m.out.Fail(fmt.Errorf("runview: log producer of %s replaced under the stream: %w", m.runID, store.ErrRunDataIdentityChanged))
-			return true
-		}
 		m.out.Fail(err)
 		return true
 	}
@@ -621,15 +616,9 @@ func (m *liveLogMerge) rearm() bool {
 		return false
 	}
 	if sub.Closed {
-		var end logEnd
-		select {
-		case w := <-sub.C:
-			end = w.End
-		default:
-			end = logEndLost
-		}
+		end := retainedEnd(sub)
 		sub.Cancel()
-		return m.applyEnd(sub.epoch, end, logEndByRetained)
+		return m.applyWake(sub.epoch, end, logEndByRetained)
 	}
 	m.adoptLane(sub)
 	return false
@@ -661,9 +650,10 @@ func (m *liveLogMerge) statusPoll() bool {
 		// The settle ticker drives the E3 end.
 		return false
 	}
-	if m.l.svc.localLogProducerFailure(m.runID) != nil {
-		// The watch delivers it; never settle over a known failure.
-		return false
+	if err := m.l.svc.boundLogProducerFailure(m.ctx, m.runID); err != nil {
+		m.recordEnd(logEndByLane)
+		m.out.Fail(err)
+		return true
 	}
 	run, err := m.l.svc.store.LoadRun(m.ctx, m.runID)
 	if err != nil {
