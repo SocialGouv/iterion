@@ -414,12 +414,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// pre-task permission_policy envelope: the in-container
 		// `iterion __claw-runner` rebuilds the policy through the same
 		// parser and enforces it in its own tool loop (see
-		// executeViaSandboxRunner). What CANNOT cross is an Ask
-		// decision — the runner has no seam to pause the parent run for
-		// a human — so a policy that can ever produce one (mode ask, or
-		// any explicit ask rule, which outranks mode deny) is refused
-		// loudly rather than silently degraded to deny; pi treats the
-		// same combination as fail-not-degrade.
+		// executeViaSandboxRunner). The launcher does not support permission
+		// pauses on this path: resuming one requires binding a one-time grant
+		// to the approved call and consuming it at dispatch. Refuse any policy
+		// that can Ask rather than silently degrading it to Deny.
 		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
 				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
@@ -2398,6 +2396,9 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv))
 	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
+	if rejectSandboxedPermissionPause(&res) {
+		return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+	}
 	if ioRes.Error != "" {
 		if ioRes.ProviderError != nil {
 			provider := *ioRes.ProviderError
@@ -3872,6 +3873,22 @@ func refusedMCPServerSummary(refused map[string]delegate.MCPLauncherRefusal) str
 		quoted[i] = fmt.Sprintf("%q", name)
 	}
 	return "servers " + strings.Join(quoted, ", ")
+}
+
+// rejectSandboxedPermissionPause enforces the launcher's no-Ask contract on
+// incoming results as well as on outgoing tasks. Ordinary ask_user pauses
+// carry no permission marker and keep their resume state.
+func rejectSandboxedPermissionPause(res *delegate.Result) bool {
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	if _, marked := questions[permission.InteractionMarkerKey]; !marked {
+		return false
+	}
+	delete(res.Output, "_needs_interaction")
+	delete(res.Output, "_interaction_questions")
+	res.PendingConversation = nil
+	res.PendingToolUseID = ""
+	res.PendingCommandNarrowing = nil
+	return true
 }
 
 // refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
