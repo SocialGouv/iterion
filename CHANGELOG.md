@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.25.0](https://github.com/SocialGouv/iterion/compare/v7.24.2...v7.25.0) (2026-11-21)
+
+### Features
+
+* **codemode:** run bounded batches through the tool dispatcher ([#3506](https://github.com/SocialGouv/iterion/issues/3506)) ([7c02c2c](https://github.com/SocialGouv/iterion/commit/7c02c2c7e7c97f44bd19e8086841b22f33536a90))
+
+    <details><summary>why</summary>
+
+    Keep unclassified tools exclusive and keep the launcher event relay responsive while a forwarded tool runs. Carry the concurrency limit through the launch and queue contracts.
+
+    </details>
+
 ## [7.24.2](https://github.com/SocialGouv/iterion/compare/v7.24.1...v7.24.2) (2026-11-21)
 
 ### Bug Fixes
