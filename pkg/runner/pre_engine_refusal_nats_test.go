@@ -35,6 +35,13 @@ func TestPreEngineRefusalKeepsAnsweredResumeOnRedelivery(t *testing.T) {
 	msg.V = queue.SchemaVersion
 	msg.TenantID = "tenant-refusal"
 	msg.OwnerID = "owner-refusal"
+	ctx = store.WithIdentity(ctx, msg.TenantID, msg.OwnerID)
+	// This fixture bypasses the publisher, so it owns the run's birth.
+	if _, err := store.PrepareRunInvocation(ctx, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{
+		ID: id, WorkflowName: msg.WorkflowName,
+	}}); err != nil {
+		t.Fatalf("prepare queued run: %v", err)
+	}
 	if err := r.executeRun(ctx, msg, nil, nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("initial pause: %v", err)
 	}
