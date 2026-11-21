@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -31,6 +32,7 @@ type runTagsDoc struct {
 // on run_id. Re-saving replaces the prior set (never merges). tags is
 // assumed already normalized by the caller (see store.NormalizeTags).
 func (s *Store) SetRunTags(ctx context.Context, runID string, tags []string) error {
+	tags = slices.Clone(tags)
 	if tags == nil {
 		tags = []string{}
 	}
@@ -42,11 +44,13 @@ func (s *Store) SetRunTags(ctx context.Context, runID string, tags []string) err
 	if id, ok := store.TenantFromContext(ctx); ok {
 		doc.TenantID = id
 	}
-	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
-	if _, err := s.runTags.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("store/mongo: set run tags %s: %w", runID, err)
-	}
-	return nil
+	return s.withRunMetadataWrite(ctx, runID, func(sc context.Context, _ *store.Run) error {
+		filter := withTenantFilter(sc, bson.M{"run_id": runID})
+		if _, err := s.runTags.ReplaceOne(sc, filter, doc, options.Replace().SetUpsert(true)); err != nil {
+			return fmt.Errorf("store/mongo: set run tags %s: %w", runID, err)
+		}
+		return nil
+	})
 }
 
 // GetRunTags implements store.RunTagStore: the tag set for the run, or an

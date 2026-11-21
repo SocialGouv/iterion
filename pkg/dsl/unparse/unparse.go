@@ -1251,6 +1251,24 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
+		if wf.BusinessStores != nil {
+			w.b.WriteString("  business_stores:\n")
+			if len(wf.BusinessStores) == 0 {
+				w.b.WriteByte('\n')
+			}
+			for _, declaration := range wf.BusinessStores {
+				fmt.Fprintf(&w.b, "    %s:\n", w.b.str(declaration.ID))
+				if declaration.Kind != "" {
+					writeStrProp(&w.b, "      ", "kind", declaration.Kind)
+				}
+				if declaration.Namespace != "" {
+					writeStrProp(&w.b, "      ", "namespace", declaration.Namespace)
+				}
+				if declaration.Required != nil {
+					fmt.Fprintf(&w.b, "      required: %t\n", *declaration.Required)
+				}
+			}
+		}
 		if wf.MCP != nil {
 			writeMCPConfigBlock(&w.b, wf.MCP, "  ")
 		}

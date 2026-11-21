@@ -41,11 +41,26 @@ type AnswerInteractionResult struct {
 //
 // answer is the operator's reply text (option id or free text).
 func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID, answer string) (*AnswerInteractionResult, error) {
-	r, err := s.LoadRunCtx(ctx, runID)
+	return s.AnswerInteractionExpecting(ctx, runID, interactionID, answer, ActionOrigin{})
+}
+
+// AnswerInteractionExpecting is AnswerInteractionCtx for a checked surface.
+// The answer is recorded and queued on the run the surface admitted: the
+// loads, the record, the delivery and the pending re-check run under a
+// context bound to origin, so a successor recreated under the ID refuses
+// them. The auto-resume carries origin (ResumeSpec.ExpectOrigin) on the
+// unbound ctx, so the execution it starts keeps no binding. The wake of a
+// parked node is keyed by run ID, behind the bound load.
+func (s *Service) AnswerInteractionExpecting(ctx context.Context, runID, interactionID, answer string, origin ActionOrigin) (*AnswerInteractionResult, error) {
+	bctx, err := origin.Bind(ctx, s.store)
 	if err != nil {
 		return nil, err
 	}
-	in, err := s.store.LoadInteraction(ctx, runID, interactionID)
+	r, err := s.LoadRunCtx(bctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	in, err := s.store.LoadInteraction(bctx, runID, interactionID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s/%s: %v", ErrInteractionNotFound, runID, interactionID, err)
 	}
@@ -53,7 +68,7 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 		return nil, fmt.Errorf("%w: %s has kind %q", ErrInteractionNotAsync, interactionID, in.Kind)
 	}
 
-	answered, text, err := model.RecordAsyncAnswer(ctx, s.store, s.brokerPublish(), runID, interactionID, answer)
+	answered, text, err := model.RecordAsyncAnswer(bctx, s.store, s.brokerPublish(), runID, interactionID, answer)
 	if err != nil {
 		return nil, err // ErrInteractionAlreadyAnswered maps to 409 at the HTTP layer
 	}
@@ -64,7 +79,7 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 	// never leak into an unrelated node). Delivered at the node's next
 	// turn boundary by the existing inbox drains; superseded copies are
 	// cancelled by the await-resume path via the InteractionID tag.
-	if _, qerr := s.QueueMessage(ctx, runID, text, WithMessageNode(answered.NodeID), WithMessageInteraction(interactionID)); qerr != nil {
+	if _, qerr := s.QueueMessage(bctx, runID, text, WithMessageNode(answered.NodeID), WithMessageInteraction(interactionID)); qerr != nil {
 		return nil, fmt.Errorf("runview: answer recorded but queueing delivery failed: %w", qerr)
 	}
 	result.Queued = true
@@ -83,18 +98,18 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 	if r.Status == store.RunStatusPausedWaitingHuman && r.Checkpoint != nil {
 		refs := delegate.ParseAwaitPending(r.Checkpoint.InteractionQuestions[delegate.AwaitPendingInteractionsKey])
 		if len(refs) > 0 && r.Checkpoint.PausedNodeID() == answered.NodeID {
-			pending, perr := store.ListPendingAsyncInteractions(ctx, s.store, runID, answered.NodeID)
+			pending, perr := store.ListPendingAsyncInteractions(bctx, s.store, runID, answered.NodeID)
 			if perr != nil {
 				return nil, fmt.Errorf("runview: answer recorded but pending re-check failed: %w", perr)
 			}
 			if len(pending) == 0 {
-				if _, rerr := s.Resume(ctx, ResumeSpec{RunID: runID, FilePath: r.FilePath, Answers: map[string]any{}}); rerr != nil {
+				if _, rerr := s.Resume(ctx, ResumeSpec{RunID: runID, FilePath: r.FilePath, Answers: map[string]any{}, ExpectOrigin: origin}); rerr != nil {
 					// Two answers landing together both see pending==0
 					// and race to resume; LockRun lets exactly one win.
 					// The loser's answer is already recorded + queued —
 					// verify the run actually left the pause before
 					// treating this as a failure.
-					if reloaded, lerr := s.LoadRunCtx(ctx, runID); lerr == nil && reloaded.Status != store.RunStatusPausedWaitingHuman {
+					if reloaded, lerr := s.LoadRunCtx(bctx, runID); lerr == nil && reloaded.Status != store.RunStatusPausedWaitingHuman {
 						if s.logger != nil {
 							s.logger.Info("runview: auto-resume of %s lost the race to a concurrent resume (benign): %v", runID, rerr)
 						}

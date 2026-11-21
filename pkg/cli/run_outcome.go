@@ -31,14 +31,15 @@ func runInteractiveResumeLoop(
 	err error,
 ) error {
 	for errors.Is(err, runtime.ErrRunPaused) && !noInteractive && IsTTY() {
-		r, loadErr := s.LoadRun(context.Background(), runID)
+		bound, r, loadErr := store.LoadRunWithValueFormat(ctx, s, runID)
 		if loadErr != nil {
 			return fmt.Errorf("interactive resume: load run: %w", loadErr)
 		}
+		ctx = bound
 		if r.Checkpoint == nil {
 			return fmt.Errorf("interactive resume: run %q has no checkpoint", runID)
 		}
-		interaction, loadErr := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID)
+		interaction, loadErr := s.LoadInteraction(ctx, runID, r.Checkpoint.InteractionID)
 		if loadErr != nil {
 			return fmt.Errorf("interactive resume: load interaction: %w", loadErr)
 		}

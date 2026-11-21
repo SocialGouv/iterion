@@ -115,7 +115,7 @@ func TestRecoveryCumulativeCostLeavesBudgetForCorrection(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	cp := run.Checkpoint
-	if cp == nil || cp.BudgetTokensUsed != 210 || math.Abs(cp.BudgetCostUSD-1.7) > 1e-12 {
+	if cp == nil || cp.BudgetTokensUsed != 210 || cp.BudgetIterationsUsed != 1 || math.Abs(cp.BudgetCostUSD-1.7) > 1e-12 {
 		t.Fatalf("corrected retry must book 210 tokens and 1.7 USD: %+v", cp)
 	}
 }

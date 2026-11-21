@@ -62,7 +62,7 @@ func TestBuildExecutor_PolicyLadderReadsTheNodeRouteDispatchServes(t *testing.T)
 				},
 				ContentBoundary: teamGateway,
 			}
-			if _, err := BuildExecutor(spec); err != nil {
+			if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 				t.Fatalf("BuildExecutor: %v", err)
 			}
 			var rungs []string
@@ -124,14 +124,14 @@ func TestBuildExecutor_TheBoundaryHoldsAGatewayNodeTheScreenReadAsVendor(t *test
 			agent.Tools = []string{}
 			wf := &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"gw": agent},
 				Vars: map[string]*ir.Var{"model": {Name: "model", Type: ir.VarString, HasDefault: true, Default: "claude-opus-5"}}}
-			exec, err := BuildExecutor(ExecutorSpec{
+			exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 				Ctx:             context.Background(),
 				Store:           st,
 				RunID:           "run-ladder-resume",
 				Workflow:        wf,
 				PolicyLadder:    []ir.PolicyLadderStage{{Harness: "claw", Credential: "anthropic_key", On: []string{"usage_window"}}},
 				ContentBoundary: row.boundary,
-			})
+			}))
 			if err != nil {
 				t.Fatalf("BuildExecutor: %v", err)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -133,42 +134,10 @@ type AmbiguousEffect interface {
 // its remote effect undecided. It is the ONE reading of the interface, so a
 // second call site cannot drift into a different rule. A RuntimeError read
 // from a run document also carries this fact in its persisted code.
-func IsAmbiguousEffect(err error) bool {
-	var amb AmbiguousEffect
-	if errors.As(err, &amb) && amb.AmbiguousEffect() {
-		return true
-	}
-	var rt *RuntimeError
-	if errors.As(err, &rt) && rt != nil && rt.Code == ErrCodeAmbiguousEffect {
-		return true
-	}
-	switch wrapped := err.(type) {
-	case interface{ Unwrap() []error }:
-		for _, cause := range wrapped.Unwrap() {
-			if IsAmbiguousEffect(cause) {
-				return true
-			}
-		}
-	case interface{ Unwrap() error }:
-		return IsAmbiguousEffect(wrapped.Unwrap())
-	case interface{ As(any) bool }:
-		// Redaction hides Unwrap from reporters but preserves As. Read the
-		// represented error's structure without exposing its unredacted text.
-		var many interface{ Unwrap() []error }
-		if wrapped.As(&many) && many != nil {
-			for _, cause := range many.Unwrap() {
-				if IsAmbiguousEffect(cause) {
-					return true
-				}
-			}
-		}
-		var one interface{ Unwrap() error }
-		if wrapped.As(&one) && one != nil {
-			return IsAmbiguousEffect(one.Unwrap())
-		}
-	}
-	return false
-}
+func IsAmbiguousEffect(err error) bool { return errtrack.IsAmbiguousEffect(err) }
+
+// AmbiguousEffect exposes the durable code through the shared cause seam.
+func (e *RuntimeError) AmbiguousEffect() bool { return e != nil && e.Code == ErrCodeAmbiguousEffect }
 
 // CapabilityDenial is implemented by an error whose cause is a REFUSED
 // grant: the node named something (a board verb, a host tool) its
@@ -247,6 +216,12 @@ type Remedy struct {
 // own answers and consents. Nothing of this resume happened — no answer
 // recorded, no claim — and there is nothing to retry.
 var ErrResumeSuperseded = errors.New("runtime: resume superseded — the run was queued again after this delivery was published")
+
+// ErrAdmissionStopped means a concurrent execution-state change invalidated
+// this admission before it could save a verdict. The invocation executed
+// nothing and must not overwrite, finalize or account for the replacement row.
+// Unlike ErrResumeSuperseded, this stop does not reoffer a queued publication.
+var ErrAdmissionStopped = errors.New("runtime: admission stopped by a concurrent execution-state change")
 
 // RemedyOf is the remedy err carries: its RuntimeError's hint, else the one
 // that error's code names (CodeRemedy). Zero when err carries no RuntimeError.

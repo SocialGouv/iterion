@@ -156,11 +156,14 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 	var updated struct {
 		RetryState *store.RunRetryState `bson:"retry_state"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(update),
+	metadataResult, err := s.findOneAndUpdateRunMetadata(ctx, runID, filter, versionRunUpdate(update),
 		options.FindOneAndUpdate().
 			SetReturnDocument(options.After).
 			SetProjection(bson.M{retryStateField: 1}),
-	).Decode(&updated)
+	)
+	if err == nil {
+		err = metadataResult.Decode(&updated)
+	}
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			// Not failed_resumable any more, or out of attempts. Both are
@@ -206,7 +209,7 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 		set[retryPath("code")] = code
 	}
 	update := mongo.Pipeline{{{Key: "$set", Value: set}}}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)
 	}
@@ -242,7 +245,7 @@ func (s *Store) PullRunRetry(ctx context.Context, runID string, expectedAfter, p
 		},
 		"$inc": bson.M{retryPath("probe_count"): 1, "version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: pull retry %s: %w", runID, err)
 	}
@@ -271,7 +274,7 @@ func (s *Store) ReleaseRunRetry(ctx context.Context, runID string, expectedAfter
 		},
 		"$inc": bson.M{retryPath("probe_count"): 1, "version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: release retry %s: %w", runID, err)
 	}
@@ -294,7 +297,7 @@ func (s *Store) AnswerRunProbe(ctx context.Context, runID string, at time.Time) 
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: answer probe %s: %w", runID, err)
 	}
@@ -339,7 +342,7 @@ func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at, wall 
 		set[retryPath("wall")] = wall.UTC()
 		set[retryPath("probe_count")] = probeCountForWall(wall)
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(mongo.Pipeline{{{Key: "$set", Value: set}}}))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(mongo.Pipeline{{{Key: "$set", Value: set}}}))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: re-arm probed retry %s: %w", runID, err)
 	}
@@ -373,7 +376,7 @@ func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter t
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: claim retry %s: %w", runID, err)
 	}
@@ -397,7 +400,7 @@ func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
 		"$set":   bson.M{"updated_at": time.Now().UTC()},
 		"$inc":   bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
+	if _, err := s.updateRunMetadata(ctx, runID, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: clear retry %s: %w", runID, err)
 	}
 	return nil
@@ -442,7 +445,7 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string, expec
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, filter), versionRunUpdate(update))
+	res, err := s.updateRunMetadata(ctx, runID, withTenantFilter(ctx, filter), versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
 	}

@@ -800,11 +800,12 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # The sum of the harness's two inner `go test -timeout`s (20m + 15m) plus
-    # setup: a hang is named by go test's own timeout, and this ceiling only
-    # backstops the steps around it. At 15 it cut a green 11-14 min suite
-    # whenever two runs shared the runners (#3390).
-    timeout-minutes: 40
+    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
+    # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
+    # check_response_timeout: a hang is named by go test's own timeout, and
+    # this ceiling only backstops the steps around it. At 15 it cut a green
+    # 11-14 min suite whenever two runs shared the runners (#3390).
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -816,8 +817,8 @@ jobs:
           # No Go cache (#1839, like fmt-check): -mod=vendor needs no module
           # cache, the build cache it restores is another job's, and on the
           # scale set a slow restore of that ~400 MB archive has taken eleven
-          # minutes of this fifteen-minute budget (nats-conformance, the same
-          # setup, cancelled twice on 2026-09-29).
+          # minutes of a fifteen-minute job (nats-conformance, the same setup,
+          # cancelled twice on 2026-09-29).
           cache: false
 
       - name: Start mongo as a replica set
@@ -831,7 +832,7 @@ jobs:
           docker run -d --name mongo-rs \
             -p 127.0.0.1:27017:27017 \
             mongo:8.0 \
-            --replSet rs0 --bind_ip_all
+            --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
           for i in $(seq 1 30); do
             if docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; then
               break
@@ -879,7 +880,7 @@ jobs:
           # five minutes without Mongo and reached the old 10m package budget
           # with it under queue load (600.6s, #3390). The budget stays below
           # the job's ceiling without shortening any test coverage.
-          go test -mod=vendor -count=1 -v -timeout 20m ./pkg/store/mongo/... \
+          go test -mod=vendor -count=1 -v -timeout 20m \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
@@ -890,10 +891,48 @@ jobs:
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/... \
             ./pkg/connector/intake/... ./pkg/connector/poller/...
+          # The store harness runs alone on the replica set: its transactions
+          # and change streams saturate a shared mongod, which starves the
+          # suites beside it, so it carries its own budget.
+          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/store/mongo/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
-          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
+          # BuildSnapshot's run-origin matrix and the merge doors' expected
+          # birth against the native Mongo store. The `/...` form keeps
+          # pkg/runview visible to pkg/store/mongo's gated-package guard;
+          # -run leaves the rest of it to `test`.
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
+            -run '^(TestSnapshotOriginNativeMongo|TestMergeExpectedBirthNativeMongo)$'
+
+      - name: Subbot lease Mongo and NATS witness
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+          ITERION_TEST_NATS_URI: nats://localhost:4222
+        run: |
+          set -euo pipefail
+          test -n "$ITERION_TEST_MONGO_URI"
+          test -n "$ITERION_TEST_NATS_URI"
+          trap 'docker rm -f nats-child-lease >/dev/null 2>&1 || true' EXIT
+          docker run -d --name nats-child-lease \
+            -p 127.0.0.1:4222:4222 nats:2.14-alpine -js
+          ready=0
+          for i in $(seq 1 30); do
+            logs="$(docker logs nats-child-lease 2>&1)"
+            if grep -Fq 'Server is ready' <<<"$logs" && grep -Fq 'JetStream' <<<"$logs"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-child-lease
+            echo 'Owned NATS fixture failed to start' >&2
+            exit 1
+          fi
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo \
+            -run '^TestSubbotLeaseMongoNATS$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the

@@ -454,6 +454,9 @@ func TestAWithheldCloneCredentialIsAckedByTheDeliveryNotRedelivered(t *testing.T
 	})
 	msg := &queue.RunMessage{RunID: cloneGateRunID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body,
 		RepoURL: forge.url("https"), RepoSHA: "main"}
+	if _, err := r.cfg.Store.CreateRun(ctx, msg.RunID, "main", nil); err != nil {
+		t.Fatal(err)
+	}
 	execErr := r.executeRun(ctx, msg, nil, nil)
 	if _, ok := runtime.IsSecretGrantUnservable(execErr); !ok {
 		t.Fatalf("executeRun = %v, want the typed grant refusal: its cause no longer reaches the delivery path", execErr)

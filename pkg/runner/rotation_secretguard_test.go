@@ -80,7 +80,7 @@ func TestBuildExecutorDeliversTheLiveGuardOnTheRunnerPath(t *testing.T) {
 	msg := &queue.RunMessage{RunID: "run-guard-live", WorkflowName: "wf"}
 
 	holder := &runSecretGuard{}
-	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{}, t.TempDir(), iterlog.Nop(), nil, holder)
+	exec, _, err := r.buildExecutor(preparedRunnerFixture(t, context.Background(), r, msg.RunID), msg, &ir.Workflow{}, t.TempDir(), iterlog.Nop(), nil, holder)
 	if err != nil {
 		t.Fatalf("buildExecutor: %v", err)
 	}

@@ -231,3 +231,15 @@ export function workspaceFileURL(
     `/runs/${encodeURIComponent(runId)}/workspace-files/${segments}${suffix ? `?${suffix}` : ""}`,
   );
 }
+
+// runPreviewURL is the run's preview proxy for an internal target (GET
+// /api/runs/{id}/preview), loaded by the browser pane's <iframe>. Built on
+// apiURL, so it carries the run's expected birth once the page knows it.
+export function runPreviewURL(runId: string, target: string): string {
+  return apiURL(`/runs/${encodeURIComponent(runId)}/preview?target=${encodeURIComponent(target)}`);
+}
+
+// runBrowserAttachURL is POST /api/runs/{id}/browser/attach.
+export function runBrowserAttachURL(runId: string): string {
+  return apiURL(`/runs/${encodeURIComponent(runId)}/browser/attach`);
+}

@@ -35,7 +35,7 @@ workflow child:
 
 	storetest.SeedParentRun(t, st, "cli-parent")
 	run := subbotRunnerForCLI(filepath.Join(botDir, "parent.bot"), storeDir, st, iterlog.Nop(), RunOptions{Sandbox: "none"})
-	_, err = run(context.Background(), runtime.SubbotRequest{
+	_, err = run(boundLegacySubbotFixture(t, context.Background(), "cli-parent"), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"path": "child.txt", "content": "CLI child\n"},
 		ParentRunID: "cli-parent", NodeID: "child", ReattachKey: "child", WorkDir: workspace,
 	})

@@ -28,7 +28,7 @@ func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 			WithParentRunID("parent-run-1"),
 			WithTrust(store.RunTrustFork, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
 		)
-		run, err := e.runResolveDoc(context.Background(), "child-trust-1", map[string]any{})
+		_, run, err := e.runResolveDoc(context.Background(), "child-trust-1", map[string]any{})
 		if err != nil {
 			t.Fatalf("runResolveDoc: %v", err)
 		}
@@ -45,7 +45,7 @@ func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 	// acquires a marker it never had.
 	t.Run("a trusted child is unchanged", func(t *testing.T) {
 		e, _ := newEngine(WithParentRunID("parent-run-2"), WithTrust("", ""))
-		run, err := e.runResolveDoc(context.Background(), "child-trust-2", map[string]any{})
+		_, run, err := e.runResolveDoc(context.Background(), "child-trust-2", map[string]any{})
 		if err != nil {
 			t.Fatalf("runResolveDoc: %v", err)
 		}

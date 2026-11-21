@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { isForceResumeRequiredError, resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import {
   askUserAllowsFreeText,
   askUserOptions,
@@ -68,6 +69,7 @@ export default function PauseForm({
   onSubmitted,
   onStage,
 }: Props) {
+  const canAct = useRunCanAct();
   const marker = useMemo(() => permissionMarker(questions ?? {}), [questions]);
   const options = useMemo(() => askUserOptions(questions ?? {}), [questions]);
   // Reserved (underscore) keys are runtime plumbing (options payload,
@@ -200,6 +202,16 @@ export default function PauseForm({
       </span>
     </div>
   );
+
+  // A reader, or a view whose run was lost (scope_lost), resumes nothing:
+  // the read-only note replaces the form.
+  if (!canAct) {
+    return (
+      <p className="text-body text-fg-muted" role="note">
+        This pause waits on a member of the run&apos;s team — you cannot answer it from this view.
+      </p>
+    );
+  }
 
   if (marker) {
     const prompt = String(questions[ASK_USER_KEY] ?? "");

@@ -577,6 +577,14 @@ type ResumeSpec struct {
 	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
 	// mismatched admission.
 	Admitted *GateAdmission
+	// ExpectOrigin is the origin a checked surface admitted for RunID.
+	// Resume verifies the run it loads against it before anything is
+	// reconciled, written, published or spawned, binds its budget writes to
+	// it, and verifies the run again under the spawn lock; the cloud
+	// publisher verifies the document it republishes from and binds its
+	// queued claim to it. The resumed execution never inherits the binding.
+	// The zero value is unchecked.
+	ExpectOrigin ActionOrigin
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
@@ -711,6 +719,11 @@ func MergeBudgetOverrides(base, next *ir.BudgetOverrides) *ir.BudgetOverrides {
 // RunSnapshot — call Snapshot for the full view.
 type RunSummary struct {
 	ID string `json:"id"`
+	// BirthID is the run's birth identity, as on the snapshot header
+	// (RunHeader.BirthID): a view opened from this row expects it, so a run
+	// replaced between the listing and the navigation is refused rather
+	// than shown in its place. "" is a historical run.
+	BirthID string `json:"birth_id"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -933,6 +946,31 @@ type Service struct {
 	// Wails sink. Set via WithAlerts.
 	alertSettings *AlertSettings
 	alertManager  *alert.Manager
+	// alertRegistry carries manager-published alerts to the native merges
+	// by registration (R54 slice 3): one epoch per adoption, closed at the
+	// last bail's release. nil on wrapper stores and without alerts —
+	// those runs keep the legacy-only alert path.
+	alertRegistry *alertRegistry
+	// alertSeamMu serializes THIS service's registration seam: capture,
+	// acquire and adopt must be one step against the other seams (a
+	// rotation re-registration racing a resume's launch seam must not
+	// install two epochs of one observation). Per service, not package
+	// level — a hot-swap pair must not serialize each other.
+	alertSeamMu sync.Mutex
+
+	// logRegistry carries the log lanes of this service's producers to its
+	// bound log subscribers (R54 slice 4): one retained epoch per producer
+	// registration, wakes without payload, and the epoch's one end. nil only
+	// on a Service built outside NewService — log lanes then stay off.
+	logRegistry *logRegistry
+	// logSeamMu serializes THIS service's log registration seam, as
+	// alertSeamMu does for alerts, and for the same reason.
+	logSeamMu sync.Mutex
+	// logAdmissionHook, when set (tests), runs before the bound log
+	// admission's store read so a witness can drive the retry against the
+	// native store without wrapping it (a wrapper stays legacy, arbitration
+	// C). Nil in production.
+	logAdmissionHook func(ctx context.Context, runID string) error
 
 	// recoveryDispatch is built once on construction so each Launch /
 	// Resume reuses the same dispatcher rather than allocating a new
@@ -1058,6 +1096,12 @@ type Service struct {
 	// handler streams from change streams instead of relying on the
 	// local broker (which only sees this process's writes). ADR-053.
 	streamSrc runstream.Source
+	// observedEvents owns only explicit observed feeds, never the legacy Source.
+	observedEvents *observedEventBridges
+	// liveEvents owns the retained per-client event subscriptions
+	// StreamSource serves on the native filesystem store; nil on any other
+	// store or with an injected streamSrc.
+	liveEvents *liveEventStreams
 
 	// fileSrcs tracks on-demand events.jsonl tailers started by
 	// ensureEventSource for runs not produced in this process (e.g.
@@ -1072,6 +1116,9 @@ type Service struct {
 	// fileSrcMu (same low-contention lock). Refcounted; the tailer + buffer are
 	// torn down when the last WS subscriber releases.
 	logSrcs map[string]*fileSrcHandle
+	// logReleaseGap, when set (tests), runs between a log tailer's last
+	// release unlocking fileSrcMu and dropping its buffer.
+	logReleaseGap func(runID string)
 
 	// maxCostPerDayUSD configures the per-(store, UTC-day) LLM spend cap
 	// enforced across every run this service launches. 0 disables it.
@@ -1495,8 +1542,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
 	}
 
+	// The log registry precedes the recovery pass for the same reason the
+	// alert registry does: a boot-time reattach of a detached runner
+	// registers its log lane during reconcileOrphans.
+	s.logRegistry = newLogRegistry()
+
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)
+		// The registry precedes the recovery pass: a boot-time reattach of
+		// a detached runner registers its alert origin during
+		// reconcileOrphans, so both halves of the registration must exist
+		// by then.
+		s.alertRegistry = newAlertRegistry()
 		if !s.recoveryPassive {
 			s.alertManager.Start(context.Background())
 		}
@@ -1523,13 +1580,15 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		s.rebuildPipelineQueue()
 		s.startPipelineScheduler()
 	}
+	s.initObservedEventFeeds()
+	s.initLiveEventStreams()
 	return s, nil
 }
 
 // buildAlertManager wires the alert Manager's sinks (webhook, optional
-// desktop, and the always-on browser-broker sink), the run-name lookup,
-// and the deep-link base URL. The manager itself is fed events by the
-// file-event tail (see runstream.TailEventsFile).
+// desktop, tracker), the origin-bound lookups, the persisted twin, and the
+// legacy broker carrier. The manager itself is fed events by the file-event
+// tail (see runstream.TailEventsFile).
 func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	var sinks []alert.Sink
 	if wh := alert.NewWebhookSink(set.WebhookURL, s.logger); wh != nil {
@@ -1544,21 +1603,6 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	if tk := alert.NewTrackerSink(); tk != nil {
 		sinks = append(sinks, tk)
 	}
-	// Browser delivery: publish an in-process `alert` event to the
-	// broker. It is NOT persisted to events.jsonl, so the file tail
-	// never re-feeds it into Observe (no detection feedback loop).
-	sinks = append(sinks, alert.FuncSink(func(_ context.Context, a alert.Alert) {
-		if s.broker == nil {
-			return
-		}
-		s.broker.Publish(store.Event{
-			Type:      store.EventAlert,
-			RunID:     a.RunID,
-			NodeID:    a.NodeID,
-			Timestamp: a.Timestamp,
-			Data:      a.AsEventData(),
-		})
-	}))
 
 	// Alert callbacks run outside request contexts. Bootstrap the identity
 	// from the exact run already observed by this internal manager, then
@@ -1580,9 +1624,27 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		}
 		return r, store.WithIdentity(ctx, r.TenantID, r.OwnerID), nil
 	}
-	runLookup := func(id string) (string, bool) {
+	runLookup := func(id string, obs store.RunObservation, registered bool) (string, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if registered {
+			// A registered run resolves under its captured observation: the
+			// name is the birth's, never whatever run holds the ID now.
+			bound, err := alertObservationContext(ctx, obs)
+			if err != nil {
+				return "", false
+			}
+			r, err := s.store.LoadRun(bound, id)
+			if err != nil || r == nil {
+				// A successor refused the bound read: no name decorates the
+				// alert, and the by-ID fallback stays out of reach (R3).
+				return "", false
+			}
+			if r.Name != "" {
+				return r.Name, true
+			}
+			return r.WorkflowName, true
+		}
 		r, _, err := loadAlertRun(ctx, id)
 		if err != nil || r == nil {
 			return "", false
@@ -1596,7 +1658,37 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
-		alert.WithHumanWaitLookup(func(ctx context.Context, id string, now time.Time) bool {
+		// The wait probe splits the root from its descendants (F11): the
+		// root read validates under the captured binding (a successor is
+		// refused), then the traversal runs on a tenant-stamped UNBOUND
+		// context — the root's run binding must not refuse each child's
+		// load, or a genuinely paused descendant reads as absent and the
+		// watchdog false-stalls.
+		alert.WithHumanWaitLookup(func(ctx context.Context, id string, obs store.RunObservation, registered bool, now time.Time) bool {
+			if registered {
+				bound, err := alertObservationContext(ctx, obs)
+				if err != nil {
+					return false
+				}
+				// The root is validated under the captured binding and the
+				// VALIDATED row is pinned into the traversal (M4): a
+				// replacement between the two reads must not decide this
+				// stall on the successor's data. Descendants traverse on a
+				// tenant-stamped unbound context — the root's run binding
+				// must not refuse each child's load, or a genuinely paused
+				// descendant reads as absent and the watchdog false-stalls.
+				root, err := s.store.LoadRun(bound, id)
+				if err != nil || root == nil {
+					return false
+				}
+				unbound := store.WithoutRunDataBinding(ctx)
+				if tenant := obs.TenantID(); tenant != "" {
+					unbound = store.WithIdentity(unbound, tenant, "")
+				} else {
+					unbound = store.WithoutTenantFilter(unbound)
+				}
+				return store.HasBlockingHumanWaitWithRoot(unbound, s.store, root, id, now)
+			}
 			_, ctx, err := loadAlertRun(ctx, id)
 			if err != nil {
 				return false
@@ -1607,34 +1699,95 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
 	}
+	// The legacy broker carrier (fact 13): the manager publishes every
+	// fired alert inline along its captured route — stamped when the run
+	// was registered, unstamped (today's shape) otherwise. Unbound and
+	// wrapper consumers keep this carrier; merges holding the registry
+	// lane dedup it per-merge.
+	if s.broker != nil {
+		opts = append(opts, alert.WithLegacyAlertPublish(func(evt store.Event) {
+			s.broker.Publish(evt)
+		}))
+	}
 	// Persisted twin: append every alert as a durable run_health event
 	// so the stall episode survives a WS reconnect and shows in the
 	// timeline. Loop-free by construction — Observe ignores
 	// EventRunHealth — and best-effort: an append failure is logged,
 	// never blocks alerting.
+	//
+	// The twin lands under the registration captured at the alert's birth
+	// (F10): the capability check runs BEFORE any write (F17), and once an
+	// observed append was ATTEMPTED the by-ID append is out of reach — a
+	// refusal after a partial write must never replay a second row.
 	if s.store != nil {
-		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
+		opts = append(opts, alert.WithStoreSink(func(a alert.Alert, obs store.RunObservation, registered bool) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, ctx, err := loadAlertRun(ctx, a.RunID)
-			if err != nil {
-				if s.logger != nil {
-					s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
-				}
-				return
-			}
-			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
+			evt := store.Event{
 				Type:      store.EventRunHealth,
 				RunID:     a.RunID,
 				NodeID:    a.NodeID,
 				Timestamp: a.Timestamp,
 				Data:      a.AsEventData(),
-			}); err != nil && s.logger != nil {
-				s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+			}
+			if !registered {
+				// A run nobody registered keeps today's by-ID append.
+				_, ctx, err := loadAlertRun(ctx, a.RunID)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+					}
+					return
+				}
+				if _, err := s.store.AppendEvent(ctx, a.RunID, evt); err != nil && s.logger != nil {
+					s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+				}
+				return
+			}
+			if err := store.RequireEventObservationProducer(s.store); err != nil {
+				// A store without the observed-producer capability keeps
+				// today's by-ID append — detected before any write (F17).
+				_, ctx, err := loadAlertRun(ctx, a.RunID)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+					}
+					return
+				}
+				if _, err := s.store.AppendEvent(ctx, a.RunID, evt); err != nil && s.logger != nil {
+					s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+				}
+				return
+			}
+			bound, err := alertObservationContext(ctx, obs)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("alert: bind run_health for %s to its registration: %v", a.RunID, err)
+				}
+				return
+			}
+			if _, err := store.AppendObservedEvent(bound, s.store, a.RunID, evt); err != nil && s.logger != nil {
+				// Any error AFTER the attempt — identity changed, capability,
+				// store failure — logs and stops: the append may have landed,
+				// so a by-ID replay could double-persist the row.
+				s.logger.Warn("alert: persist run_health for %s under its registration: %v", a.RunID, err)
 			}
 		}))
 	}
 	return alert.NewManager(opts...)
+}
+
+// alertObservationContext restores a captured registration's identity for
+// store reads and writes under the alert manager's callbacks: the tenant
+// (or an explicit no-filter for local runs), then the observation's header
+// as the read/write binding — a successor is refused, not adopted (F10).
+func alertObservationContext(ctx context.Context, obs store.RunObservation) (context.Context, error) {
+	if tenant := obs.TenantID(); tenant != "" {
+		ctx = store.WithIdentity(ctx, tenant, "")
+	} else {
+		ctx = store.WithoutTenantFilter(ctx)
+	}
+	return store.BindRunObservation(ctx, obs)
 }
 
 // Broker exposes the event broker for transports that need to

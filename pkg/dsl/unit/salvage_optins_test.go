@@ -839,7 +839,12 @@ var unsafeFiles = map[string]string{
 // import, UnsafePointer and NewAt read an unexported field — a view's unit —
 // as a value of its type, and the read-only mark of the field does not hold
 // it. None does today.
-var reflectPointerFiles = map[string]string{}
+var reflectPointerFiles = map[string]string{
+	"pkg/backend/model/output_correction_ownership.go": "identity-only memoization while copying cyclic values; no pointer reconstruction or hidden field access",
+	"pkg/dsl/expr/numeric_format.go":                   "identity-only active-path cycle detection; values stay rooted in the active map",
+	"pkg/recordcodec/plan.go":                          "identity-only metadata cycle detection; no reconstructed pointer or access to unexported fields",
+	"pkg/valuecodec/encode.go":                         "identity-only exact-value cycle detection; no pointer reconstruction or dereference through an address",
+}
 
 // reflectPointerMethods are the reflect.Value methods that hand out an
 // address: a pointer to read any value as any type through.

@@ -1065,20 +1065,27 @@ func (s *RunRetryState) ProbeInFlight(now time.Time) bool {
 // raises the run budget; it does not consume another correction attempt by
 // itself.
 type OutputCorrectionEpisode struct {
-	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
-	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
-	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
-	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
-	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
-	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
-	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
-	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
-	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
-	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
-	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
-	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
+	Generation               string                        `json:"generation,omitempty" bson:"generation,omitempty"`
+	Revision                 int64                         `json:"revision,omitempty" bson:"revision,omitempty"`
+	LedgerKey                string                        `json:"ledger_key,omitempty" bson:"ledger_key,omitempty"`
+	Reservations             []OutputCorrectionReservation `json:"reservations,omitempty" bson:"reservations,omitempty"`
+	Usage                    OutputCorrectionUsage         `json:"usage,omitempty" bson:"usage,omitempty"`
+	TerminalKind             string                        `json:"terminal_kind,omitempty" bson:"terminal_kind,omitempty"`
+	Cause                    *OutputCorrectionCause        `json:"cause,omitempty" bson:"cause,omitempty"`
+	EpisodeID                string                        `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string                        `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string                        `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int                           `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int                           `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string                        `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string                        `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string                        `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string                        `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string                        `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time                     `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time                     `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time                    `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string                        `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
 }
 
 // WatcherCursor is the durable anti-loop cursor for a supervisor/watch
@@ -1176,8 +1183,25 @@ const (
 )
 
 type Run struct {
-	FormatVersion int    `json:"format_version" bson:"format_version"`
-	ID            string `json:"id" bson:"_id"`
+	InitialUsageReservations map[string]OutputCorrectionReservation `json:"initial_usage_reservations,omitempty" bson:"initial_usage_reservations,omitempty"`
+	UsageSessionMarks        map[string]float64                     `json:"usage_session_marks,omitempty" bson:"usage_session_marks,omitempty"`
+
+	// BirthID identifies one durable birth, independently of execution claims.
+	// The store assigns it once; metadata and pause/resume preserve it. Empty
+	// means a historical row without an established birth identity.
+	BirthID string `json:"birth_id,omitempty" bson:"birth_id,omitempty"`
+
+	// DataProtocol selects payload ownership independently of numeric format.
+	// Zero is historical; incarnation storage remains unavailable until all
+	// backend payload domains have qualified the new protocol.
+	DataProtocol RunDataProtocol `json:"data_protocol,omitempty" bson:"data_protocol,omitempty"`
+
+	// ExecutionEpoch is store-owned and assigned at birth. Empty is legacy,
+	// never a grant. Claims, status changes and queue publications renew it;
+	// metadata preserves it, including an existing legacy absence.
+	ExecutionEpoch string `json:"execution_epoch,omitempty" bson:"execution_epoch,omitempty"`
+	FormatVersion  int    `json:"format_version" bson:"format_version"`
+	ID             string `json:"id" bson:"_id"`
 	// ExecutionContext is the versioned launch contract. It is optional so
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.
@@ -2310,6 +2334,34 @@ type RunMergeUpdate struct {
 	// took over. Zero skips the check (exits from non-merging states,
 	// which carry no claim).
 	ExpectClaimedAt time.Time
+	// ExpectBirth anchors the exit to the run its caller loaded: a
+	// successor recreated under the same ID answers
+	// ErrRunDataIdentityChanged instead of receiving the original's
+	// outcome. Zero skips the check.
+	ExpectBirth ExpectedBirth
+}
+
+// ExpectedBirth is the birth a merge compare-and-set expects to find. When
+// Check, the CAS also requires the stored birth to equal ID — "" is the
+// historical empty birth, not "unset"; a different birth answers
+// ErrRunDataIdentityChanged. The zero value skips the check.
+type ExpectedBirth struct {
+	ID    string
+	Check bool
+}
+
+// ExpectBirthOf is the expectation of r's own birth; r must be non-nil.
+func ExpectBirthOf(r *Run) ExpectedBirth {
+	return ExpectedBirth{ID: r.BirthID, Check: true}
+}
+
+// Verify answers ErrRunDataIdentityChanged when e checks and the birth
+// stored under runID differs from the expected one.
+func (e ExpectedBirth) Verify(runID, stored string) error {
+	if !e.Check || stored == e.ID {
+		return nil
+	}
+	return fmt.Errorf("store: run %s holds birth %q, expected %q: %w", runID, stored, e.ID, ErrRunDataIdentityChanged)
 }
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
@@ -2535,7 +2587,8 @@ type Checkpoint struct {
 	// the per-run cumulative) keeps climbing after a resume instead of
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
-	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CostUSDTotal         float64               `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	CorrectionAccounting *CorrectionAccounting `json:"correction_accounting,omitempty" bson:"correction_accounting,omitempty"`
 	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
 	// prevents a resumed branch from waiting forever on an event emitted by a
 	// sibling whose durable cursor is already Completed and will not replay.

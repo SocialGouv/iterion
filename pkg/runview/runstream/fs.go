@@ -3,181 +3,531 @@ package runstream
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
-
+	"fmt"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"sync"
+	"time"
 )
 
-// fileTerminalPollInterval bounds how often a FileSource subscription
-// re-reads run.json to detect a terminal status. The foreign run is
-// driven by a different daemon, so there is no in-process completion
-// signal — without this poll the tail would run forever on a finished
-// run (the file simply stops growing, indistinguishable from "still
-// working" by file watch alone). A var so tests can tighten it.
 var fileTerminalPollInterval = 5 * time.Second
 
-// FileSource implements Source over a foreign filesystem store root —
-// the cross-store observation mode (`?store=`): a run owned by another
-// local daemon whose files this process can read but whose broker it
-// cannot reach. Replay goes through the store's range API; the live
-// tail rides the shared fsnotify tailers; termination is detected by
-// polling run.json.
-type FileSource struct {
-	store  store.RunStore
-	root   string
-	logger *iterlog.Logger
+// fileTerminalHook, set by tests, runs after a round reports a terminal
+// status and before the final drain, so a test can land a write in that
+// window. Mutex-guarded: a test sets or clears it while a producer between
+// rounds may still read it.
+var (
+	fileTerminalHookMu sync.Mutex
+	fileTerminalHook   func()
+)
 
-	closeOnce sync.Once
-	closed    chan struct{}
+func setFileTerminalHook(f func()) {
+	fileTerminalHookMu.Lock()
+	defer fileTerminalHookMu.Unlock()
+	fileTerminalHook = f
 }
 
-// NewFileSource builds a Source over the store rooted at root. st must
-// be a RunStore opened on that same root (the caller typically has both
-// from resolving the cross-store request).
-func NewFileSource(st store.RunStore, root string, logger *iterlog.Logger) *FileSource {
+// fileTerminalSettleWindow bounds how long an event stream that observed a
+// terminal status keeps re-draining, every fileTerminalSettleInterval, for the
+// terminal event its writer persists after that status. A run whose terminal
+// event never comes (its emit failed, or it predates them) ends when the
+// window elapses. Vars so tests can widen or tighten them.
+var (
+	fileTerminalSettleWindow   = 500 * time.Millisecond
+	fileTerminalSettleInterval = 25 * time.Millisecond
+)
+
+// FileStreamHints are optional wake inputs of one subscription. They carry no
+// payload: every event and every log byte is still read from the
+// subscription's retained selection and validated there.
+//
+// Drain requests a drain now. Terminal requests the end check now, without
+// the settle wait: the confirmed status takes a final drain and the end
+// check's status read — a run still terminal ends (a terminal event already
+// read ends at once), a run resumed since the check keeps tailing. A
+// non-positive TerminalPoll keeps the default terminal poll interval.
+//
+// Final is the producer's own end of the stream, and it supersedes the status:
+// with Final set, a log subscription no longer ends on a terminal status and
+// TerminalPoll is ignored — the producer keeps writing its finalize after that
+// status. On Final the stream takes one last drain through its cursor and ends
+// (bytes written before the producer declared the end are still delivered); a
+// log file still absent after that last drain is a single clean empty end. A
+// closed Final is a hint that already fired. Nil keeps the status-driven
+// behaviour.
+type FileStreamHints struct {
+	Drain, Terminal, Final <-chan struct{}
+	TerminalPoll           time.Duration
+}
+
+// fileRun is what one selected-file producer runs: its drain, its optional
+// end-of-events barrier (nil for logs), its hints and settle bounds, and its
+// reporting.
+type fileRun struct {
+	id                  string
+	logs                bool
+	drain               func(context.Context) error
+	ended               func() bool
+	hints               FileStreamHints
+	settle, settleEvery time.Duration
+	warn, fail          func(error)
+}
+
+// FileSource borrows a store and owns only its subscriptions. Payload IO is
+// selected by the store; the legacy root argument is never an IO authority.
+type FileSource struct {
+	store   store.RunStore
+	logger  *iterlog.Logger
+	mu      sync.Mutex
+	closed  bool
+	active  map[uint64]context.CancelCauseFunc
+	next    uint64
+	workers sync.WaitGroup
+}
+
+func NewFileSource(st store.RunStore, _ string, logger *iterlog.Logger) *FileSource {
 	if logger == nil {
 		logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
-	return &FileSource{store: st, root: root, logger: logger, closed: make(chan struct{})}
+	return &FileSource{store: st, logger: logger}
 }
 
-// Close cancels every subscription spawned from this source.
+// Close cancels every open subscription with ErrSourceClosed, which each one
+// publishes before it ends, and joins them.
 func (f *FileSource) Close() error {
-	f.closeOnce.Do(func() { close(f.closed) })
+	f.mu.Lock()
+	f.closed = true
+	for _, cancel := range f.active {
+		cancel(ErrSourceClosed)
+	}
+	f.mu.Unlock()
+	f.workers.Wait()
 	return nil
 }
-
-// SubscribeEvents replays the persisted backlog through the store's
-// range API, then tails the foreign events.jsonl (deduping the overlap
-// by seq) until the run reaches a terminal status, the subscription is
-// closed, or ctx is cancelled. On terminal detection a final drain
-// flushes the tail before the channel closes.
-func (f *FileSource) SubscribeEvents(ctx context.Context, runID string, fromSeq int64) (EventSubscription, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+func (f *FileSource) register(ctx context.Context) (context.Context, context.CancelCauseFunc, <-chan struct{}, func(), error) {
+	if ctx == nil {
+		return nil, nil, nil, nil, store.ErrInvalidRunDataIdentity
 	}
-	pipe := NewEventPipe()
-
-	go func() {
-		defer pipe.Finish(nil)
-
-		// Phase 1 — paginated replay. Load errors are non-fatal for a
-		// foreign store (the file tail below is the authoritative
-		// fallback); they just end the replay early.
-		maxReplayed, err := ReplayEvents(ctx, f.store, runID, fromSeq, pipe)
-		if err != nil {
-			f.logger.Warn("runstream: cross-store replay (%s): %v", runID, err)
-		}
-
-		// Phase 2 — live file tail. lastSeq is only touched from the
-		// tailer goroutine (after the replay above completed), so the
-		// dedup needs no lock.
-		lastSeq := maxReplayed
-		emit := func(evt store.Event) {
-			if evt.Seq <= lastSeq {
-				return
-			}
-			e := evt
-			if !pipe.Ship(ctx, []*store.Event{&e}) {
-				return
-			}
-			lastSeq = evt.Seq
-		}
-		eventsPath := filepath.Join(f.root, "runs", runID, "events.jsonl")
-		f.tailUntilTerminal(ctx, runID, pipe.Done(), func(done <-chan struct{}) {
-			TailEventsFile(eventsPath, done, emit, f.logger)
+	if e := ctx.Err(); e != nil {
+		return nil, nil, nil, nil, e
+	}
+	c, cancel := context.WithCancelCause(ctx)
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		cancel(ErrSourceClosed)
+		return nil, nil, nil, nil, ErrSourceClosed
+	}
+	if f.active == nil {
+		f.active = make(map[uint64]context.CancelCauseFunc)
+	}
+	f.next++
+	id := f.next
+	f.active[id] = cancel
+	f.workers.Add(1)
+	f.mu.Unlock()
+	done := make(chan struct{})
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			cancel(context.Canceled)
+			f.mu.Lock()
+			delete(f.active, id)
+			f.mu.Unlock()
+			close(done)
+			f.workers.Done()
 		})
-	}()
+	}
+	return c, cancel, done, finish, nil
+}
 
+// failIfSourceClosed publishes ErrSourceClosed when the subscription ends
+// because its source was closed, so the end is not a clean completion.
+func failIfSourceClosed(ctx context.Context, fail func(error)) {
+	if errors.Is(context.Cause(ctx), ErrSourceClosed) {
+		fail(ErrSourceClosed)
+	}
+}
+
+// openRetained opens the subscription's retained selection. A transient
+// failure (a permission, descriptor exhaustion, an I/O error) is a warning
+// and the open is retried with the stream's backoff; a permanent refusal fails
+// the subscription; ok is false once the subscription is over.
+func openRetained(ctx context.Context, cap store.FilesystemStreamStore, id string, opts store.FilesystemStreamOpenOptions, warn, fail func(error)) (selection store.FilesystemStreamSelection, observed, ok bool) {
+	delay := 250 * time.Millisecond
+	for {
+		selection, observed, e := cap.OpenFilesystemStream(ctx, id, opts)
+		if e == nil {
+			return selection, observed, true
+		}
+		if IsPermanentError(e) {
+			fail(e)
+			return nil, false, false
+		}
+		if !retryAfter(ctx, fileRetryLabel, e, delay, warn) {
+			return nil, false, false
+		}
+		delay = nextMongoDelay(delay)
+	}
+}
+func (f *FileSource) SubscribeEvents(ctx context.Context, id string, from int64) (EventSubscription, error) {
+	return f.SubscribeEventsCursor(ctx, id, EventCursor{Seq: from})
+}
+func (f *FileSource) SubscribeEventsCursor(ctx context.Context, id string, position EventCursor) (EventSubscription, error) {
+	return f.subscribeEvents(ctx, id, position, FileStreamHints{})
+}
+
+// SubscribeEventsHinted is SubscribeEventsCursor with wake inputs from the
+// subscription's owner. Hints only change when the retained selection is
+// drained or checked for a terminal status, never what is delivered.
+func (f *FileSource) SubscribeEventsHinted(ctx context.Context, id string, position EventCursor, hints FileStreamHints) (EventSubscription, error) {
+	return f.subscribeEvents(ctx, id, position, hints)
+}
+
+func (f *FileSource) subscribeEvents(ctx context.Context, id string, position EventCursor, hints FileStreamHints) (EventSubscription, error) {
+	if hints.TerminalPoll <= 0 {
+		hints.TerminalPoll = fileTerminalPollInterval
+	}
+	settle, settleEvery := fileTerminalSettleWindow, fileTerminalSettleInterval
+	c, cancel, done, finish, e := f.register(ctx)
+	if e != nil {
+		return nil, e
+	}
+	cap := store.AsFilesystemStreamStore(f.store)
+	if cap == nil {
+		finish()
+		return nil, store.ErrRunDataCapability
+	}
+	pipe := NewEventPipeWithClose(func() { cancel(context.Canceled); <-done })
+	go func() {
+		defer finish()
+		defer pipe.Finish(nil)
+		defer failIfSourceClosed(c, pipe.Fail)
+		selection, observed, ok := openRetained(c, cap, id, store.FilesystemStreamOpenOptions{WaitForInitialDirectory: true}, pipe.Warn, pipe.Fail)
+		if !ok {
+			return
+		}
+		if !observed || nilEventSelection(selection) {
+			pipe.Fail(store.ErrRunDataCapability)
+			return
+		}
+		defer selection.Close()
+		cursor := newFileEventDrain(selection, pipe, position.Seq)
+		if cursor.admissionErr != nil {
+			pipe.Fail(cursor.admissionErr)
+			return
+		}
+		cursor.after = position.After
+		defer cursor.Close()
+		f.runSelectedFile(c, selection, fileRun{id: id, drain: cursor.Drain, ended: cursor.Ended, hints: hints, settle: settle, settleEvery: settleEvery, warn: pipe.Warn, fail: pipe.Fail})
+	}()
+	return pipe, nil
+}
+func (f *FileSource) SubscribeLogs(ctx context.Context, id string, from int64) (LogSubscription, error) {
+	return f.subscribeLogs(ctx, id, from, FileStreamHints{})
+}
+
+// SubscribeLogsHinted is SubscribeLogs with wake inputs: a bound reader wakes
+// the subscription instead of relying on the file watcher alone, and Final
+// makes the producer — not the status — the end of the stream (FileStreamHints).
+func (f *FileSource) SubscribeLogsHinted(ctx context.Context, id string, from int64, hints FileStreamHints) (LogSubscription, error) {
+	return f.subscribeLogs(ctx, id, from, hints)
+}
+
+func (f *FileSource) subscribeLogs(ctx context.Context, id string, from int64, hints FileStreamHints) (LogSubscription, error) {
+	c, cancel, done, finish, e := f.register(ctx)
+	if e != nil {
+		return nil, e
+	}
+	cap := store.AsFilesystemStreamStore(f.store)
+	if cap == nil {
+		finish()
+		return nil, store.ErrRunDataCapability
+	}
+	pipe := NewLogPipeWithClose(func() { cancel(context.Canceled); <-done })
+	go func() {
+		defer finish()
+		defer pipe.Finish(nil)
+		defer failIfSourceClosed(c, pipe.Fail)
+		selection, observed, ok := openRetained(c, cap, id, store.FilesystemStreamOpenOptions{}, pipe.Warn, pipe.Fail)
+		if !ok || !observed {
+			return
+		}
+		if selection == nil {
+			pipe.Fail(store.ErrRunDataCapability)
+			return
+		}
+		defer selection.Close()
+		cursor := newFileLogDrain(selection, pipe, from)
+		defer cursor.Close()
+		// Absence is valid only after the retained observation was checked. A
+		// joined identity/missing error must never be an empty successful log;
+		// a transient failure of the check is retried like the open.
+		delay := 250 * time.Millisecond
+		for {
+			file, e := selection.OpenLog(c)
+			if IsPermanentError(e) {
+				pipe.Fail(e)
+				return
+			}
+			if isFileMissing(e) {
+				if hints.Final == nil {
+					return
+				}
+				// Final promises a future end, not a finished file: a run that
+				// has not written its first byte yet is normal. Watch the
+				// selection — the creation of the file and every wake drain it
+				// — and let Final end the stream through the round's own final
+				// drain (an absent file then ends it cleanly, once).
+				break
+			}
+			if e != nil {
+				retry, final := retryAfterOrFinal(c, hints.Final, fileRetryLabel, e, delay, pipe.Warn)
+				if final {
+					drainCommittedFileLog(c, cursor.Drain, pipe.Warn, pipe.Fail)
+				}
+				if !retry {
+					return
+				}
+				delay = nextMongoDelay(delay)
+				continue
+			}
+			if file == nil {
+				pipe.Fail(store.ErrRunDataCapability)
+				return
+			}
+			file.Close()
+			break
+		}
+		f.runSelectedFile(c, selection, fileRun{id: id, logs: true, drain: cursor.Drain, hints: hints, warn: pipe.Warn, fail: pipe.Fail})
+	}()
 	return pipe, nil
 }
 
-// SubscribeLogs streams the foreign run.log from fromOffset. A missing
-// file at subscribe time means it will never exist for this run (every
-// producer that writes run.log creates it before the first event), so
-// the stream closes immediately instead of polling forever.
-func (f *FileSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (LogSubscription, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	pipe := NewLogPipe()
-
-	logPath := filepath.Join(f.root, "runs", runID, "run.log")
-	if _, err := os.Stat(logPath); errors.Is(err, os.ErrNotExist) {
-		pipe.Finish(nil)
-		return pipe, nil
-	}
-
-	go func() {
-		defer pipe.Finish(nil)
-
-		// The tailer drains from byte 0; dedup/slice against the
-		// delivered high-water mark so fromOffset semantics match every
-		// other backend. The chunk aliases the tailer's scratch buffer
-		// (TailLogFile's emit contract) — copy before shipping, since
-		// the pipe retains it.
-		delivered := fromOffset
-		emit := func(off int64, chunk []byte) {
-			if off+int64(len(chunk)) <= delivered {
-				return
-			}
-			cp := make([]byte, len(chunk))
-			copy(cp, chunk)
-			delivered, _ = ShipLogChunk(ctx, pipe, off, cp, delivered)
-		}
-		f.tailUntilTerminal(ctx, runID, pipe.Done(), func(done <-chan struct{}) {
-			TailLogFile(logPath, done, emit, f.logger)
-		})
-	}()
-
-	return pipe, nil
+type fileRound struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	terminal bool
+	// hinted is true when the terminal status was confirmed on a Terminal
+	// hint, the producer's own end-of-events barrier.
+	hinted bool
+	// final is true when the round ended on FileStreamHints.Final, the
+	// producer's own end of the stream. Written before done closes.
+	final bool
+	err   error
 }
 
-// tailUntilTerminal runs tail (a blocking file tailer parametrised by
-// its stop channel) until the run reaches a terminal status, the
-// subscription closes, the source closes, or ctx ends. Closing the stop
-// channel makes the tailer flush a final drain before returning, so the
-// wait guarantees every byte/event persisted before termination was
-// emitted.
-func (f *FileSource) tailUntilTerminal(ctx context.Context, runID string, subDone <-chan struct{}, tail func(done <-chan struct{})) {
-	tailDone := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		tail(tailDone)
-	}()
-	stop := func() {
-		close(tailDone)
-		wg.Wait()
+func newFileRound(ctx context.Context, s store.FilesystemStreamSelection, hints FileStreamHints) *fileRound {
+	if hints.TerminalPoll <= 0 {
+		hints.TerminalPoll = fileTerminalPollInterval
 	}
+	c, cancel := context.WithCancel(ctx)
+	r := &fileRound{ctx: c, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		if hints.Final != nil {
+			// The producer owns the end: a status does not end the round and
+			// the terminal poll is off. Final fires once and only once.
+			select {
+			case <-c.Done():
+			case <-hints.Final:
+				r.final = true
+				cancel()
+			}
+			return
+		}
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		check := func(hinted bool) bool {
+			terminal, e := s.Terminal(c)
+			if e != nil || terminal {
+				r.terminal, r.hinted, r.err = terminal, hinted, e
+				cancel()
+				return true
+			}
+			return false
+		}
+		// A closed hint channel is a hint that never fires again.
+		terminalHint := hints.Terminal
+		for {
+			select {
+			case <-c.Done():
+				return
+			case _, open := <-terminalHint:
+				if !open {
+					terminalHint = nil
+					continue
+				}
+				if check(true) {
+					return
+				}
+			case <-timer.C:
+				if check(false) {
+					return
+				}
+				timer.Reset(hints.TerminalPoll)
+			}
+		}
+	}()
+	return r
+}
+func (r *fileRound) finish(parent context.Context, e error) (bool, bool, error) {
+	r.cancel()
+	<-r.done
+	if mongoContextErrorOnly(e) && errors.Is(e, context.Canceled) && parent.Err() == nil {
+		e = nil
+	}
+	pollErr := r.err
+	if mongoContextErrorOnly(pollErr) && errors.Is(pollErr, context.Canceled) && parent.Err() == nil {
+		pollErr = nil
+	}
+	return r.terminal, r.hinted, errors.Join(e, pollErr)
+}
+func (f *FileSource) runSelectedFile(ctx context.Context, s store.FilesystemStreamSelection, run fileRun) {
+	eventDir, logDir := s.WatchHints()
+	dir, name := eventDir, "events.jsonl"
+	if run.logs {
+		dir, name = logDir, "run.log"
+	}
+	delay := 250 * time.Millisecond
+	for {
+		round := newFileRound(ctx, s, run.hints)
+		e := watchFileDrains(round.ctx, dir, name, run.drain, run.hints.Drain, f.logger)
+		terminal, hinted, e := round.finish(ctx, e)
+		if IsPermanentError(e) {
+			run.fail(e)
+			return
+		}
+		if ctx.Err() != nil || errors.Is(e, errEventDeliveryStopped) {
+			return
+		}
+		if round.final {
+			drainCommittedFileLog(ctx, run.drain, run.warn, run.fail)
+			return
+		}
+		if terminal && e == nil {
+			fileTerminalHookMu.Lock()
+			terminalHook := fileTerminalHook
+			fileTerminalHookMu.Unlock()
+			if terminalHook != nil {
+				// Test seam: a write landed between the terminal read and the
+				// final drain.
+				terminalHook()
+			}
+			var ended bool
+			ended, e = f.finalDrain(ctx, s, run, hinted)
+			if IsPermanentError(e) {
+				run.fail(e)
+				return
+			}
+			if ended || errors.Is(e, errEventDeliveryStopped) {
+				return
+			}
+			if e == nil {
+				// The run is no longer terminal (resumed): tail it again.
+				continue
+			}
+		}
+		if e == nil {
+			e = fmt.Errorf("runstream: filesystem watch ended")
+		}
+		if !retryAfter(ctx, fileRetryLabel, e, delay, run.warn) {
+			return
+		}
+		delay = nextMongoDelay(delay)
+	}
+}
 
-	ticker := time.NewTicker(fileTerminalPollInterval)
-	defer ticker.Stop()
+// drainCommittedFileLog retries a validated drain on the same cursor without
+// reopening the producer's committed end.
+func drainCommittedFileLog(ctx context.Context, drain func(context.Context) error, warn, fail func(error)) {
+	for delay := 250 * time.Millisecond; ctx.Err() == nil; delay = nextMongoDelay(delay) {
+		err := drain(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		if IsPermanentError(err) {
+			fail(err)
+			return
+		}
+		if !retryAfter(ctx, "runstream/file: retry committed final log drain", err, delay, warn) {
+			return
+		}
+	}
+}
+
+// finalDrain flushes what a terminal run persisted, then holds the stream at
+// the end-of-events barrier: the terminal writers persist the status before
+// the terminal event, so a terminal status alone does not end the events. The
+// events end once the drained ones end with a terminal event. Otherwise a
+// Terminal hint or the end of the settle window runs the end check (settleEnd):
+// the status is read again through the retained selection, so a run resumed
+// after a terminal read keeps its stream; a run still terminal ends it (a
+// status-only terminal write is legitimate). A log stream (no episode) ends at
+// once. ended is false, with a nil error, when the run is no longer terminal
+// and its stream goes on.
+func (f *FileSource) finalDrain(ctx context.Context, s store.FilesystemStreamSelection, run fileRun, hinted bool) (bool, error) {
+	if e := run.drain(ctx); e != nil {
+		return false, e
+	}
+	if run.ended == nil || run.ended() {
+		return true, nil
+	}
+	if hinted {
+		// The hint asked for the check now, without the settle wait: settleEnd
+		// drains again and reads the status, so a run resumed after the
+		// hint's status read keeps its stream.
+		return f.settleEnd(ctx, s, run)
+	}
+	window := time.NewTimer(run.settle)
+	defer window.Stop()
+	tick := time.NewTicker(run.settleEvery)
+	defer tick.Stop()
+	// A closed hint channel is a hint that never fires again.
+	terminalHint, drainHint := run.hints.Terminal, run.hints.Drain
 	for {
 		select {
 		case <-ctx.Done():
-			stop()
-			return
-		case <-subDone:
-			stop()
-			return
-		case <-f.closed:
-			stop()
-			return
-		case <-ticker.C:
-			run, err := f.store.LoadRun(ctx, runID)
-			if err != nil {
+			return false, ctx.Err()
+		case _, open := <-terminalHint:
+			if !open {
+				terminalHint = nil
 				continue
 			}
-			if run.Status.IsTerminal() {
-				stop() // final drain flushes anything written before the flip
-				return
+			return f.settleEnd(ctx, s, run)
+		case <-window.C:
+			return f.settleEnd(ctx, s, run)
+		case _, open := <-drainHint:
+			if !open {
+				drainHint = nil
+				continue
 			}
+		case <-tick.C:
+		}
+		if e := run.drain(ctx); e != nil || run.ended() {
+			return e == nil, e
 		}
 	}
+}
+
+// settleEnd closes the wait for a terminal event: a last drain, then the
+// status read again through the retained selection. A run still terminal
+// ends its events, with or without a terminal event (a status-only terminal
+// write is legitimate); a run resumed meanwhile keeps its stream.
+func (f *FileSource) settleEnd(ctx context.Context, s store.FilesystemStreamSelection, run fileRun) (bool, error) {
+	if e := run.drain(ctx); e != nil {
+		return false, e
+	}
+	if run.ended() {
+		return true, nil
+	}
+	terminal, e := s.Terminal(ctx)
+	if e != nil {
+		return false, e
+	}
+	if terminal {
+		f.logger.Debug("runstream: run %s ends terminal without a terminal event", run.id)
+	}
+	return terminal, nil
 }

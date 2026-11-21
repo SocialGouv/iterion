@@ -890,7 +890,11 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	execCtx = model.WithRunnerHomeScope(execCtx, model.RunnerHomeScopeForBranch(runID, branchID))
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, rs, node, nodeInput)
+	output, err := e.executeCorrectionInvocation(execCtx, rs, currentNodeID, ledgerKey, node, nodeInput)
+	if errors.Is(err, errCorrectionOwnershipLost) {
+		result.err = err
+		return nil, true
+	}
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The branch classifies a cut from what IT knows, as the trunk does
@@ -930,7 +934,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		output = mergeRouterPassThrough(nodeInput, output)
 	}
 
-	validatedOutput, validationErr := e.correctAndValidateNodeOutput(execCtx, rs, currentNodeID, node, output)
+	validatedOutput, validationErr := e.correctAndValidateNodeOutputInScope(execCtx, rs, currentNodeID, ledgerKey, node, output)
 	output = validatedOutput
 	if validationErr != nil {
 		// Charge both the original call and any correction call before the
@@ -976,10 +980,24 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
 // alone.
 func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
+	if accountedInvocation(rs, currentNodeID) {
+		result.spendUncheckpointed = true
+		return findExceeded(rs.budget.Check())
+	}
 	spend := extractSpend(output)
 	costUSD := spend.costUSD
 
-	if e.dailyCap != nil && costUSD > 0 {
+	if rs.correctionAccounts != nil {
+		if err := rs.correctionAccounts.book(ledgerKey, store.OutputCorrectionUsage{Tokens: spend.tokens, CostUSD: spend.costUSD, UnreportedCalls: spend.unreportedCalls}, true); err != nil {
+			result.err = err
+			return nil
+		}
+		if err := rs.correctionAccounts.flushDaily(ctx, e.dailyCap); err != nil {
+			result.err = err
+			return nil
+		}
+		result.spendUncheckpointed = true
+	} else if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
 		// The branch's DURABLE cost cursor just moved — the figure a resume
 		// re-seeds from, and the one the ledger's monotonic-max entry is
@@ -995,7 +1013,12 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 	if rs.budget == nil {
 		return nil
 	}
-	checks := rs.budget.RecordUsage(spend)
+	var checks []budgetCheckResult
+	if rs.correctionAccounts != nil {
+		checks = rs.budget.Check()
+	} else {
+		checks = rs.budget.RecordUsage(spend)
+	}
 	if !spend.empty() {
 		// The run budget just moved in memory. Every exit of this branch that
 		// writes no checkpoint would leave it there: a failed node, a fail
@@ -1031,6 +1054,10 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 // detached from the branch's, so a teardown mid-branch cannot refuse the
 // ledger write it is the last chance to make.
 func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
+	if accountedInvocation(rs, currentNodeID) {
+		result.spendUncheckpointed = true
+		return
+	}
 	spend := extractSpend(output)
 	if spend.empty() {
 		return

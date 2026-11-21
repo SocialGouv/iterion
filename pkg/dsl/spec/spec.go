@@ -586,6 +586,7 @@ var Kinds = append([]Kind{
 			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)"),
 			block("vars", "vars", "Workflow-scoped vars (merged with the file's)"),
 			block("attachments", "attachments", "Workflow-scoped attachments"),
+			block("business_stores", "business_stores", "Expected business-store identities, normalized at launch and inherited by children"),
 			block("budget", "budget", "Run caps, each overridable by the matching run flag"),
 			block("resources", "resources", "Named semaphores and pools nodes lease with needs:"),
 			block("mcp", "mcp", "MCP servers active for the run"),
@@ -605,6 +606,14 @@ var Kinds = append([]Kind{
 			prop("capabilities", ToolList, "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none"),
 			prop("skills", SkillList, "Run-wide skill-library skills"),
 			enum("interaction", "Default interaction mode for the run's nodes that set none", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host"),
+		}},
+	{Name: "business_stores", Role: BlockRole, Opener: "business_stores", Hosts: []string{"workflow"}, Doc: "Declared business stores; no inference from accessed files. A bare block declares none.",
+		Entries: &Entries{Key: StringOrIdent, KeyName: "id", Body: "business_store", SequenceKey: "id", Doc: "One store per entry; the same id may name stores in different namespaces"}},
+	{Name: "business_store", Role: Entry, Opener: "business_stores", Hosts: []string{"business_stores"}, Doc: "Expected store identity; launch refuses missing id/kind and duplicate kind/namespace/id declarations.",
+		Properties: []Property{
+			prop("kind", StringOrIdent, "Store kind"),
+			prop("namespace", StringOrIdent, "Logical namespace"),
+			prop("required", Bool, "The declared store is required (default false); does not itself add an admission gate"),
 		}},
 	{Name: "budget", Role: BlockRole, Opener: "budget", Hosts: []string{"workflow"}, Doc: "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
 		Properties: []Property{

@@ -290,7 +290,7 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// failed for any reason under wait_all (their results would be
 			// discarded anyway, so paying for them is pure waste).
 			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(plan.cancelOnFirstFailure) {
+				if errors.Is(result.err, errCorrectionOwnershipLost) || errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || e.siblingsCancelled(plan.cancelOnFirstFailure) {
 					cancelBranches()
 				}
 			}
@@ -384,6 +384,17 @@ func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context,
 				results = e.recordAbandonedBranches(rs, routerNodeID, mode, expected, results)
 			}
 			collected = total
+		}
+	}
+	for _, result := range results {
+		if result != nil && errors.Is(result.err, errCorrectionOwnershipLost) {
+			var causes []error
+			for _, r := range results {
+				if r != nil {
+					causes = append(causes, r.err)
+				}
+			}
+			return results, errors.Join(causes...)
 		}
 	}
 	if amb := firstAmbiguousBranchErr(byBranchID(results)); amb != nil {

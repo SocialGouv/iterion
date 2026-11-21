@@ -333,7 +333,9 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 	}
 	switch decision {
 	case routing.DecisionMerge:
-		req := runview.MergeRequest{}
+		// The merge lands on the run decided on: PerformMergeCtx reloads by
+		// ID, and a successor recreated under it since is refused, typed.
+		req := runview.MergeRequest{ExpectBirth: store.ExpectBirthOf(run)}
 		if run.RoutingPolicy != nil {
 			if run.RoutingPolicy.MergeInto != "" {
 				req.MergeInto = run.RoutingPolicy.MergeInto

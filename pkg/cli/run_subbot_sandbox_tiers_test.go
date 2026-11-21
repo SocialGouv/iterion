@@ -64,7 +64,11 @@ func buildExecutorForTest(t *testing.T, opts RunOptions, tiers sandboxTiersClaim
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	exec, err := buildRunExecutor(opts, tiers, wf, s, lineage{runID: "run-1"}, storeDir, iterlog.Nop(), "", nil, "bot", nil)
+	invocation, err := store.PrepareRunInvocation(t.Context(), s, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: "run-1", WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec, err := buildRunExecutor(invocation.Context, opts, tiers, wf, s, lineage{runID: "run-1"}, storeDir, iterlog.Nop(), "", nil, "bot", nil)
 	if err != nil {
 		t.Fatalf("buildRunExecutor: %v", err)
 	}

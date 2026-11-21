@@ -170,7 +170,11 @@ func buildRunLevelExecutor(t *testing.T, src, runBackend string, rows []ModelOve
 	if serr != nil {
 		t.Fatal(serr)
 	}
-	spec := ExecutorSpec{Ctx: context.Background(), Store: st, RunID: "run-level", Workflow: wf, WorkDir: t.TempDir(),
+	invocation, err := store.PrepareRunInvocation(context.Background(), st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: "run-level", WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ExecutorSpec{Ctx: invocation.Context, Store: st, RunID: "run-level", Workflow: wf, WorkDir: t.TempDir(),
 		Backend: runBackend, ModelOverrides: toModelOverrides(rows), Logger: iterlog.Nop()}
 	if tweak != nil {
 		tweak(&spec)

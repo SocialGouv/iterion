@@ -12,13 +12,13 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -757,11 +757,15 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// context.DeadlineExceeded and fails the node cleanly. Compile-time
 	// validation (C122) already rejects malformed durations, so a parse
 	// error here is defensive: skip the bound rather than fail the node.
+	var correctionDeadline time.Time
+	var correctionTimeout time.Duration
 	if f.timeout != "" {
 		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
+			correctionTimeout = d
+			correctionDeadline = time.Now().Add(d)
 			runCtx := ctx
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, d)
+			ctx, cancel = context.WithDeadline(ctx, correctionDeadline)
 			defer cancel()
 			nodeCtx := ctx
 			// This bound is the ENGINE's, so the cut it makes is named here
@@ -816,7 +820,13 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// return, its `timeout:` cut, a panic unwinding. Deferred before the task
 	// is built so a failure DURING the build cannot leave a minted token
 	// behind — boardTokenFor runs inside buildTask.
-	defer sess.revokeBoardToken(e.boardRevoke)
+	lifetime := &correctionLifetime{revoke: func() { sess.revokeBoardToken(e.boardRevoke) }}
+	transferred := false
+	defer func() {
+		if !transferred {
+			lifetime.release()
+		}
+	}()
 	task, err := e.buildTask(ctx, node, f, input, backendName, sess)
 	if err != nil {
 		return nil, err
@@ -845,7 +855,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// against the primary backend; fall-through elements inherit the dir
 	// below so a route change does not drop MEMORY.md mid-node.
 	syncAutoMemory := e.applyAutoMemory(ctx, &task, f, backendName)
-	defer syncAutoMemory()
+	lifetime.syncMemory = syncAutoMemory
 
 	chain := collapseHintOnlyChain(e.resolveChain(node), backendName)
 	build := e.newElementBuilder(f.id, backendName, backend,
@@ -1014,7 +1024,24 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// IR regression or a programmatic schema-map mutation.
 	if f.outputSchema != "" {
 		if schema, ok := e.schemas[f.outputSchema]; ok {
-			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
+			failure, prepareErr := e.prepareOutputCorrection(ctx, node, f, servingBackendName, servingBackend, servingTask, result, schema, out, correctionDeadline, correctionTimeout, lifetime)
+			if prepareErr != nil {
+				return meteredFailureOutput(out, servingBackendName), prepareErr
+			}
+			if failure != nil {
+				output := meteredFailureOutput(out, servingBackendName)
+				transferred = true
+				return output, failure
+			}
+			// Ownership is an invocation contract, including an ineligible answer.
+			// Absence of a correction handle must not buy a legacy retry.
+			validated := result
+			var err error
+			if _, owned := OutputCorrectionOwnershipFromContext(ctx); owned {
+				err = ValidateOutputWithRegistry(result.Output, schema, e.schemas)
+			} else {
+				validated, err = e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
+			}
 			if err != nil {
 				// The node failed AFTER the model answered and the call was
 				// paid for — often twice, since a retry-eligible failure

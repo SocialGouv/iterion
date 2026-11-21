@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -24,8 +25,10 @@ func TestExecutorCorrectionStopsOnUnchangedAnswer(t *testing.T) {
 	st := tmpStore(t)
 	exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithBackendRegistry(reg))
 	eng := New(wf, st, exec, WithOutputCorrectionBudget(2))
-	if err := eng.Run(context.Background(), "unchanged", nil); err == nil {
-		t.Fatal("invalid output accepted")
+	executionErr := eng.Run(context.Background(), "unchanged", nil)
+	var schemaErr *model.OutputSchemaError
+	if !errors.As(executionErr, &schemaErr) || !schemaErr.Unchanged {
+		t.Fatalf("unchanged terminal reason lost: %v", executionErr)
 	}
 	run, err := st.LoadRun(context.Background(), "unchanged")
 	if err != nil {

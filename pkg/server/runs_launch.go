@@ -134,8 +134,13 @@ type launchRunRequest struct {
 	// repository that owns one failed run's workflow source. The host resolves
 	// provenance, injects a bounded attested failure envelope, and enforces an
 	// isolated no-merge worktree.
-	SourceRunID  string `json:"source_run_id,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+	SourceRunID string `json:"source_run_id,omitempty"`
+	// SourceRunBirth is the birth the caller expects of SourceRunID
+	// (checkCarriedBirth): a source replaced under its ID is refused 409
+	// run_origin_lost instead of delegated in the original's place.
+	// Optional; "historical" expects a run with no birth.
+	SourceRunBirth string `json:"source_run_birth,omitempty"`
+	Instructions   string `json:"instructions,omitempty"`
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
 	// records it on Run.Preset for resume.
@@ -772,8 +777,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var err error
-		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.Instructions, req.Vars)
+		req.Vars, delegationTarget, req.RunID, delegation, err = s.prepareRunDelegation(r.Context(), req.SourceRunID, req.SourceRunBirth, req.Instructions, req.Vars)
 		if err != nil {
+			if carriedBirthFailure(err) {
+				s.writeCarriedBirthFailure(w, r, err)
+				span.SetStatus(codes.Error, "source run origin")
+				return
+			}
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
 			return
 		}
@@ -1188,6 +1198,17 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// A failure of a resume the gate admitted on its expected birth answers
+	// run_origin_lost when the run behind the ID is no longer that birth
+	// (writeActionFailure), whichever step refused it. Its load below stays
+	// unbound (the subject and the source are resolved from it); Resume
+	// verifies the run it re-enters against expect, and the upload promotion
+	// is bound to the admitted run.
+	origin := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, origin)
+	if !ok {
+		return
+	}
 	var (
 		gateMeta    *store.Run
 		gateMetaErr = errors.New("run service unavailable")
@@ -1207,6 +1228,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)
 	if d != nil {
+		// The subject was read from the run behind the ID now: on a lost
+		// origin the denial judged another run, and the loss is the answer.
+		if s.writeActionFailure(w, r, origin, d.err()) {
+			return
+		}
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -1245,6 +1271,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// one, and its TenantID scopes the resume's Mongo queries (see below).
 	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
+		if s.writeActionFailure(w, r, origin, err) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		span.SetStatus(codes.Error, "run not found")
 		return
@@ -1270,6 +1300,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta,
 	)
 	if pathErr != nil {
+		// Resolved from the run read above: on a lost origin, another run's.
+		if s.writeActionFailure(w, r, origin, pathErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
 		s.httpSourcePathError(w, r, pathErr, "%v")
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
@@ -1328,8 +1363,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			resumeLB.stampResumeBundle(&pfSpec)
 		}
 		if pfErr := s.runs.PreflightResume(ctx, pfSpec); pfErr != nil {
-			s.writeResumeError(w, r, pfErr)
 			span.RecordError(pfErr)
+			if s.writeActionFailure(w, r, origin, pfErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.writeResumeError(w, r, pfErr)
 			span.SetStatus(codes.Error, "resume preflight failed")
 			return
 		}
@@ -1337,10 +1376,19 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		if runMeta.Checkpoint != nil {
 			pausedNode = runMeta.Checkpoint.PausedNodeID()
 		}
-		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
+		promoteCtx, ok := s.bindAction(w, r, origin, ctx)
+		if !ok {
+			span.SetStatus(codes.Error, "scope unavailable")
+			return
+		}
+		promoted, promoteErr := s.promoteAnswerUploads(promoteCtx, id, pausedNode, answers, req.Attachments)
 		if promoteErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.RecordError(promoteErr)
+			if s.writeActionFailure(w, r, origin, promoteErr) {
+				span.SetStatus(codes.Error, "run origin lost")
+				return
+			}
+			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
 			span.SetStatus(codes.Error, "attach upload failed")
 			return
 		}
@@ -1359,12 +1407,17 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// What the gate above judged on the run it read: the run service
 		// refuses the resume when the document it re-enters names another
 		// trust or another fork author subject.
-		Admitted: gateAdmitted(subj, adm),
+		Admitted:     gateAdmitted(subj, adm),
+		ExpectOrigin: expect,
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.RecordError(historyErr)
+		if s.writeActionFailure(w, r, origin, historyErr) {
+			span.SetStatus(codes.Error, "run origin lost")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "project assistant chat history: %v", historyErr)
 		span.SetStatus(codes.Error, "chat history projection failed")
 		return
 	}
@@ -1386,6 +1439,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// routine and must not meter the studio's own chat.
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
+		}
+		if s.writeActionFailure(w, r, origin, err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "run origin lost")
+			return
 		}
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)

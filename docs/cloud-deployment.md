@@ -701,6 +701,23 @@ them:
 > `MinSchemaVersion` alone additionally allows runner-first, which rejects
 > nothing and needs neither a drained queue nor a resume of parked runs.
 
+> **Writers before birth identities.** A server compares the run's birth
+> identity: its run socket, and every run-addressed request that names the
+> birth it expects (the studio's). A released v6.0.x runner, dispatcher or CLI
+> drops `birth_id` when it rewrites a run, so during a mixed-version window a
+> newer server reads that same run as replaced: its socket answers
+> `snapshot_failed` or `run_origin_lost` and closes `scope_lost`, a request
+> answers HTTP 409 `run_origin_lost`, and a reload recovers. Roll writers no
+> later than servers, and keep no pre-birth writer on a shared store
+> ([run origin](agents/engine/run-ws-origin.md)). `ITERION_RUN_BIRTH_CHECK=0`
+> on the server admits every HTTP and body expectation unchecked — it ends the
+> 409s of such a window, not the rest: a run socket stays bound to the birth it
+> opened on and still closes `scope_lost` when a writer drops it, and the
+> studio still marks a run lost when a snapshot shows another birth. Only
+> rolling the writers ends those. Keep the Mongo URI's read preference
+> primary: the check reads through it, and the server warns at startup
+> otherwise.
+
 ### Pinning the image
 
 `image.tag` accepts a **moving** tag (`edge`, `main`, `latest`) and many

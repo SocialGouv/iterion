@@ -49,9 +49,11 @@ func TestDelegateMetadataUsesOnlyHarnessCounters(t *testing.T) {
 func TestDelegateOutputExitsUseTheMetadataBoundary(t *testing.T) {
 	t.Parallel()
 	for file, names := range map[string][]string{
-		"executor_build_task.go": {"meteredFailureOutput", "executeBackend", "validateAndRetry", "extractStructuredViaClaw"},
-		"executor_router.go":     {"executeLLMRouterUnified"},
-		"claw_backend.go":        {"executeViaSandboxRunner"},
+		"executor_build_task.go":       {"meteredFailureOutput", "executeBackend"},
+		"output_correction_round.go":   {"setCandidate"},
+		"output_correction_extract.go": {"extractStructuredCorrection"},
+		"executor_router.go":           {"executeLLMRouterUnified"},
+		"claw_backend.go":              {"executeViaSandboxRunner"},
 	} {
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 		if err != nil {

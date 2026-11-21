@@ -56,7 +56,10 @@ func TestAResumedExecutorReadsTheStoredInputsAtTheirDeclaredType(t *testing.T) {
 		"labels": "a11y,rgaa",
 		"zz":     "undeclared",
 	}}
-	ne, err := buildResumeExecutor(ResumeOptions{RunID: run.ID}, cr.Workflow, st, storeDir, nil, run, nil)
+	if err := st.SaveRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	ne, err := buildResumeExecutor(boundLegacySubbotFixture(t, t.Context(), run.ID), ResumeOptions{RunID: run.ID}, cr.Workflow, st, storeDir, nil, run, nil)
 	if err != nil {
 		t.Fatalf("buildResumeExecutor: %v", err)
 	}

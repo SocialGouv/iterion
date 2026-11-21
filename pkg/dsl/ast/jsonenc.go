@@ -996,18 +996,19 @@ type jsonFailDecl struct {
 type jsonWorkflowDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File           string                `json:"file,omitempty"`
-	Name           string                `json:"name,omitempty"`
-	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry          string                `json:"entry,omitempty"`
-	Contract       string                `json:"contract,omitempty"`
-	DefaultBackend string                `json:"default_backend,omitempty"`
-	ToolPolicy     []string              `json:"tool_policy,omitempty"`
-	Capabilities   *[]string             `json:"capabilities,omitempty"`
-	Skills         []string              `json:"skills,omitempty"`
-	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	File           string                    `json:"file,omitempty"`
+	Name           string                    `json:"name,omitempty"`
+	Vars           *jsonVarsBlock            `json:"vars,omitempty"`
+	Attachments    *jsonAttachmentsBlock     `json:"attachments,omitempty"`
+	BusinessStores *[]*jsonBusinessStoreDecl `json:"business_stores,omitempty"`
+	Entry          string                    `json:"entry,omitempty"`
+	Contract       string                    `json:"contract,omitempty"`
+	DefaultBackend string                    `json:"default_backend,omitempty"`
+	ToolPolicy     []string                  `json:"tool_policy,omitempty"`
+	Capabilities   *[]string                 `json:"capabilities,omitempty"`
+	Skills         []string                  `json:"skills,omitempty"`
+	MCP            *jsonMCPConfigDecl        `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock          `json:"budget,omitempty"`
 	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
 	// (a block the canvas created and did not fill in, or a plain file's) is
 	// `{}`, an absent block is no key — with a plain map, omitempty would
@@ -1783,6 +1784,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		DefaultBackend:      w.DefaultBackend,
 		ToolPolicy:          w.ToolPolicy,
 		Capabilities:        declaredListToJSON(w.Capabilities),
+		BusinessStores:      businessStoresToJSON(w.BusinessStores),
 		Skills:              w.Skills,
 		MCP:                 mcpConfigToJSON(w.MCP),
 		Compaction:          compactionToJSON(w.Compaction),
@@ -2644,6 +2646,10 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 }
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
+	businessStores, err := businessStoresFromJSON(jw.BusinessStores)
+	if err != nil {
+		return nil, err
+	}
 	w := &WorkflowDecl{
 		Name:                jw.Name,
 		Entry:               jw.Entry,
@@ -2651,6 +2657,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		DefaultBackend:      jw.DefaultBackend,
 		ToolPolicy:          jw.ToolPolicy,
 		Capabilities:        declaredListFromJSON(jw.Capabilities),
+		BusinessStores:      businessStores,
 		Skills:              jw.Skills,
 		MCP:                 mcpConfigFromJSON(jw.MCP),
 		Compaction:          compactionFromJSON(jw.Compaction),

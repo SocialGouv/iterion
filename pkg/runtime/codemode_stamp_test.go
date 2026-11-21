@@ -27,7 +27,7 @@ func TestAnOverrideOnlyEngineStampsTheRunDoc(t *testing.T) {
 		WithLogger(iterlog.Nop()),
 		WithCodemodeOverride("off", bounds),
 	)
-	run, err := e.runResolveDoc(context.Background(), "run-override-only", nil)
+	_, run, err := e.runResolveDoc(context.Background(), "run-override-only", nil)
 	if err != nil {
 		t.Fatalf("runResolveDoc: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestAnOverrideOnlyEngineStampsTheRunDoc(t *testing.T) {
 	// And the persisted value survives a SECOND pass that carries no
 	// override (the silent resume): the absence must not clobber it.
 	e2 := New(pinWorkflow("override-only", nil), s, newStubExecutor(), WithLogger(iterlog.Nop()))
-	run2, err := e2.runResolveDoc(context.Background(), "run-override-only", nil)
+	_, run2, err := e2.runResolveDoc(context.Background(), "run-override-only", nil)
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}

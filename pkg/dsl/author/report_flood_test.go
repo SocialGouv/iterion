@@ -153,19 +153,19 @@ func TestSeparatorNoticeListsWhatFitsAndCountsTheRest(t *testing.T) {
 }
 
 // A `fallbacks:` written as a mapping is refused with the remedy of a list
-// of routes: the speller completes the refusal its sequence reader just
+// of named entries: the speller completes the refusal its sequence reader just
 // recorded, and no other one.
-func TestFallbacksWrittenAsAMappingSayRoutes(t *testing.T) {
+func TestFallbacksWrittenAsAMappingSayNamedEntries(t *testing.T) {
 	doc := "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    fallbacks:\n      route: spare\n      model: x\n"
 	res := Parse("fallbacks.bot.yaml", []byte(doc))
 	var hit []parser.Diagnostic
 	for _, d := range res.Diagnostics {
-		if strings.Contains(d.Message, "is a list of routes (order is the try order), each `{route: <name>, …}`, not a mapping") {
+		if strings.Contains(d.Message, "is a list of named entries, each `{route: <name>, …}`, not a mapping") {
 			hit = append(hit, d)
 		}
 	}
 	if len(hit) != 1 || hit[0].Line != 6 {
-		t.Fatalf("want the one routes refusal on the mapping's line, got %v", res.Diagnostics)
+		t.Fatalf("want the one named-entry refusal on the mapping's line, got %v", res.Diagnostics)
 	}
 }
 

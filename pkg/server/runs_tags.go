@@ -69,12 +69,23 @@ func (s *Server) handleSetRunTags(w http.ResponseWriter, r *http.Request) {
 	}
 	// Tenant gate: confirm the run exists under the caller's context before
 	// the (tenant-blind on run_id) write, mirroring the other sub-resource
-	// handlers.
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	// handlers. Both are bound to the run the gate admitted, if any.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
-	if err := s.runs.SetRunTagsCtx(r.Context(), id, tags); err != nil {
+	if err := s.runs.SetRunTagsCtx(ctx, id, tags); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "set tags: %v", err)
 		return
 	}

@@ -171,6 +171,8 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_SECURITY_HEADERS":            true,
 	"ITERION_CANONICAL_REDIRECT":          true,
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
+	// The expected-birth comparison of run-addressed requests.
+	"ITERION_RUN_BIRTH_CHECK": true,
 	// Private-network reach (SSRF) and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE": true,
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,

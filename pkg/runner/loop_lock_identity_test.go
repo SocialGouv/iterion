@@ -76,7 +76,7 @@ func TestEnginePathStampsLeaseIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(subbotSrc), "r.cfg.Store.LockRun(childCtx, childRunID)") {
+	if !strings.Contains(string(subbotSrc), "runview.AcquireSubbotLease(ctx, r.cfg.Store, req.ParentRunID, childRunID,") {
 		t.Fatal("the subbot child's lock no longer takes the inherited delivery context — the child's lease would fail closed on acquire")
 	}
 }
