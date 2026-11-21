@@ -191,6 +191,7 @@ nodes:
     codemode:
       mode: "on"
       tool_calls: 256
+      concurrent_tool_calls: 3
       wall: "2m"
       cpu: "45s"
       memory: 536870912

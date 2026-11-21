@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -549,7 +550,6 @@ func TestReviewPR_ConvergeDegradesOnAFork(t *testing.T) {
 	writeExecutable(t, iterionBin, "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ITERION_BIN", iterionBin)
-	t.Setenv("ITERION_VIBE_BACKEND_EMIT", "")
 
 	for _, trust := range []store.RunTrust{store.RunTrustDefault, store.RunTrustFork} {
 		t.Run(trustLabel(trust), func(t *testing.T) {
@@ -558,13 +558,6 @@ func TestReviewPR_ConvergeDegradesOnAFork(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("ITERION_HOME", t.TempDir())
 			t.Setenv("ANTHROPIC_API_KEY", "bench-key")
-			// The bench stands in for the claude_code CLI: its converge row
-			// must run on that CLI, so the merge step's three dials are
-			// pointed at the claude slot (ADR-169 made claw + an `openai/…`
-			// model its default, which would dial OpenAI for real here).
-			t.Setenv("ITERION_VIBE_BACKEND_EMIT_GPT", "claude_code")
-			t.Setenv("ITERION_VIBE_MODEL_EMIT_GPT", "claude-opus-5-5")
-			t.Setenv("ITERION_VIBE_PROVIDER_EMIT_GPT", "anthropic")
 			ws := t.TempDir()
 			storeDir := t.TempDir()
 			st, err := store.New(t.TempDir())
@@ -593,6 +586,14 @@ func TestReviewPR_ConvergeDegradesOnAFork(t *testing.T) {
 			ex, err := runview.BuildExecutor(runview.ExecutorSpec{
 				Ctx: prepared.Context, Workflow: wf, Store: st, RunID: runID, StoreDir: storeDir, WorkDir: ws, Logger: iterlog.Nop(),
 				BotID: "e2e-host-caps",
+				// The bench stands in for the claude_code CLI: its converge
+				// row must run on that CLI, so a routing cell moves the merge
+				// step's backend, model and provider onto the claude slot
+				// (its authored route is claw + an `openai/…` model, which
+				// would dial OpenAI for real here).
+				ModelOverrides: model.OverridesFrom([]model.OverrideEntry{{
+					Selector: "converge", Backend: "claude_code", Model: "claude-opus-5-5", Provider: "anthropic",
+				}}),
 				// Same per-row decision as runHostCapEngine's.
 				SandboxTiersKnown: true,
 			})

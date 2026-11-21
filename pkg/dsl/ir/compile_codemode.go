@@ -56,7 +56,7 @@ func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (s
 	return mode, bounds
 }
 
-// codemodeBounds reads the seven bound properties, parsing the two durations.
+// codemodeBounds reads the bound properties, parsing the two durations.
 // It returns nil when the block declared none — the block form with only a
 // mode is the short form, and a nil bound set is what leaves every field to
 // scripthost.DefaultLimits.
@@ -77,11 +77,12 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 		return nil
 	}
 	b := CodemodeBounds{
-		ToolCalls:       cb.ToolCalls,
-		Memory:          cb.Memory,
-		ScriptBytes:     cb.ScriptBytes,
-		ResultBytes:     cb.ResultBytes,
-		ToolResultBytes: cb.ToolResultBytes,
+		ToolCalls:           cb.ToolCalls,
+		ConcurrentToolCalls: cb.ConcurrentToolCalls,
+		Memory:              cb.Memory,
+		ScriptBytes:         cb.ScriptBytes,
+		ResultBytes:         cb.ResultBytes,
+		ToolResultBytes:     cb.ToolResultBytes,
 	}
 	// Gated with the census, for the same reason and at the same place: on an
 	// inert block a C349 saying "the DEFAULT applies instead" is text about an

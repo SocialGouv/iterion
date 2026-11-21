@@ -21,13 +21,16 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { TagInput } from "@/components/ui/TagInput";
 import { SourceLogo } from "@/components/Sources/SourceLogo";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import {
   formatPollInterval,
   listSources,
   pollContractText,
   sourceDeliveryLabel,
   type Source,
+  type SourceFilter,
   type SourceTrigger,
 } from "@/api/sources";
 import { listConnections, patchConnection } from "@/api/connections";
@@ -40,6 +43,7 @@ import {
 import { createWebhook, listWebhooks, type WebhookWithToken } from "@/api/webhooks";
 import type { ConnectorConnection } from "@/api/connections";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { connectorsTabPath } from "@/views/integrations/connectorsTabPath";
 import type { BotEntryWithSchema } from "@/api/bots";
 import type { UseQueryResult } from "@tanstack/react-query";
 
@@ -82,6 +86,12 @@ export default function PlugWizardView() {
     }
     navigate(`/sources/plug?${next}`, { replace: true });
   };
+  // The Connectors tab, opened on this source's connector, brings the
+  // operator back to this very step — the URL holds every choice made so far.
+  const addConnectionHref = connectorsTabPath({
+    connector: sourceID,
+    returnTo: `/sources/plug?${params}`,
+  });
 
   const sources = useQuery({ queryKey: ["sources"], queryFn: listSources });
   const source: Source | undefined = sources.data?.find(
@@ -337,8 +347,10 @@ export default function PlugWizardView() {
         {step === "account" &&
           (cloud ? (
             <StepAccount
+              source={source}
               connections={connections}
               connectionID={connectionID}
+              addConnectionHref={addConnectionHref}
               onPick={(id) => setParams({ connection: id, step: "event" })}
             />
           ) : (
@@ -407,6 +419,7 @@ export default function PlugWizardView() {
             source={source}
             trigger={trigger}
             connectionID={connectionID}
+            connection={pickedConnection}
             triggerID={triggerID}
             botID={botID}
             pollQuery={serverPollQuery()}
@@ -433,12 +446,16 @@ export default function PlugWizardView() {
 }
 
 function StepAccount({
+  source,
   connections,
   connectionID,
+  addConnectionHref,
   onPick,
 }: {
+  source: Source;
   connections: UseQueryResult<ConnectorConnection[], Error>;
   connectionID: string;
+  addConnectionHref: string;
   onPick: (id: string) => void;
 }) {
   if (connections.isPending) return <Spinner label="Chargement des connexions" />;
@@ -449,33 +466,41 @@ function StepAccount({
     return (
       <EmptyState
         title="Aucune connexion"
-        message="Créez d'abord une connexion pour ce connecteur, depuis la page Intégrations."
+        message={`Créez d'abord une connexion ${source.display_name} : l'onglet Connecteurs des Intégrations s'ouvre sur ce connecteur et vous ramène ici une fois la connexion créée.`}
         action={
-          <Link href="/integrations">
-            <Button variant="secondary">Ouvrir Intégrations</Button>
+          <Link href={addConnectionHref}>
+            <Button variant="secondary">Créer une connexion</Button>
           </Link>
         }
       />
     );
   return (
-    <div className="flex flex-col gap-2" role="radiogroup" aria-label="Connexion">
-      {list.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          role="radio"
-          aria-checked={c.id === connectionID}
-          onClick={() => onPick(c.id)}
-          className={`rounded-[var(--radius-md)] border p-3 text-left text-sm ${
-            c.id === connectionID
-              ? "border-fg-default"
-              : "border-border-default hover:border-fg-subtle"
-          }`}
-        >
-          <span className="font-medium text-fg-default">{c.alias}</span>
-          <span className="text-fg-subtle"> — {c.base_url || c.connector}</span>
-        </button>
-      ))}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" role="radiogroup" aria-label="Connexion">
+        {list.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            role="radio"
+            aria-checked={c.id === connectionID}
+            onClick={() => onPick(c.id)}
+            className={`rounded-[var(--radius-md)] border p-3 text-left text-sm ${
+              c.id === connectionID
+                ? "border-fg-default"
+                : "border-border-default hover:border-fg-subtle"
+            }`}
+          >
+            <span className="font-medium text-fg-default">{c.alias}</span>
+            <span className="text-fg-subtle"> — {c.base_url || c.connector}</span>
+          </button>
+        ))}
+      </div>
+      <Link
+        href={addConnectionHref}
+        className="self-start text-xs text-accent-text underline underline-offset-2"
+      >
+        Créer une autre connexion {source.display_name}
+      </Link>
     </div>
   );
 }
@@ -542,44 +567,59 @@ function StepEvent({
           setPollQuery={setPollQuery}
         />
       )}
-      {selected?.filters?.map((f) => (
-        <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
-          Filtre {f.id}
-          {f.type === "enum" ? (
-            <Select
-              value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) => {
-                const next = { ...filters };
-                if (e.target.value) next[f.id] = [e.target.value];
-                else delete next[f.id]; // untouched and emptied mean the same
-                setFilters(next);
-              }}
-              aria-label={`Filtre ${f.id}`}
-            >
-              {/* The server refills an absent narrowing with the package's
-                  declared default, so "all" is only offered when the
-                  package declares none — otherwise the label would lie. */}
-              {(f.default?.length ?? 0) === 0 && <option value="">— tous —</option>}
-              {(f.options ?? []).map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <Input
-              value={filters[f.id]?.[0] ?? ""}
-              onChange={(e) => {
-                const next = { ...filters };
-                if (e.target.value) next[f.id] = [e.target.value];
-                else delete next[f.id];
-                setFilters(next);
-              }}
-              aria-label={`Filtre ${f.id}`}
-            />
-          )}
-        </label>
-      ))}
+      {selected?.filters?.map((f) =>
+        f.type === "list" ? (
+          <ListFilterField
+            key={`${triggerID}-${f.id}`}
+            inputID={`filter-${triggerID}-${f.id}`}
+            filter={f}
+            values={filters[f.id] ?? []}
+            onChange={(values) => {
+              const next = { ...filters };
+              if (values.length) next[f.id] = values;
+              else delete next[f.id]; // untouched and emptied mean the same
+              setFilters(next);
+            }}
+          />
+        ) : (
+          <label key={`${triggerID}-${f.id}`} className="flex flex-col gap-1 text-xs text-fg-default">
+            Filtre {f.id}
+            {f.type === "enum" ? (
+              <Select
+                value={filters[f.id]?.[0] ?? ""}
+                onChange={(e) => {
+                  const next = { ...filters };
+                  if (e.target.value) next[f.id] = [e.target.value];
+                  else delete next[f.id]; // untouched and emptied mean the same
+                  setFilters(next);
+                }}
+                aria-label={`Filtre ${f.id}`}
+              >
+                {/* The server refills an absent narrowing with the package's
+                    declared default, so "all" is only offered when the
+                    package declares none — otherwise the label would lie. */}
+                {(f.default?.length ?? 0) === 0 && <option value="">— tous —</option>}
+                {(f.options ?? []).map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <Input
+                value={filters[f.id]?.[0] ?? ""}
+                onChange={(e) => {
+                  const next = { ...filters };
+                  if (e.target.value) next[f.id] = [e.target.value];
+                  else delete next[f.id];
+                  setFilters(next);
+                }}
+                aria-label={`Filtre ${f.id}`}
+              />
+            )}
+          </label>
+        ),
+      )}
       {selected && (
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={onNext} disabled={missingQuery.length > 0}>
@@ -592,6 +632,45 @@ function StepEvent({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ListFilterField narrows on a list the event carries (a feed entry's
+// categories): the operator lists values, and the event matches when any
+// element of its list is one of them. The values are compared as written,
+// case and commas included. A label element would hand its clicks to the
+// first chip's remove button, so the label names the draft input by id.
+function ListFilterField({
+  inputID,
+  filter,
+  values,
+  onChange,
+}: {
+  inputID: string;
+  filter: SourceFilter;
+  values: string[];
+  onChange: (values: string[]) => void;
+}) {
+  // The server refills an emptied narrowing with the package's declared
+  // default, so "empty matches all" is only said when it declares none.
+  const empty =
+    (filter.default?.length ?? 0) === 0
+      ? "vide, tout événement correspond"
+      : "vide, la valeur par défaut du paquet s'applique";
+  return (
+    <div className="flex flex-col gap-1 text-xs text-fg-default">
+      <label htmlFor={inputID}>Filtre {filter.id}</label>
+      <TagInput
+        id={inputID}
+        value={values}
+        onChange={onChange}
+        placeholder="Une valeur, puis Entrée"
+        literalValues
+      />
+      <span className="text-fg-subtle">
+        Correspond si l&apos;événement porte au moins une de ces valeurs ; {empty}.
+      </span>
     </div>
   );
 }
@@ -760,7 +839,10 @@ function StepMapping({
           aria-live="polite"
         >
           {preview.filtered ? (
-            <span className="text-fg-subtle">Filtré : {preview.filtered}</span>
+            <PreviewVerdict
+              sentence="Écarté par le déclencheur avant vos filtres : sa garde anti-boucle ne laisse pas passer cet événement, il ne lancerait rien."
+              detail={preview.filtered}
+            />
           ) : preview.matched ? (
             <>
               <span className="font-medium text-fg-default">
@@ -777,13 +859,48 @@ function StepMapping({
                 </pre>
               )}
             </>
+          ) : preview.refusal ? (
+            <PreviewVerdict
+              sentence="L'abonnement refuserait cet événement : sa configuration (filtres ou mapping) ne s'applique pas à lui, et un nouvel essai n'y changerait rien."
+              detail={[preview.reason, preview.refusal].filter(Boolean).join(" — ")}
+            />
           ) : (
-            <span className="text-fg-subtle">
-              Refusé{preview.reason ? ` : ${preview.reason}` : ""}
-              {preview.refusal ? ` — ${preview.refusal}` : ""}
-            </span>
+            <PreviewVerdict
+              sentence="Cet événement ne passe pas vos filtres : l'abonnement ne lancerait pas le bot."
+              hint={
+                preview.sample
+                  ? "L'échantillon est un exemple fourni par le paquet : vos vrais événements peuvent porter d'autres valeurs."
+                  : undefined
+              }
+              detail={preview.reason}
+            />
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// PreviewVerdict words a preview that launches nothing for the operator, and
+// keeps the server's own account of it — technical, in English — verbatim
+// below, for whoever needs the exact filter and values.
+function PreviewVerdict({
+  sentence,
+  hint,
+  detail,
+}: {
+  sentence: string;
+  hint?: string;
+  detail?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="font-medium text-fg-default">{sentence}</p>
+      {hint && <p className="text-fg-subtle">{hint}</p>}
+      {detail && (
+        <p className="text-fg-subtle">
+          Détail technique : <code className="break-all">{detail}</code>
+        </p>
       )}
     </div>
   );
@@ -793,6 +910,7 @@ function StepReview({
   source,
   trigger,
   connectionID,
+  connection,
   triggerID,
   botID,
   pollQuery,
@@ -815,6 +933,9 @@ function StepReview({
   source: Source;
   trigger?: SourceTrigger;
   connectionID: string;
+  // The picked connection as the account step listed it; absent while the
+  // list loads, or when it does not hold the id the URL names.
+  connection?: ConnectorConnection;
   triggerID: string;
   botID: string;
   pollQuery?: Record<string, string>;
@@ -836,6 +957,9 @@ function StepReview({
 }) {
   const polled = trigger?.delivery === "poll";
   const blocked = missingGrants.length > 0 || (polled && (missingQuery.length > 0 || !backfillValid));
+  // A polled trigger shows the package's polling notes when it ships them:
+  // its setup.md may walk through a webhook the polled flow never adds.
+  const notes = polled ? (source.setup_poll ?? source.setup) : source.setup;
   return (
     <div className="flex flex-col gap-3 text-sm text-fg-default">
       <ul className="flex flex-col gap-1 text-xs text-fg-subtle">
@@ -843,7 +967,18 @@ function StepReview({
           Source : <span className="text-fg-default">{source.display_name}</span>
         </li>
         <li>
-          Connexion : <code>{connectionID}</code>
+          Connexion :{" "}
+          {connection ? (
+            <>
+              <span className="text-fg-default">{connection.alias}</span>
+              {connection.display_name && (
+                <span className="text-fg-default"> — {connection.display_name}</span>
+              )}{" "}
+              <code className="text-fg-muted">({connectionID})</code>
+            </>
+          ) : (
+            <code>{connectionID}</code>
+          )}
         </li>
         <li>
           Événement : <code>{triggerID}</code>
@@ -942,14 +1077,16 @@ function StepReview({
           </p>
         </div>
       )}
-      {source.setup && (
+      {notes && (
         <details className="rounded-[var(--radius-md)] border border-border-default p-3 text-xs">
           <summary className="cursor-pointer font-medium text-fg-default">
             {polled
               ? `Notes de configuration (${source.display_name})`
               : `Configuration chez le fournisseur (${source.display_name})`}
           </summary>
-          <pre className="mt-2 whitespace-pre-wrap font-sans text-fg-subtle">{source.setup}</pre>
+          <div className="mt-2">
+            <MarkdownText value={notes} size="sm" />
+          </div>
         </details>
       )}
       {done ? (

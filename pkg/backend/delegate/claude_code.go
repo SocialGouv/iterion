@@ -1937,24 +1937,26 @@ func reportClaudeCodeEffort(result *Result, task Task, reachedModel bool) {
 
 // claudeCodeNoEffortModels are the Claude ids the claude CLI is measured
 // serving with NO effort on the wire, whatever handed (claude CLI 2.1.282,
-// recorded requests): sonnet-4-5 and the haiku line predate the effort dial
-// and claude-3-5-sonnet-20241022 is out of it. Matched on the id after the
-// spawn's prefix strip and the registry's alias and date normalization —
+// recorded requests): sonnet-4-5, haiku-4-5, and the 20241022 snapshots of
+// claude-3-5-haiku and claude-3-5-sonnet. Matched on the id after the
+// spawn's prefix strip, exact alias resolution and date stripping —
 // claude-haiku-4-5-20251001 lands here as claude-haiku-4-5.
 var claudeCodeNoEffortModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 	"claude-haiku-4-5":  true,
 	"claude-3-5-sonnet": true,
+	"claude-3-5-haiku":  true,
 }
 
 // claudeCodeWireEffort is the effort the claude CLI puts on its requests for
 // model when CLAUDE_CODE_EFFORT_LEVEL says level, as measured on claude CLI
 // 2.1.282 against a recording Anthropic endpoint. The id read is the one the
-// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), resolved
-// the way every registry lookup reads it — alias resolved, a dated snapshot
-// suffix stripped (apikit.NormalizeModelName). A Claude model sends the
-// level its accepted set takes: none for the measured no-effort ids
-// (claudeCodeNoEffortModels), the highest accepted level at or below the one
+// spawn hands the CLI (claudeCodeModelID strips the slot prefixes), normalized
+// by resolving an exact alias and then stripping a dated snapshot suffix
+// (apikit.NormalizeModelName). Bare dated aliases remain bare after stripping
+// and are reported as handed; this is not a canonical registry lookup.
+// A Claude model sends the level its accepted set takes: none for the measured
+// no-effort ids (claudeCodeNoEffortModels), the highest accepted level at or below the one
 // handed otherwise (sonnet-4-6 sends high for xhigh; sonnet-4-7 forwards
 // every level) — the matrix and the rule the claw backend sends by
 // (apikit.EffortCapabilities, effortlevel.Coerce). Any other id (a GLM id on

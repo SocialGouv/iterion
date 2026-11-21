@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -45,5 +47,30 @@ func TestCodemodeFlagsProjectBoundsOrNothing(t *testing.T) {
 	}
 	if name := (&codemodeFlagSet{toolCalls: 4}).negativeField(); name != "" {
 		t.Errorf("a clean set named %q, want silence", name)
+	}
+}
+
+func TestCodemodeConcurrencyFlagAlone(t *testing.T) {
+	t.Parallel()
+	var c codemodeFlagSet
+	flags := pflag.NewFlagSet("codemode", pflag.ContinueOnError)
+	c.register(flags)
+	if err := flags.Parse([]string{"--codemode-concurrent-tool-calls=3"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.bounds(); got == nil || got.ConcurrentToolCalls != 3 {
+		t.Errorf("bounds = %+v, want only ConcurrentToolCalls 3", got)
+	}
+	if err := flags.Set("codemode-concurrent-tool-calls", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.bounds(); got != nil {
+		t.Errorf("bounds = %+v, want nil for explicit inherit", got)
+	}
+	if err := flags.Set("codemode-concurrent-tool-calls", "-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.negativeField(); got != "--codemode-concurrent-tool-calls" {
+		t.Errorf("negativeField = %q, want concurrency flag", got)
 	}
 }

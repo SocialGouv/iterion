@@ -425,6 +425,7 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 			fn(nodeID, li)
 		}
 	}
+	opts.toolObserversAudited = h.toolObserversAudited
 	if h.OnToolStarted != nil {
 		fn := h.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {

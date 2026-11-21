@@ -96,7 +96,9 @@ not measure suite duration. No sleeps are changed or executed by the census.
 ## CI publication and runner observations
 
 The existing `test-unit` job runs the same Go command after tool setup, before
-the unit suite, and appends `summary.md` to the GitHub job summary. Generation
+the unit suite, and appends `summary.md` to the GitHub job summary. The job is
+sharded three ways (#3402), and the census runs on its last shard only: the
+inventory is static, and one artifact name can be uploaded once per run. Generation
 and upload use `always()` so an earlier failure does not silently suppress
 evidence. The `test-capabilities-unit` artifact contains the two census files
 and `runner.json`; missing artifacts fail publication. Upload explicitly includes

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -821,23 +822,84 @@ func WithContributionsUnresolved() EngineOption {
 	return func(e *Engine) { e.contributionsUnresolved = true }
 }
 
-// EnvOutputValidation selects strict runtime output validation on every surface.
-// The default warns and preserves outputs from nodes not validated by their executor.
-const EnvOutputValidation = "ITERION_STRICT_OUTPUT_VALIDATION"
+// EnvOutputValidation is the output-validation dial, read once per engine on
+// every surface (run, resume, subbot, studio, runner, dispatcher). It has
+// three positions:
+//
+//   - unset or empty — the default: an output that misses its declared
+//     schema is reported (node_output_schema_mismatch) and kept, and a tool
+//     recipe that declares `output:` and prints something else than a JSON
+//     object fails its node (model.ToolStdoutNotJSONError);
+//   - on (1, true, yes, y, on, enabled) — strict: every mismatch fails the
+//     node as well;
+//   - off, written out (0, false, no, n, off, disabled) — every mismatch is
+//     reported and kept, and a tool recipe's non-JSON stdout is wrapped as
+//     `{"result": "<text>"}` again.
+//
+// An unknown value warns and reads as unset.
+const EnvOutputValidation = model.EnvStrictOutputValidation
 
-func defaultOutputValidation() bool {
+// outputValidationDial is one position of EnvOutputValidation.
+type outputValidationDial uint8
+
+const (
+	outputValidationDefault outputValidationDial = iota
+	outputValidationStrict
+	outputValidationOff
+)
+
+func outputValidationFromEnv() outputValidationDial {
 	raw := os.Getenv(EnvOutputValidation)
-	enabled, known := parseEnvBool(raw)
-	if !known {
-		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_VALIDATION_INVALID: %s=%q is not a boolean; using advisory validation", EnvOutputValidation, raw)
+	if strings.TrimSpace(raw) == "" {
+		return outputValidationDefault
 	}
-	return enabled
+	enabled, known := parseEnvBool(raw)
+	switch {
+	case !known:
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_VALIDATION_INVALID: %s=%q is not a boolean; using the default (advisory validation, a tool node's non-JSON stdout under `output:` refused)", EnvOutputValidation, raw)
+		return outputValidationDefault
+	case enabled:
+		return outputValidationStrict
+	}
+	return outputValidationOff
 }
 
-// WithOutputValidation selects strict rejection instead of advisory warnings.
+func defaultOutputValidation() bool {
+	return outputValidationFromEnv() == outputValidationStrict
+}
+
+// WithOutputValidation sets the output-validation dial by hand, over the
+// environment: true is its strict position, false its explicit off — advisory
+// warnings, and a tool recipe's non-JSON stdout wrapped (EnvOutputValidation).
 // Executor-validated LLM outputs retain their validation and correction loop.
 func WithOutputValidation(enabled bool) EngineOption {
-	return func(e *Engine) { e.validateOutputs = enabled }
+	return func(e *Engine) {
+		e.validateOutputs = enabled
+		e.toolStdoutWrapped = !enabled
+	}
+}
+
+// EnvOutputRefs is the dial on what a tool body's unresolved
+// `{{outputs.<node>.<field>}}` does when the producer ran and its own
+// `output:` schema declares the field. On by default: the node fails before
+// its body runs (model.UnresolvedOutputRefError). Off, written out (0, false,
+// no, n, off, disabled), restores the rendering of the hole — the reference's
+// own text in a `command:` / `postcondition:`, `null` in a `script:` or an
+// action parameter. Every other hole renders that way on both positions. An
+// unknown value warns and keeps the default.
+const EnvOutputRefs = model.EnvStrictOutputRefs
+
+func defaultOutputRefsOwed() bool {
+	raw := os.Getenv(EnvOutputRefs)
+	if strings.TrimSpace(raw) == "" {
+		return true
+	}
+	enabled, known := parseEnvBool(raw)
+	if !known {
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_REFS_INVALID: %s=%q is not a boolean; keeping the default (an owed output reference fails its tool node)", EnvOutputRefs, raw)
+		return true
+	}
+	return enabled
 }
 
 // WithOutputCorrectionBudget bounds the number of optional correction calls

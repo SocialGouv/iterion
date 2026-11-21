@@ -306,6 +306,46 @@ func (m *MemoryStore) ListPairs(_ context.Context, tenantID string, q PairQuery,
 	return out, nil
 }
 
+func (m *MemoryStore) LaunchedPair(_ context.Context, tenantID, subscriptionID, itemKey string) (Pair, bool, error) {
+	if err := checkItemKey(subscriptionID, itemKey); err != nil {
+		return Pair{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	var first *Pair
+	for _, p := range m.pairs {
+		if p.TenantID != tenantID || p.SubscriptionID != subscriptionID || p.ItemKey != itemKey || p.State != PairLaunched {
+			continue
+		}
+		if first == nil || launchedBefore(*p, *first) {
+			first = p
+		}
+	}
+	if first == nil {
+		return Pair{}, false, nil
+	}
+	return copyPair(*first), true, nil
+}
+
+// launchedBefore is LaunchedPair's order: earliest launched, then lowest
+// id. A launched pair without its instant sorts first, as Mongo sorts a
+// missing field.
+func launchedBefore(a, b Pair) bool {
+	at, bt := launchedAt(a), launchedAt(b)
+	if !at.Equal(bt) {
+		return at.Before(bt)
+	}
+	return a.ID < b.ID
+}
+
+func launchedAt(p Pair) time.Time {
+	if p.LaunchedAt == nil {
+		return time.Time{}
+	}
+	return *p.LaunchedAt
+}
+
 // pairBefore is ListPairs' order: newest intake first, then intake id, then
 // subscription id.
 func pairBefore(a, b Pair) bool {

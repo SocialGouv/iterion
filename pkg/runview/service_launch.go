@@ -291,6 +291,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
 		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
+	// A pin rides the same refusal: only the publisher lane runs the program
+	// its compile read (ErrLaunchPinUnsupported says why), and this is the one
+	// place every other lane — detached, parked behind the pipeline cap, in
+	// process — is still ahead, before a compile, a run document or a queue
+	// slot exists.
+	if spec.ExpectProgramHash != "" && s.publisher == nil {
+		return nil, ErrLaunchPinUnsupported
+	}
 	// The trust is settled: the launch is published under it only on an
 	// admission that judged it (ADR-162 decision 5). The one choke point every
 	// launch surface crosses, so a surface whose gate judged the request
@@ -365,6 +373,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// the launch surface's answer for the pre-flight checks (#1800).
 		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkPinnedProgram(spec, cs); err != nil {
 			return nil, err
 		}
 		// Fail before persisting/publishing a queued run. The runner repeats
@@ -569,18 +580,6 @@ func (s *Service) launchSourceFacts(ctx context.Context, parentRunID, delegation
 		out.ForkAuthorSubject = r.ForkAuthorSubject
 	}
 	return out, pool, nil
-}
-
-// hookEventObservers builds ExecutorSpec.EventObservers for every
-// in-process execution (launch AND resume): the caller's extra observers
-// plus the broker. Backend-hook events (assistant_text, tool_*, llm_*)
-// never fire the engine's observer, so without the broker here a
-// declared supervisor observing via ObserveRun — and any live broker
-// subscriber of an in-process run — is blind to the agent's own words.
-// Subscribers dedup by Seq, and the two event sets are disjoint, so
-// nothing arrives twice.
-func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Event) {
-	return append(append([]func(store.Event){}, extra...), s.broker.Publish)
 }
 
 // foldAndScreen folds the resolved routing policy's override cells under
@@ -923,7 +922,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Workflow:       wf,
 		Vars:           spec.Vars,
 		Store:          s.store,
-		EventObservers: s.hookEventObservers(spec.ExtraObservers),
+		EventObservers: spec.ExtraObservers,
+		EventBroker:    s.broker,
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -1693,7 +1693,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
-		EventObservers: s.hookEventObservers(nil),
+		EventBroker:    s.broker,
 		AutoMemory:     autoMemory,
 		BoardRegister:  s.boardRegister,
 		BoardRevoke:    s.boardRevoke,

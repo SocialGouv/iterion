@@ -15,10 +15,12 @@ read 141 distinct names, on 287 routing-field lines at #2699's last
 count. Only 13 of those bots use the `ITERION_VIBE_*` family; the rest
 read per-bot families such as `ITERION_ASSESSMENT_*_MODEL`,
 `ITERION_COPILOT_*`, `ITERION_ADR_MODEL_CLAUDE`, `ITERION_MODERNIZE_*` and
-`ITERION_RGAA_MODEL_*`. Production pins some of those dials in the runner
-pods' environment (`ITERION_VIBE_*_GPT` plus `ITERION_BOT_VARS_ENV_PINS`
-in the deployment's production values), and the same surface carries
-behaviour knobs such as `ITERION_MODERNIZE_EFFORT`.
+`ITERION_RGAA_MODEL_*`. Production pins some of those dials in two seats:
+the runner pods' environment (`ITERION_VIBE_*_GPT` plus
+`ITERION_BOT_VARS_ENV_PINS` in the deployment's production values) and the
+platform bot-vars record (ADR-093's overlay, nine dials of its own, such as
+`ITERION_VIBE_MODEL_CLAUDE`). The same surface carries behaviour knobs such
+as `ITERION_MODERNIZE_EFFORT`.
 
 That single mechanism costs three things at once.
 
@@ -64,9 +66,9 @@ non-empty `providers:` list refuse its launches.
    route's own — whatever its family; `ITERION_RGAA_MODEL_*` is routing,
    not a knob. `ITERION_VIBE_*` and `ITERION_MODERNIZE_EFFORT` go
    **first**, because they are the ones the deployment pins today: they
-   leave the catalogue, the pod env and `ITERION_BOT_VARS_ENV_PINS` in the
-   first delivery, and the other families follow bot by bot under the same
-   rule. The bot-var overlay itself (ADR-093) survives for knobs that are
+   leave the catalogue, the pod env, `ITERION_BOT_VARS_ENV_PINS` and the
+   bot-vars record in the first delivery, and the other families follow
+   bot by bot under the same rule. The bot-var overlay itself (ADR-093) survives for knobs that are
    not routing — a threshold, a cap, a flag — and for engine-injected
    settings; it is simply no longer how routing is expressed.
 4. **The class is closed, not only its sites.** The guard is the one
@@ -90,12 +92,13 @@ non-empty `providers:` list refuse its launches.
 - **One seat per setting.** An instance that needs another model writes
   one override cell; nothing shadows it in a pod env, and a roll is no
   longer the way to re-tune a bot.
-- **Production migrates before the de-dial, not after it.** The nine
-  routing pins of the deployment are first written as override cells
-  (platform, team or binding, per ADR-132 §7) and proved by a credential
-  preview while the env pins still say the same thing; only then is the
-  catalogue de-dialled, and the env block and its
-  `ITERION_BOT_VARS_ENV_PINS` entries are removed last. De-dialling first
+- **Production migrates before the de-dial, not after it.** The
+  deployment's routing pins, in both seats, are first written as override
+  cells (platform, team or binding, per ADR-132 §7) and proved by a
+  credential preview while the pins still say the same thing; only then is
+  the catalogue de-dialled, and both seats are emptied last — the env block
+  with its `ITERION_BOT_VARS_ENV_PINS` entries, and the routing dials of the
+  bot-vars record. De-dialling first
   would send a sovereign pool's spend to the authored literals — off its
   gateway — for as long as the cells are missing.
 - **Revi's vocabulary leaves `claude` and `gpt`.** Integrations carrying

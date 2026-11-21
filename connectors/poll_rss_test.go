@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connector/binding"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // A feed publisher, as RSS 2.0 (https://www.rssboard.org/rss-specification)
@@ -370,6 +373,78 @@ func TestAFeedEntryWithNoGuidOrLinkIsOneItemWhileItStays(t *testing.T) {
 				t.Fatalf("the entry without guid or link shares id %q with a neighbour", id)
 			}
 		}
+	}
+}
+
+// TestAFeedSubscriptionNarrowsOnTheEntrysCategories: the shipped category
+// filter, saved on a subscription and judged on each entry the Atom
+// publisher answers, as the lane stores and re-reads the event, keeps an
+// entry carrying any chosen category and drops one carrying none. What each
+// entry carries is the publisher's, not the package's.
+func TestAFeedSubscriptionNarrowsOnTheEntrysCategories(t *testing.T) {
+	p, err := overlay.LoadPackage("rss")
+	if err != nil {
+		t.Fatalf("load rss: %v", err)
+	}
+	trig := polledTrigger(t, p, "rss.item.published")
+	op, _ := p.Operation(trig.Poll.Operation)
+	v := newAtomVendor()
+	srv := httptest.NewServer(v)
+	defer srv.Close()
+	e := &exec.Executor{Client: exec.MarkGuarded(srv.Client()), BaseURL: srv.URL + "/blog/feed.xml?lang=fr"}
+	res, err := e.Call(context.Background(), p, op, nil, exec.Credential{SchemeID: "none"})
+	if err != nil || !res.OK() {
+		t.Fatalf("read the feed: %v %v", err, res.Err)
+	}
+	items, err := spec.PollItems(op, trig.Poll, res.Data)
+	if err != nil {
+		t.Fatalf("items: %v", err)
+	}
+	chosen := []string{"pollers", "annonces"}
+	sub, err := binding.ValidateSubscription(trigger.Subscription{
+		ID: "s1", BotID: "veille", TriggerID: trig.ID, ConnectionID: "conn-feed",
+		Filters: map[string][]string{"category": chosen},
+	}, trig, nil)
+	if err != nil {
+		t.Fatalf("save a subscription narrowed on categories: %v", err)
+	}
+	carries := map[string][]string{}
+	for _, entry := range v.entries {
+		carries[entry.id] = entry.categories
+	}
+	judged := 0
+	for _, item := range items {
+		id, _, err := spec.PollItemIdentity(trig.Poll, res.Data, item)
+		if err != nil {
+			t.Fatalf("identity: %v", err)
+		}
+		categories, known := carries[id]
+		if !known {
+			t.Fatalf("the scan read entry %q, which the publisher does not serve", id)
+		}
+		stored, err := json.Marshal(map[string]any{"payload": item})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev, err := binding.DecodeEvent(stored)
+		if err != nil {
+			t.Fatalf("entry %q: %v", id, err)
+		}
+		verdict, err := binding.Judge(context.Background(), sub, trig, ev)
+		if err != nil {
+			t.Fatalf("entry %q: %v", id, err)
+		}
+		want := false
+		for _, c := range categories {
+			want = want || slices.Contains(chosen, c)
+		}
+		if verdict.Refusal != "" || verdict.Matched != want {
+			t.Errorf("entry %q carrying %q: verdict %+v, want matched=%v under the chosen %q", id, categories, verdict, want, chosen)
+		}
+		judged++
+	}
+	if judged != len(v.entries) {
+		t.Fatalf("judged %d entries, the publisher serves %d", judged, len(v.entries))
 	}
 }
 

@@ -921,7 +921,8 @@ export interface DownloadOutcome {
 }
 
 export interface CreateRunRequest {
-  file_path: string;
+  // Absent on a launch that names a bot (bot_id) and nothing else.
+  file_path?: string;
   // Inline workflow source — required in cloud mode (no shared FS),
   // ignored in local mode where file_path resolves on disk.
   source?: string;
@@ -937,6 +938,12 @@ export interface CreateRunRequest {
   // catalog bot launches without uploading its bytes. A catalog-shaped
   // file_path is inferred to the same id when this is omitted.
   bot_id?: string;
+  // Pins a launch naming a bot to the program its form rendered: the sha256
+  // GET /api/v1/bots/{name}/launch-source issued. The server refuses with
+  // 409 `bot_source_changed` when the bot's entry source is no longer that
+  // one. Only beside bot_id with no source: an inline source is its own
+  // program, and the server refuses a pin it cannot check.
+  expect_source_sha256?: string;
   run_id?: string;
   vars?: Record<string, string>;
   // Host-owned cross-project delegation. The server resolves source-run bot
@@ -1068,6 +1075,7 @@ export interface CodemodeBoundsOverride {
   script_bytes?: number;
   result_bytes?: number;
   tool_result_bytes?: number;
+  concurrent_tool_calls?: number;
 }
 
 export interface PreviewCostNode {

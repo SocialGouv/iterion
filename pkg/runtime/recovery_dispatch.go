@@ -15,7 +15,8 @@ import (
 //   - (true, code, nil)   → caller should `continue` and re-execute the same node.
 //   - (false, code, nil)  → caller should fail terminally (failRunWithCheckpoint).
 //   - (false, code, err)  → terminal outcome already produced (ErrRunPaused for
-//     RecoveryPauseForHuman, or a context cancellation).
+//     RecoveryPauseForHuman, a context cancellation, or a tool node's
+//     identical repeat recorded as TOOL_FAILED_PERMANENT).
 //
 // The classified code is returned so a terminal failure carries the REAL
 // cause (USAGE_LIMIT_BLOCKED, CONTEXT_LENGTH_EXCEEDED, …) instead of a
@@ -32,8 +33,21 @@ import (
 // resume a carry with this pass missing from it. The caller books a retry
 // after this dispatcher returns; session-total costs are deduplicated against
 // readings already booked within that recovery sequence.
+//
+// It is also where a tool node's command that failed the same way again is
+// recorded as permanent (noteToolFailure, identical_failure.go): every
+// failure of a trunk node crosses here, with a dispatcher or without one, so
+// the streak is counted once and the verdict taken in one place. That verdict
+// is a terminal outcome this function produces itself.
 func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID string, execErr error, failedOutput map[string]any) (bool, ErrorCode, error) {
 	if e.recoveryDispatch == nil {
+		// Nothing retries in place without a dispatcher, and the streak is
+		// still the run's: a host that wires none (`iterion resume`) meets
+		// the repeat a dispatching engine started, and its own `--auto-resume`
+		// loop reads the code this returns.
+		if repeat := e.noteToolFailure(rs, nodeID, ClassifyError(execErr), execErr); repeat != nil {
+			return false, ErrCodeToolFailedPermanent, e.failIdenticalToolFailure(rs, nodeID, repeat, 0, failedOutput)
+		}
 		return false, "", nil
 	}
 
@@ -52,6 +66,14 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 	// bucket by 1.
 	action, code := e.recoveryDispatch(ctx, execErr, func(c ErrorCode) int { return bucket[c] })
 	bucket[code]++
+
+	// An identical repeat outranks the recipe's retry and its terminal
+	// reading alike: neither re-runs a command that just failed the same way
+	// again. A pause the recipe asked for is left alone — it already parks
+	// the run for a human, and nothing redelivers a pause.
+	if repeat := e.noteToolFailure(rs, nodeID, code, execErr); repeat != nil && action.Kind != RecoveryPauseForHuman {
+		return false, ErrCodeToolFailedPermanent, e.failIdenticalToolFailure(rs, nodeID, repeat, bucket[code], failedOutput)
+	}
 
 	emitData := map[string]any{
 		"code":    string(code),

@@ -499,7 +499,7 @@ prompt pacer_policy:
 ## for it (runner.preflightSupervisors).
 supervisor pacer:
   watches: [reviewer_alternate]
-  model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}"
+  model: "anthropic/claude-opus-5-5"
   system: pacer_policy
   cooldown: "6m"
   max_evals: 12
@@ -510,12 +510,13 @@ supervisor pacer:
   monitors: ["cost_gt=32"]
 
 ## The same pacer on the GPT family — same policy prompt by name, same
-## cooldown, budget and trigger; only the route differs, and its own dial
-## (`ITERION_VIBE_MODEL_SUPERVISOR` keeps dialling the claude one). The
-## model is this bundle's OpenAI supervisor spec, the merge twin's.
+## cooldown, budget and trigger; only the route differs, and each pacer
+## takes its own routing cell (`review-pr/supervisor:pacer_gpt` here,
+## `review-pr/supervisor:pacer` for the claude one). The model is this
+## bundle's OpenAI supervisor spec, the merge twin's.
 supervisor pacer_gpt:
   watches: [reviewer]
-  model: "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}"
+  model: "openai/gpt-6-sol"
   system: pacer_policy
   cooldown: "6m"
   max_evals: 12

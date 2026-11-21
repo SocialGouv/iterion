@@ -353,8 +353,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// knob failing open, the exact direction the rule exists to reject. A
 	// dropped bounds raise only lands tighter, but the off direction alone
 	// decides the bump. MinSchemaVersion still 27.
-	if SchemaVersion != 33 {
-		t.Errorf("SchemaVersion = %d, want 33 (bump intentionally)", SchemaVersion)
+	// v34 adds concurrent_tool_calls to both compiled and launch bounds.
+	if SchemaVersion != 34 {
+		t.Errorf("SchemaVersion = %d, want 34 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
@@ -362,7 +363,7 @@ func TestSchemaVersionConstant(t *testing.T) {
 }
 
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
-// At v31 the window is [27, 31]: a v27 message lacks the wire-carried
+// A v27 message lacks the wire-carried
 // BotSourceTier (#1959) but its publisher already stamped the run document,
 // so the floor re-reads it from there; a v27, v28 or v29 message carrying no
 // content boundary is the unstamped reading (one replaying team_gateway parks:
@@ -378,11 +379,10 @@ func TestValidate_DualAcceptWindow(t *testing.T) {
 			TenantID:     "t1",
 		}
 	}
-	if err := base(SchemaVersion).Validate(); err != nil {
-		t.Fatalf("current version must validate: %v", err)
-	}
-	if err := base(MinSchemaVersion).Validate(); err != nil {
-		t.Fatalf("previous version must validate (dual-accept): %v", err)
+	for v := MinSchemaVersion; v <= SchemaVersion; v++ {
+		if err := base(v).Validate(); err != nil {
+			t.Errorf("v=%d: supported version refused: %v", v, err)
+		}
 	}
 	for _, v := range []int{MinSchemaVersion - 1, SchemaVersion + 1} {
 		err := base(v).Validate()

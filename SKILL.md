@@ -190,9 +190,15 @@ Every one of these is enforced by the compiler or the runtime, and none of
 them can be read off the syntax tables — authors reverse-engineer them from
 shipped bots, so they are written here:
 
-- **A tool node's stdout is its output.** With `output:` declared, the
-  command must print a JSON object matching the schema; other stdout is
-  wrapped as `{"result": "…"}` and the fields downstream expect are absent. A
+- **A tool node's stdout is its output.** With `output:` declared, a
+  `command:` / `script:` prints ONE JSON object matching the schema and
+  nothing else: any other non-empty stdout — a `git commit` summary, a
+  progress line, plain text — fails the node (`TOOL_FAILED_PERMANENT`), so
+  everything that is not the answer goes to stderr (`git commit -q -m "$m"
+  >&2`). The engine's own `[iterion] attachment=` / `preview_url=` /
+  `preview_screenshot=` lines are not part of the answer. A later tool body
+  that reads a declared field the producer did not print is refused before
+  it runs. A
   non-zero exit fails the node — wrap a command whose failure is a *result*
   (a failing test suite) so it exits 0 and reports `passed: false`.
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
@@ -308,11 +314,13 @@ shipped bots, so they are written here:
   python3); `-full` and the `-sec` layered on it add python3. So a tool that
   must turn text into the JSON its `output:` schema wants uses `jq -Rs`
   unless the workflow PINS an image that has more; a missing interpreter
-  degrades the output to `{"result": …}` silently.
+  leaves the node without its JSON object, which fails it.
 - **A `fan_out_each` fan-in sees ONE output per node id.** At the collector
-  (`await: wait_all` / `best_effort`) the branches' outputs are merged
-  last-write-wins, so `{{outputs.<node>.<field>}}` after the fan-in is one
-  item's result, not a list, and a downstream `compute` cannot aggregate
+  (`await: wait_all` / `best_effort`) the branches' outputs are merged in
+  the LEXICOGRAPHIC order of their branch ids, the last one winning on
+  every run — not the last item: with twelve items `…_9` sorts after
+  `…_11` — so `{{outputs.<node>.<field>}}` after the fan-in is one
+  item's result, never to be relied on, not a list, and a downstream `compute` cannot aggregate
   the items from `outputs.*`. Give each item its own record instead (a
   board card, a subbot child run's own artifacts) — the
   `per-ticket-subbots` template shows it.
@@ -389,7 +397,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
 - `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool (profile ≤1) · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
-- `codemode` (`codemode:` in workflow, agent, judge) — mode on|off · tool_calls int · wall str · cpu str · memory int · script_bytes int · result_bytes int · tool_result_bytes int
+- `codemode` (`codemode:` in workflow, agent, judge) — mode on|off · tool_calls int · concurrent_tool_calls int · wall str · cpu str · memory int · script_bytes int · result_bytes int · tool_result_bytes int
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map
 - `sandbox.network` (`network:` in sandbox) — mode open|allowlist|denylist · preset str|id · inherit replace|append · rules [str|id]

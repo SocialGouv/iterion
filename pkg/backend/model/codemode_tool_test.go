@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -22,8 +23,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/scripthost"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // childHost is a Host that re-execs THIS test binary as the script-host
@@ -64,7 +67,7 @@ func runCodemode(t *testing.T, toolMap map[string]*GenerationTool, source string
 	// load on `race-shard (1)` — the same flake the bko runbook documents
 	// with `gh run rerun` as its remedy. 1 GiB is under scripthost.Ceiling,
 	// so Clamp leaves it alone and no bound under test moves.
-	return codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}).Execute(ctx, in)
+	return codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription).Execute(ctx, in)
 }
 
 // TestCodemodeCallsReachTheNodesOwnDoor is the whole slice in one assertion,
@@ -149,7 +152,7 @@ func TestCodemodeWithoutTheNodesDoorRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := codemodeTool(childHost(), scripthost.Limits{}).Execute(context.Background(), in)
+	out, err := codemodeTool(childHost(), scripthost.Limits{}, codemodeDescription).Execute(context.Background(), in)
 	if err == nil {
 		t.Fatalf("a program ran on a context with no dispatcher, returning %q", out)
 	}
@@ -245,7 +248,7 @@ func TestTwoDispatchesOfTheSameToolDoNotCrossDoors(t *testing.T) {
 	// does not fit in DefaultLimits' 256 MiB. A child dying of memory_exceeded
 	// would be read by the assertion below as a crossing. 1 GiB is under
 	// scripthost.Ceiling, so Clamp leaves it alone.
-	tool := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30})
+	tool := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription)
 
 	var ranA, ranB atomic.Int64
 	_, ctxA := newToolDispatcher(context.Background(), namedTool("ToolA", &ranA), nil, nil, nil, nil, nil)
@@ -331,7 +334,7 @@ func TestADeploymentFailureSaysItIsOne(t *testing.T) {
 
 	// A host that cannot start: the deployment class.
 	broken := scripthost.Host{Binary: filepath.Join(t.TempDir(), "no-such-iterion")}
-	_, hostErr := codemodeTool(broken, scripthost.Limits{}).Execute(ctx, in)
+	_, hostErr := codemodeTool(broken, scripthost.Limits{}, codemodeDescription).Execute(ctx, in)
 	if hostErr == nil {
 		t.Fatal("a Host whose binary does not exist returned no error")
 	}
@@ -386,7 +389,7 @@ func TestACancelledRunIsNotCalledADeploymentFailure(t *testing.T) {
 		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := codemodeTool(childHost(), scripthost.Limits{}).Execute(ctx, in)
+			_, err := codemodeTool(childHost(), scripthost.Limits{}, codemodeDescription).Execute(ctx, in)
 			if err == nil {
 				t.Fatal("an ended context returned no error")
 			}
@@ -691,7 +694,7 @@ func TestAnAskVerdictInsideAProgramDegradesRatherThanPausing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, execErr := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}).Execute(ctx, in)
+	got, execErr := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30}, codemodeDescription).Execute(ctx, in)
 
 	var ask *delegate.ErrAskUser
 	if errors.As(execErr, &ask) {
@@ -762,4 +765,129 @@ func TestTheToolUseNudgeReachesACodemodeNodeWithNoDeclaredTools(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The first scope read cannot finish until a second tool actually enters the
+// same live ReadScope. Separate result assertions reject fake executions.
+func TestCodemodeParallelRunsAuditedBuiltins(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte("expected payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, globFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("glob-first=%t", globFirst), func(t *testing.T) {
+			firstTwo := make(chan struct{})
+			var calls atomic.Int32
+			var timedOut atomic.Bool
+			scope := tool.NewReadScopeWithProvider(func() string {
+				switch calls.Add(1) {
+				case 1:
+					select {
+					case <-firstTwo:
+					case <-time.After(3 * time.Second):
+						timedOut.Store(true)
+					}
+				case 2:
+					close(firstTwo)
+				}
+				return workspace
+			})
+			registry := tool.NewRegistry()
+			if err := tool.RegisterClawBuiltinsWithScope(registry, scope, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := tool.RegisterClawWorkspaceDiagnosticsWithScope(registry, scope, nil); err != nil {
+				t.Fatal(err)
+			}
+			var defs []delegate.ToolDef
+			for _, name := range []string{"glob", "workspace_grep", "read_file", "grep", "bash"} {
+				def, err := registry.Resolve(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defs = append(defs, def.ToDelegateDef())
+			}
+			// Exercise the actual event callbacks, including the emitter and
+			// its observers, not a test-only stub of the dispatcher.
+			var events []store.Event
+			var mu sync.Mutex
+			emitter := codemodeEventEmitter(func(event store.Event) {
+				mu.Lock()
+				defer mu.Unlock()
+				events = append(events, event)
+			})
+			opts := GenerationOptions{Tools: toolDefsToGeneration(defs), Hooks: NewDefaultLifecycleHooks(EventHooks{})}
+			applyHooks("node", 0, NewStoreEventHooks(context.Background(), emitter, "run", nil, nil, nil), &opts)
+			mapOfTools := buildToolMap(opts.Tools)
+			_, ctx := newToolDispatcher(context.Background(), mapOfTools, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, nil, nil, opts.toolObserversAudited)
+			server, err := newScriptToolServer(ctx, ScriptHostToolName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"glob", "workspace_grep", "read_file", "grep", "bash", "missing"} {
+				if got, want := server.ConcurrentSafe(name), name == "glob" || name == "workspace_grep"; got != want {
+					t.Errorf("ConcurrentSafe(%q) = %v, want %v", name, got, want)
+				}
+			}
+			const glob = `{name: "glob", input: {pattern: "*.txt"}}`
+			const grep = `{name: "workspace_grep", input: {pattern: "expected payload"}}`
+			first, second := glob, grep
+			want := []string{"fixture.txt", "expected payload"}
+			if !globFirst {
+				first, second = second, first
+				want[0], want[1] = want[1], want[0]
+			}
+			input, err := json.Marshal(map[string]string{"source": "call.parallel([" + first + "," + second + "])"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := codemodeTool(childHost(), scripthost.Limits{Memory: 1 << 30, Wall: 10 * time.Second, ConcurrentToolCalls: 2}, codemodeDescription).Execute(ctx, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if timedOut.Load() {
+				t.Fatal("first builtin did not observe the second inside the real read scope")
+			}
+			var results []struct{ Status, Text string }
+			if err := json.Unmarshal([]byte(out), &results); err != nil || len(results) != len(want) {
+				t.Fatalf("batch results = %s, error = %v", out, err)
+			}
+			for i, text := range want {
+				if results[i].Status != "ok" || !strings.Contains(results[i].Text, text) {
+					t.Fatalf("result %d = %+v, want successful result containing %q", i, results[i], text)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			started := map[string]string{}
+			completed := map[string]bool{}
+			for _, event := range events {
+				id, _ := event.Data["tool_use_id"].(string)
+				name, _ := event.Data["tool"].(string)
+				switch event.Type {
+				case store.EventToolStarted:
+					if id == "" || started[id] != "" {
+						t.Fatalf("missing or duplicate start ID: %+v", event)
+					}
+					started[id] = name
+				case store.EventToolCalled:
+					if started[id] != name || completed[id] {
+						t.Fatalf("completion does not follow its own start: %+v", event)
+					}
+					completed[id] = true
+				}
+			}
+			if len(started) != 2 || len(completed) != 2 {
+				t.Fatalf("observed starts = %v and completions = %v", started, completed)
+			}
+		})
+	}
+}
+
+type codemodeEventEmitter func(store.Event)
+
+func (emit codemodeEventEmitter) AppendEvent(_ context.Context, _ string, event store.Event) (*store.Event, error) {
+	emit(event)
+	return &event, nil
 }

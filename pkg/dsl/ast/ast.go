@@ -1209,15 +1209,16 @@ type SandboxBlock struct {
 // empty duration) mean ABSENT, which is what Limits.Clamp already reads as
 // "nobody chose" — so an explicit `tool_calls: 0` is the default, not a ban.
 type CodemodeBlock struct {
-	Mode            string // "on" | "off" | "" (inherit when on a node)
-	ToolCalls       int64  // tool_calls: nested calls one program may make
-	Wall            string // wall: the child's lifetime, e.g. "60s"
-	CPU             string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
-	Memory          int64  // memory: bytes of RLIMIT_DATA
-	ScriptBytes     int64  // script_bytes: bytes of program source
-	ResultBytes     int64  // result_bytes: bytes the program may return
-	ToolResultBytes int64  // tool_result_bytes: bytes of ONE tool result
-	Span            Span
+	Mode                string // "on" | "off" | "" (inherit when on a node)
+	ToolCalls           int64  // tool_calls: nested calls one program may make
+	ConcurrentToolCalls int64  // concurrent_tool_calls: nested calls in flight in one program
+	Wall                string // wall: the child's lifetime, e.g. "60s"
+	CPU                 string // cpu: the child's CPU-seconds ceiling, e.g. "30s"
+	Memory              int64  // memory: bytes of RLIMIT_DATA
+	ScriptBytes         int64  // script_bytes: bytes of program source
+	ResultBytes         int64  // result_bytes: bytes the program may return
+	ToolResultBytes     int64  // tool_result_bytes: bytes of ONE tool result
+	Span                Span
 }
 
 // Bounded reports whether the block declares any bound — i.e. whether it was
@@ -1237,7 +1238,7 @@ func (c *CodemodeBlock) Bounded() bool {
 	if c == nil {
 		return false
 	}
-	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
 		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
 }
 

@@ -1,6 +1,6 @@
 # ADR-165 — Codemode: the model's code runs in a credential-less child process whose only capability is the node's own tool door
 
-- **Status**: Accepted — the operator decided the mandate on 2026-11-10 (codemode in iterion; cloud before local, web and desktop; claw as the reference harness; the fold as library-only). CM-2 built (`d13f6391e`, #3154): the tool dispatcher and the context contract. This record is CM-0. CM-1 (the script host), CM-3 (declarations and discovery), CM-4 (the loop binding) and CM-5 (the DSL switch) to come.
+- **Status**: Accepted — the operator decided the mandate on 2026-11-10 (codemode in iterion; cloud before local, web and desktop; claw as the reference harness; the fold as library-only). CM-2 built (`d13f6391e`, #3154): the tool dispatcher and the context contract. This record is CM-0. CM-1 (the script host), CM-3 (declarations and discovery), CM-4 (the loop binding) and CM-5 (the DSL switch) were to come when this record was written; the amendments below say what landed.
 - **Date**: 2026-11-10
 - **Deciders**: jo (the mandate and its four arbitrations), Claude (exploration, design, the five corrected facts)
 - **Extends**: [ADR-029](029-sandboxed-claw-via-hidden-claw-runner-ndjson-ipc.md) — a hidden subcommand reached over NDJSON IPC is already how this tree runs a contained child; codemode adds a second such child with a narrower capability than claw's runner.
@@ -594,3 +594,86 @@ leaves UDP open; a **NetworkPolicy** — the child shares the runner's network
 namespace, so a policy cannot tell them apart. The escape suite's network arms
 no longer depend on the ABI and run on every lane, which retires the CI record
 `ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET`.
+
+## Amendment — 2026-11-18 (bis): the memory bound is room, not a total (#3383)
+
+`Limits.Memory` was applied as an absolute `RLIMIT_DATA`. The shipped script
+host holds ~86 MiB of data segment before the interpreter exists, because the
+Go 1.26 runtime maps a 64 MiB heap arena read-write and only ~9 MiB of it is
+resident. So at the 64 MiB floor the child started **above** its own bound.
+Every mapping the runtime then needed was refused: a GC span-queue buffer, a
+memory-profile bucket, an arena. A script pushing 10 000 strings died of a
+SIGSEGV in the garbage collector 5 runs out of 5 (`script_host_died`), while
+128 MiB passed.
+
+The same class turned up as three CI flakes on 18/11. A test-binary child at
+the floor died 2 runs out of 60 on `1+1`, and a test helper that lowered its
+own limit to 32 MiB died 3 runs out of 40, whenever the profiler's random
+sample asked for a chunk. It also explains the 768 MiB race floor the tests
+carried.
+
+**Decision (Jo):** `memory:` is the program's **growth** budget. `Confine`
+reads its own `VmData`, which is `mm->data_vm`, the very counter the limit is
+compared with, before the deny-all ruleset closes `/proc`. It then sets
+`RLIMIT_DATA = base + Memory`, and reports the base as
+`Applied.MemoryBaseBytes`. This is the meaning the parent's resident-set probe
+already had (growth from a baseline, #3299). The floor, default and ceiling
+keep their numbers and now mean room, whatever the binary weighs. Measured on
+the shipped binary at the floor: the 10 000-push script completes, and a memory
+bomb dies with the runtime's own `out of memory`, the typed `memory_exceeded`.
+The race floor is retired: the race suite passes at 64 MiB of room, three runs
+out of three.
+
+Consequence for sizing: a child can hold its base plus `memory:`, ~86 + 256 MiB
+under the default. The base is mostly reserved, not resident, so a pod budget
+should count the resident base (~9 MiB) plus the room per concurrent child.
+`Ceiling().Memory` still caps the room a tenant may ask for.
+
+## Amendment — 2026-11-20: discovery is an index in the description, and two methods on `call` (CM-3, #3443)
+
+The consequence above promised "one tool plus a discovery index". CM-3 builds
+it.
+
+**What the model reads.** The codemode tool's description is a constant
+preamble plus the node's **index**: one line per tool a program can call,
+sorted by name, giving its top-level parameters and the first sentence of its
+description. The description sits in the cached prefix, so it is a pure
+function of the node's script-callable tools and holds nothing per turn.
+
+**What a program asks for.** `call.describe(name)` returns the tool's
+TypeScript declaration (an overload of `call`). `call.search(query, limit)`
+ranks the tools by BM25 and returns `{name, summary, declaration}` for each
+hit. Both are methods of the one global, as CM-1b's binding requires. The
+child answers them from a catalogue the parent sends with the request, so
+neither is a tool call. The catalogue is bounded by `toolindex.Bound`, applied
+inside `Host.Run`, and `MaxRequestBytes` reserves room for it. `Proto` moves
+to 2.
+
+**One predicate, one snapshot.** The index, the catalogue and the dispatch pin
+all read `scriptWithheld`, over the `opts.Tools` snapshot taken at install. A
+tool the door refuses therefore cannot appear in the index.
+
+**Decision (operator, 2026-11-20)** — chosen over two alternatives:
+
+- inlining every declaration in the description: it grows with tool count ×
+  schema size, contradicts the declaration budget above, and leaves CM-14
+  nothing to defer;
+- a second model-facing search tool: a second tool in the budget, and a
+  duplicate of claw's `tool_search`.
+
+The details, the bounds table and the 11 mutants seen red are in
+[codemode-discovery](../agents/backends/codemode-discovery.md).
+
+## Amendment — 2026-11-21: explicit, bounded tool batches (CM-9/CM-10)
+
+`call.parallel` is a synchronous join over a short batch, not a new global or
+an event loop. The parent reserves the call budget before dispatch and runs
+only explicitly audited tools concurrently. The zero-value tool capability
+is exclusive; `concurrent_tool_calls` defaults to one and is clamped to four.
+Batches preserve input order even when work completes out of order. The same
+node dispatcher still applies scope, permission and lifecycle hooks.
+
+The launcher keeps reading events and session captures while tools run, with
+bounded admission and reply queues. Placement and policy remain its decisions;
+the runner does not attest concurrency eligibility. This does not certify
+codemode's sandbox crossing (CM-6). See [the batch contract](../agents/backends/codemode-concurrency.md).

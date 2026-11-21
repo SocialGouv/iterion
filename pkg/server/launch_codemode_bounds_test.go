@@ -20,12 +20,12 @@ func TestLaunchCodemodeBoundsParseOrNameTheField(t *testing.T) {
 		t.Errorf("an absent bounds object converted to %+v / %v, want nil / nil", got, err)
 	}
 
-	got, err = (&runview.CodemodeBoundsRequest{ToolCalls: 256, Wall: "90s", CPU: "2m"}).ToBounds()
+	got, err = (&runview.CodemodeBoundsRequest{ToolCalls: 256, ConcurrentToolCalls: 3, Wall: "90s", CPU: "2m"}).ToBounds()
 	if err != nil {
 		t.Fatalf("well-formed bounds refused: %v", err)
 	}
-	if got.ToolCalls != 256 || got.Wall != 90*time.Second || got.CPU != 2*time.Minute {
-		t.Errorf("bounds = %+v, want ToolCalls 256 / Wall 90s / CPU 2m", got)
+	if got.ToolCalls != 256 || got.ConcurrentToolCalls != 3 || got.Wall != 90*time.Second || got.CPU != 2*time.Minute {
+		t.Errorf("bounds = %+v, want ToolCalls 256 / ConcurrentToolCalls 3 / Wall 90s / CPU 2m", got)
 	}
 	if got.Memory != 0 || got.ScriptBytes != 0 {
 		t.Errorf("bounds = %+v, want the unset fields to stay zero", got)
@@ -45,18 +45,19 @@ func TestLaunchCodemodeBoundsParseOrNameTheField(t *testing.T) {
 	// launch surface refuses everywhere else. Found by the adversarial
 	// round; the refusal names the field.
 	for name, bad := range map[string]runview.CodemodeBoundsRequest{
-		"tool_calls":        {ToolCalls: -5},
-		"memory":            {Memory: -1},
-		"wall":              {Wall: "-5s"},
-		"cpu":               {CPU: "-2m"},
-		"tool_result_bytes": {ToolResultBytes: -8},
+		"tool_calls":            {ToolCalls: -5},
+		"concurrent_tool_calls": {ConcurrentToolCalls: -1},
+		"memory":                {Memory: -1},
+		"wall":                  {Wall: "-5s"},
+		"cpu":                   {CPU: "-2m"},
+		"tool_result_bytes":     {ToolResultBytes: -8},
 	} {
 		_, err := bad.ToBounds()
 		if err == nil {
 			t.Errorf("%s: a negative bound was accepted — it would silently invert into an inherit", name)
 			continue
 		}
-		if !strings.Contains(err.Error(), "negative") {
+		if !strings.Contains(err.Error(), "negative") || !strings.Contains(err.Error(), "codemode_bounds."+name+":") {
 			t.Errorf("%s: the refusal %v does not name the defect", name, err)
 		}
 	}

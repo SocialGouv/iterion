@@ -118,11 +118,23 @@ type TriggerOutput struct {
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
 }
 
+// The types a filter may declare. A string, enum or bool filter reads one
+// value and matches when it is among the chosen values; a list filter reads a
+// list and matches when any of its elements is. The type is declared rather
+// than read off each event: the studio picks its input from it before any
+// event exists, and the sample check proves it at load.
+const (
+	FilterString = "string"
+	FilterEnum   = "enum"
+	FilterBool   = "bool"
+	FilterList   = "list"
+)
+
 // TriggerFilter is a value an operator may filter a trigger's deliveries on.
 type TriggerFilter struct {
 	ID   string `yaml:"id" json:"id"`
 	From string `yaml:"from" json:"from"`
-	// Type is string, enum or bool.
+	// Type is string, enum, bool or list.
 	Type    string   `yaml:"type" json:"type"`
 	Options []string `yaml:"options,omitempty" json:"options,omitempty"`
 	Default []string `yaml:"default,omitempty" json:"default,omitempty"`
@@ -147,7 +159,7 @@ var reservedOutputs = map[string]string{
 
 var (
 	outputTypes  = []string{"string", "int", "bool", "list", "map"}
-	filterTypes  = []string{"string", "enum", "bool"}
+	filterTypes  = []string{FilterString, FilterEnum, FilterBool, FilterList}
 	identifierRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	placeholder  = regexp.MustCompile(`\{[^}]*\}`)
 	// neverListable are headers no expression may read, whatever a package
@@ -462,7 +474,7 @@ func validateTriggerExtraction(p *Package, t Trigger) error {
 		if !slices.Contains(filterTypes, f.Type) {
 			return fmt.Errorf("connector %q: trigger %q: filter %q has type %q, not one of %s", id, t.ID, f.ID, f.Type, strings.Join(filterTypes, ", "))
 		}
-		if f.Type == "enum" {
+		if f.Type == FilterEnum {
 			if len(f.Options) == 0 {
 				return fmt.Errorf("connector %q: trigger %q: enum filter %q declares no options", id, t.ID, f.ID)
 			}
@@ -556,7 +568,7 @@ func checkExtraction(id string, t Trigger, ctx *expr.Context) error {
 		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: ignore fails on the sample: %w", id, t.ID, err)
 		}
-		if v == true {
+		if expr.Truthy(v) {
 			return fmt.Errorf("connector %q: trigger %q: the trigger's own ignore drops its sample — a sample must show an event the trigger keeps", id, t.ID)
 		}
 	}
@@ -570,9 +582,27 @@ func checkExtraction(id string, t Trigger, ctx *expr.Context) error {
 		}
 	}
 	for _, f := range t.Filters {
-		if _, err := evalExpr(f.From, ctx); err != nil {
+		v, err := evalExpr(f.From, ctx)
+		if err != nil {
 			return fmt.Errorf("connector %q: trigger %q: filter %q fails on the sample: %w", id, t.ID, f.ID, err)
 		}
+		if err := checkFilterShape(f, v); err != nil {
+			return fmt.Errorf("connector %q: trigger %q: filter %q %w", id, t.ID, f.ID, err)
+		}
+	}
+	return nil
+}
+
+// checkFilterShape holds a list filter's value on a sample to its declared
+// type: it reads a list. A nil value is an event that does not carry it, and
+// passes. A scalar filter is not judged here: over a list it compares the
+// list's JSON text, as it always has.
+func checkFilterShape(f TriggerFilter, v any) error {
+	if f.Type != FilterList || v == nil {
+		return nil
+	}
+	if _, isList := v.([]any); !isList {
+		return fmt.Errorf("reads %T from the sample, not the list its type declares", v)
 	}
 	return nil
 }

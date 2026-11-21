@@ -26,8 +26,8 @@ const (
 
 // The namespaces a `poll:` block's expressions read (ADR-168 §9). `query`
 // is what the operator typed for this poller, `cursor` the checkpoint the
-// last complete scan left; `response` is the operation's decoded answer and
-// `item` one element of it.
+// last scan left; `response` is the operation's decoded answer and `item`
+// one element of it.
 const (
 	NamespaceQuery    = "query"
 	NamespaceCursor   = "cursor"
@@ -41,6 +41,13 @@ const (
 	CursorTimestamp = "timestamp"
 	CursorOpaque    = "opaque"
 )
+
+// PollOrderOldestFirst is the one order a poll may declare its operation
+// answers in (poll.order): oldest first, so the pages a scan read before it
+// stopped are the oldest of the answer. A timestamp checkpoint may then move
+// to the latest instant they hold in full, and an opaque one's last item is
+// the newest the scan read.
+const PollOrderOldestFirst = "oldest_first"
 
 // TriggerPoll is how a polled trigger reads its events: one read operation
 // of the same package, called on an interval with parameters built from the
@@ -63,9 +70,15 @@ type TriggerPoll struct {
 	// revision is the digest of the item itself.
 	ItemID      string `yaml:"item_id" json:"item_id"`
 	ItemVersion string `yaml:"item_version,omitempty" json:"item_version,omitempty"`
-	// Cursor is the checkpoint a complete scan advances. Without one every
-	// scan reads the whole result and the seen set alone removes repeats.
-	Cursor   *PollCursor  `yaml:"cursor,omitempty" json:"cursor,omitempty"`
+	// Cursor is the checkpoint a complete scan advances, and a stopped one
+	// under Order. Without one every scan reads the whole result and the seen
+	// set alone removes repeats.
+	Cursor *PollCursor `yaml:"cursor,omitempty" json:"cursor,omitempty"`
+	// Order is the order the operation answers in: PollOrderOldestFirst, or
+	// empty when the package does not say. Declared, a scan of a timestamp
+	// cursor that stops before its last page still moves the checkpoint, to
+	// the latest instant it read in full; an opaque cursor requires it.
+	Order    string       `yaml:"order,omitempty" json:"order,omitempty"`
 	Interval PollInterval `yaml:"interval" json:"interval"`
 }
 
@@ -143,7 +156,7 @@ var cursorFields = map[string][]string{
 }
 
 // namespace renders the checkpoint as the `cursor` namespace: every field of
-// its kind, nil before the first complete scan.
+// its kind, nil before a scan left a checkpoint.
 func (c *PollCheckpoint) namespace(kind string) map[string]any {
 	out := map[string]any{}
 	for _, f := range cursorFields[kind] {
@@ -164,7 +177,7 @@ func (c *PollCheckpoint) namespace(kind string) map[string]any {
 
 // NewPollParamsContext is the context a poll's params are evaluated under:
 // the operator's query values and the last checkpoint, under the `cursor`
-// fields of its kind (cursorFields), each nil before the first complete scan.
+// fields of its kind (cursorFields), each nil before a scan left one.
 func NewPollParamsContext(query map[string]any, kind string, checkpoint *PollCheckpoint) *expr.Context {
 	cursor := checkpoint.namespace(kind)
 	return &expr.Context{Named: map[string]func([]string) any{
@@ -176,7 +189,7 @@ func NewPollParamsContext(query map[string]any, kind string, checkpoint *PollChe
 // PollParams evaluates a poll's params for one tick: the operator's typed
 // query values and the checkpoint moved back by its overlap. A param that
 // evaluates to nil is not sent — the expression said "nothing on this tick"
-// (a cursor absent before the first complete scan).
+// (a cursor absent before a scan left one).
 func PollParams(poll *TriggerPoll, query map[string]any, checkpoint *PollCheckpoint) (map[string]any, error) {
 	kind := ""
 	if poll.Cursor != nil {
@@ -605,6 +618,11 @@ func validatePoll(p *Package, t Trigger) error {
 			return where("%v", err)
 		}
 	}
+	if poll.Order != "" && poll.Order != PollOrderOldestFirst {
+		// Prevents: an order a poller would be thought to rely on and does
+		// not read — oldest first is the one a checkpoint can rest on.
+		return where("poll.order %q is not %s — the one order a poll declares; leave it unset when the operation answers in another", poll.Order, PollOrderOldestFirst)
+	}
 	if c := poll.Cursor; c != nil {
 		if strings.TrimSpace(c.From) == "" {
 			return where("poll.cursor.from is empty")
@@ -622,6 +640,12 @@ func validatePoll(p *Package, t Trigger) error {
 		case CursorOpaque:
 			if c.Overlap != "" {
 				return where("poll.cursor.overlap applies to a timestamp cursor; an opaque token has no before")
+			}
+			if poll.Order != PollOrderOldestFirst {
+				// Prevents: a checkpoint at the last item of an answer whose
+				// last item is not its newest — the next scan starts behind
+				// what it read, or past what it never did.
+				return where("poll.cursor.kind opaque takes the last item's token, so its operation must answer oldest first — declare poll.order: %s", PollOrderOldestFirst)
 			}
 		default:
 			return where("poll.cursor.kind %q is not %s or %s", c.Kind, CursorTimestamp, CursorOpaque)

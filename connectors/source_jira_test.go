@@ -20,5 +20,16 @@ func init() {
 			return map[string]string{"X-Hub-Signature": "sha256=" + hex.EncodeToString(mac.Sum(nil))}
 		},
 		eventPath: "payload.webhookEvent",
+		// An issue carries its labels as strings in `issue.fields.labels`,
+		// and an issue_updated its `changelog.items`, each naming the field
+		// it changed in `field`.
+		lists: map[string]func(map[string]any) []string{
+			"label": func(p map[string]any) []string {
+				return deliveryStrings(deliveryAt(p, "issue", "fields", "labels"), "")
+			},
+			"updated_field": func(p map[string]any) []string {
+				return deliveryStrings(deliveryAt(p, "changelog", "items"), "field")
+			},
+		},
 	})
 }

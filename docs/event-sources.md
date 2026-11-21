@@ -52,8 +52,26 @@ link reopens the same step:
 The vendor side is the last manual step: declare the delivery URL and
 the secret on the vendor's webhook settings. When the package ships a
 `setup.md`, the review step shows it verbatim — the package's own
-instructions for that vendor's settings screens. Packages that declare how
-to provision their hook automate this in a later wave (ADR-168 §6).
+instructions for that vendor's settings screens. A package whose
+`setup.md` walks through a webhook may ship a `setup-poll.md` beside it:
+the review step of a polled trigger shows that one instead, and falls back
+to `setup.md` when the package ships none. Each is capped at 32 KiB, and a
+`setup-poll.md` in a package that declares no polled trigger refuses the
+load — nothing would show it. Packages that declare how to provision their
+hook automate this in a later wave (ADR-168 §6).
+
+A **filter** narrows the events a subscription receives to the values the
+operator chose: a `string`, `enum` or `bool` filter reads one value and
+matches when it is one of them; a `list` filter reads a list — a feed
+entry's categories, an issue's labels — and matches when any of its
+elements is. Each value is compared as a launch converts it (a number in
+decimal, a bool as `true`/`false`). The type is declared, not read off each
+event: the wizard picks its input from it (a list filter takes several
+values), and where the package's sample carries the value it must read a
+list for a `list` filter, or the package does not load. An event whose list
+filter reads something other than a list is refused, naming the filter. A
+scalar filter over a list compares the list's JSON text; `type: list` is the
+membership reading.
 
 ## Polled triggers
 
@@ -74,6 +92,7 @@ example is a fictional `probe` vendor, loaded as written by
     item_id: 'item.key'
     item_version: 'item.fields.updated'
     cursor: { from: 'item.fields.updated', kind: timestamp, overlap: 1m }
+    order: oldest_first                # the operation answers oldest first
     interval: { default: 5m, min: 1m }
   outputs:
     - { name: subject, from: 'payload.fields.summary' }
@@ -114,13 +133,24 @@ example is a fictional `probe` vendor, loaded as written by
   one of the names RFC 822 defines (UT, GMT, EST, EDT, CST, CDT, MST, MDT,
   PST, PDT) at its own offset, never the process's; any other zone name is
   refused. An `opaque` cursor is a string or number, handed back as is — the
-  last item's, so its operation must answer oldest first. A
+  last item's, so its operation must answer oldest first: a poll with an
+  opaque cursor that does not declare `order: oldest_first` is refused. A
   param reads the checkpoint, moved back by the overlap, as `cursor.value` —
   RFC 3339 in UTC for a timestamp, the token for an opaque cursor — and a
   timestamp also as `cursor.epoch_ms`, the epoch milliseconds as a decimal
   string, for a vendor that reads a bare number in its own clock's terms
   (JQL reads a quoted date in the searching user's time zone, an unquoted
-  number as epoch milliseconds). Both are nil before the first complete scan.
+  number as epoch milliseconds). Both are nil before a scan left a
+  checkpoint.
+- **The answer's order.** `order: oldest_first` says the operation answers
+  oldest first — Jira's `ORDER BY updated ASC`. It is the one value: any other
+  is refused at load, and none means the package does not say. Declared on a
+  timestamp cursor, a scan that stops before its last page still moves the
+  checkpoint, to the latest instant it read in full: the one before the last
+  instant it read, whose other items may sit on the page it never read, so
+  the next scan misses nothing whatever its overlap. Declared without a
+  cursor, it loads and changes nothing. An opaque cursor never moves on a
+  scan that stops early.
 - **The interval** is counted in seconds: `min` at least `1s` and at most
   `default`.
 - **Feeds.** An operation with `response_format: feed` reads a successful
@@ -177,15 +207,21 @@ example is a fictional `probe` vendor, loaded as written by
 - **Accept, then checkpoint.** Every item the poller's seen set does not
   hold becomes an intake, idempotent on (poller, item id, item version) and
   numbered by the poller's own sequence; then the seen set records every item
-  observed, and only a complete scan moves the checkpoint — to the latest
-  instant observed, never back, or to the last item's token. A scan that
-  stops early (a page error, the operation's page bound) keeps what it
-  accepted and moves nothing; an item the package cannot read is recorded on
-  the poller and remembered, so it does not stop every later tick. The seen
-  set keeps an item for `ITERION_CONNECTOR_POLL_SEEN_RETENTION` (7 days) after
-  it was last observed.
+  observed, and a complete scan moves the checkpoint — to the latest instant
+  observed, never back nor past the tick's clock, or to the last item's
+  token. A scan that stops early (a page error, the operation's page bound,
+  its deadline) keeps what it accepted, does not prime and says why; on a
+  timestamp cursor whose operation declares `order: oldest_first` it moves
+  the checkpoint to the latest instant it read in full — the one before the
+  last it read — under the same bounds, and the next scan reads on from
+  there; otherwise it moves nothing. An item the package cannot read is
+  recorded on the poller and remembered, so it does not stop every later
+  tick. The seen set keeps an item for `ITERION_CONNECTOR_POLL_SEEN_RETENTION`
+  (7 days) after it was last observed.
 - **Enabling never replays.** A new poller's first complete scan records
-  what is already there as `primed` intakes, matched to nothing. A
+  what is already there as `primed` intakes, matched to nothing — a first
+  answer longer than the page bound, read oldest first, primes on the tick
+  whose scan reaches its end, every intake before it primed. A
   subscription receives the intakes accepted after its activation — saved
   enabled, resumed, or moved to another query — by iterion's sequence, not the
   vendor's clock; `backfill: N` pairs, once per activation, the last N intakes
@@ -225,20 +261,38 @@ example is a fictional `probe` vendor, loaded as written by
   appended to it — and takes no path, prefix or parameter that would reshape
   it. A connection URL never carries a user and password: they would be stored
   in the clear; a basic scheme seals them.
-- **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection) and
+- **Shipped:** `rss` (any RSS 2.0 or Atom 1.0 feed, one per connection,
+  narrowed by `author` or by a `category` list filter) and
   `jira.issue.changed` (a JQL the operator writes, without `ORDER BY`,
-  checkpointed by `updated`; its first scan reads the last day, so a backfill
-  reaches no further back).
+  checkpointed by `updated` and read oldest first, so a scan the page bound
+  cuts reads on at the next tick; its first scan reads the last day, so a
+  backfill reaches no further back; narrowed by `project`, `issue_type`,
+  `status` or a `label` list filter, as the webhook triggers are; its notes
+  are the package's `setup-poll.md`).
 - **Re-binding** a subscription to the query of another, existing poller
-  activates it on that poller's sequence: an item both pollers observe can be
-  delivered once by each.
+  activates it on that poller's sequence. A revision it already received
+  through its first poller is not launched again when the other poller
+  accepts it later: that pair is refused at launch, naming the pair and run
+  that delivered the revision. A pair the first poller still owed when the
+  subscription moved is refused at launch — the subscription now listens to
+  another poller — and delivered nothing, so the revision launches once,
+  through the new poller. Three windows stay open, each a duplicate rather
+  than a loss: a first submission acknowledged but not yet marked launched
+  when the second pair is judged; pairs written before this check, which
+  name no item, so a revision delivered before that deploy can be delivered
+  once more after it; and a pair expires with its intake
+  (`ITERION_CONNECTOR_INTAKE_RETENTION`), so a poller lagging past that
+  retention delivers the revision again.
 
 A webhook trigger of a package that declares no ingress stays refused at save
-and off the catalogue: no delivery can reach it. Two limits are known: a scan
-whose answer needs more pages than its operation's page bound never
-completes — so a poller whose first answer is that large never primes — and
-filters compare one value, so a list-valued output (a feed's categories) is
-mapped, not filtered on.
+and off the catalogue: no delivery can reach it. Two limits are known: a
+scan whose answer needs more pages than its operation's page bound completes
+only across ticks of an oldest-first timestamp cursor — without
+`order: oldest_first`, or on an opaque cursor, it never completes, so a
+poller whose first answer is that large never primes; and an oldest-first
+scan cannot move the checkpoint when every item its page bound holds shares
+one instant, or when more changes fall within one overlap window than the
+bound holds, and reads the same pages on every tick.
 
 ## Icons
 

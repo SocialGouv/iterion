@@ -247,7 +247,7 @@ erDiagram
         string connection_id FK "connections._id"
         string trigger_id "the polled trigger it reads"
         int64 generation "the fence: one per tick that took it"
-        object checkpoint "timestamp or opaque token a complete scan reached"
+        object checkpoint "timestamp or opaque token a complete scan reached, or the last instant an oldest-first scan read in full before it stopped"
         bool primed "its first complete scan recorded what was there"
         int64 sequence "the last number handed to an intake"
         datetime next_tick_at
@@ -294,7 +294,7 @@ erDiagram
 | `repo_integrations` | `pkg/forge` | `RepoIntegration` | `tenant_id` — a team | `tenant_conn_repo_unique` | none (cloud-only) — same as the binding above: spec generator and tests only |
 | `runs` | `pkg/store/mongo` | `store.Run` | `tenant_id` — a team; absent on a local or resident-surface run | none unique, none TTL | file `runs/<id>/run.json` |
 | `connector_intakes` | `pkg/connector/intake` | `Intake` | `tenant_id` — a team | the derived `_id` is the dedup identity; TTL `intake_expiry` on `expires_at`, no delay | one JSON journal for both, `intake.FileStore`, for a local server (memory in tests) |
-| `connector_pairs` | `pkg/connector/intake` | `Pair` | `tenant_id` — a team | the derived `_id` is one per (intake, subscription); TTL `pair_expiry` on `expires_at`, no delay | the intakes' journal |
+| `connector_pairs` | `pkg/connector/intake` | `Pair` | `tenant_id` — a team | the derived `_id` is one per (intake, subscription); a polled pair's `item_key` is read with its subscription at launch (`pair_subscription_item_launched`, not unique); TTL `pair_expiry` on `expires_at`, no delay | the intakes' journal |
 | `connector_pollers` | `pkg/connector/poller` | `Poller` | `tenant_id` — a team (`local` on a local server) | the derived `_id` is the poller's identity; none TTL | one JSON journal for both, `poller.FileStore` (`connector/pollers.json`), for a local server (memory in tests) |
 | `connector_poller_seen` | `pkg/connector/poller` | `seenRow` | `tenant_id` — the poller's team | the derived `_id` is one per (poller, item id, item version); pruned by the poller past `ITERION_CONNECTOR_POLL_SEEN_RETENTION`, no TTL index | the pollers' journal |
 | `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a **team** on the `schedule.*` rows drawn here, an org on `auditOrg` rows, empty or either on `scope: platform` rows ([identity](data-model-identity.md)) | TTL `audit_ttl`, 400 days | none (cloud-only); the tick records go to the local JSONL |

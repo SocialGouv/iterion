@@ -54,17 +54,17 @@ func TestTheRunRungDecidesTheBoundsFieldByField(t *testing.T) {
 	runValues := CodemodeBounds{
 		ToolCalls: 4096, Wall: 91 * time.Second, CPU: 31 * time.Second,
 		Memory: 1 << 30, ScriptBytes: 1 << 20, ResultBytes: 2 << 20,
-		ToolResultBytes: 512 << 10,
+		ToolResultBytes: 512 << 10, ConcurrentToolCalls: 1,
 	}
 	nodeValues := CodemodeBounds{
 		ToolCalls: 64, Wall: 30 * time.Second, CPU: 20 * time.Second,
 		Memory: 256 << 20, ScriptBytes: 512 << 10, ResultBytes: 1 << 20,
-		ToolResultBytes: 128 << 10,
+		ToolResultBytes: 128 << 10, ConcurrentToolCalls: 3,
 	}
 	workflowValues := CodemodeBounds{
 		ToolCalls: 128, Wall: 60 * time.Second, CPU: 40 * time.Second,
 		Memory: 512 << 20, ScriptBytes: 256 << 10, ResultBytes: 512 << 10,
-		ToolResultBytes: 64 << 10,
+		ToolResultBytes: 64 << 10, ConcurrentToolCalls: 4,
 	}
 	got := ResolveCodemodeBounds(&runValues, &nodeValues, &workflowValues)
 	if got == nil {
@@ -75,6 +75,7 @@ func TestTheRunRungDecidesTheBoundsFieldByField(t *testing.T) {
 		got, want any
 	}{
 		{"tool_calls", got.ToolCalls, runValues.ToolCalls},
+		{"concurrent_tool_calls", got.ConcurrentToolCalls, runValues.ConcurrentToolCalls},
 		{"wall", got.Wall, runValues.Wall},
 		{"cpu", got.CPU, runValues.CPU},
 		{"memory", got.Memory, runValues.Memory},
@@ -91,6 +92,12 @@ func TestTheRunRungDecidesTheBoundsFieldByField(t *testing.T) {
 	partial := ResolveCodemodeBounds(&CodemodeBounds{ToolCalls: 4096}, &nodeValues, &workflowValues)
 	if partial == nil {
 		t.Fatal("a partial run bound resolved nil")
+	}
+	if partial.ConcurrentToolCalls != 3 {
+		t.Errorf("ConcurrentToolCalls = %d, want the node's 3 (the launch did not choose)", partial.ConcurrentToolCalls)
+	}
+	if got := ResolveCodemodeBounds(nil, &CodemodeBounds{}, &workflowValues); got == nil || got.ConcurrentToolCalls != 4 {
+		t.Errorf("ResolveCodemodeBounds with no run or node concurrency = %+v, want the workflow's 4", got)
 	}
 	if partial.ToolCalls != 4096 {
 		t.Errorf("ToolCalls = %d, want the launch's 4096", partial.ToolCalls)

@@ -4019,7 +4019,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// check on its side; spec.AllowUnknownInputs is the operator's opt-out
 	// (--allow-unknown-inputs, the dispatcher's warn-and-proceed contract).
 	// The engine-injected names are carved out (#2416): a provision's
-	// stamped ITERION_VIBE_* dials are answered by the engine's expansion,
+	// stamped ITERION_* dials are answered by the engine's expansion,
 	// not by a DSL var — refusing them refused every API launch of a
 	// provisioned bot.
 	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {

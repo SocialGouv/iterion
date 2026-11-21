@@ -4,7 +4,8 @@ set -euo pipefail
 base=${1:-HEAD}
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-work=$(mktemp -d "$root/.chart-render-diff.XXXXXX")
+# Repository-wide test sweeps must never walk a scratch tree we remove on exit.
+work=$(mktemp -d "${TMPDIR:-/tmp}/chart-render-diff.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/before" "$work/after"
 git archive "$base" charts/iterion | tar -x -C "$work/before"

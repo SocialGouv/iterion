@@ -417,9 +417,12 @@ func (t *tick) run(ctx context.Context) error {
 	t.prune(ctx)
 	r := poller.Tick{NextTickAt: next, Error: strings.Join(accepted.problems, "; ")}
 	if !scan.complete {
-		// An incomplete scan keeps what it accepted and never moves the
-		// checkpoint or primes: the next one re-reads from the old place.
+		// An incomplete scan keeps what it accepted and never primes; it
+		// moves the checkpoint only as far as its operation's order lets it
+		// (partial), so the next scan reads on from there or from the old
+		// place.
 		r.Error = joinProblems(scan.why, r.Error)
+		r.Checkpoint = t.partial(trig, scan)
 		return t.complete(ctx, r)
 	}
 	r.Checkpoint = t.checkpoint(trig, scan)
@@ -505,6 +508,12 @@ func (t *tick) scan(ctx context.Context, trig spec.Trigger) (scanned, error) {
 		return scanned{}, errors.New("no resolver for the poller's tenant")
 	}
 	r.Trust = connection.TrustOfTenantConfiguration()
+	// What a poller reads is believed on the connection's word, as a
+	// delivery an ingress takes is: the trigger grant the save checked is
+	// checked again, so a grant the operator withdrew feeds nothing more.
+	if conn, err := r.Store.Get(ctx, p.TenantID, p.ConnectionID); err == nil && !conn.Has(connection.CapTrigger) {
+		return scanned{}, fmt.Errorf("connection %q no longer holds the trigger grant: nothing it feeds is believed", conn.Alias)
+	}
 	pkg, op, cred, baseURL, err := r.ResolveActionByConnection(ctx, trig.Poll.Operation, p.ConnectionID)
 	if err != nil {
 		return scanned{}, err
@@ -597,33 +606,70 @@ func (t *tick) paramsCheckpoint(trig spec.Trigger) *spec.PollCheckpoint {
 }
 
 // checkpoint is the position a complete scan reached: the latest instant it
-// observed — never behind the stored one, since the overlap re-reads items
-// before it, and never past the tick's own clock, so one item a vendor
-// stamped in the future does not blind every later scan — or the last
-// item's token; the stored one when the scan saw nothing to move it.
+// observed, under instant's bounds, or the last item's token; the stored one
+// when the scan saw nothing to move it.
 func (t *tick) checkpoint(trig spec.Trigger, s scanned) *poller.Checkpoint {
 	if trig.Poll.Cursor == nil || len(s.items) == 0 {
 		return nil
 	}
 	if trig.Poll.Cursor.Kind == spec.CursorTimestamp {
-		var latest time.Time
-		for _, it := range s.items {
-			if it.at.After(latest) {
-				latest = it.at
-			}
-		}
-		if latest.After(t.now) {
-			latest = t.now
-		}
-		if c := t.p.Checkpoint; c != nil && c.Kind == poller.KindTimestamp && c.At != nil && c.At.After(latest) {
-			latest = *c.At
-		}
-		if latest.IsZero() {
-			return nil
-		}
-		return &poller.Checkpoint{Kind: poller.KindTimestamp, At: &latest}
+		return t.instant(latestAt(s.items, time.Time{}))
 	}
 	return &poller.Checkpoint{Kind: poller.KindOpaque, Token: s.items[len(s.items)-1].token}
+}
+
+// partial is the position a scan that stopped before its last page reached
+// (a page bound, a later page failing, its deadline). Only an operation that
+// answers oldest first (poll.order) has one, and only for a timestamp
+// cursor: the pages read are then the oldest of the answer, so every instant
+// before the last one read is read in full, while the last one's other items
+// may sit on the page never read. The latest of those complete instants,
+// under instant's bounds, is where the next scan reads on from — whatever
+// its overlap, and whether its param reads the cursor inclusively or not.
+// When every item read shares one instant, or the answer is in no declared
+// order (an unread page may hold an item older than every one read), nothing
+// moves.
+func (t *tick) partial(trig spec.Trigger, s scanned) *poller.Checkpoint {
+	if trig.Poll.Order != spec.PollOrderOldestFirst || trig.Poll.Cursor == nil || trig.Poll.Cursor.Kind != spec.CursorTimestamp {
+		return nil
+	}
+	full := latestAt(s.items, latestAt(s.items, time.Time{}))
+	if full.IsZero() {
+		return nil
+	}
+	return t.instant(full)
+}
+
+// latestAt is the latest item instant strictly before below, or of all the
+// items when below is zero; zero when no item has one.
+func latestAt(items []item, below time.Time) time.Time {
+	var latest time.Time
+	for _, it := range items {
+		if !below.IsZero() && !it.at.Before(below) {
+			continue
+		}
+		if it.at.After(latest) {
+			latest = it.at
+		}
+	}
+	return latest
+}
+
+// instant is a timestamp checkpoint at at, bounded: never behind the stored
+// one, since the overlap re-reads items before it, and never past the tick's
+// own clock, so one item a vendor stamped in the future does not blind every
+// later scan. nil when there is no instant to stand on.
+func (t *tick) instant(at time.Time) *poller.Checkpoint {
+	if at.After(t.now) {
+		at = t.now
+	}
+	if c := t.p.Checkpoint; c != nil && c.Kind == poller.KindTimestamp && c.At != nil && c.At.After(at) {
+		at = *c.At
+	}
+	if at.IsZero() {
+		return nil
+	}
+	return &poller.Checkpoint{Kind: poller.KindTimestamp, At: &at}
 }
 
 // acceptance is what accept wrote.

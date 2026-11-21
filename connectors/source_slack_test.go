@@ -37,5 +37,9 @@ func init() {
 		// The inner event carries the vendor's name; the outer `event_callback`
 		// is the same for all of them.
 		eventPath: "payload.event.type",
+		// A message the app itself posted carries its bot id on the event.
+		echo: func(payload map[string]any) {
+			payload["event"].(map[string]any)["bot_id"] = "B0APPSELF"
+		},
 	})
 }

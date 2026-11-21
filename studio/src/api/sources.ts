@@ -4,6 +4,7 @@
 // schemas are inline in schema.ts.
 
 import { apiRequest, guard404, FeatureUnavailableError } from "./client";
+import { scopePrefix } from "@/lib/scope";
 
 export { FeatureUnavailableError };
 
@@ -49,7 +50,9 @@ export interface SourceOutput {
   type?: string;
 }
 
-// SourceFilter mirrors sourceFilter: a value an operator may filter on.
+// SourceFilter mirrors sourceFilter: a value an operator may filter on. A
+// string, enum or bool filter matches when the event's value is among the
+// chosen ones; a list filter when any element of the event's list is.
 export interface SourceFilter {
   id: string;
   type: string;
@@ -88,8 +91,12 @@ export interface Source {
   connections: number;
   subscriptions: number;
   // The package's setup.md: what to do at the vendor's side once the
-  // binding exists. Plain text, rendered as text.
+  // binding exists. Markdown, rendered through MarkdownText, which renders
+  // none of the HTML the package writes as an element.
   setup?: string;
+  // The package's setup-poll.md: the setup of its polled triggers, shown in
+  // place of setup for one, rendered alike. Absent when the package ships none.
+  setup_poll?: string;
   ingress?: SourceIngress;
 }
 
@@ -116,7 +123,9 @@ export async function listTeamSources(teamID: string): Promise<Source[]> {
 // authenticates it and the answer is always an image — the sanitized mark
 // or the monogram — so the component carries no fallback of its own.
 export function sourceIconURL(connectorID: string): string {
-  return `/api/v1/connectors/${encodeURIComponent(connectorID)}/icon`;
+  // Through the pane's scope, as apiRequest routes every call: a desktop
+  // workspace pane serves its own backend under a prefix.
+  return `${scopePrefix()}/api/v1/connectors/${encodeURIComponent(connectorID)}/icon`;
 }
 
 // Labels of the closed category taxonomy (pkg/connector/spec Category).

@@ -38,6 +38,12 @@ func init() {
 		// Linear has no endpoint-verification handshake: a new webhook sends
 		// nothing until an event fires.
 		eventPath: "payload.type",
+		// An Issue's `data.labels` are label objects, each with its `name`.
+		lists: map[string]func(map[string]any) []string{
+			"label": func(p map[string]any) []string {
+				return deliveryStrings(deliveryAt(p, "data", "labels"), "name")
+			},
+		},
 	})
 }
 

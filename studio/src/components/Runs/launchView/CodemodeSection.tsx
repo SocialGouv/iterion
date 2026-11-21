@@ -1,5 +1,5 @@
 // The launch form's codemode override (CM-5f, ADR-165): the mode select,
-// and behind a disclosure the seven bounds an operator can raise for this
+// and behind a disclosure the bounds an operator can raise for this
 // run — the HTTP twin of the CLI's --codemode / --codemode-* flags.
 // Presentational: useRunOverrides owns the state and folds it into
 // createRun() via buildCodemodePayload.
@@ -45,6 +45,7 @@ interface RowSpec {
 
 const rows: RowSpec[] = [
   { key: "toolCalls", id: "launch-codemode-tool-calls", label: "tool_calls", sub: "calls per program", type: "number", step: "1" },
+  { key: "concurrentToolCalls", id: "launch-codemode-concurrent-tool-calls", label: "concurrent_tool_calls", sub: "calls in flight per program", type: "number", step: "1" },
   { key: "wall", id: "launch-codemode-wall", label: "wall", sub: "wall-clock bound", type: "text" },
   { key: "cpu", id: "launch-codemode-cpu", label: "cpu", sub: "CPU-seconds bound", type: "text" },
   { key: "memory", id: "launch-codemode-memory", label: "memory", sub: "bytes", type: "number", step: "1048576" },
@@ -62,6 +63,8 @@ function placeholderOf(
   switch (key) {
     case "toolCalls":
       return def.tool_calls !== undefined ? String(def.tool_calls) : "inherits";
+    case "concurrentToolCalls":
+      return "inherits";
     case "wall":
       return def.wall || "inherits";
     case "cpu":
@@ -140,7 +143,7 @@ export default function CodemodeSection({
               type="button"
               className="text-xs text-fg-muted hover:text-fg-default flex items-center gap-1"
               onClick={onToggle}
-              title="Raise a codemode bound for this run without editing the bot."
+              title="Override a codemode bound for this run without editing the bot."
             >
               <span>{show ? "▾" : "▸"}</span>
               <span>Bounds{overriding ? " — overriding the bot" : ""}</span>
@@ -184,6 +187,12 @@ export default function CodemodeSection({
                   value={values[row.key]}
                   onChange={(e) => onChange({ [row.key]: e.target.value })}
                 />
+                {row.key === "concurrentToolCalls" && limits?.default.concurrent_tool_calls !== undefined && (
+                  <div className="mt-1 text-caption text-fg-subtle">
+                    Platform default: {limits.default.concurrent_tool_calls}
+                    {limits.default.concurrent_tool_calls === 1 ? " (serial)" : ""}.
+                  </div>
+                )}
                 {unreadable.includes(row.label) && (
                   <div className="mt-1 text-caption text-danger">
                     not a positive value — left as inherit, nothing is sent

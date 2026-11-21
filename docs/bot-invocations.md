@@ -75,7 +75,12 @@ effect honours (C215, below).
   acknowledged, then matched by the connector worker against the
   connection's own subscriptions — never through the bus — and each matched
   pair launches once, as an idempotent submission. The dead-letter view and
-  replays live under `/api/v1/intakes` and `/api/v1/pairs`.
+  replays live under `/api/v1/intakes` and `/api/v1/pairs`. A **polled**
+  trigger (an RSS feed, a Jira JQL) is read by a poller instead of delivered:
+  its subscription names the trigger's `poll_query` and the connection needs
+  the `action` grant beside `trigger` ([event sources](event-sources.md#running-pollers)).
+  The studio plugs either kind from the Sources catalogue, and shows a bot's
+  sources on its start node in the editor.
 
 ## Execution mode
 

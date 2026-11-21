@@ -74,7 +74,11 @@ const (
 	FailureUsageLimitBlocked     FailureCode = "USAGE_LIMIT_BLOCKED"
 	FailureContextLengthExceeded FailureCode = "CONTEXT_LENGTH_EXCEEDED"
 	FailureToolFailedTransient   FailureCode = "TOOL_FAILED_TRANSIENT"
-	FailureToolFailedPermanent   FailureCode = "TOOL_FAILED_PERMANENT"
+	// FailureToolFailedPermanent: a tool's failure that re-running it cannot
+	// change — a host capability the node does not hold, an output a strict
+	// schema refuses, or a tool node's command that failed the same way
+	// several executions in a row (runtime.IdenticalToolFailure).
+	FailureToolFailedPermanent FailureCode = "TOOL_FAILED_PERMANENT"
 	// FailureNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
 	// reaching the upstream model API. Distinct from
 	// FailureExecutionFailed so the recovery dispatcher can apply a

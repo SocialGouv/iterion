@@ -180,6 +180,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/bots/upload` | session | yes |
 | `GET` | `/api/v1/bots/{name}` | session | yes |
 | `PUT` | `/api/v1/bots/{name}` | session | yes |
+| `GET` | `/api/v1/bots/{name}/launch-source` | session | yes |
 | `PUT` | `/api/v1/bots/{name}/overlay` | session | yes |
 | `POST` | `/api/v1/bots/{name}/triggers/from-invocation` | session + write rung | yes |
 

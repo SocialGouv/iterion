@@ -2792,10 +2792,10 @@ router intel_fanout:
   mode: fan_out_all
 
 ## Emit JSON so the runtime maps the SHA onto the declared
-## `sha` field. A bare stdout string gets auto-wrapped as
-## `{result: "..."}`, leaving `outputs.capture_start_sha.sha`
-## empty — and Phase 2's review nodes diff against an empty
-## base, which silently degrades to "review the whole repo".
+## `sha` field. A bare stdout string is not the object
+## `output:` declares and fails the node — which is the point:
+## an absent `outputs.capture_start_sha.sha` would have Phase 2's
+## review nodes diff against an empty base, "review the whole repo".
 tool capture_start_sha:
   ## The reference rides an env assignment and git is called with an argv
   ## list: a quote written around a reference does not nest with the one the
@@ -3216,9 +3216,9 @@ tool commit_changes:
     MSG={{input.full_message}}
     # All git output goes to stderr so the tool's stdout is dedicated to
     # the final JSON line. Without these redirects, "[detached HEAD <SHA>]
-    # <subject>" mixes with the JSON and iterion's parser falls back to
-    # wrapping the whole blob as {"result": "..."} — losing the "output"
-    # field that downstream edges (write_audit_md, etc.) read for the SHA.
+    # <subject>" mixes with the JSON, the stdout is no longer the object
+    # `output:` declares, and the node fails — instead of handing
+    # downstream edges (write_audit_md, etc.) the "output" field they read.
     printf '%s' "$FILES_LINES" | while IFS= read -r f; do [ -n "$f" ] && { git check-ignore -q -- "$f" || printf '%s\n' "$f"; }; done | tr '\n' '\0' | xargs -0 -r git add -- >&2
     if git diff --cached --quiet; then
       ## Nothing staged is a soft no-op: select_candidate may have

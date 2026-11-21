@@ -31,7 +31,9 @@ type BotVar struct {
 //     required ones set, each of its type — and the poller is derived from
 //     them; a webhook trigger takes no query, poller or backfill;
 //   - every chosen filter is declared, an enum's values are its options, a
-//     bool's are true/false; a declared default fills a filter left unset;
+//     bool's are true/false, a string's and a list's are any text (a list
+//     filter's values are the elements it matches); a declared default
+//     fills a filter left unset;
 //   - `when` and every var_map expression read the event namespace only;
 //   - every var_map target is a var the bot declares, and every var the bot
 //     requires is filled — by the var_map, else by a same-named output, or
@@ -74,11 +76,11 @@ func ValidateSubscription(sub trigger.Subscription, trig spec.Trigger, bot []Bot
 		}
 		for _, v := range values {
 			switch f.Type {
-			case "enum":
+			case spec.FilterEnum:
 				if !slices.Contains(f.Options, v) {
 					return sub, fmt.Errorf("filter %s: %q is not one of its options %q", id, v, f.Options)
 				}
-			case "bool":
+			case spec.FilterBool:
 				if v != "true" && v != "false" {
 					return sub, fmt.Errorf("filter %s: %q is not true or false", id, v)
 				}

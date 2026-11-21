@@ -426,7 +426,7 @@ const (
 	EffortSourceNode = "node"
 	// EffortSourceDialPrefix opens the source of a level an operator dial
 	// supplied: the variable the node's `${VAR:-default}` read, set in the
-	// environment or the platform's bot-vars (`dial:ITERION_VIBE_EFFORT_CLAUDE`).
+	// environment or the platform's bot-vars (`dial:ITERION_RENOVACY_EFFORT_CLAUDE`).
 	EffortSourceDialPrefix = "dial:"
 	// EffortSourceBackend is the harness, below the model boundary: it sent
 	// another level than it was handed (a model's accepted set), none at all

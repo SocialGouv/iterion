@@ -382,7 +382,7 @@ const (
 	// Stage 1 changes nothing at runtime, so a deployment's pins keep
 	// working while the catalogue is de-dialled; the hard catalogue floor
 	// arrives with the last de-dialled bot group.
-	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field, var default, tool body) reads the process environment instead of its authored literal and the levels above it (warning)
+	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field incl. a supervisor's model, var default, tool body, cursor setting, budget max_duration) reads the process environment instead of its authored literal and the levels above it (warning)
 
 	// On codex a `tools:` list is not an allowlist: codex runs its built-in
 	// shell outside the SDK's per-name callbacks, so the list buys a SANDBOX
@@ -526,4 +526,22 @@ const (
 	DiagCodemodeBoundUnreadable DiagCode = "C349" // a codemode: duration that is not readable as one, or is negative — the default applies instead, which is tighter than a bound being raised and looser than one being lowered (warning)
 
 	DiagCodemodeMemoryBelowFloor DiagCode = "C350" // a codemode: memory bound below the measured floor a Go child works under — the platform raises the bound to the floor where the program is spawned (warning)
+
+	// A node's own `allow:`/`ask:`/`deny:` lists on a claw route that serves
+	// it no tool. On claw the declared `tools:` list IS the tool surface
+	// (ClawToolSurfaceEmpty), so a node that declares rules and nothing to
+	// call is dispatched with nothing callable: the rules bound nothing, and
+	// an `allow:` row — which reads as a grant — grants nothing. A warning:
+	// the node still runs, and the same shape is a real bound on a backend
+	// that keeps its own roster (claude_code), which is why only a route the
+	// source sends to claw is named.
+	DiagPermissionRulesNoTools DiagCode = "C351" // a node declares its own allow/ask/deny rules and a route the source sends to claw (primary or fallback) serves it no tool — nothing is callable there, so the rules bound nothing (warning)
+
+	// C352 joins the Verified Action family (C103-C106 and C179, ADR-044)
+	// beside C351, whose fact it shares and whose fix it does not: a tool
+	// node's rung-4 recovery agent is dispatched with `agent_tools:` as its
+	// whole tool list, so on claw a rung that declares none sends an agent
+	// with nothing to call to achieve a goal "with its tools". A warning: the
+	// node runs, and the postcondition still judges it.
+	DiagRecoveryAgentNoTools DiagCode = "C352" // policy: recover reaches rung 4 on a workflow the source routes to claw, with no recovery.agent_tools: and no workflow codemode — the recovery agent is served no tool (warning)
 )

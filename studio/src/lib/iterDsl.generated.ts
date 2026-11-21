@@ -248,6 +248,7 @@ export const iterDslPropertiesByKind = {
   ],
   "business_stores": [],
   "codemode": [
+    "concurrent_tool_calls",
     "cpu",
     "memory",
     "mode",

@@ -238,6 +238,7 @@ codemode_decl = "codemode" ":" codemode_mode NEWLINE
               | "codemode" ":" NEWLINE [ INDENT { codemode_prop } DEDENT ] ;
 codemode_prop = "mode" ":" codemode_mode NEWLINE
               | "tool_calls" ":" INT_LIT NEWLINE
+              | "concurrent_tool_calls" ":" INT_LIT NEWLINE
               | "wall" ":" str_value NEWLINE
               | "cpu" ":" str_value NEWLINE
               | "memory" ":" INT_LIT NEWLINE

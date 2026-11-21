@@ -300,6 +300,10 @@ type ToolDef struct {
 	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
 	// it never crosses the sandbox IPC.
 	QualifiedName string
+
+	// ConcurrentSafe attests the native implementation, not the tool name.
+	// Zero is exclusive. This field does not cross the sandbox IPC.
+	ConcurrentSafe bool
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on

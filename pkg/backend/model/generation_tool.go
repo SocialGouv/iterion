@@ -25,6 +25,9 @@ type GenerationTool struct {
 
 	// Execute runs the tool with the given JSON input and returns the result text.
 	Execute func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// concurrentSafe follows the actual native Execute closure.
+	concurrentSafe bool
 }
 
 // GenerationOptions configures a direct generation call.
@@ -186,7 +189,8 @@ type GenerationOptions struct {
 	OnToolStarted func(ToolCallInfo)
 
 	// OnToolCall is called after each tool execution.
-	OnToolCall func(ToolCallInfo)
+	OnToolCall           func(ToolCallInfo)
+	toolObserversAudited bool
 
 	// OnBeforeCompact fires only when in-loop compaction is about to
 	// shrink the history. The callback may return a modified slice

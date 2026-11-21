@@ -2068,6 +2068,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	rs.nodeFailureStreaks = restoreNodeFailureStreaks(cp.NodeFailureStreaks)
 	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
@@ -2524,6 +2525,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint, arti
 		rs.artifactVersions = cloneMap(cp.ArtifactVersions)
 	}
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	rs.nodeFailureStreaks = restoreNodeFailureStreaks(cp.NodeFailureStreaks)
 	restoreLoopSnapshots(rs, cp)
 	if err := e.restoreCheckpointBudget(rs, cp); err != nil {
 		return err

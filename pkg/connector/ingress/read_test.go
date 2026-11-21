@@ -801,3 +801,35 @@ func TestReadAnUnnamedDeliveryNeverReachesAPolledTrigger(t *testing.T) {
 		t.Fatalf("the unnamed delivery read as trigger %q (filtered %q) — a polled trigger is fed by its poller only", d.TriggerID, d.Filtered)
 	}
 }
+
+// A loop guard and a handshake condition are read as the language reads a
+// guard (expr.Truthy): the natural guard `payload.bot_id` drops a bot's
+// message, and an unset, empty or "false" value keeps the delivery (#3360).
+func TestReadAGuardIsReadAsACondition(t *testing.T) {
+	in := &spec.Ingress{
+		Credential: spec.IngressCredential{Scheme: spec.SchemeToken, In: "query", Name: "t", Secret: "minted"},
+		Event:      spec.IngressLocator{From: "payload.type"},
+		Handshake:  &spec.IngressHandshake{When: `payload.challenge`, Respond: "payload.challenge"},
+	}
+	trig := []spec.Trigger{{ID: "chat.message.posted", Event: "message", Ignore: `payload.bot_id`}}
+	read := func(body string) Delivery {
+		t.Helper()
+		d, err := Read(Request{Ingress: in, Triggers: trig, Secret: []byte("tok"), Body: []byte(body),
+			Header: http.Header{}, Query: url.Values{"t": {"tok"}}, Now: time.Now()})
+		if err != nil {
+			t.Fatalf("read %s: %v", body, err)
+		}
+		return d
+	}
+	if d := read(`{"type":"message","bot_id":"B42"}`); d.Filtered == "" {
+		t.Fatalf("a bot's message under the guard payload.bot_id = %+v, want dropped", d)
+	}
+	for _, body := range []string{`{"type":"message"}`, `{"type":"message","bot_id":""}`, `{"type":"message","bot_id":"false"}`} {
+		if d := read(body); d.Filtered != "" || d.Event == nil {
+			t.Errorf("%s = %+v, want it kept", body, d)
+		}
+	}
+	if d := read(`{"type":"url_verification","challenge":"c-1"}`); d.Handshake == nil || *d.Handshake != "c-1" {
+		t.Fatalf("a handshake whose condition renders a string = %+v, want answered", d)
+	}
+}

@@ -26,21 +26,18 @@ agent converge:
   ## and file tools without starting unrelated repository MCP servers.
   mcp:
     inherit: false
-  ## The merge model this bundle documents. Its three dials move TOGETHER:
-  ## backend, model and provider decide one route, and a deployment that
-  ## moves one of them alone lands the slot somewhere nobody chose. (The
-  ## `_GPT` suffix is the dial's legacy name — ADR-169's de-dial turns this
-  ## line into a literal and retires the dial.)
-  model: "${ITERION_VIBE_MODEL_EMIT_GPT:-openai/gpt-6-sol}"
+  ## The merge model this bundle documents. Backend, model and provider
+  ## decide one route and move TOGETHER: a routing cell that re-targets
+  ## this node names all three, or the slot lands somewhere nobody chose.
+  model: "openai/gpt-6-sol"
   ## Explicit pin: an `openai/…` id only resolves via claw (the
   ## auto-resolver would send it to claude_code, which does not know the
   ## prefix, and the schema validator fails).
-  backend: "${ITERION_VIBE_BACKEND_EMIT_GPT:-claw}"
-  ## Empty by default, like the gpt reviewer's: on claw the model's
-  ## `openai/` prefix IS the route, while a leftover hint would describe an
-  ## Anthropic route this node does not take to the credential walk and to
-  ## the wire-reach check (model.AnthropicWireRoutes).
-  provider: "${ITERION_VIBE_PROVIDER_EMIT_GPT:-}"
+  backend: "claw"
+  ## No `provider:` hint, like the reviewer: on claw the model's `openai/`
+  ## prefix IS the route, while a hint would describe an Anthropic route
+  ## this node does not take to the credential walk and to the wire-reach
+  ## check (model.AnthropicWireRoutes).
   output: emit_output
   ## The hand-off reads a publication by NODE id (manifest
   ## `fallback_nodes`), so the name is this bundle's own alias for the
@@ -68,13 +65,13 @@ agent converge:
   ## The published run table prints the effort this node was dispatched at
   ## (its `_reasoning_effort_applied`, carried through pr_gate), so a
   ## routing cell over the merge step shows as what it is.
-  reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
+  reasoning_effort: medium
   ## One firing, after both reviewer branches have settled.
   await: wait_all
   ## No rescue route, like the reviewer: a GLM route belongs to
   ## claude_code (it carries a `provider:` hint, which claw reads nowhere),
-  ## and a deployment without a usable OpenAI route moves this slot's three
-  ## dials or re-targets the node with a routing cell instead.
+  ## and a deployment without a usable OpenAI route re-targets the node
+  ## with a routing cell instead.
 
 judge reviewer_alternate:
   ## No ambient MCP (#3283 S6): the platform's plugin servers ride every
@@ -84,8 +81,8 @@ judge reviewer_alternate:
   ## whole surface on claw; the opt-out keeps it that way on every route.
   mcp:
     inherit: false
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  backend: "${ITERION_VIBE_BACKEND_CLAUDE:-claude_code}"
+  model: "claude-opus-5-5"
+  backend: "claude_code"
   ## The `anthropic` hint is LOAD-BEARING, not decorative: the wire's
   ## credential order (secrets.AnthropicWireSlotOrder) puts facade keys
   ## (zai, moonshot) FIRST, and a z.ai key takes the wire as the run's
@@ -100,10 +97,10 @@ judge reviewer_alternate:
   ## and the route takes it, stamped `_fallback_used` and `glm-5.3`.
   ## The hint forces Anthropic-direct: the anthropic key if sealed, else
   ## the claude_code forfait — skipping the facade branches entirely
-  ## (selectedAnthropicCredEnvForCLI). A dial, one for both tiers of the
-  ## slot, so an operator can put the slot on z.ai deliberately
-  ## (ITERION_VIBE_PROVIDER_CLAUDE=zai) without re-releasing the bot.
-  provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"
+  ## (selectedAnthropicCredEnvForCLI). An operator who wants the slot on
+  ## z.ai deliberately writes a routing cell (`provider: zai`), without
+  ## re-releasing the bot.
+  provider: "anthropic"
   output: review_output
   system: review_system
   user: review_user_claude
@@ -132,7 +129,7 @@ judge reviewer_alternate:
   ## shipped uncapped) and the miss path is a soft stop — a truncated but
   ## valid review. Headroom until a live turn count says otherwise.
   tool_max_steps: 60
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
   fallbacks:
     ## GLM, the claude family's other server, when the Anthropic route
@@ -153,8 +150,7 @@ judge reviewer_alternate:
     ## and takes Task/WebFetch/Skill off the PRIMARY path. The hint keeps
     ## the whole thing on one backend. (claw DOES reach GLM its own way —
     ## model `anthropic/glm-5.3`, provider read from the spec prefix, as
-    ## the converge dial's OpenAI alternative documents — that is just
-    ## not this route.)
+    ## the bundle README documents — that is just not this route.)
     ##
     ## What each trigger is FOR — the primary is forced Anthropic-direct,
     ## so every one of these is a failure OF THAT ROUTE (a sealed z.ai
@@ -180,11 +176,10 @@ judge reviewer_alternate:
     ## published review's run table carries them.
     ##
     ## An account entitled to a different GLM id — or one z.ai renames —
-    ## repoints it without
-    ## re-releasing the bot; element models are ${VAR:-default}-expanded
-    ## at dispatch like the node's own.
+    ## repoints it with a routing cell on `reviewer_alternate#glm`,
+    ## without re-releasing the bot.
     glm:
-      model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
+      model: "glm-5.3"
       provider: "zai"
       on: [usage_window, auth, unavailable]
       metered: true
@@ -195,27 +190,21 @@ judge reviewer:
   ## schemas beside the four declared tools — none of them ever called.
   mcp:
     inherit: false
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-6-astra}"
+  model: "openai/gpt-6-astra"
   ## Explicit backend pin: "openai/gpt-6-astra" only resolves via claw.
   ## Without it the auto-resolver routes through claude_code, which
   ## doesn't recognise openai/* models and the schema validator fails.
-  ## Backend, model AND provider are dials, so an instance points this
-  ## reviewer at whatever its credentials serve — all three move
-  ## together, or the slot lands on a route nobody chose. The glance tier
-  ## has its own backend and model dials (the _GLANCE ones) and shares the
-  ## provider one, so a remedy moves both tiers:
-  ##   claude family: ITERION_VIBE_BACKEND_GPT and _GPT_GLANCE=claude_code,
-  ##     ITERION_VIBE_MODEL_GPT and _GPT_GLANCE=claude-opus-5-5,
-  ##     ITERION_VIBE_PROVIDER_GPT=anthropic (without the hint a z.ai key
-  ##     holding the wire answers the claude id with GLM — see
-  ##     reviewer_alternate);
-  ##   GLM: ITERION_VIBE_BACKEND_GPT and _GPT_GLANCE=claude_code,
-  ##     ITERION_VIBE_MODEL_GPT and _GPT_GLANCE=glm-5.3,
-  ##     ITERION_VIBE_PROVIDER_GPT=zai.
-  ## The provider dial is empty by default: on claw the model's
-  ## `openai/` prefix is the route.
-  backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
-  provider: "${ITERION_VIBE_PROVIDER_GPT:-}"
+  ## An instance points this reviewer at whatever its credentials serve
+  ## with a routing cell, and backend, model AND provider move together,
+  ## or the slot lands on a route nobody chose. The glance tier is its own
+  ## node (reviewer_glance) and takes its own cell, so a remedy writes both:
+  ##   claude family: backend claude_code, model claude-opus-5-5, provider
+  ##     anthropic (without the hint a z.ai key holding the wire answers
+  ##     the claude id with GLM — see reviewer_alternate);
+  ##   GLM: backend claude_code, model glm-5.3, provider zai.
+  ## No `provider:` hint here: on claw the model's `openai/` prefix is the
+  ## route.
+  backend: "claw"
   output: review_output
   system: review_system
   user: review_user_gpt
@@ -224,7 +213,7 @@ judge reviewer:
   ## path to edit it.
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  reasoning_effort: high
 
 ## GLANCE-TIER reviewers (#685). `reasoning_effort:` takes a level or a
 ## quoted `${ENV_VAR:-default}` string, so a `{{vars.x}}` there is a
@@ -241,17 +230,16 @@ judge reviewer_glance:
   ## No ambient MCP, like reviewer (#3283 S6).
   mcp:
     inherit: false
-  model: "${ITERION_VIBE_MODEL_GPT_GLANCE:-openai/gpt-6-luna}"
-  ## Same three dials as reviewer (see there); the provider one is
-  ## shared, since it follows the family, not the tier.
-  backend: "${ITERION_VIBE_BACKEND_GPT_GLANCE:-claw}"
-  provider: "${ITERION_VIBE_PROVIDER_GPT:-}"
+  model: "openai/gpt-6-luna"
+  ## Same route shape as reviewer (see there), re-targeted by its own
+  ## routing cell.
+  backend: "claw"
   output: review_output
   system: review_system
   user: review_user_gpt
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium}"
+  reasoning_effort: medium
 
 ## Topology gate. A `condition` router picks a SINGLE target, which is
 ## exactly what single needs; the guard cannot live on `fan`'s own edges
@@ -1002,8 +990,8 @@ def ai_run_identity():
     return '<a href=' + chr(34) + html.escape(run_url, quote=True) + chr(34) + '>' + label + '</a>'
 
 def ai_family(model, wire):
-    # The family that SERVED, never the slot's name: a slot's model and
-    # backend are dials, and a row titled Revue GPT over a claude model is
+    # The family that SERVED, never the slot's name: a routing cell moves a
+    # slot's model and backend, and a row titled Revue GPT over a claude model is
     # a lie the reader cannot check against the next column. The session's
     # routing label decides first, because a facade serves whatever id it
     # is sent: z.ai answers a claude id with GLM, and only the label knows.
@@ -1027,11 +1015,11 @@ def ai_family(model, wire):
 
 def ai_effort(prefix):
     # The effort the node that ran SENT its model, and who decided it: the
-    # engine's record on the node's output, never the dial the node was
-    # written with. A routing cell outranks that dial, a gateway's feed
+    # engine's record on the node's output, never the level the node was
+    # written with. A routing cell outranks that level, a gateway's feed
     # replaces a level its route does not take, and the harness may send
-    # another level, none, or a lower one on a recovery -- reading the dial
-    # here printed a level the run did not use.
+    # another level, none, or a lower one on a recovery -- reading the
+    # authored level here printed a level the run did not use.
     effort = ai_value(prefix + '_EFFORT')
     source = ai_value(prefix + '_EFFORT_SOURCE')
     requested = ai_value(prefix + '_EFFORT_REQUESTED')
@@ -1042,8 +1030,6 @@ def ai_effort(prefix):
         label = 'feed ' + source[len('feed:'):]
     elif source.startswith('env:'):
         label = 'table du runner'
-    elif source.startswith('dial:'):
-        label = 'réglage d’exploitation'
     else:
         label = {'cell': 'cellule', 'launch': 'lancement', 'override': 'surcharge', 'node': 'nœud',
                  'edge': 'arête', 'backend': 'harness'}.get(source, source)
@@ -1116,7 +1102,7 @@ if ai_rows:
                     '|---|---|---|---|---:|'] + ai_rows)
 else:
     summary.append('Détails par étape indisponibles pour ce run.')
-summary.extend(['', '<sub>Tokens cumulés des appels IA, pas la taille du contexte. L’effort indiqué est celui de la première requête de l’étape au modèle — tel que claw l’a mis sur le fil, tel que claude_code l’a retenu pour le modèle, tel que l’exécuteur l’a remis aux autres harness — avec sa source : cellule (routage), lancement, surcharge (l’une ou l’autre, sans que le run sache laquelle), nœud (réglage du bot), réglage d’exploitation (variable du bot fixée par l’opérateur), arête (étape précédente), feed ou table du runner (la passerelle a remplacé le niveau demandé), harness (le harness a envoyé un autre niveau, aucun — « non envoyé » —, ou son niveau par défaut). « abaissé à » : claw a repris un tour coupé ou fait sa passe de récupération à un effort plus bas, et la réponse publiée en vient.</sub>', '', '</details>'])
+summary.extend(['', '<sub>Tokens cumulés des appels IA, pas la taille du contexte. L’effort indiqué est celui de la première requête de l’étape au modèle — tel que claw l’a mis sur le fil, tel que claude_code l’a retenu pour le modèle, tel que l’exécuteur l’a remis aux autres harness — avec sa source : cellule (routage), lancement, surcharge (l’une ou l’autre, sans que le run sache laquelle), nœud (réglage du bot), arête (étape précédente), feed ou table du runner (la passerelle a remplacé le niveau demandé), harness (le harness a envoyé un autre niveau, aucun — « non envoyé » —, ou son niveau par défaut). « abaissé à » : claw a repris un tour coupé ou fait sa passe de récupération à un effort plus bas, et la réponse publiée en vient.</sub>', '', '</details>'])
 
 payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
 

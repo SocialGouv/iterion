@@ -65,6 +65,9 @@ export interface RepoTargetSectionProps {
    *  wizard's returnTo so the operator lands back on this exact launch
    *  screen once a forge is wired. */
   filePath: string;
+  /** The ?bot= slug of a launch that names its bot, which the return goes
+   *  back to in place of a path. */
+  botSlug?: string;
 }
 
 /** Derive an initial RepoTargetState from the bot's requirement + the
@@ -151,6 +154,7 @@ export default function RepoTargetSection({
   createError,
   submitting,
   filePath,
+  botSlug,
 }: RepoTargetSectionProps) {
   const [, setLocation] = useLocation();
   // Connections list: fetched whenever create mode is open — a freshly
@@ -420,9 +424,11 @@ export default function RepoTargetSection({
                 variant="primary"
                 size="sm"
                 onClick={() => {
-                  const back = filePath
-                    ? `/runs/new?file=${encodeURIComponent(filePath)}`
-                    : "/runs/new";
+                  const back = botSlug
+                    ? `/runs/new?bot=${encodeURIComponent(botSlug)}`
+                    : filePath
+                      ? `/runs/new?file=${encodeURIComponent(filePath)}`
+                      : "/runs/new";
                   setLocation(
                     `/integrations/connect?returnTo=${encodeURIComponent(back)}`,
                   );

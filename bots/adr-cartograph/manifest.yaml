@@ -1,7 +1,11 @@
 name: adr-cartograph
 display_name: Adry
 icon: 🗺️
-version: 2.1.2
+version: 2.1.3
+## 2.1.3 — mark_issue_for_review answers `{"text": …}` on every path
+## and sends the dispatcher's own answer to stderr (#3421); an HTTP error
+## status is a failed request (`curl -f`), reported as skipped instead of
+## read as a transition requested.
 ## 2.1.2 — the survey's scope discipline names the inventory its own prompt
 ## renders (`input.recently_changed_code_files`) instead of the var that
 ## produced it, which no channel of the node shows.

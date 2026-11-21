@@ -6,7 +6,7 @@
         "zai"
       ],
       "NarrowSafe": true,
-      "EnvDeferred": true,
+      "EnvDeferred": false,
       "Unknown": null,
       "EnvFunded": null,
       "ForfaitFirst": [
@@ -30,31 +30,17 @@
       },
       "Forbidden": null,
       "ForbiddenPrimary": null,
-      "DecidedPrimary": null,
-      "Unreadable": null,
-      "AnthropicWireDefaultReads": [
-        "anthropic",
-        "moonshot",
-        "zai"
-      ],
-      "GatewaySites": null,
-      "DeferredSites": [
-        "converse_agent",
-        "converse_agent#glm"
-      ],
-      "UnattributedSites": null,
-      "WireDefaultSites": {
-        "converse_agent": [
-          "anthropic",
-          "moonshot",
-          "zai"
-        ],
-        "converse_agent#glm": [
-          "anthropic",
-          "moonshot",
-          "zai"
+      "DecidedPrimary": {
+        "anthropic": [
+          "converse_agent"
         ]
-      }
+      },
+      "Unreadable": null,
+      "AnthropicWireDefaultReads": null,
+      "GatewaySites": null,
+      "DeferredSites": null,
+      "UnattributedSites": null,
+      "WireDefaultSites": null
     },
     "only_env_funded": false,
     "call_sites": [
@@ -83,7 +69,7 @@
             "Model": ""
           }
         ],
-        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "model": "glm-5.3",
         "role": "node",
         "host": false,
         "rescue": true
@@ -98,8 +84,8 @@
         "openai",
         "zai"
       ],
-      "NarrowSafe": false,
-      "EnvDeferred": true,
+      "NarrowSafe": true,
+      "EnvDeferred": false,
       "Unknown": null,
       "EnvFunded": null,
       "ForfaitFirst": null,
@@ -143,55 +129,22 @@
       },
       "Forbidden": null,
       "ForbiddenPrimary": null,
-      "DecidedPrimary": null,
-      "Unreadable": null,
-      "AnthropicWireDefaultReads": [
-        "anthropic",
-        "moonshot",
-        "zai"
-      ],
-      "GatewaySites": null,
-      "DeferredSites": [
-        "converge",
-        "reviewer",
-        "reviewer_alternate",
-        "reviewer_alternate#glm",
-        "reviewer_glance",
-        "supervisor:pacer",
-        "supervisor:pacer_gpt"
-      ],
-      "UnattributedSites": [
-        "converge",
-        "reviewer",
-        "reviewer_glance"
-      ],
-      "WireDefaultSites": {
-        "converge": [
-          "anthropic",
-          "moonshot",
-          "zai"
+      "DecidedPrimary": {
+        "anthropic": [
+          "reviewer_alternate"
         ],
-        "reviewer": [
-          "anthropic",
-          "moonshot",
-          "zai"
-        ],
-        "reviewer_alternate": [
-          "anthropic",
-          "moonshot",
-          "zai"
-        ],
-        "reviewer_alternate#glm": [
-          "anthropic",
-          "moonshot",
-          "zai"
-        ],
-        "reviewer_glance": [
-          "anthropic",
-          "moonshot",
-          "zai"
+        "openai": [
+          "converge",
+          "reviewer",
+          "reviewer_glance"
         ]
-      }
+      },
+      "Unreadable": null,
+      "AnthropicWireDefaultReads": null,
+      "GatewaySites": null,
+      "DeferredSites": null,
+      "UnattributedSites": null,
+      "WireDefaultSites": null
     },
     "only_env_funded": false,
     "call_sites": [
@@ -250,7 +203,7 @@
             "Model": ""
           }
         ],
-        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "model": "glm-5.3",
         "role": "node",
         "host": false,
         "rescue": true
@@ -304,13 +257,13 @@
     "supervisors": [
       {
         "name": "pacer",
-        "model": "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}",
+        "model": "anthropic/claude-opus-5-5",
         "provider_hint": "",
         "gateway_watched": false
       },
       {
         "name": "pacer_gpt",
-        "model": "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}",
+        "model": "openai/gpt-6-sol",
         "provider_hint": "",
         "gateway_watched": false
       }

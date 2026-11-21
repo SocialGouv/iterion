@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // epoch is the instant every script sees as "now". A fixed point rather than
@@ -116,6 +118,7 @@ func RunChild(in io.Reader, out io.Writer) error {
 		}
 		bridge := newToolBridge(os.NewFile(fdToolReplies, "codemode-replies"),
 			os.NewFile(fdToolCalls, "codemode-calls"), limits)
+		bridge.index = toolindex.New(req.Catalog, req.CatalogOmitted)
 		if err := bridge.install(vm); err != nil {
 			return writeResponse(out, Refuse(RefusalUnavailable,
 				"the tool binding could not be installed: %v", err))
@@ -195,8 +198,10 @@ func resolveSeed(hexSeed string) ([32]byte, error) {
 // The read happens BEFORE Confine — it has to, because a deny-all ruleset
 // would stop anything that still needed to open a descriptor — so no rlimit is
 // in force for it. The ceiling's script bound plus room for the limits object
-// is the honest cap.
-const MaxRequestBytes = 4<<20 + 64<<10
+// is the honest cap, plus the catalogue `call.describe` and `call.search`
+// answer from, which crosses in the same document and is bounded by
+// [toolindex.Bound].
+const MaxRequestBytes = 4<<20 + 64<<10 + toolindex.MaxCatalogBytes
 
 // readRequest decodes the single request document.
 //

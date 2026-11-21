@@ -98,6 +98,11 @@ const SOURCE: Source = {
   ],
 };
 
+// The mixed package's two setup notes: its webhook steps and its polling ones.
+const MIX_SETUP = "Add the webhook at the vendor, then paste the secret.";
+const MIX_SETUP_POLL = "Grant action to the connection; there is no webhook to add.";
+const FEED_SETUP = "Give the feed's own address as the instance URL.";
+
 // A card mixing a webhook trigger and a polled one whose poller is keyed by
 // a typed query.
 const MIXED: Source = {
@@ -107,6 +112,8 @@ const MIXED: Source = {
   delivery: "mixed",
   connections: 1,
   subscriptions: 0,
+  setup: MIX_SETUP,
+  setup_poll: MIX_SETUP_POLL,
   triggers: [
     {
       id: "mix.issue.updated",
@@ -139,7 +146,7 @@ const FEED: Source = {
   connections: 1,
   subscriptions: 0,
   auth: [{ id: "none", kind: "none" }],
-  setup: "Give the feed's own address as the instance URL.",
+  setup: FEED_SETUP,
   triggers: [
     {
       id: "feed.item.published",
@@ -147,6 +154,7 @@ const FEED: Source = {
       delivery: "poll",
       interval: "15m",
       outputs: [{ name: "title", type: "string" }],
+      filters: [{ id: "category", type: "list" }],
     },
   ],
 };
@@ -394,5 +402,144 @@ describe("PlugWizardView — a polled trigger", () => {
     expect(patchConnection).toHaveBeenCalledWith("t1", "conn-1", {
       capabilities: ["trigger", "action"],
     });
+  });
+});
+
+describe("PlugWizardView — the setup notes", () => {
+  it("shows the package's polling notes for a polled trigger, not its webhook steps", async () => {
+    search = "?source=mix&step=review&connection=conn-1&trigger=mix.issue.polled&bot=steward";
+    const { container } = renderWizard();
+    await screen.findByText("Notes de configuration (Mix)");
+    expect(screen.getByText(MIX_SETUP_POLL)).toBeTruthy();
+    expect(container.textContent).not.toContain(MIX_SETUP);
+  });
+
+  it("shows setup.md for a webhook trigger of the same package", async () => {
+    search = "?source=mix&step=review&connection=conn-1&trigger=mix.issue.updated&bot=steward";
+    const { container } = renderWizard();
+    await screen.findByText("Configuration chez le fournisseur (Mix)");
+    expect(screen.getByText(MIX_SETUP)).toBeTruthy();
+    expect(container.textContent).not.toContain(MIX_SETUP_POLL);
+  });
+
+  it("shows setup.md for a polled trigger whose package ships no polling notes", async () => {
+    search = "?source=feed&step=review&connection=conn-1&trigger=feed.item.published&bot=steward";
+    renderWizard();
+    await screen.findByText("Notes de configuration (Feed)");
+    expect(screen.getByText(FEED_SETUP)).toBeTruthy();
+  });
+});
+
+describe("PlugWizardView — a list filter", () => {
+  it("takes several values, each one a chip, and sends the ones kept", async () => {
+    search = "?source=feed&step=event&connection=conn-1&trigger=feed.item.published&bot=steward";
+    const { goto } = renderWizard();
+    const input = (await screen.findByLabelText("Filtre category")) as HTMLInputElement;
+    for (const value of ["sources", "Sources", "Pollers, weekly"]) {
+      fireEvent.change(input, { target: { value } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    }
+    // A value is compared as written, as the server compares it: a case
+    // apart is another value, and a comma stays inside it.
+    expect(screen.getByRole("button", { name: "Remove Pollers, weekly" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove sources" }));
+    expect(screen.getByText(/au moins une de ces valeurs ; vide, tout événement correspond/)).toBeTruthy();
+
+    goto("?source=feed&step=mapping&connection=conn-1&trigger=feed.item.published&bot=steward");
+    fireEvent.click(await screen.findByRole("button", { name: /Prévisualiser/ }));
+    await waitFor(() => expect(previewTrigger).toHaveBeenCalled());
+    expect(previewTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: { category: ["Sources", "Pollers, weekly"] } }),
+    );
+
+    goto("?source=feed&step=event&connection=conn-1&trigger=feed.item.published&bot=steward");
+    for (const name of ["Remove Pollers, weekly", "Remove Sources"]) {
+      fireEvent.click(await screen.findByRole("button", { name }));
+    }
+    goto("?source=feed&step=review&connection=conn-1&trigger=feed.item.published&bot=steward");
+    fireEvent.click(await screen.findByRole("button", { name: /Activer/ }));
+    await waitFor(() => expect(createTrigger).toHaveBeenCalled());
+    // Emptied is untouched: no narrowing is sent.
+    expect(createTrigger).toHaveBeenCalledWith(expect.objectContaining({ filters: {} }));
+  });
+});
+
+describe("PlugWizardView — the review names the connection", () => {
+  it("shows the connection's alias and display name, its id only beside them", async () => {
+    listConnections.mockImplementation(async (_team: string, connector: string) => [
+      {
+        id: "conn_01a1f83f",
+        alias: "main",
+        display_name: "Jira de production",
+        connector,
+        capabilities: ["action", "trigger"],
+      },
+    ]);
+    search =
+      "?source=probe&step=review&connection=conn_01a1f83f&trigger=probe.issue.commented&bot=steward";
+    renderWizard();
+    const line = (await screen.findByText(/^Connexion :/)).closest("li");
+    await waitFor(() =>
+      expect(line?.textContent).toBe("Connexion : main — Jira de production (conn_01a1f83f)"),
+    );
+  });
+});
+
+describe("PlugWizardView — the setup notes are Markdown", () => {
+  it("renders the package's headings and emphasis as elements, never as raw markup or HTML", async () => {
+    listSources.mockResolvedValue([
+      {
+        ...MIXED,
+        setup_poll:
+          "# Polling a Jira site\n\n**Issue changed (polled)** reads the site <img src=x onerror=alert(1)> on an interval.\n",
+      },
+    ]);
+    search = "?source=mix&step=review&connection=conn-1&trigger=mix.issue.polled&bot=steward";
+    const { container } = renderWizard();
+    const notes = (await screen.findByText("Notes de configuration (Mix)")).closest("details");
+    const heading = notes?.querySelector("h2, h3, h4");
+    expect(heading?.textContent).toBe("Polling a Jira site");
+    expect(screen.getByText("Issue changed (polled)").tagName).toBe("STRONG");
+    expect(container.textContent).not.toContain("# Polling");
+    expect(container.textContent).not.toContain("**");
+    // The package's HTML is never rendered as an element.
+    expect(notes?.querySelector("img")).toBeNull();
+  });
+});
+
+describe("PlugWizardView — the preview's verdict, in French", () => {
+  const goPreview = async () => {
+    search = "?source=feed&step=mapping&connection=conn-1&trigger=feed.item.published&bot=steward";
+    renderWizard();
+    fireEvent.click(await screen.findByRole("button", { name: /Prévisualiser/ }));
+  };
+
+  it("says the sample does not pass the filters, and keeps the server's detail verbatim", async () => {
+    const reason =
+      'filter category: no element of ["sources","pollers"] is one of ["Security" "Open Source"]';
+    previewTrigger.mockResolvedValue({ matched: false, sample: true, reason });
+    await goPreview();
+    await screen.findByText(
+      "Cet événement ne passe pas vos filtres : l'abonnement ne lancerait pas le bot.",
+    );
+    expect(screen.getByText(reason).tagName).toBe("CODE");
+    expect(screen.getByText(/L'échantillon est un exemple fourni par le paquet/)).toBeTruthy();
+    expect(screen.queryByText(/^Refusé/)).toBeNull();
+  });
+
+  it("says a refusal is final, with the server's detail", async () => {
+    const refusal = 'var_map title (event.missing): unknown field "missing"';
+    previewTrigger.mockResolvedValue({ matched: false, refusal });
+    await goPreview();
+    await screen.findByText(/^L'abonnement refuserait cet événement/);
+    expect(screen.getByText(refusal).tagName).toBe("CODE");
+  });
+
+  it("says the trigger's loop guard dropped it, with the server's detail", async () => {
+    const filtered = "trigger feed.item.published's loop guard dropped it";
+    previewTrigger.mockResolvedValue({ matched: false, filtered });
+    await goPreview();
+    await screen.findByText(/^Écarté par le déclencheur avant vos filtres/);
+    expect(screen.getByText(filtered).tagName).toBe("CODE");
   });
 });

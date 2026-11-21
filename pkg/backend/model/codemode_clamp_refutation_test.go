@@ -57,7 +57,7 @@ func TestTheOverrideRunsUnderClampLikeAnyAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := codemodeTool(host, *bounds).Execute(ctx, in)
+	out, err := codemodeTool(host, *bounds, codemodeDescription).Execute(ctx, in)
 	if err != nil {
 		t.Fatalf("program run: %v", err)
 	}

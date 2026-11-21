@@ -16,12 +16,6 @@ func TestReviewPRRunDetails(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	// Every effort dial reads `max`, a level no case's run used: the table
-	// prints the effort the engine recorded on the node that ran, so `max`
-	// in a row would be the dial read back (#3283 F11).
-	for _, dial := range []string{"ITERION_VIBE_EFFORT_CLAUDE", "ITERION_VIBE_EFFORT_GPT", "ITERION_VIBE_EFFORT_CLAUDE_GLANCE", "ITERION_VIBE_EFFORT_GPT_GLANCE", "ITERION_VIBE_EFFORT_EMIT"} {
-		t.Setenv(dial, "max")
-	}
 	for _, tc := range []struct {
 		name         string
 		endpointPath string
@@ -49,9 +43,9 @@ func TestReviewPRRunDetails(t *testing.T) {
 			absent: []string{"Revue Claude", "Revue GLM", "glance", "**225 000**", "private", "fragment", "test-token"},
 		},
 		{
-			// The run-details table names the family that SERVED: the gpt
-			// slot's model is a dial, and an instance pointing it at a claude
-			// model (the documented cross-vendor outage dial) must not publish
+			// The run-details table names the family that SERVED: a routing
+			// cell moves the gpt slot's model, and an instance pointing it at a
+			// claude model (the documented cross-vendor outage remedy) must not publish
 			// "Revue GPT" over a claude run — PR #1924's gate comment did
 			// exactly that.
 			name: "a gpt slot fed a claude model is labelled by what served",
@@ -175,12 +169,12 @@ func TestReviewPRRunDetails(t *testing.T) {
 		},
 		{
 			// What the run used, from the engine's record on the node that
-			// ran — never the dial, which reads `max` here. A routing cell's
+			// ran — never the level the node was written with. A routing cell's
 			// `low` is the reviewer's level; a level the gateway's feed
 			// replaced names the feed and the level asked for; an edge's
 			// level names the edge; a source the table does not know is
 			// printed as given (HTML-escaped like every engine value).
-			name: "the effort the run used, never the env dial",
+			name: "the effort the run used, never the authored level",
 			refs: map[string]string{
 				"run.id": "run-123", "input.ai_run_tokens": "3000",
 				"input.ai_reviewer_alternate_model": "openai_compatible/scaleway/deepseek-v4.1-flash", "input.ai_reviewer_alternate_backend": "claw",
@@ -203,12 +197,12 @@ func TestReviewPRRunDetails(t *testing.T) {
 				"| low (&lt;b&gt;who&lt;/b&gt;) | 400 |",
 				"| high (feed pliage ; demandé medium) | 200 |",
 			},
-			absent: []string{"max", "<b>who</b>"},
+			absent: []string{"<b>who</b>"},
 		},
 		{
 			// The harness's own answers and the other request sources: a
-			// level the client did not send, a recovery at a lower level, an
-			// operator dial, the launch's row, the overrides when the run
+			// level the client did not send, a recovery at a lower level, the
+			// launch's row, the overrides when the run
 			// cannot tell which layer, a level the harness clamped.
 			name: "what the harness sent, and every source of a request",
 			refs: map[string]string{

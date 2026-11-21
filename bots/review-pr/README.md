@@ -23,16 +23,14 @@ anything both reviewers flagged ("cross-confirmed"). It then writes one issue
 per finding to the iterion native kanban board (labelled `severity:*`,
 `type:*`, `source:revi`) plus a markdown report.
 
-**Every route is a `${ENV_VAR:-default}` dial for now**, so an instance
-points a slot at whatever its credentials serve without re-releasing the
-bot: `reviewer` defaults to `openai/gpt-6-astra` on `claw` (glance:
-`openai/gpt-6-luna`), `reviewer_alternate` to `claude-opus-5-5` on
-`claude_code` with an Anthropic-direct provider hint, `converge` to
+**Every route is a literal** (ADR-169), and an instance points a slot at
+whatever its credentials serve with a routing cell, without re-releasing the
+bot: `reviewer` is `openai/gpt-6-astra` on `claw` (glance:
+`openai/gpt-6-luna`), `reviewer_alternate` is `claude-opus-5-5` on
+`claude_code` with an Anthropic-direct provider hint, `converge` is
 `openai/gpt-6-sol` on `claw`, and `reviewer_alternate` carries a GLM fallback
-route (`provider: "zai"`, dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`, default
-`glm-5.3`) for the day the Anthropic credential cannot serve. (ADR-169
-retires these dials in favour of literals plus routing cells; until then they
-are the live lever.) The published run table labels each row
+route (`glm-5.3`, `provider: "zai"`) for the day the Anthropic credential
+cannot serve. The published run table labels each row
 with the family that actually served — read from the session's routing label
 first (a z.ai facade is GLM, whatever id it was sent), then from the model —
 never from the slot's name: Revue Claude / Revue GPT / Revue GLM, and
@@ -135,9 +133,7 @@ effort is the level the node's first model request carried — as claw put it on
 the wire, as claude_code handed it to the CLI, as the executor handed it to
 the other harnesses — with who decided it: `cellule` (a routing cell),
 `lancement` (the launch's own override), `surcharge` (either, when the run
-cannot tell), `nœud` (the node's own setting or its dial's default),
-`réglage d’exploitation` (an operator setting the node's `ITERION_VIBE_EFFORT_*`
-dial), `arête` (an upstream edge), the gateway's feed when it replaced the level
+cannot tell), `nœud` (the node's own setting), `arête` (an upstream edge), the gateway's feed when it replaced the level
 asked for (`high (feed pliage ; demandé medium)`), `harness` when the harness
 sent another level, none (`non envoyé`) or its default; `abaissé à low
 (récupération)` marks an answer that came from a later request at a lower
@@ -421,9 +417,8 @@ sneaks back in (`TestReviewPrSystemPromptsCarryNoRunSpecificText`, `bots`).
 ## The Anthropic pin, and the z.ai route below it
 
 Every claude_code node on a claude id — `reviewer_alternate` — pins its
-provider to `anthropic`, through a dial (`ITERION_VIBE_PROVIDER_CLAUDE`;
-`converge` runs on claw, where the model's `openai/` prefix is the route and
-a hint is read nowhere). The pin is **load-bearing**: the wire's credential order
+provider to `anthropic` (`converge` runs on claw, where the model's `openai/`
+prefix is the route and a hint is read nowhere). The pin is **load-bearing**: the wire's credential order
 (secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, so a
 z.ai key the run holds as a DEFAULT credential serves every unpinned node of
 the wire, the forfait beside it or not. The team's own z.ai key is always one
@@ -454,11 +449,9 @@ It is a `provider: "zai"` hint with no `backend:` of its own, so it stays on
 `claude_code`, the one backend that honours a provider hint: the hint forces
 the z.ai facade (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from the run's
 `zai` credential, or `ZAI_API_KEY`) **even when Anthropic credentials are
-present**. The rescue rides `converge`'s own primary route, which a CLI
+present**. The rescue rides `reviewer_alternate`'s own primary route, which a CLI
 backend serves by construction: claw reads no hint and a bare GLM id is not a
-claw spec. The merge step's `backend:` note bounds that dial to the CLI
-backends for a second reason — pointed at claw, the node holds no tool at all
-(below). It is armed for three failure categories — each a failure OF THE
+claw spec. It is armed for three failure categories — each a failure OF THE
 PINNED ANTHROPIC ROUTE, never of a facade:
 
 | category | the shape that produces it |
@@ -467,11 +460,10 @@ PINNED ANTHROPIC ROUTE, never of a facade:
 | `auth` | the Anthropic credential present but rejected or expired. Not in the default trigger set; named here deliberately. A run whose forfait the publisher skipped at the cap lands here too when the runner carries no ambient Anthropic auth: the forced-Anthropic primary has no channel, fails "Not logged in" (no spend), and this route takes it |
 | `unavailable` | the resolved credential cannot reach the model it was given |
 
-The rescue model is a dial like every other on those nodes:
-`${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}`, one for both tiers since
-the rescue is deliberately the same on each. An account entitled to a
-different GLM id — or one z.ai renames — repoints it without re-releasing
-the bundle, live through `bot-vars` like the other `ITERION_*` dials.
+The rescue model is a literal, `glm-5.3`. An account entitled to a
+different GLM id — or one z.ai renames — repoints it with a routing cell on
+the route (`review-pr/reviewer_alternate#glm`), without re-releasing the
+bundle.
 
 With no credential at all the route has none either, and the run fails loudly.
 
@@ -526,13 +518,10 @@ floor restores at every severity and without a cap: a posted finding can be
 dismissed, but a dropped one is never seen.
 
 The claw nodes — `reviewer`, `reviewer_glance` and `converge` — have no
-fallback route of their own: their backend, model and provider are dials
-(`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
-`ITERION_VIBE_PROVIDER_GPT`; `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`
-for the merge step, which keeps its own trio because the merge model is not
-the reviewer's), so an instance without a usable OpenAI route
-points them at a family it can serve — all three together, or the slot lands
-on a route nobody chose:
+fallback route of their own. An instance without a usable OpenAI route
+points each of them at a family it can serve with a routing cell per node —
+backend, model and provider together, or the slot lands on a route nobody
+chose:
 
 - the claude forfait: `claude_code` + `claude-opus-5-5` + provider
   `anthropic` (without the hint, a z.ai key holding the wire answers the
@@ -553,12 +542,12 @@ whose credentials serve other families re-targets the role through a routing
 cell (or a `--model` / `--backend` override) instead of needing a launch
 pattern.
 
-| role | node | shipped default route | dials (until ADR-169's de-dial) |
+| role | node | authored route | routing cell selector |
 |---|---|---|---|
-| reviewer | `reviewer` | `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{GPT}`, `ITERION_VIBE_PROVIDER_GPT` |
-| reviewer, glance tier | `reviewer_glance` | `claw` + `openai/gpt-6-luna` | `ITERION_VIBE_{MODEL,BACKEND}_GPT_GLANCE`, `ITERION_VIBE_PROVIDER_GPT` |
-| alternate (paired only) | `reviewer_alternate` | `claude_code` + opus 5.5 + `anthropic`, with a GLM rescue route | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_CLAUDE`, `…_MODEL_CLAUDE_FALLBACK` |
-| merge | `converge` | `claw` + `openai/gpt-6-sol`, no provider hint | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT` |
+| reviewer | `reviewer` | `claw` + `openai/gpt-6-astra` | `review-pr/reviewer` |
+| reviewer, glance tier | `reviewer_glance` | `claw` + `openai/gpt-6-luna` | `review-pr/reviewer_glance` |
+| alternate (paired only) | `reviewer_alternate` | `claude_code` + opus 5.5 + `anthropic`, with a GLM rescue route | `review-pr/reviewer_alternate`, `review-pr/reviewer_alternate#glm` |
+| merge | `converge` | `claw` + `openai/gpt-6-sol`, no provider hint | `review-pr/converge` |
 
 `review_mode` is `auto | single | paired`: `single` runs `reviewer` alone,
 `paired` fans both, and `auto` — what an unconfigured launch resolves to —
@@ -578,17 +567,17 @@ The merge step is ONE node on the trunk: it reads `outputs.merge_reviews`,
 the collector that folds whichever reviewers fired, so a single review and a
 paired one reach the same merge with no branching and the run's published
 table names one step. A deployment that wants the merge on another route
-moves the `_EMIT_GPT` trio together (backend, model, provider — a deployment
-that moves one of them alone lands the slot somewhere nobody chose), or
-re-targets the `converge` node with a routing cell.
+re-targets the `converge` node with a routing cell, backend, model and
+provider together (a cell that moves one of them alone lands the slot
+somewhere nobody chose).
 
-Each `ITERION_VIBE_*` dial repoints live through `bot-vars`, without
-re-releasing the bundle; `ITERION_SUPERVISORS` is the machine-wide kill
-switch instead, the heavier lever of the two. A supervisor is metered as a
+A routing cell re-targets a role live, without re-releasing the bundle;
+`ITERION_SUPERVISORS` is the machine-wide kill switch for the supervisors,
+the heavier lever of the two. A supervisor is metered as a
 route on every execution only while one of the nodes it WATCHES is on the
 run's topology — a coordinator evaluates nothing until a watched node is
 active — which is what lets each family keep its own pacer without the other
-one parking the run (`runner.preflightSupervisors`). Pinned with no dial set,
+one parking the run (`runner.preflightSupervisors`). On its literal routes,
 a review starts under a spent Anthropic window, soft cap or hard
 (`TestUsageCapPreflight_SingleReviewOnTheReviewPrBot`, `pkg/runner`), and the
 merge runs on claw (`TestReviewPRTier_GlanceRoutesToCheapReviewerGPT`,

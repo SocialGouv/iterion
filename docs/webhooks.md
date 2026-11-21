@@ -540,7 +540,7 @@ Every row, what ships and what does not yet:
 | **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **the pool ships (U7 part 1); its sandbox waits on #2965** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool). The chart's `runnerPools[].sandbox.enabled` is the flag that would sandbox that pool alone, but with the chart's defaults (`serviceAccount.create`) and under the prod values (`networkPolicy.enabled`) turning it on FAILS the render until #2965 renders the pool's ServiceAccount, Role and standing policy; until then the operator brings them by hand ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools), at the cost it names), and a pool deployed without its sandbox refuses every fork run at the runner (`untrusted_without_sandbox`) |
 | **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
 | **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
-| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first, AND a fundable `review-pr`: every one of its routes reads an `${ITERION_VIBE_*}` dial, so its fork gesture is refused `fork_run_unfunded` whatever keys the team holds ([below](#fork-lane-funding)) until a run's settings arrive frozen at claim (ADR-132) or its dials give way to literal routes — its supervisors have no routing-override cell; its cost goes in its commit |
+| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first, and a team whose keys fund `review-pr`'s literal routes (ADR-169), or the cells over them ([below](#fork-lane-funding)); its cost goes in its commit |
 
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
@@ -801,14 +801,15 @@ each named by the route sites in the refusal:
 | One that names no provider the server can read: a model with no `provider/` prefix, an `auto`, empty or unknown provider step, a sub-bot node (its child bot's routes are not read), a supervisor with no model | no verdict says the team's keys fund it — the runner resolves what it spends. The cost: a `claude_code` route on a bare model the team's Anthropic key would serve is refused too; pinning its provider (`provider: anthropic`, or a routing override) lifts it |
 | Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient. A providers allowlist that admits none of the route's slots leaves it nothing it may spend, refused the same way |
 
-`review-pr` reads EVERY route through an `${ITERION_VIBE_*}` dial — its
-nodes, its supervisors, its rescue route — so a fork gesture of
-`review-pr` is refused `fork_run_unfunded` until a run's settings arrive
-frozen at claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot
-whose routes are literal, or whose nodes the integration's routing
-overrides pin (provider, model and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md)),
-is judged on those literal routes; a supervisor or an authored rescue
-route has no override cell and reads the bot's own text.
+A bot that reads a route through an `${…}` dial is refused
+`fork_run_unfunded` on that route until a run's settings arrive frozen at
+claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot whose routes
+are literal — every route of `review-pr`, its nodes, its supervisors and its
+rescue route, since [ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)
+— or whose routes the integration's routing overrides pin (provider, model
+and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md);
+a supervisor through `bot/supervisor:<name>`, an authored rescue route
+through `bot/<node>#<route>`), is judged on those routes.
 
 **Refused before anything is metered.** The launch gate asks a funding judge
 for every untrusted subject, after its own refusals and BEFORE its first
@@ -1167,6 +1168,11 @@ declared; and the hold-label veto applies, this being an auto-launch lane —
 a delivery whose issue carries a hold label is filtered, not launched.
 
 ## <a name="connector-ingress"></a>A connector ingress: `POST /api/webhooks/c/{id}`
+
+A connector trigger is delivered through an ingress or read by a poller: a
+polled trigger (an RSS feed, a Jira JQL) needs no ingress and no webhook
+configuration — see [event sources](event-sources.md#running-pollers). This
+section is the delivered half.
 
 A webhook with `provider: connector` is a connector package's **ingress**
 ([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §6): the

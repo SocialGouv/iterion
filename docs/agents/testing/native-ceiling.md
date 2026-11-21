@@ -47,9 +47,9 @@ the pod, refused where it was measured and not guaranteed in a production pod.
 
 ## What proves it
 
-- **The premise, executed**: a helper grows a 96 MiB `MAP_SHARED` mapping under
-  a 32 MiB `RLIMIT_DATA` and **finishes**. Without this the probe's verdict would
-  be about something else.
+- **The premise, executed**: a helper grows a 96 MiB `MAP_SHARED` mapping with
+  16 MiB of `RLIMIT_DATA` room left and **finishes**. Without this the probe's
+  verdict would be about something else.
 - **The kill**: the same helper under the probe is killed, and the reported peak
   is at or above the bound it passed.
 - **The quantity**: a synthetic status document whose `VmRSS` is mostly

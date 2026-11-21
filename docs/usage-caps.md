@@ -583,16 +583,15 @@ while one of its watched nodes is active):
   reaches arms.
 
 A `single` review therefore starts under a spent Anthropic window, soft cap
-or hard, **with no dial set at all**
-(`TestUsageCapPreflight_SingleReviewOnTheReviewPrBot`, `pkg/runner`). The dials
-stay the escape hatch in both directions: pointing the merge step's three
-(`ITERION_VIBE_{BACKEND,MODEL,PROVIDER}_EMIT_GPT`) back at `claude_code` +
-`claude-opus-5-5` + `anthropic` parks the run again, which is the operator's
-explicit choice honoured rather than replaced. What this verdict reads is the
+or hard, **on its literal routes, with no cell written**
+(`TestUsageCapPreflight_SingleReviewOnTheReviewPrBot`, `pkg/runner`). A
+routing cell is the escape hatch in both directions: one pointing `converge`
+back at `claude_code` + `claude-opus-5-5` + `anthropic` parks the run again,
+which is the operator's explicit choice honoured rather than replaced. What this verdict reads is the
 backend and the model — a claw route is metered on the credential its model
 resolves — so a leftover `anthropic` hint on a claw node does not park the
 run; clearing it is the node's own instruction, for the credential walk
-([the bot's own dials](../bots/review-pr/README.md#roles-routes-and-the-merge-step)).
+([the bot's own routes](../bots/review-pr/README.md#roles-routes-and-the-merge-step)).
 
 ## Cloud
 

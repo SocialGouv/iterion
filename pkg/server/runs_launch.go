@@ -111,9 +111,25 @@ type launchRunRequest struct {
 	// against its own tiers and stamp the canonical name it discovered. With
 	// inline source the value is not read as an identity anywhere — the run is
 	// gated, funded, bound and attributed as work naming no bot.
-	BotID string            `json:"bot_id,omitempty"`
-	RunID string            `json:"run_id,omitempty"`
-	Vars  map[string]string `json:"vars,omitempty"`
+	BotID string `json:"bot_id,omitempty"`
+	// ExpectSourceSHA256 pins a launch that resolves a bot to the program its
+	// caller read: the sha256 GET /api/v1/bots/{name}/launch-source issued —
+	// the identity of the whole program (entry source, bundle prompts and
+	// presets, fragments, included files). The run service compares it with
+	// the identity of the program its compile reads
+	// (runview.LaunchSpec.ExpectProgramHash) and refuses a mismatch (409
+	// bot_source_changed) — a file of the bot changed, or another tier now
+	// serves the name, since the form was rendered. It is the cloud lane's
+	// guarantee: outside cloud the launch reads the bot's files again after
+	// it is accepted, and a pin is refused (400 launch_pin_unsupported)
+	// rather than compared and outrun. It pins a RESOLVED bot only:
+	// malformed, beside an inline source or on a launch that resolves no bot
+	// it is refused (400) rather than left unchecked, and from a caller who
+	// may not read the bot's program (403) — only a reader can have been
+	// issued one. Absent, nothing is compared.
+	ExpectSourceSHA256 string            `json:"expect_source_sha256,omitempty"`
+	RunID              string            `json:"run_id,omitempty"`
+	Vars               map[string]string `json:"vars,omitempty"`
 	// SourceRunID asks the host to launch the selected worker against the
 	// repository that owns one failed run's workflow source. The host resolves
 	// provenance, injects a bounded attested failure envelope, and enforces an
@@ -436,6 +452,28 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid codemode_bounds")
 		return
 	}
+	if pin := req.ExpectSourceSHA256; pin != "" {
+		// A pin is judged with the payload, before admission meters a slot:
+		// what it must look like, and what it may stand beside.
+		if !launchPinPattern.MatchString(pin) {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 is not a pin: a pin is the sha256 GET /api/v1/bots/{name}/launch-source answered for the bot, as it wrote it (64 lowercase hex digits) — this value is %d characters long", len(pin))
+			span.SetStatus(codes.Error, "malformed pin")
+			return
+		}
+		if req.Source != "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 pins a bot the server resolves (bot_id), and an inline source is its own program — send one or the other")
+			span.SetStatus(codes.Error, "pin beside an inline source")
+			return
+		}
+		if s.cfg.Mode != "cloud" {
+			// Outside cloud no lane publishes a frozen program, and the
+			// request alone says so: refused here, by name, rather than
+			// compared at a compile the run then outruns.
+			s.httpErrorCode(w, r, http.StatusBadRequest, launchPinUnsupportedErrorCode, "%s", launchPinUnsupportedSentence)
+			span.SetStatus(codes.Error, "pin on a lane that cannot hold it")
+			return
+		}
+	}
 	if req.Source != "" && strings.TrimSpace(req.BotID) != "" {
 		// An inline source names no bot: the label beside it is ignored, so
 		// say so — a scoped key, a bot binding or a pledge stops applying to
@@ -593,7 +631,33 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	trustedCatalogPath := ""
 	if resolvesBot {
 		id, _ := auth.FromContext(r.Context())
-		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
+		resolveCtx := r.Context()
+		if req.ExpectSourceSHA256 != "" {
+			// Only a reader of the program can have been issued a pin for it,
+			// so a pinned launch resolves under the read's own guard and a
+			// caller the read refuses is refused here in the same words. The
+			// guard protects the TEXT. The digest is no secret: it is the
+			// workflow_hash on the header of every run of the bot, readable
+			// by whoever may view one.
+			resolveCtx = s.withTierReadGuard(resolveCtx, r, id)
+		}
+		lb, lbErr := s.resolveBotTiered(resolveCtx, id.TeamID, req.BotID, req.FilePath)
+		var unreadable *tierReadRefusal
+		if errors.As(lbErr, &unreadable) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "expect_source_sha256 is issued by the read of the bot's program (GET /api/v1/bots/{name}/launch-source), which this caller may not make — %s; launch it by id with no pin", unreadable.Error())
+			span.SetStatus(codes.Error, "pin from a caller who may not read the bot")
+			return
+		}
+		var tierDown *tierUnavailableError
+		if errors.As(lbErr, &tierDown) {
+			// A stored tier did not answer — the bot's own, or that of a
+			// bundle its freeze resolves. Transient, and the store's words
+			// are the server's: a 5xx body is masked, where the 400 below
+			// would hand the caller the store's address. The slot goes back.
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "resolve bot: %v", lbErr)
+			span.SetStatus(codes.Error, "a bot tier did not answer")
+			return
+		}
 		if lbErr != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve bot: %v", lbErr)
 			span.SetStatus(codes.Error, "bot resolution failed")
@@ -611,16 +675,24 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		if lb != nil {
 			launchLB = lb
 			defer launchLB.Cleanup()
-			req.FilePath, botID = lb.Path, lb.BotID
-			if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
-				req.Source = lb.Source
-			} else {
+			botID = lb.BotID
+			var onDisk bool
+			req.FilePath, req.Source, onDisk = s.launchProgramOf(lb)
+			if onDisk {
 				// The resolver already constrained this absolute path to a
 				// configured catalog root and read it successfully. Keep the real
 				// file so bundle-relative skills/prompts remain adjacent.
 				trustedCatalogPath = lb.Path
 			}
 		}
+	}
+	if req.ExpectSourceSHA256 != "" && launchLB == nil {
+		// A pin nobody checks is a false guarantee: the launch that carries
+		// one runs a bot the server resolved, or does not run. A file launch
+		// names no bot, so there is no read that could have issued its pin.
+		s.httpErrorFor(w, r, http.StatusBadRequest, "expect_source_sha256 pins a bot the server resolves, and this launch resolves none (a file names no bot) — name the bot (bot_id), or drop the pin")
+		span.SetStatus(codes.Error, "pin without a resolved bot")
+		return
 	}
 	// A canonical path can resolve to a stored spelling variant. Re-admit that
 	// real identity instead of publishing it under the inferred reservation.
@@ -959,6 +1031,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// launch, and the author subject it charged — for the run service to
 		// hold against the trust it publishes under (CheckLaunchAdmitted).
 		Admitted: gateAdmitted(gateSubj, adm),
+		// The pin, for the run service to hold against the program its
+		// compile reads — the one comparison, where what is compared is what
+		// runs (runview.ErrProgramChanged).
+		ExpectProgramHash: req.ExpectSourceSHA256,
 	}
 	if origin, originErr := inferRunBotOrigin(&store.Run{FilePath: absPath}); originErr == nil {
 		spec.BotOrigin = origin
@@ -1022,6 +1098,22 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			// any team, and the answer is the same for both.
 			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
 			span.SetStatus(codes.Error, "run id taken")
+			return
+		}
+		if errors.Is(err, runview.ErrLaunchPinUnsupported) {
+			// The run service owns the lane decision: a cloud server whose
+			// service publishes nothing refuses the pin there, in the same
+			// words as the mode refusal above, and the slot goes back.
+			s.httpErrorCode(w, r, http.StatusBadRequest, launchPinUnsupportedErrorCode, "%s", launchPinUnsupportedSentence)
+			span.SetStatus(codes.Error, "pin on a lane that cannot hold it")
+			return
+		}
+		if errors.Is(err, runview.ErrProgramChanged) {
+			// The bot is no longer the program the pin names: nothing was
+			// compiled into a run, and the metered slot goes back above.
+			s.httpErrorCode(w, r, http.StatusConflict, botSourceChangedErrorCode,
+				"bot %q changed since the launch form read it: the %s tier now serves another program than the one the form shows — reload the form, check its fields and launch again", botID, spec.BotSourceTier)
+			span.SetStatus(codes.Error, "bot source changed")
 			return
 		}
 		if errors.Is(err, runview.ErrLaunchNotAdmitted) {

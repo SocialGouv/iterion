@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // MaxStderrBytes caps what the parent keeps of a dead child's stderr. A Go
@@ -70,6 +71,14 @@ type Host struct {
 	// channel and its pump are per-Run, and the server is asked one call at a
 	// time per script.
 	Tools ToolServer
+
+	// Catalog is what `call.describe` and `call.search` answer from: the
+	// tools Tools serves, as names, descriptions and input schemas (CM-3).
+	// It travels with the request only when Tools is set — a program with no
+	// door has nothing to discover — and Run bounds it with
+	// [toolindex.Bound] itself, so no caller can send the child a catalogue
+	// past the bound the child's request read reserves for it.
+	Catalog []toolindex.Tool
 
 	// OnClamp, when set, is called with the requested and the actually applied
 	// bounds whenever [Limits.Clamp] reduced something.
@@ -128,7 +137,19 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		return Response{}, fmt.Errorf("scripthost: drawing the script's seed: %w", err)
 	}
 
-	payload, err := json.Marshal(Request{
+	var catalog []toolindex.Tool
+	catalogOmitted := 0
+	if h.Tools != nil {
+		bounded, omitted, err := toolindex.Bound(h.Catalog)
+		if err != nil {
+			return Response{}, fmt.Errorf("scripthost: %w", err)
+		}
+		catalog, catalogOmitted = bounded, omitted
+	}
+
+	// Written in toolindex.Encode's encoding — no HTML escaping — which is the
+	// one the catalogue bound measured.
+	payload, err := toolindex.Encode(Request{
 		Script:               src,
 		Limits:               limits,
 		Seed:                 hex.EncodeToString(rawSeed[:]),
@@ -136,11 +157,26 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 
 		AllowSingleThreadConfinement: h.AllowSingleThreadConfinement,
 
-		ToolChannel: h.Tools != nil,
-		Proto:       Proto,
+		ToolChannel:    h.Tools != nil,
+		Proto:          Proto,
+		Catalog:        catalog,
+		CatalogOmitted: catalogOmitted,
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("scripthost: encoding the request: %w", err)
+	}
+	// The child reads at most MaxRequestBytes, BEFORE it is confined, and a
+	// request cut there fails to decode as a dead host — which the model is
+	// told is a broken deployment. ScriptBytes bounds the raw source, but
+	// JSON escapes a control character six-fold and a newline two-fold, so a
+	// script under its bound can still encode past the child's. The
+	// catalogue's share is bounded by toolindex.Bound, which leaves the
+	// script as the only part that can overflow: refused here, as the
+	// script's size, before any process exists.
+	if int64(len(payload)) > MaxRequestBytes {
+		return Refuse(RefusalScriptBytes,
+			"the script is %d bytes but encodes to a %d-byte request, over the %d bytes the script host reads: JSON escapes control characters and newlines, so keep the program shorter",
+			len(src), len(payload), MaxRequestBytes), nil
 	}
 
 	binary := h.Binary
@@ -204,7 +240,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	join := func() serveVerdict { return serveVerdict{} }
 	if channel != nil {
 		channel.closeChildEnds()
-		join = pump(ctx, channel, h.Tools, limits)
+		join = pump(ctx, channel, h.Tools, limits, cancel)
 	}
 
 	waitErr := cmd.Wait()
@@ -360,7 +396,8 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// Positive identification, so it outranks every threshold below.
 	if looksLikeMemoryDeath(e.stderrText) {
 		return Refuse(RefusalMemory,
-			"the script host died allocating past its %d-byte memory bound. %s", e.limits.Memory, evidence), nil
+			"the script host died allocating past its %d-byte memory bound (room above the data segment "+
+				"the host itself held before the script ran). %s", e.limits.Memory, evidence), nil
 	}
 
 	// (3) The CPU bound: the kernel kills on it, so the child must have been
@@ -416,14 +453,17 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 
 	// (6) The child crashed inside the Go runtime. That is the script host
 	// failing, not the deployment — so it is a refusal, and the ambiguity is
-	// NAMED rather than resolved. Measured: the same allocation bomb prints
-	// `runtime: out of memory` under a 128 MiB bound and dies with
-	// `SIGSEGV: segmentation violation` under 64 MiB, so a crash under a tight
-	// bound is usually the bound and the runtime does not say so. Calling it
-	// memory_exceeded would be a guess wearing a verdict.
+	// NAMED rather than resolved. Measured: when a mapping the runtime needs
+	// is refused at the wrong moment, it dies of `SIGSEGV: segmentation
+	// violation` in the garbage collector rather than printing
+	// `runtime: out of memory` (the same bomb did both, #3290; a bound with no
+	// room left did it on a 10 000-push script, #3383), so a crash under a
+	// tight bound is usually the bound and the runtime does not say so.
+	// Calling it memory_exceeded would be a guess wearing a verdict.
 	if looksLikeRuntimeCrash(e.stderrText) {
 		return Refuse(RefusalHostDied,
-			"the script host crashed against a %d-byte memory bound and a %s CPU bound, and the "+
+			"the script host crashed against a %d-byte memory bound (room above its own data segment) "+
+				"and a %s CPU bound, and the "+
 				"runtime did not name a cause; a crash under a tight memory bound is usually the bound. %s",
 			e.limits.Memory, time.Duration(e.limits.CPUSeconds())*time.Second, evidence), nil
 	}

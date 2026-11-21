@@ -705,14 +705,15 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 // refuse every stored document, and a writer that only emitted it would churn
 // every golden to say the same thing.
 type jsonCodemodeBlock struct {
-	Mode            string `json:"mode,omitempty"`
-	ToolCalls       int64  `json:"tool_calls,omitempty"`
-	Wall            string `json:"wall,omitempty"`
-	CPU             string `json:"cpu,omitempty"`
-	Memory          int64  `json:"memory,omitempty"`
-	ScriptBytes     int64  `json:"script_bytes,omitempty"`
-	ResultBytes     int64  `json:"result_bytes,omitempty"`
-	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+	Mode                string `json:"mode,omitempty"`
+	ToolCalls           int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                string `json:"wall,omitempty"`
+	CPU                 string `json:"cpu,omitempty"`
+	Memory              int64  `json:"memory,omitempty"`
+	ScriptBytes         int64  `json:"script_bytes,omitempty"`
+	ResultBytes         int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
 }
 
 // bounded mirrors ast.CodemodeBlock.Bounded: any bound declared.
@@ -720,7 +721,7 @@ func (c *jsonCodemodeBlock) bounded() bool {
 	if c == nil {
 		return false
 	}
-	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
 		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
 }
 
@@ -756,14 +757,15 @@ func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
 		return nil
 	}
 	return &jsonCodemodeBlock{
-		Mode:            c.Mode,
-		ToolCalls:       c.ToolCalls,
-		Wall:            c.Wall,
-		CPU:             c.CPU,
-		Memory:          c.Memory,
-		ScriptBytes:     c.ScriptBytes,
-		ResultBytes:     c.ResultBytes,
-		ToolResultBytes: c.ToolResultBytes,
+		Mode:                c.Mode,
+		ToolCalls:           c.ToolCalls,
+		ConcurrentToolCalls: c.ConcurrentToolCalls,
+		Wall:                c.Wall,
+		CPU:                 c.CPU,
+		Memory:              c.Memory,
+		ScriptBytes:         c.ScriptBytes,
+		ResultBytes:         c.ResultBytes,
+		ToolResultBytes:     c.ToolResultBytes,
 	}
 }
 
@@ -798,14 +800,15 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 		mode = "on"
 	}
 	return &CodemodeBlock{
-		Mode:            mode,
-		ToolCalls:       j.ToolCalls,
-		Wall:            j.Wall,
-		CPU:             j.CPU,
-		Memory:          j.Memory,
-		ScriptBytes:     j.ScriptBytes,
-		ResultBytes:     j.ResultBytes,
-		ToolResultBytes: j.ToolResultBytes,
+		Mode:                mode,
+		ToolCalls:           j.ToolCalls,
+		ConcurrentToolCalls: j.ConcurrentToolCalls,
+		Wall:                j.Wall,
+		CPU:                 j.CPU,
+		Memory:              j.Memory,
+		ScriptBytes:         j.ScriptBytes,
+		ResultBytes:         j.ResultBytes,
+		ToolResultBytes:     j.ToolResultBytes,
 	}
 }
 

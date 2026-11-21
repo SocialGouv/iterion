@@ -2,6 +2,8 @@
 // delivery carries and the narrowings an operator may pick, its auth
 // schemes, and the entry into the plug wizard. Read-only — the wizard
 // decides.
+import { useLocation } from "wouter";
+
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Drawer } from "@/components/ui/Drawer";
@@ -27,6 +29,9 @@ export function SourceDetail({
   source: Source | null;
   onClose: () => void;
 }) {
+  // The router's navigation stays under the studio's base (/studio in the
+  // cloud); a bare window.location write would leave it (scope.ts).
+  const [, navigate] = useLocation();
   return (
     <Drawer
       open={source !== null}
@@ -46,9 +51,7 @@ export function SourceDetail({
         source?.kind === "connector" ? (
           <Button
             variant="primary"
-            onClick={() => {
-              window.location.href = `/sources/plug?source=${encodeURIComponent(source.id)}`;
-            }}
+            onClick={() => navigate(`/sources/plug?source=${encodeURIComponent(source.id)}`)}
           >
             Brancher sur un bot
           </Button>

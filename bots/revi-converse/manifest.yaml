@@ -1,7 +1,15 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.11
+version: 0.2.0
+## 0.2.0 — every route is a literal (ADR-169, #2699): the
+## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
+## effort from the process environment are gone, each replaced by the
+## default it carried, so a run with no pin set routes exactly as before. A
+## deployment that pinned one (pod env, `ITERION_BOT_VARS_ENV_PINS`, a
+## bot-var override) re-expresses it as a routing cell, an `llmroute`
+## override at the platform, org, team, binding or launch level: the pin
+## alone no longer moves the bot.
 ## 0.1.11 — precomputed scope + a 20-step bound + a byte-stable system
 ## prompt (#3283). The workflow OPENS with converse_scope, a deterministic
 ## tool node: the reviewed head, the merge-base with a best-effort

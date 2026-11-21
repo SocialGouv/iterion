@@ -211,9 +211,20 @@ jobs:
   test-unit:
     # The Go unit half of what `test` ran as one mega-job. Split so the wall
     # clock stops stacking studio, e2e and unit on one pod (2026-10-04: the
-    # mega-job was 24-26 min; unit alone is ~10, dominated by the single
+    # mega-job was 24-26 min; unit alone was ~10, dominated by the single
     # `bots` package). Runs in the merge queue behind the required `test`
     # aggregator; carries the tap skip and nothing else — see the header.
+    #
+    # SHARDED three ways, like race-shard (#3402). Unsharded, the suite grew
+    # to a 24.5-min `go test` step under a 30-min job ceiling: a slow runner
+    # cut the next step and a suite whose every package passed read red in the
+    # merge queue. Every package still runs: `./...` minus e2e, partitioned by
+    # scripts/ci/testshards with the UNIT weights table, a pure function of the
+    # commit, so the three legs of one entry pick complementary sets. LPT seats
+    # the heaviest row (`bots`) on shard 0; the one-time steps — the freshness
+    # gate, gofmt, vet, the census and the live compile, ~5 min together — run
+    # on the LAST shard, away from it. Should the weights ever put them
+    # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     # Nested read-only mount witnesses need a namespace-capable runner.
@@ -223,6 +234,10 @@ jobs:
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -255,6 +270,7 @@ jobs:
           fi
 
       - name: Generated artefacts are fresh (fail fast)
+        if: matrix.shard == 2
         # Two pull requests that each regenerate the same committed artefact
         # can merge clean and stale together — the queue's most frequent
         # failure. The freshness tests that catch it take seconds, but the
@@ -332,6 +348,7 @@ jobs:
           node "$ULTRA11Y_BIN" --version
 
       - name: gofmt (check)
+        if: matrix.shard == 2
         shell: bash
         run: |
           set -euo pipefail
@@ -346,10 +363,11 @@ jobs:
           fi
 
       - name: go vet
+        if: matrix.shard == 2
         run: go vet -mod=vendor ./...
 
       - name: Test capability census
-        if: always()
+        if: always() && matrix.shard == 2
         # Static inventory is identical locally; runner observations contain
         # boolean prerequisite presence only, never credential values.
         run: |
@@ -357,7 +375,7 @@ jobs:
           cat .iterion/test-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish test capabilities
-        if: always()
+        if: always() && matrix.shard == 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-capabilities-unit
@@ -399,9 +417,19 @@ jobs:
         # while a test had run for only 9s (#2745). Allow 25m per package,
         # still bounded by the job's 30m including setup and live compilation.
         # Individual test deadlines and all assertions remain in force.
-        run: go test -mod=vendor -count=1 -timeout 1500s $(go list -mod=vendor ./... | grep -v '/e2e$')
+        #
+        # The partition goes through an ASSIGNMENT, never inline `$( )`:
+        # inline substitution loses the splitter's exit code, and an
+        # empty-shard refusal would degrade into `go test` with no package.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
+          go test -mod=vendor -count=1 -timeout 1500s $pkgs
 
       - name: Live e2e compile check
+        if: matrix.shard == 2
         # Builds every -tags=live test in the repo and runs NONE of them
         # (`-run '^$'`). No credentials, no model call, no network — pure
         # compilation. The paid live layer would otherwise bit-rot green
@@ -1136,7 +1164,9 @@ jobs:
         # DSL shape (see docs/grammar/iterion_v1.ebnf + examples/*.bot):
         #   - top-level node decls, schemas, then `workflow` block
         #   - tool nodes use `output: <schema>` (singular) referencing a
-        #     declared schema, not an inline `outputs:` map
+        #     declared schema, not an inline `outputs:` map — and a node
+        #     that declares one prints that schema's fields as ONE JSON
+        #     object: plain text there fails the node (ADR-171)
         #   - edges live INSIDE the workflow block as `src -> dst`,
         #     not in a separate `edges:` list
         #   - entry point is `entry:`, not `start:`
@@ -1146,7 +1176,7 @@ jobs:
         timeout-minutes: 3 # the 90 s poll and its requests
         run: |
           set -euo pipefail
-          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
+          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: `printf \'{"stdout": "hello cloud"}\'`\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
           BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
           RUN_ID=$(curl -sf \
             -H "Content-Type: application/json" \

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation, useSearch } from "wouter";
 
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
@@ -25,6 +26,7 @@ import {
   type ConnectorConnection,
 } from "@/api/connections";
 import { listTeamSources } from "@/api/sources";
+import { sanitizeReturnTo } from "./wizard/bindModel";
 
 const STATUS_VARIANT: Record<string, "success" | "warning" | "neutral" | "danger"> = {
   active: "success",
@@ -32,15 +34,33 @@ const STATUS_VARIANT: Record<string, "success" | "warning" | "neutral" | "danger
   revoked: "danger",
 };
 
+// The status a connection is in, as the operator reads it; a status this map
+// does not know is shown as the server names it.
+const STATUS_LABEL: Record<string, string> = {
+  active: "active",
+  degraded: "dégradée",
+  revoked: "révoquée",
+};
+
+// The select's "another connector" choice. A connector id never starts with a
+// space (the server trims it), so no catalogue entry can take this value.
+const OTHER_CONNECTOR = " other";
+
 // The capability set the server admits (pkg/connection.CapabilityNames). `action`
 // is the default server-side; `agent` lets a model choose calls through the MCP
-// facade; `trigger` is stored but inert until the webhook ingress lands — the
-// server's `warnings` say so on every row that grants it.
+// facade; `trigger` lets the connection feed a source — a connector ingress
+// believes a delivery on it, and a subscription to its package's triggers
+// (pushed or polled) requires it.
 const CAPABILITIES = ["action", "agent", "trigger"] as const;
 
 // ConnectionsTab is the tenant's connector connections (ADR-098, #2759): the
 // records a `.bot`'s `connection: <alias>` and the agent facade resolve. The
 // credential is write-only — the form sends it, nothing ever reads it back.
+//
+// A surface that needs a connection deep-links here (connectorsTabPath):
+// `connector` opens the add form on that connector, and `returnTo` — an in-app
+// path, admitted only through sanitizeReturnTo — is where the operator goes
+// back to, offered at once and taken as soon as the connection exists.
 export default function ConnectionsTab({
   teamID,
   canManage,
@@ -49,13 +69,17 @@ export default function ConnectionsTab({
   canManage: boolean;
 }) {
   const queryClient = useQueryClient();
+  const params = new URLSearchParams(useSearch());
+  const requestedConnector = (params.get("connector") ?? "").trim();
+  const returnTo = sanitizeReturnTo(params.get("returnTo"));
+  const [, navigate] = useLocation();
   const query = useQuery<ConnectorConnection[]>({
     queryKey: ["team-connections", teamID],
     queryFn: () => listConnections(teamID),
   });
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
-  const [showForm, setShowForm] = useState(false);
+  const [showForm, setShowForm] = useState(requestedConnector !== "");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -66,7 +90,7 @@ export default function ConnectionsTab({
     setErr(null);
     try {
       await revokeConnection(teamID, c.id, "revoked from the studio");
-      addToast(`Connection ${c.alias} revoked.`, "success");
+      addToast(`Connexion ${c.alias} révoquée.`, "success");
       refresh();
     } catch (e) {
       setErr(errorMessage(e));
@@ -78,9 +102,9 @@ export default function ConnectionsTab({
   const remove = async (c: ConnectorConnection) => {
     if (
       !(await confirm({
-        title: `Delete "${c.alias}"`,
-        message: `Delete the ${c.connector} connection "${c.alias}"? Workflows naming it will fail to resolve it. This cannot be undone.`,
-        confirmLabel: "Delete",
+        title: `Supprimer « ${c.alias} »`,
+        message: `Supprimer la connexion ${c.connector} « ${c.alias} » ? Les workflows qui la nomment ne pourront plus la résoudre. Cette action est définitive.`,
+        confirmLabel: "Supprimer",
         confirmVariant: "danger",
       }))
     ) {
@@ -90,7 +114,7 @@ export default function ConnectionsTab({
     setErr(null);
     try {
       await deleteConnection(teamID, c.id);
-      addToast(`Connection ${c.alias} deleted.`, "success");
+      addToast(`Connexion ${c.alias} supprimée.`, "success");
       refresh();
     } catch (e) {
       setErr(errorMessage(e));
@@ -101,15 +125,23 @@ export default function ConnectionsTab({
 
   return (
     <section className="grid gap-4">
+      {returnTo && (
+        <div>
+          <Link href={returnTo} className="text-sm text-accent-text underline underline-offset-2">
+            ← {returnTo.startsWith("/sources/plug") ? "Revenir au branchement de la source" : "Revenir"}
+          </Link>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <p className="text-sm text-fg-muted">
-          Connector connections bind a credential to a connector package — what a workflow's{" "}
-          <code>connection:</code> alias and the agent facade (<code>capabilities: [connectors]</code>)
-          resolve. The credential is sealed at the server and never returned.
+          Une connexion lie un secret d&apos;accès à un paquet de connecteur : c&apos;est ce que
+          résolvent l&apos;alias <code>connection:</code> d&apos;un workflow et la façade des agents
+          (<code>capabilities: [connectors]</code>). Le secret est scellé côté serveur et n&apos;est
+          jamais renvoyé.
         </p>
         {canManage && (
           <Button variant="primary" onClick={() => setShowForm((v) => !v)}>
-            {showForm ? "Close" : "Add a connection"}
+            {showForm ? "Fermer" : "Ajouter une connexion"}
           </Button>
         )}
       </div>
@@ -123,9 +155,14 @@ export default function ConnectionsTab({
       {showForm && canManage && (
         <AddConnectionForm
           teamID={teamID}
+          initialConnector={requestedConnector}
           onDone={() => {
             setShowForm(false);
             refresh();
+            // The surface that sent the operator here lists connections under
+            // its own key: it reads the new one on the way back.
+            void queryClient.invalidateQueries({ queryKey: ["connections", teamID] });
+            if (returnTo) navigate(returnTo);
           }}
         />
       )}
@@ -134,19 +171,19 @@ export default function ConnectionsTab({
         <PanelLoading />
       ) : (query.data ?? []).length === 0 ? (
         <EmptyState
-          title="No connections yet"
-          message="A connection authenticates one instance of one connector for this team — e.g. your Forgejo. Add one to let workflows and agents call it."
+          title="Aucune connexion pour l'instant"
+          message="Une connexion authentifie une instance d'un connecteur pour cette équipe — par exemple votre Forgejo. Ajoutez-en une pour que les workflows et les agents puissent l'appeler."
         />
       ) : (
-        <Table caption="Connector connections">
+        <Table caption="Connexions aux connecteurs">
           <THead>
             <Tr>
               <Th>Alias</Th>
-              <Th>Connector</Th>
+              <Th>Connecteur</Th>
               <Th>Instance</Th>
-              <Th>Capabilities</Th>
-              <Th>Status</Th>
-              <Th>Created</Th>
+              <Th>Usages autorisés</Th>
+              <Th>État</Th>
+              <Th>Créée le</Th>
               {canManage && <Th aria-label="Actions" />}
             </Tr>
           </THead>
@@ -166,7 +203,9 @@ export default function ConnectionsTab({
                 <Td className="text-fg-muted">{c.base_url}</Td>
                 <Td>{(c.capabilities ?? []).join(" + ")}</Td>
                 <Td>
-                  <Badge variant={STATUS_VARIANT[c.status] ?? "neutral"}>{c.status}</Badge>
+                  <Badge variant={STATUS_VARIANT[c.status] ?? "neutral"}>
+                    {STATUS_LABEL[c.status] ?? c.status}
+                  </Badge>
                   {c.status_reason && <div className="text-xs text-fg-muted">{c.status_reason}</div>}
                 </Td>
                 <Td className="text-fg-muted">{formatDateTime(c.created_at)}</Td>
@@ -179,7 +218,7 @@ export default function ConnectionsTab({
                           disabled={busy === c.id}
                           onClick={() => void revoke(c)}
                         >
-                          Revoke
+                          Révoquer
                         </Button>
                       )}
                       <Button
@@ -187,7 +226,7 @@ export default function ConnectionsTab({
                         disabled={busy === c.id}
                         onClick={() => void remove(c)}
                       >
-                        Delete
+                        Supprimer
                       </Button>
                     </div>
                   </Td>
@@ -202,9 +241,18 @@ export default function ConnectionsTab({
   );
 }
 
-function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => void }) {
+function AddConnectionForm({
+  teamID,
+  initialConnector,
+  onDone,
+}: {
+  teamID: string;
+  initialConnector: string;
+  onDone: () => void;
+}) {
   const addToast = useUIStore((s) => s.addToast);
-  const [connector, setConnector] = useState("forgejo");
+  const [connector, setConnector] = useState(initialConnector);
+  const [otherConnector, setOtherConnector] = useState(false);
   const [alias, setAlias] = useState("main");
   const [baseURL, setBaseURL] = useState("");
   const [schemeID, setSchemeID] = useState("");
@@ -225,7 +273,19 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
     queryKey: ["team-sources", teamID],
     queryFn: () => listTeamSources(teamID),
   });
-  const card = sources.data?.find((s) => s.kind === "connector" && s.id === connector.trim());
+  const catalogue = (sources.data ?? []).filter((s) => s.kind === "connector");
+  const card = catalogue.find((s) => s.id === connector.trim());
+  // The connector is picked from the catalogue. One it does not list — it
+  // lists the packages that declare triggers, and an outbound-only package is
+  // connected all the same — is typed by id, as every connector is while the
+  // catalogue cannot load.
+  const typedConnector =
+    !sources.isError && (otherConnector || (sources.isSuccess && connector.trim() !== "" && !card));
+  const pickConnector = (id: string) => {
+    // A scheme belongs to its package: another connector starts from its own.
+    setConnector(id);
+    setSchemeID("");
+  };
   const schemes = card?.auth ?? [];
   const effectiveScheme = schemeID || (schemes.length === 1 ? (schemes[0]?.id ?? "") : "");
   const scheme = schemes.find((a) => a.id === effectiveScheme);
@@ -251,7 +311,7 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
         capabilities: caps,
         ...(shape ? credentialFields(shape, { token, username, password }) : {}),
       });
-      addToast(`Connected ${created.connector} as "${created.alias}".`, "success");
+      addToast(`${created.connector} connecté sous l'alias « ${created.alias} ».`, "success");
       (created.warnings ?? []).forEach((w) => addToast(w, "warning"));
       onDone();
     } catch (e) {
@@ -271,19 +331,67 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <FieldLabel htmlFor="conn-connector">Connector</FieldLabel>
-          <Input
-            id="conn-connector"
-            value={connector}
-            onChange={(e) => {
-              // A scheme belongs to its package: another connector starts
-              // from its own.
-              setConnector(e.target.value);
-              setSchemeID("");
-            }}
-            placeholder="forgejo"
-            required
-          />
+          <FieldLabel htmlFor="conn-connector">Connecteur</FieldLabel>
+          {sources.isError ? (
+            <Input
+              id="conn-connector"
+              value={connector}
+              onChange={(e) => pickConnector(e.target.value)}
+              placeholder="identifiant du paquet, ex. jira"
+              required
+            />
+          ) : (
+            <Select
+              id="conn-connector"
+              value={typedConnector ? OTHER_CONNECTOR : connector.trim()}
+              disabled={sources.isPending}
+              onChange={(e) => {
+                const other = e.target.value === OTHER_CONNECTOR;
+                setOtherConnector(other);
+                pickConnector(other ? "" : e.target.value);
+              }}
+              required
+            >
+              {sources.isPending ? (
+                <option value={connector.trim()}>Chargement du catalogue…</option>
+              ) : (
+                <>
+                  {!typedConnector && connector.trim() === "" && (
+                    <option value="">— choisir un connecteur —</option>
+                  )}
+                  {catalogue.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.display_name} ({s.id})
+                    </option>
+                  ))}
+                  <option value={OTHER_CONNECTOR}>Autre connecteur, par identifiant…</option>
+                </>
+              )}
+            </Select>
+          )}
+          {typedConnector && (
+            <Input
+              className="mt-1"
+              aria-label="Identifiant du connecteur"
+              value={connector}
+              // Typing commits to « Autre connecteur »: a field shown because
+              // the requested connector is not in the catalogue would otherwise
+              // vanish once the value is cleared or matches a catalogue id.
+              onChange={(e) => {
+                setOtherConnector(true);
+                pickConnector(e.target.value);
+              }}
+              placeholder="identifiant du paquet"
+              required
+            />
+          )}
+          {sources.isError && (
+            <p className="mt-1 text-xs text-warning-fg">
+              Le catalogue des connecteurs n&apos;a pas pu être chargé ({errorMessage(sources.error)}) :
+              saisissez l&apos;identifiant du connecteur. Sans le catalogue, le champ du secret ne peut
+              pas suivre la méthode d&apos;authentification : il demande un jeton.
+            </p>
+          )}
         </div>
         <div>
           <FieldLabel htmlFor="conn-alias">Alias</FieldLabel>
@@ -291,11 +399,11 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
             id="conn-alias"
             value={alias}
             onChange={(e) => setAlias(e.target.value)}
-            placeholder="main"
+            placeholder="main (par défaut)"
           />
         </div>
         <div>
-          <FieldLabel htmlFor="conn-base-url">Instance URL</FieldLabel>
+          <FieldLabel htmlFor="conn-base-url">URL de l&apos;instance</FieldLabel>
           <Input
             id="conn-base-url"
             value={baseURL}
@@ -304,7 +412,9 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
           />
         </div>
         <div>
-          <FieldLabel htmlFor="conn-scheme">Auth scheme (when the package declares several)</FieldLabel>
+          <FieldLabel htmlFor="conn-scheme">
+            Méthode d&apos;authentification (si le paquet en déclare plusieurs)
+          </FieldLabel>
           {schemes.length > 0 ? (
             <Select
               id="conn-scheme"
@@ -312,7 +422,7 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
               onChange={(e) => setSchemeID(e.target.value)}
               required
             >
-              {schemes.length > 1 && <option value="">— choose a scheme —</option>}
+              {schemes.length > 1 && <option value="">— choisir une méthode —</option>}
               {schemes.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.display_name ? `${a.display_name} (${a.kind})` : `${a.id} (${a.kind})`}
@@ -324,35 +434,29 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
               id="conn-scheme"
               value={schemeID}
               onChange={(e) => setSchemeID(e.target.value)}
-              placeholder="token"
+              placeholder="identifiant de la méthode, ex. token"
             />
-          )}
-          {sources.isError && (
-            <p className="mt-1 text-xs text-fg-muted">
-              The connector catalog did not load ({errorMessage(sources.error)}): the
-              credential field cannot follow the scheme&apos;s kind, so it asks for a token.
-            </p>
           )}
         </div>
         <div>
-          <FieldLabel htmlFor="conn-name">Display name</FieldLabel>
+          <FieldLabel htmlFor="conn-name">Nom affiché</FieldLabel>
           <Input
             id="conn-name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Production Forgejo"
+            placeholder="Forgejo de production"
           />
         </div>
         {shape === "none" && (
           <p className="text-xs text-fg-muted self-end">
-            This scheme presents no credential — a public resource. The connection still pins
-            its instance URL and states what it may be used for.
+            Cette méthode ne présente aucun secret : une ressource publique. La connexion fixe tout
+            de même l&apos;URL de son instance et ce à quoi elle peut servir.
           </p>
         )}
         {shape === "basic" && (
           <>
             <div>
-              <FieldLabel htmlFor="conn-username">Username</FieldLabel>
+              <FieldLabel htmlFor="conn-username">Nom d&apos;utilisateur</FieldLabel>
               <Input
                 id="conn-username"
                 value={username}
@@ -362,7 +466,7 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
               />
             </div>
             <div>
-              <FieldLabel htmlFor="conn-password">Password</FieldLabel>
+              <FieldLabel htmlFor="conn-password">Mot de passe</FieldLabel>
               <Input
                 id="conn-password"
                 type="password"
@@ -376,7 +480,7 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
         )}
         {shape === "token" && (
           <div>
-            <FieldLabel htmlFor="conn-token">Credential</FieldLabel>
+            <FieldLabel htmlFor="conn-token">Jeton d&apos;accès</FieldLabel>
             <Input
               id="conn-token"
               type="password"
@@ -389,7 +493,7 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
         )}
       </div>
       <fieldset>
-        <legend className="text-sm text-fg-muted">May be used for</legend>
+        <legend className="text-sm text-fg-muted">Peut servir à</legend>
         <div className="flex gap-4">
           {CAPABILITIES.map((cap) => (
             <Checkbox
@@ -406,9 +510,9 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
         </div>
         {pollGrantsMissing && (
           <p className="mt-1 text-xs text-warning-fg">
-            {card?.display_name ?? connector} declares polled triggers (
-            {polled.map((t) => t.display_name || t.id).join(", ")}): polling reads through the
-            connection and delivers what it reads, so grant both action and trigger.
+            {card?.display_name ?? connector} déclare des déclencheurs interrogés (
+            {polled.map((t) => t.display_name || t.id).join(", ")}) : l&apos;interrogation lit par la
+            connexion et livre ce qu&apos;elle lit, accordez donc action et trigger.
           </p>
         )}
       </fieldset>
@@ -418,8 +522,12 @@ function AddConnectionForm({ teamID, onDone }: { teamID: string; onDone: () => v
         </InlineBanner>
       )}
       <div>
-        <Button variant="primary" type="submit" disabled={busy || caps.length === 0}>
-          {busy ? "Connecting…" : "Connect"}
+        <Button
+          variant="primary"
+          type="submit"
+          disabled={busy || caps.length === 0 || connector.trim() === ""}
+        >
+          {busy ? "Connexion…" : "Connecter"}
         </Button>
       </div>
     </form>
