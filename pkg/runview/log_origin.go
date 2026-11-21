@@ -125,24 +125,9 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 	}
 	deadline := time.Now().Add(logLaneWaitBound)
 	for {
-		if obs, _, ok := s.logRegistry.currentFor(runID); ok {
-			if binding.Header() != obs.Header() {
-				_, err := s.store.LoadRun(ctx, runID)
-				return nil, store.RunObservation{}, err
-			}
-			// A retained end belongs to the epoch before the one starting now:
-			// when a later failure took that epoch over, adopting its value
-			// would announce a clean end for a run whose producer failed.
-			if s.logRegistry.supersededByFailure(runID) {
-				return nil, obs, s.boundLogProducerFailure(ctx, runID)
-			}
-			if sub, ok := s.logRegistry.subscribe(obs); ok {
-				if err := s.admitLogLane(sub, binding); err != nil {
-					sub.Cancel()
-					return nil, obs, err
-				}
-				return sub, obs, nil
-			}
+		sub, obs, found, err := s.resolveLogDecision(ctx, runID, binding, nil, nil)
+		if found || err != nil {
+			return sub, obs, err
 		}
 		// The bounded wait covers the launch-before-registration race, which
 		// only exists for a run this process is driving: a finished or
@@ -153,7 +138,7 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 			return nil, store.RunObservation{}, nil
 		}
 		w := s.logRegistry.waitSlot(runID)
-		if _, _, ok := s.logRegistry.currentFor(runID); ok {
+		if d, _, _ := s.logRegistry.decideLog(runID, nil, false, nil); d.topic != nil || d.failure != nil {
 			s.logRegistry.dropSlot(runID, w)
 			continue
 		}
@@ -168,6 +153,51 @@ func (s *Service) observedLogLane(ctx context.Context, runID string, wait bool) 
 			return nil, store.RunObservation{}, nil
 		}
 	}
+}
+
+// resolveLogDecision validates the reader outside the registry lock, then
+// confirms the candidate and subscribes to that exact epoch under the lock.
+func (s *Service) resolveLogDecision(ctx context.Context, runID string, binding store.RunDataBinding, held *LogWakeSubscription, beforeConfirm func() error) (*LogWakeSubscription, store.RunObservation, bool, error) {
+	for ctx.Err() == nil {
+		d, _, _ := s.logRegistry.decideLog(runID, nil, false, held)
+		var obs store.RunObservation
+		var err error
+		adopt := false
+		switch {
+		case d.failure != nil:
+			obs = d.failure.obs
+			err = s.checkLogProducerFailure(ctx, runID, obs, d.failure.err)
+		case d.topic != nil:
+			obs = d.topic.obs
+			if binding.Header() != obs.Header() {
+				_, err = s.store.LoadRun(ctx, runID)
+			} else {
+				adopt = true
+			}
+		}
+		if err == nil && beforeConfirm != nil {
+			err = beforeConfirm()
+			if err != nil {
+				adopt = false
+			}
+		}
+		keepHeld := adopt && held != nil && !held.Closed && held.topic == d.topic
+		_, sub, unchanged := s.logRegistry.decideLog(runID, &d, adopt && !keepHeld, held)
+		if !unchanged {
+			continue
+		}
+		if keepHeld {
+			return held, obs, true, nil
+		}
+		if sub != nil {
+			if err = s.admitLogLane(sub, binding); err != nil {
+				sub.Cancel()
+				return nil, obs, true, err
+			}
+		}
+		return sub, obs, d.topic != nil || d.failure != nil, err
+	}
+	return nil, store.RunObservation{}, false, ctx.Err()
 }
 
 // admitLogLane checks a subscription against the reader's binding: the lane
@@ -195,16 +225,6 @@ func (s *Service) recordLogProducerFailure(runID string, err error) {
 		s.logger.Warn("runview: run %s log producer stopped: %v", runID, err)
 	}
 	s.logRegistry.recordFailure(runID, err)
-}
-
-// boundLogProducerFailure distinguishes a producer failure from the reader's
-// origin verdict. A known foreign epoch cannot end an admitted reader.
-func (s *Service) boundLogProducerFailure(ctx context.Context, runID string) error {
-	obs, cause, ok := s.logRegistry.failureFor(runID)
-	if !ok {
-		return nil
-	}
-	return s.checkLogProducerFailure(ctx, runID, obs, cause)
 }
 
 func (s *Service) checkLogProducerFailure(ctx context.Context, runID string, obs store.RunObservation, cause error) error {

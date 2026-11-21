@@ -107,6 +107,7 @@ type LogWakeSubscription struct {
 	// its first fin with it, so E1 then E2 (or E2 then E1) of one epoch apply
 	// exactly once.
 	epoch  uint64
+	topic  *logTopic
 	cancel func()
 }
 
@@ -179,6 +180,41 @@ func (r *logRegistry) subscribe(obs store.RunObservation) (*LogWakeSubscription,
 	if tp == nil {
 		return nil, false
 	}
+	return r.subscribeTopicLocked(tp), true
+}
+
+// logDecision pins the registry facts a bound reader uses. A topic's cause
+// is immutable once its end is set; capture failures are immutable records.
+type logDecision struct {
+	topic   *logTopic
+	failure *logFailure
+	end     logEnd
+	durable bool
+}
+
+func (r *logRegistry) decideLog(runID string, previous *logDecision, subscribe bool, held *LogWakeSubscription) (logDecision, *LogWakeSubscription, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var d logDecision
+	tp, failure := r.current[runID], r.failures[runID]
+	if held != nil && !held.Closed && held.topic != nil && held.topic.end != logEndNone {
+		tp = held.topic
+		d = logDecision{topic: tp, end: tp.end, durable: tp.durable}
+	} else if failure != nil && (tp == nil || failure.epoch > tp.epoch) {
+		d.failure = failure
+	} else if tp != nil {
+		d = logDecision{topic: tp, end: tp.end, durable: tp.durable}
+	}
+	if previous != nil && *previous != d {
+		return d, nil, false
+	}
+	if subscribe && d.topic != nil {
+		return d, r.subscribeTopicLocked(d.topic), true
+	}
+	return d, nil, true
+}
+
+func (r *logRegistry) subscribeTopicLocked(tp *logTopic) *LogWakeSubscription {
 	if tp.closed || tp.end != logEndNone {
 		end := tp.end
 		if end == logEndNone {
@@ -189,12 +225,12 @@ func (r *logRegistry) subscribe(obs store.RunObservation) (*LogWakeSubscription,
 		ch := make(chan LogWake, 1)
 		ch <- LogWake{End: end, cause: tp.fail}
 		close(ch)
-		return &LogWakeSubscription{C: ch, Durable: tp.durable, Closed: true, obs: obs, epoch: tp.epoch, cancel: func() {}}, true
+		return &LogWakeSubscription{C: ch, Durable: tp.durable, Closed: true, obs: tp.obs, epoch: tp.epoch, topic: tp, cancel: func() {}}
 	}
 	sub := &logWakeSub{ch: make(chan LogWake, 1)}
 	tp.subs = append(tp.subs, sub)
 	cancel := func() { r.cancelSub(tp, sub) }
-	return &LogWakeSubscription{C: sub.ch, Durable: tp.durable, obs: obs, epoch: tp.epoch, cancel: cancel}, true
+	return &LogWakeSubscription{C: sub.ch, Durable: tp.durable, obs: tp.obs, epoch: tp.epoch, topic: tp, cancel: cancel}
 }
 
 // cancelSub unregisters one wake subscriber. Subscribers already closed by an
@@ -373,16 +409,6 @@ func (r *logRegistry) failureFor(runID string) (store.RunObservation, error, boo
 	return store.RunObservation{}, nil, false
 }
 
-// supersededByFailure reports whether the current epoch of runID is a retained
-// closed one that a later failure has taken over: its end is stale, and a
-// reader must see the failure instead.
-func (r *logRegistry) supersededByFailure(runID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	tp, f := r.current[runID], r.failures[runID]
-	return tp != nil && tp.end != logEndNone && f != nil && f.epoch > tp.epoch
-}
-
 // failureEpoch returns the generation a retained failure is attached to: the
 // epoch of the topic that recorded it, or a fresh generation when it was
 // recorded before any epoch existed. A merge arbitrates a late failure
@@ -406,7 +432,7 @@ func (r *logRegistry) failureEpoch(runID string) (uint64, bool) {
 func (r *logRegistry) clearFailure(runID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if tp := r.current[runID]; tp != nil && tp.fail != nil {
+	if tp, f := r.current[runID], r.failures[runID]; tp != nil && tp.fail != nil && f != nil && f.epoch <= tp.epoch {
 		delete(r.failures, runID)
 	}
 }

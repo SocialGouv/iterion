@@ -264,23 +264,6 @@ func (f *FileSource) subscribeLogs(ctx context.Context, id string, from int64, h
 		// joined identity/missing error must never be an empty successful log;
 		// a transient failure of the check is retried like the open.
 		delay := 250 * time.Millisecond
-		// finalDrain is the end of the stream: one last drain through the
-		// cursor, which validates the selection before reading. Bytes written
-		// before the producer declared the end are delivered; a file still
-		// absent is a single clean empty end.
-		finalDrain := func() {
-			e := cursor.Drain(c)
-			if e == nil {
-				return
-			}
-			if IsPermanentError(e) {
-				pipe.Fail(e)
-				return
-			}
-			if c.Err() == nil {
-				pipe.Warn(fmt.Errorf("runstream: final log drain of %s: %w", id, e))
-			}
-		}
 		for {
 			file, e := selection.OpenLog(c)
 			if IsPermanentError(e) {
@@ -301,7 +284,7 @@ func (f *FileSource) subscribeLogs(ctx context.Context, id string, from int64, h
 			if e != nil {
 				retry, final := retryAfterOrFinal(c, hints.Final, fileRetryLabel, e, delay, pipe.Warn)
 				if final {
-					finalDrain()
+					drainCommittedFileLog(c, cursor.Drain, pipe.Warn, pipe.Fail)
 				}
 				if !retry {
 					return
@@ -420,18 +403,7 @@ func (f *FileSource) runSelectedFile(ctx context.Context, s store.FilesystemStre
 			return
 		}
 		if round.final {
-			// The producer declared the end: one last drain through the same
-			// cursor, then the stream is over. The status is not consulted —
-			// a finalize keeps writing after the terminal status.
-			if _, e := f.finalDrain(ctx, s, run, false); e != nil {
-				if IsPermanentError(e) {
-					run.fail(e)
-					return
-				}
-				if ctx.Err() == nil {
-					run.warn(e)
-				}
-			}
+			drainCommittedFileLog(ctx, run.drain, run.warn, run.fail)
 			return
 		}
 		if terminal && e == nil {
@@ -464,6 +436,24 @@ func (f *FileSource) runSelectedFile(ctx context.Context, s store.FilesystemStre
 			return
 		}
 		delay = nextMongoDelay(delay)
+	}
+}
+
+// drainCommittedFileLog retries a validated drain on the same cursor without
+// reopening the producer's committed end.
+func drainCommittedFileLog(ctx context.Context, drain func(context.Context) error, warn, fail func(error)) {
+	for delay := 250 * time.Millisecond; ctx.Err() == nil; delay = nextMongoDelay(delay) {
+		err := drain(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		if IsPermanentError(err) {
+			fail(err)
+			return
+		}
+		if !retryAfter(ctx, "runstream/file: retry committed final log drain", err, delay, warn) {
+			return
+		}
 	}
 }
 
