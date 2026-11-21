@@ -143,6 +143,8 @@ type ExecutorSpec struct {
 	// below). Engine-level events reach the same observers through
 	// runtime.WithEventObserver; the two event sets are disjoint.
 	EventObservers []func(store.Event)
+	// EventBroker is the runtime-owned, non-reentrant live event fan-out.
+	EventBroker *EventBroker
 	// Inbox, when non-nil, wires the operator chatbox plumbing into
 	// the claw backend so queued messages are delivered between
 	// agent-loop iterations. Nil disables the inbox (CLI mode +
@@ -292,8 +294,8 @@ type ExecutorSpec struct {
 	// highest-priority rung of ir.ResolveCodemode (ADR-165): it wins over
 	// node and workflow DSL in both directions, and there is deliberately no
 	// environment rung. CodemodeBounds is the launch's field-by-field bounds
-	// raise (the seven scripthost.Limits numbers; a zero field means the
-	// launch did not choose). Both travel on the queue message (schema v33) —
+	// raise (the scripthost.Limits numbers; a zero field means the
+	// launch did not choose). Both travel on the queue message (schema v33 onward) —
 	// a stale runner ignoring an explicit off would run the capability the
 	// operator asked away: the knob failing open.
 	Codemode       string
@@ -541,6 +543,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The caller owns preparation and keeps this original binding for the
+	// engine as well. A format intention alone does not authorize credentials,
+	// callbacks or filesystem effects: an existing row must still match it.
+	if err := store.RequireRunValueFormat(ctx, spec.RunID); err != nil {
+		return nil, err
+	}
+	runs := spec.Runs
+	if runs == nil {
+		runs, _ = spec.Store.(RunLoader)
+	}
+	if _, _, err := store.LoadRunWithValueFormat(ctx, runs, spec.RunID); err != nil {
+		return nil, err
+	}
 	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
 	// workflow's declared `secrets:` names from the local sealed store and
 	// stamp them into ctx — the in-process equivalent of the cloud runner's
@@ -673,18 +688,50 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// hooks observe post-redaction copies of the neutral event types.
 	var handoff *model.HandoffRecorder
 	artifactDir := ""
-	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+	var runFilesGrant store.RunFilesGrant
+	grantTransferred := false
+	defer func() {
+		if runFilesGrant != nil && !grantTransferred {
+			_ = runFilesGrant.Close()
+		}
+	}()
+	if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+		filesStore, _ := spec.Runs.(store.RunStore)
+		if filesStore == nil {
+			filesStore, _ = spec.Store.(store.RunStore)
+		}
+		{
+			grants := store.AsRunFilesGrantStore(filesStore)
+			if grants == nil {
+				return nil, store.ErrRunDataCapability
+			}
+			var grantErr error
+			runFilesGrant, grantErr = grants.OpenRunFilesGrant(ctx, spec.RunID)
+			if grantErr != nil {
+				return nil, grantErr
+			}
+			if runFilesGrant == nil {
+				return nil, store.ErrRunDataCapability
+			}
+			artifactDir = runFilesGrant.HostPath()
+		}
+	} else if fs, ok := spec.Store.(store.RunFilesStore); ok {
 		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
 			artifactDir = dir
 		}
 	}
+
 	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
 		handoff = model.NewHandoffRecorder(artifactDir, guard)
 	}
 	// The recorder rides INSIDE the hooks constructor: the capability
 	// detection must see the store's own interfaces, and the wrap lands
 	// between the redaction boundary and the store.
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
+	var publish func(store.Event)
+	if spec.EventBroker != nil {
+		publish = spec.EventBroker.Publish
+	}
+	hooks := model.NewStoreEventHooksWithBroker(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, publish, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}
@@ -851,6 +898,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// area (or a mkdir failure) just leave the variable unset, as before.
 	if artifactDir != "" {
 		opts = append(opts, model.WithArtifactFilesDir(artifactDir))
+	}
+	if runFilesGrant != nil {
+		opts = append(opts, model.WithRunFilesGrant(runFilesGrant))
 	}
 	if handoff != nil {
 		opts = append(opts, model.WithHandoffRecorder(handoff))
@@ -1048,6 +1098,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		executor.SetLaunchVars(ir.DeclaredVarsOnly(spec.Workflow, spec.Vars))
 	}
 
+	grantTransferred = true
 	return executor, nil
 }
 

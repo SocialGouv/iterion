@@ -80,7 +80,7 @@ type InteractionAnswerCAS interface {
 // InteractionAnswerCAS (both production stores): the second of two
 // concurrent answers gets the conflict instead of silently winning.
 func AnswerInteraction(ctx context.Context, rs RunStore, runID, interactionID string, answers map[string]any) (*Interaction, error) {
-	if cas, ok := rs.(InteractionAnswerCAS); ok {
+	if cas := capability[InteractionAnswerCAS](rs); cas != nil {
 		return cas.AnswerInteractionCAS(ctx, runID, interactionID, answers)
 	}
 	return answerInteractionUnlocked(ctx, rs, runID, interactionID, answers)

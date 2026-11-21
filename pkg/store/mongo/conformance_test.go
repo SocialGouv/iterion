@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,11 +23,10 @@ import (
 // conformance harness. Skipped unless ITERION_TEST_MONGO_URI is set —
 // the suite needs a real replica set (change streams + transactions),
 // so we don't try to spin up testcontainers from a unit test. Local
-// runs use the docker-compose.cloud.yml stack:
-//
-//	devbox run -- task cloud:up:deps
-//	ITERION_TEST_MONGO_URI='mongodb://localhost:27017/?replicaSet=rs0' \
-//	    devbox run -- go test ./pkg/store/mongo/...
+// runs use the owned replica-set fixture documented in docs/development.md,
+// "Running the Mongo conformance harness locally". That fixture enables test
+// commands for the app-scoped commit-failure probe; ordinary dev/prod stacks
+// need no test-command setting.
 //
 // The blob backend is stubbed via inMemoryBlob so a real S3/MinIO
 // isn't required just to exercise the run/event/lock paths.
@@ -41,9 +41,10 @@ func TestConformance_Mongo(t *testing.T) {
 		ctx, cancel := mongotest.Ctx(t)
 		defer cancel()
 		s, err := New(ctx, Config{
-			URI:      uri,
-			Database: dbName,
-			Blob:     newInMemoryBlob(),
+			URI:                uri,
+			Database:           dbName,
+			Blob:               newInMemoryBlob(),
+			RunFilesScratchDir: filepath.Join(t.TempDir(), "scratch"),
 		})
 		if err != nil {
 			t.Fatalf("mongo New: %v", err)

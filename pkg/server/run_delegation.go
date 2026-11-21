@@ -162,10 +162,16 @@ func delegationRefName(fingerprint string) string {
 	return hex.EncodeToString(sum[:12])
 }
 
-func (s *Server) prepareRunDelegation(ctx context.Context, sourceRunID, instructions string, vars map[string]string) (map[string]string, delegationLaunchTarget, string, *store.RunDelegation, error) {
+func (s *Server) prepareRunDelegation(ctx context.Context, sourceRunID, sourceRunBirth, instructions string, vars map[string]string) (map[string]string, delegationLaunchTarget, string, *store.RunDelegation, error) {
 	sourceRun, err := s.runs.LoadRunCtx(ctx, strings.TrimSpace(sourceRunID))
 	if err != nil {
 		return nil, delegationLaunchTarget{}, "", nil, fmt.Errorf("source run not found")
+	}
+	// The run whose failure the worker repairs is the run this load read:
+	// the expectation is compared here, on the load the envelope is built
+	// from.
+	if err := checkCarriedBirth("source_run_birth", sourceRunBirth, sourceRun); err != nil {
+		return nil, delegationLaunchTarget{}, "", nil, err
 	}
 	if sourceRun.Status != store.RunStatusFailed && sourceRun.Status != store.RunStatusFailedResumable {
 		return nil, delegationLaunchTarget{}, "", nil, fmt.Errorf("source run must be failed, got %s", sourceRun.Status)

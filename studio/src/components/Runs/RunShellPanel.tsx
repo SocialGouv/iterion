@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Drawer } from "@/components/ui";
+import { isScopeLostClose } from "@/hooks/runWs/policy";
+import { LostRunError, lostRunAddressedBy, markRunLost, withExpectedBirth } from "@/lib/lostRuns";
 
 // Post-mortem shell drawer: an xterm.js terminal bridged over
 // GET /api/ws/runs/{id}/shell. PTY bytes ride BINARY frames both ways;
@@ -61,17 +63,50 @@ export function RunShellPanel({ open, onOpenChange, runId }: RunShellPanelProps)
       fit.fit();
 
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${proto}://${window.location.host}/api/ws/runs/${encodeURIComponent(
-        runId,
-      )}/shell?cols=${term.cols}&rows=${term.rows}`;
+      // The dial carries the run's expected birth: the server closes a shell
+      // whose run was replaced scope_lost instead of opening it in the
+      // successor's worktree.
+      const url = withExpectedBirth(
+        `${proto}://${window.location.host}/api/ws/runs/${encodeURIComponent(
+          runId,
+        )}/shell?cols=${term.cols}&rows=${term.rows}`,
+      );
+      // The lost state the drawer shows, whoever detected the loss.
+      const showLost = (lostRun: string) => {
+        const message = new LostRunError(lostRun).message;
+        errored = true;
+        setLastError(message);
+        setStatus("error");
+        term?.write(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
+      };
+      // A run this page lost (scope_lost) is never dialed: the ID may name
+      // another run now.
+      const lost = lostRunAddressedBy(url);
+      if (lost !== null) {
+        showLost(lost);
+        return;
+      }
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => setStatus("live");
       ws.onclose = (ev) => {
+        const reason = typeof ev.reason === "string" ? ev.reason : "";
+        // scope_lost: the run was replaced or deleted (or the caller's
+        // standing changed) — the page's registry refuses it from now on.
+        // The drawer's status names the loss, unless the server's own error
+        // frame already said why; the close line keeps the server's reason.
+        if (isScopeLostClose(reason)) {
+          markRunLost("", runId);
+          setStatus("error");
+          if (errored) return;
+          errored = true;
+          setLastError(new LostRunError(runId).message);
+          term?.write(`\r\n\x1b[2m[shell closed: ${reason}]\x1b[0m\r\n`);
+          return;
+        }
         setStatus((prev) => (prev === "error" ? prev : "closed"));
         if (errored) return;
-        const reason = typeof ev.reason === "string" ? ev.reason : "";
         term?.write(`\r\n\x1b[2m[shell closed${reason ? `: ${reason}` : ""}]\x1b[0m\r\n`);
       };
       ws.onerror = () => setStatus("error");

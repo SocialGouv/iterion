@@ -45,6 +45,52 @@ func TestClawSandboxRefusesAskCapablePolicy(t *testing.T) {
 	}
 }
 
+func TestClawSandboxPermissionPauseBoundary(t *testing.T) {
+	t.Parallel()
+	for _, marked := range []bool{false, true} {
+		name := "ordinary question passes"
+		if marked {
+			name = "permission pause is refused"
+		}
+		t.Run(name, func(t *testing.T) {
+			questions := map[string]any{delegate.AskUserQuestionKey: "Which label should I use?"}
+			if marked {
+				questions[permission.InteractionMarkerKey] = nil
+			}
+			env, err := delegate.NewResultEnvelope(delegate.IOResult{
+				Output: map[string]any{"_needs_interaction": true, "_interaction_questions": questions},
+				Tokens: 42, PendingConversation: []byte(`[]`), PendingToolUseID: "pending",
+				PendingCommandNarrowing: &delegate.CommandNarrowingState{Command: "fixture"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			script, reply := envelopeScript(t, 1, env)
+			b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+			res, err := b.Execute(context.Background(), delegate.Task{
+				NodeID: "question", Model: "openai/gpt-5", WorkDir: t.TempDir(),
+				Sandbox: &scriptedSandbox{script: script, args: []string{"", reply}},
+			})
+			if res.Tokens != 42 {
+				t.Errorf("accounted tokens = %d, want 42", res.Tokens)
+			}
+			if !marked {
+				if err != nil || res.Output["_needs_interaction"] != true || res.PendingToolUseID != "pending" {
+					t.Fatalf("ordinary question did not retain its pause: %v, %v", res, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "unsupported permission pause") {
+				t.Fatalf("expected the permission pause refusal, got %v", err)
+			}
+			if res.Output["_needs_interaction"] != nil || res.Output["_interaction_questions"] != nil ||
+				len(res.PendingConversation) != 0 || res.PendingToolUseID != "" || res.PendingCommandNarrowing != nil {
+				t.Fatal("refused result retains pause state")
+			}
+		})
+	}
+}
+
 // TestClawSandboxAdmitsDenyOnlyPolicy: a deny policy with no ask rules
 // is enforceable inside the sandbox runner (the policy crosses the IPC
 // as a pre-task envelope), so the old blanket refusal must be gone —

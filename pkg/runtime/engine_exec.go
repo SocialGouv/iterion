@@ -114,7 +114,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			return nil
 		}
 		if err != nil {
-			return err
+			return e.settleLoopPhaseError(rs, currentNodeID, err)
 		}
 		if retry {
 			continue
@@ -122,10 +122,29 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		nextNodeID, err := e.execLoopAfterExec(ctx, rs, currentNodeID, node, output)
 		if err != nil {
-			return err
+			return e.settleLoopPhaseError(rs, currentNodeID, err)
 		}
 		currentNodeID = nextNodeID
 	}
+}
+
+// settleLoopPhaseError routes only an unclassified context failure from the
+// active node's execution/persistence phases through the existing stop writer.
+// A terminal verdict, ownership loss, format refusal or sibling cause remains
+// authoritative even when the request context has also ended.
+func (e *Engine) settleLoopPhaseError(rs *runState, nodeID string, err error) error {
+	var settled *terminationSettledError
+	if errors.As(err, &settled) && settled.owner == rs {
+		return err
+	}
+
+	if errors.Is(err, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(err) {
+		return err
+	}
+	if rs.ctx != nil && rs.ctx.Err() != nil && simpleContextCause(err, rs.ctx.Err()) {
+		return e.handleContextDoneWithCheckpoint(rs, nodeID, rs.ctx.Err())
+	}
+	return err
 }
 
 // execLoopDispatchSpecial handles terminal (Done/Fail), Human, Router,
@@ -442,13 +461,16 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 
 	execStart := time.Now()
-	output, execErr := e.executeWithResources(spanCtx, rs, node, nodeInput)
+	output, execErr := e.executeCorrectionInvocation(spanCtx, rs, currentNodeID, rs.runID, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if execErr != nil {
 		span.RecordError(execErr)
 		span.SetStatus(codes.Error, execErr.Error())
 	}
 	span.End()
+	if errors.Is(execErr, errCorrectionOwnershipLost) {
+		return nil, false, execErr
+	}
 	if execErr != nil {
 		// A failed call still spends. Recovery retries book each call's
 		// tokens and cost; recordBudgetOn deduplicates explicitly cumulative
@@ -605,13 +627,13 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			Code:    code,
 			NodeID:  currentNodeID,
 			Cause:   execErr,
-			Message: fmt.Sprintf("node %q execution failed: %v", currentNodeID, execErr),
+			Message: nodeExecutionFailedMessage(currentNodeID, execErr),
 		})
 	}
 
-	// Reset per-node retry counters on success so a future failure
-	// starts fresh.
-	delete(rs.nodeAttempts, currentNodeID)
+	// Reset per-node retry counters and the failure streak on success so
+	// a future failure starts fresh.
+	rs.nodeRecovered(currentNodeID)
 	return output, false, nil
 }
 

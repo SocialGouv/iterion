@@ -222,18 +222,34 @@ func EstimateUSDWithCacheInEnv(ctx context.Context, model string, inputTokens, o
 	return estimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, func(name string) string { return credroute.Getenv(ctx, name) })
 }
 
+// EstimateUSDWithKnown preserves pricing presence even for measured zero usage.
+func EstimateUSDWithKnown(model string, inputTokens, outputTokens int) (float64, bool) {
+	return estimateUSDWithCacheKnown(model, inputTokens, outputTokens, 0, gatewayPricer, os.Getenv)
+}
+
+// EstimateUSDWithCacheKnownInEnv prices an invocation at its own catalog and
+// retains both cache accounting and the distinction between unknown and zero.
+func EstimateUSDWithCacheKnownInEnv(ctx context.Context, model string, inputTokens, outputTokens, cacheReadTokens int) (float64, bool) {
+	return estimateUSDWithCacheKnown(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, func(name string) string { return credroute.Getenv(ctx, name) })
+}
+
 func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadTokens int, gatewayPricer func(string, func(string) string) (float64, float64, float64, bool), get func(string) string) float64 {
+	amount, _ := estimateUSDWithCacheKnown(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer, get)
+	return amount
+}
+
+func estimateUSDWithCacheKnown(model string, inputTokens, outputTokens, cacheReadTokens int, gatewayPricer func(string, func(string) string) (float64, float64, float64, bool), get func(string) string) (float64, bool) {
 	// FIRST: the gateway branch — a gateway id is whatever the gateway
 	// serves, and must never false-match a vendor table below, not even
 	// claw's live cache. Unknown or unpriced is 0 the budget reads as
 	// unpriced spend (cost_usd_unpriced), never as free.
 	if route := modelroute.Parse(model); route.Gateway() {
 		if gatewayPricer == nil {
-			return 0
+			return 0, false
 		}
 		inPerM, outPerM, cachePerM, known := gatewayPricer(route.Wire, get)
 		if !known {
-			return 0
+			return 0, false
 		}
 		if cachePerM <= 0 {
 			// No cache price published: cached input costs what uncached
@@ -242,11 +258,11 @@ func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadToke
 			// uncached*inPerM + cached*inPerM in floating point, and this
 			// fallback's contract is that an unextended table reports the
 			// number it always did, every bit of it.
-			return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0
+			return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0, true
 		}
 		cached := min(max(cacheReadTokens, 0), inputTokens)
 		uncached := inputTokens - cached
-		return (float64(uncached)*inPerM + float64(cached)*cachePerM + float64(outputTokens)*outPerM) / 1_000_000.0
+		return (float64(uncached)*inPerM + float64(cached)*cachePerM + float64(outputTokens)*outPerM) / 1_000_000.0, true
 	}
 	// First: ask claw's live registry cache. When it has a hit, it
 	// reflects the OpenRouter pricing as published — which means new
@@ -256,7 +272,7 @@ func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadToke
 	// subtracted here: the full input prices at the input rate, exactly as
 	// before the cache split.
 	if pricing, ok := livePricing(model); ok {
-		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
+		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0, true
 	}
 	// The model string arrives in every shape a backend might report:
 	// bare ("claude-opus-5"), qualified ("anthropic/claude-opus-5"),
@@ -270,16 +286,16 @@ func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadToke
 	// alone — so a model models.dev knew the price of could still report
 	// no cost at all.
 	if in, out, ok := specRate(prefix, bare); ok {
-		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0
+		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0, true
 	}
 	model = bare
 	// Fallback: the static table below. Used on cold starts (no cache
 	// populated) and for any model neither live source has shipped.
 	p, ok := modelPriceTable[model]
 	if !ok {
-		return 0
+		return 0, false
 	}
-	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0
+	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0, true
 }
 
 // splitModelSpec separates a model string's leading component from its model

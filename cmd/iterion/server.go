@@ -614,7 +614,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Mongo change-stream source so the WS handler streams runner-pod
 	// events AND run_logs chunks (the local broker/buffer would only
 	// see this process's writes). ADR-053.
-	streamSrc := runstream.NewMongo(st.EventsCollection(), st.RunLogsCollection(), st.RunsCollection(), logger).WithMetrics(mreg)
+	streamSrc := runstream.NewMongoResolved(func(ctx context.Context, id string) (runstream.MongoSelection, error) {
+		return st.ResolveStreamSelection(ctx, id)
+	}, logger).WithMetrics(mreg)
 
 	// The kill switch is the operator's own posture: read through envtrust,
 	// a value a project `.env` planted — what an older binary's loader could

@@ -91,10 +91,11 @@ export interface Source {
   connections: number;
   subscriptions: number;
   // The package's setup.md: what to do at the vendor's side once the
-  // binding exists. Plain text, rendered as text.
+  // binding exists. Markdown, rendered through MarkdownText, which renders
+  // none of the HTML the package writes as an element.
   setup?: string;
   // The package's setup-poll.md: the setup of its polled triggers, shown in
-  // place of setup for one. Absent when the package ships none.
+  // place of setup for one, rendered alike. Absent when the package ships none.
   setup_poll?: string;
   ingress?: SourceIngress;
 }

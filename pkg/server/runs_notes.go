@@ -69,8 +69,17 @@ func (s *Server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "body is required")
 		return
 	}
-	// Tenant gate: reject a cross-tenant write before persisting.
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	// Tenant gate: reject a cross-tenant write before persisting. The load
+	// and the write are bound to the run the gate admitted, if any.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -78,8 +87,11 @@ func (s *Server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	if author == "" {
 		author = noteAuthorFromContext(r)
 	}
-	note, err := s.runs.AddRunNoteCtx(r.Context(), id, author, req.Body)
+	note, err := s.runs.AddRunNoteCtx(ctx, id, author, req.Body)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "add note: %v", err)
 		return
 	}

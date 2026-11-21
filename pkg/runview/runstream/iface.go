@@ -101,8 +101,9 @@ type LogChunk struct {
 }
 
 // LogSubscription is one client's view of a run's log stream. Chunks()
-// closing means the log stream ended (run terminal, or no log will ever
-// exist for this run).
+// closing means the log stream ended (run terminal, no log will ever exist,
+// or a fatal error). A producer reporting a fatal error must publish it on
+// Errors before closing Chunks; consumers distinguish it from warnings.
 type LogSubscription interface {
 	Chunks() <-chan LogChunk
 	Errors() <-chan error

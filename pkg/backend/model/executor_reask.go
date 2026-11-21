@@ -171,6 +171,9 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 // call's own answer is that turn, and two consecutive assistant turns is
 // not a conversation a provider accepts.
 func (e *ClawExecutor) completedClawConversation(ctx context.Context, task *delegate.Task, result delegate.Result) json.RawMessage {
+	if frozen, ok := ctx.Value(correctionConversationKey{}).(json.RawMessage); ok {
+		return append(json.RawMessage(nil), frozen...)
+	}
 	runID, sessions := runtimeContextFrom(ctx)
 	var messages []api.Message
 	if runID != "" && sessions != nil {

@@ -152,8 +152,8 @@ jobs:
     members: ["ci:mongo-conformance"]
     equivalence: >-
       the same mongo:8.0 one-member replica set, and the job's `go test` lines
-      READ FROM the job rather than restated — both of them, including the
-      second that `docs/development.md`'s regex cannot see. Needs docker, and
+      READ FROM the job rather than restated — every one of them, including
+      the targeted lines `docs/development.md`'s regex cannot see. Needs docker, and
       refuses with exit 2 where this process cannot reach the published port.
 
   golangci:

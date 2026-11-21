@@ -39,6 +39,9 @@ workflow main:
 		t.Fatalf("compile: %v", res.Diagnostics)
 	}
 
+	if _, err := st.CreateRun(t.Context(), runID, "main", nil); err != nil {
+		t.Fatal(err)
+	}
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 	// The production shape: the tee replaces the handle, and the run's
 	// matcher is installed on whatever teeRunLog returned.
@@ -48,7 +51,7 @@ workflow main:
 	}
 	defer closer.Close()
 
-	if _, err := buildRunExecutor(
+	if _, err := buildRunExecutor(boundLegacySubbotFixture(t, t.Context(), runID),
 		RunOptions{Vars: map[string]string{"planted": value}}, tiersMatchTheEngine, res.Workflow, st,
 		lineage{runID: runID}, storeDir, logger, "", nil, "main", nil,
 	); err != nil {

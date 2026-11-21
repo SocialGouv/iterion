@@ -246,12 +246,15 @@ func MustParse(src string) *AST {
 // returns the resolved value (or nil if not found). The evaluator never
 // inspects the structure beyond what the callback returns.
 type Context struct {
-	Vars      func(path []string) any
-	Input     func(path []string) any
-	Outputs   func(path []string) any
-	Artifacts func(path []string) any
-	Loop      func(path []string) any // loop.<name>.<...>
-	Run       func(path []string) any // run.<...>
+	// NumericMode is selected by the caller's persisted value-format authority.
+	// Its zero value retains legacy semantics; operands never select a mode.
+	NumericMode NumericMode
+	Vars        func(path []string) any
+	Input       func(path []string) any
+	Outputs     func(path []string) any
+	Artifacts   func(path []string) any
+	Loop        func(path []string) any // loop.<name>.<...>
+	Run         func(path []string) any // run.<...>
 	// Named holds namespaces a caller declares beyond the standard ones,
 	// keyed by name (a connector package's `payload`, `headers`, `event`…).
 	// A named namespace is resolved by its callback and never by the
@@ -272,7 +275,21 @@ func (a *AST) Eval(ctx *Context) (any, error) {
 // ends the evaluation at the next node instead of at its end — a run's
 // exec-timeout lands DURING a pathological expression, not after it (#2775).
 func (a *AST) EvalContext(ctx context.Context, ectx *Context) (any, error) {
+	return a.evaluate(ctx, ectx, false)
+}
+
+func (a *AST) evaluate(ctx context.Context, ectx *Context, asBool bool) (any, error) {
+	mode := LegacyNumeric
+	if ectx != nil {
+		mode = ectx.NumericMode
+	}
+	if mode != LegacyNumeric && mode != ExactNumeric {
+		return nil, fmt.Errorf("expr: unsupported numeric mode %d", mode)
+	}
 	if a == nil || a.root == nil {
+		if asBool {
+			return false, nil
+		}
 		return nil, nil
 	}
 	if ctx == nil {
@@ -281,7 +298,15 @@ func (a *AST) EvalContext(ctx context.Context, ectx *Context) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("expr: evaluation interrupted: %w", err)
 	}
-	return evalNode(a.root, &evalState{ctx: ectx, cancel: ctx, visits: maxEvalVisits, work: evalBudget()})
+	st := &evalState{ctx: ectx, numericMode: mode, cancel: ctx, visits: maxEvalVisits, work: evalBudget()}
+	v, err := evalNode(a.root, st)
+	if err != nil {
+		return nil, err
+	}
+	if asBool {
+		return st.boolean(v)
+	}
+	return v, nil
 }
 
 // maxEvalVisits bounds the total number of per-element visits a single
@@ -297,11 +322,12 @@ const maxEvalVisits = 100_000
 // (innermost last), the remaining element-visit budget, the remaining work
 // budget, and the cancellation the caller asked the evaluation to honour.
 type evalState struct {
-	ctx    *Context
-	locals []map[string]any
-	visits int
-	work   int
-	cancel context.Context
+	numericMode NumericMode // fixed before callbacks run
+	ctx         *Context
+	locals      []map[string]any
+	visits      int
+	work        int
+	cancel      context.Context
 }
 
 // lookupLocal resolves a lambda-bound identifier from the innermost frame out.
@@ -353,11 +379,11 @@ func (a *AST) EvalBool(ctx *Context) (bool, error) {
 
 // EvalBoolContext is EvalBool interruptible, as EvalContext is Eval.
 func (a *AST) EvalBoolContext(ctx context.Context, ectx *Context) (bool, error) {
-	v, err := a.EvalContext(ctx, ectx)
+	v, err := a.evaluate(ctx, ectx, true)
 	if err != nil {
 		return false, err
 	}
-	return truthy(v), nil
+	return v.(bool), nil
 }
 
 // Refs returns the unique namespace.path tuples referenced by the expression.
@@ -784,7 +810,10 @@ type node interface{ exprNode() }
 
 type litBool struct{ v bool }
 type litInt struct{ v int64 }
-type litFloat struct{ v float64 }
+type litFloat struct {
+	v       float64
+	decimal string
+}
 type litString struct{ v string }
 type pathNode struct {
 	namespace string
@@ -1091,8 +1120,9 @@ func (p *parser) parsePrimary() (node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("expr: invalid float %q", Excerpt(p.cur.value))
 		}
+		decimal := normalizeDecimalLiteral(p.cur.value)
 		p.advance()
-		return litFloat{v: v}, nil
+		return litFloat{v: v, decimal: decimal}, nil
 	case tokString:
 		v := p.cur.value
 		p.advance()
@@ -1379,6 +1409,9 @@ func evalNode(n node, st *evalState) (any, error) {
 	case litInt:
 		return v.v, nil
 	case litFloat:
+		if st.exactNumbers() {
+			return st.decimalLiteral(v.decimal)
+		}
 		return v.v, nil
 	case litString:
 		return v.v, nil
@@ -1465,8 +1498,12 @@ func evalUnary(n *unaryNode, st *evalState) (any, error) {
 	}
 	switch n.op {
 	case "!":
-		return !truthy(v), nil
+		b, err := st.boolean(v)
+		return !b, err
 	case "-":
+		if st.exactNumbers() {
+			return st.negateNumber(v)
+		}
 		switch t := v.(type) {
 		case int64:
 			return -t, nil
@@ -1485,27 +1522,35 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !truthy(l) {
+		b, err := st.boolean(l)
+		if err != nil {
+			return nil, err
+		}
+		if !b {
 			return false, nil
 		}
 		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
-		return truthy(r), nil
+		return st.boolean(r)
 	case "||":
 		l, err := evalNode(n.left, st)
 		if err != nil {
 			return nil, err
 		}
-		if truthy(l) {
+		b, err := st.boolean(l)
+		if err != nil {
+			return nil, err
+		}
+		if b {
 			return true, nil
 		}
 		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
-		return truthy(r), nil
+		return st.boolean(r)
 	}
 
 	l, err := evalNode(n.left, st)
@@ -1515,6 +1560,9 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 	r, err := evalNode(n.right, st)
 	if err != nil {
 		return nil, err
+	}
+	if st.exactNumbers() {
+		return st.exactBinary(n.op, l, r)
 	}
 	switch n.op {
 	case "==":
@@ -1930,7 +1978,11 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if truthy(condVal) {
+		b, err := st.boolean(condVal)
+		if err != nil {
+			return nil, err
+		}
+		if b {
 			return evalNode(n.args[1], st)
 		}
 		return evalNode(n.args[2], st)
@@ -1959,6 +2011,11 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 	}
 	// A builtin that builds a string or a collection charges the work budget
 	// as it builds, inside its implementation — never after the allocation.
+	if st.exactNumbers() {
+		if fn := exactNumericBuiltins[n.name]; fn != nil {
+			return fn(st, args)
+		}
+	}
 	return b.fn(st, args)
 }
 
@@ -2085,7 +2142,10 @@ func builtinTail(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: tail() takes 2 arguments (array, n), got %d", len(args))
 	}
-	n, ok := toInt(args[1])
+	n, ok, err := st.integer(args[1])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: tail() expects a number as second argument, got %T", args[1])
 	}
@@ -2123,7 +2183,11 @@ func builtinIf(st *evalState, args []any) (any, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: if() takes 3 arguments (cond, then, else), got %d", len(args))
 	}
-	if truthy(args[0]) {
+	b, err := st.boolean(args[0])
+	if err != nil {
+		return nil, err
+	}
+	if b {
 		return args[1], nil
 	}
 	return args[2], nil
@@ -2261,11 +2325,17 @@ func builtinSlice(st *evalState, args []any) (any, error) {
 		return nil, fmt.Errorf("expr: slice() expects array as first argument, %w", err)
 	}
 	n := int64(len(arr))
-	start, ok := toInt(args[1])
+	start, ok, err := st.integer(args[1])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: slice() start must be an integer, got %T", args[1])
 	}
-	end, ok := toInt(args[2])
+	end, ok, err := st.integer(args[2])
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("expr: slice() end must be an integer, got %T", args[2])
 	}
@@ -2500,7 +2570,10 @@ func evalIndex(n *indexNode, st *evalState) (any, error) {
 	}
 	switch c := recv.(type) {
 	case []any:
-		i, ok := toInt(idx)
+		i, ok, err := st.integer(idx)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
 		}
@@ -2520,7 +2593,10 @@ func evalIndex(n *indexNode, st *evalState) (any, error) {
 	rv := reflect.ValueOf(recv)
 	switch rv.Kind() {
 	case reflect.Slice, reflect.Array:
-		i, ok := toInt(idx)
+		i, ok, err := st.integer(idx)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
 		}
@@ -2607,7 +2683,11 @@ func evalLambdaComb(n *lambdaCombNode, st *evalState) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if truthy(v) {
+			b, err := st.boolean(v)
+			if err != nil {
+				return nil, err
+			}
+			if b {
 				out = append(out, el)
 			}
 		}

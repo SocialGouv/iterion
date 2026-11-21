@@ -510,7 +510,41 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	runErr := eng.Run(rctx, runID, launchInputs(wf, opts.Inputs, bias))
+	// Every pass owns a disposable legacy store and a fresh run identity,
+	// even when invoked by a parent simulation. This is not a durable-format
+	// downgrade of that parent: no pass adopts its durable store or grant.
+	rctx, err = store.WithRunValueFormat(rctx, store.RunValueFormat{RunID: runID, Format: store.LegacyValueFormat})
+	if err != nil {
+		// A pass cancelled before admission is still a bounded simulation
+		// result. It owns no born run, and must not disappear as a fatal
+		// compiler error from validate --exec.
+		if rctx.Err() != nil {
+			pass.Failure = err.Error()
+			pass.TimedOut = true
+			pass.Status = "error"
+			return pass, x, nil
+		}
+		return pass, nil, err
+	}
+	inputs := launchInputs(wf, opts.Inputs, bias)
+	invocation, err := store.PrepareRunInvocation(rctx, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: wf.Name, Inputs: inputs}})
+	if invocation.Context != nil {
+		rctx = invocation.Context
+	}
+	if err != nil {
+		err = runtime.AbortPreparedRun(rctx, st, invocation, err)
+		// Cancellation can arrive after birth; the helper above then attempts
+		// to retire that birth. The bounded simulation still returns its timeout report
+		// instead of disappearing as a fatal validate --exec error.
+		if rctx.Err() != nil {
+			pass.Failure = err.Error()
+			pass.TimedOut = true
+			pass.Status = "error"
+			return pass, x, nil
+		}
+		return pass, nil, err
+	}
+	runErr := eng.RunPrepared(rctx, runID, inputs, invocation)
 	// The engine joins its branches before Run returns, but a branch the
 	// collector abandoned past its grace period may still emit: the pass is
 	// written, read and returned under the observer's lock, its lists

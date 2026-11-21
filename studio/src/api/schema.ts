@@ -6119,6 +6119,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{name}/launch-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/bots/{name}/launch-source
+         * @description The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.
+         */
+        get: operations["getV1BotsByNameLaunchSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{name}/overlay": {
         parameters: {
             query?: never;
@@ -7458,6 +7480,7 @@ export interface components {
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
             budget_unreported_calls?: number;
+            correction_accounting?: components["schemas"]["CorrectionAccounting"];
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -7495,6 +7518,9 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            node_failure_streaks?: {
+                [key: string]: components["schemas"]["NodeFailureStreak"];
+            };
             node_id: string;
             node_sessions?: {
                 [key: string]: components["schemas"]["NodeSessionSlot"];
@@ -7522,6 +7548,7 @@ export interface components {
             };
         };
         CodemodeBoundsRequest: {
+            concurrent_tool_calls?: number;
             cpu?: string;
             memory?: number;
             result_bytes?: number;
@@ -7549,6 +7576,27 @@ export interface components {
             path: string;
             ref: string;
             secret_id?: string;
+        };
+        CorrectionAccounting: {
+            daily_marks?: {
+                [key: string]: number;
+            };
+            daily_scope_cost_usd?: {
+                [key: string]: number;
+            };
+            iteration_marks?: {
+                [key: string]: boolean;
+            };
+            unpriced_marks?: {
+                [key: string]: number;
+            };
+            unpriced_node_marks?: {
+                [key: string]: boolean;
+            };
+            usage_marks?: {
+                [key: string]: components["schemas"]["OutputCorrectionUsage"];
+            };
+            version: number;
         };
         CredentialPreview: {
             candidates: components["schemas"]["CredentialPreviewCandidate"][];
@@ -7872,6 +7920,15 @@ export interface components {
             reason: string;
             spec: string;
         };
+        InvocationUsageRoute: {
+            backend?: string;
+            provider?: string;
+            reported_model?: string;
+            requested_model?: string;
+            scope: string;
+            session_fingerprint?: string;
+            session_id?: string;
+        };
         Issue: {
             assignee?: string;
             awaiting_input?: boolean;
@@ -7936,6 +7993,14 @@ export interface components {
             parent_run_id?: string;
             root_run_id?: string;
         };
+        Literal: {
+            bool_val?: boolean;
+            float_val?: number;
+            int_val?: number;
+            kind?: string;
+            raw?: string;
+            str_val?: string;
+        };
         Maintenance: {
             fence_launches: boolean;
             reason: string;
@@ -7958,6 +8023,10 @@ export interface components {
             team_id: string;
             team_name: string;
             team_slug: string;
+        };
+        NodeFailureStreak: {
+            count: number;
+            fingerprint: string;
         };
         NodeServed: {
             backend: string;
@@ -7984,24 +8053,63 @@ export interface components {
             teams: components["schemas"]["MembershipView"][];
             unavailable?: boolean;
         };
+        OutputCorrectionCause: {
+            kind: string;
+            node_id?: string;
+            provider?: string;
+            /** Format: date-time */
+            reset_at?: string;
+            self_imposed?: boolean;
+            timeout_nanos?: number;
+            version: number;
+            window_kind?: string;
+        };
         OutputCorrectionEpisode: {
             attempts?: number;
             budget?: number;
+            cause?: components["schemas"]["OutputCorrectionCause"];
             episode_id?: string;
+            generation?: string;
             input_fingerprint?: string;
             invocation_id?: string;
             last_error?: string;
             last_output_fingerprint?: string;
             last_violation_fingerprint?: string;
+            ledger_key?: string;
             node_id?: string;
+            reservations?: components["schemas"]["OutputCorrectionReservation"][];
             /** Format: date-time */
             retired_at?: string;
             retired_reason?: string;
+            revision?: number;
             /** Format: date-time */
             started_at?: string;
             status?: string;
+            terminal_kind?: string;
             /** Format: date-time */
             updated_at?: string;
+            usage?: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReceipt: {
+            observation?: components["schemas"]["UsageObservation"];
+            projection?: components["schemas"]["UsageProjection"];
+            usage: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReservation: {
+            execution_epoch: string;
+            id: string;
+            initial_usage_id?: string;
+            logical_invocation_id?: string;
+            origin?: components["schemas"]["UsageOrigin"];
+            receipt?: components["schemas"]["OutputCorrectionReceipt"];
+            scope_key: string;
+            /** Format: date-time */
+            started_at: string;
+        };
+        OutputCorrectionUsage: {
+            cost_usd?: number;
+            tokens?: number;
+            unreported_calls?: number;
         };
         Override: {
             backend?: string;
@@ -8173,6 +8281,21 @@ export interface components {
             /** Format: date-time */
             queued_at?: string;
         };
+        Preset: {
+            description?: string;
+            display_name?: string;
+            name?: string;
+            prompt?: string;
+            skills?: string[];
+            values?: components["schemas"]["PresetValue"][];
+        };
+        PresetValue: {
+            key?: string;
+            value?: components["schemas"]["Literal"];
+        };
+        PresetsBlock: {
+            entries?: components["schemas"]["Preset"][];
+        };
         PricefeedEntry: {
             declared?: boolean;
             feed: string;
@@ -8211,6 +8334,11 @@ export interface components {
             providers: components["schemas"]["ProviderStatus"][];
             resolved_default: string;
         };
+        ReportedEconomicSession: {
+            backend: string;
+            fingerprint?: string;
+            session_id: string;
+        };
         RoutingPolicy: {
             allowed_actions?: string[];
             block_when?: string[];
@@ -8243,6 +8371,7 @@ export interface components {
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bank_state?: string;
+            birth_id: string;
             bot_source_tenant?: string;
             bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
@@ -8390,6 +8519,7 @@ export interface components {
             active: boolean;
             auto_merge?: boolean;
             bank_state?: string;
+            birth_id: string;
             bundle_display_name?: string;
             bundle_name?: string;
             /** Format: date-time */
@@ -8440,6 +8570,12 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             updated_by?: string;
+        };
+        SessionCostObservation: {
+            backend: string;
+            cost_usd: number;
+            fingerprint?: string;
+            session_id: string;
         };
         SessionLedgerEntry: {
             session_id: string;
@@ -8572,6 +8708,67 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        UsageComponent: {
+            call_id?: string;
+            cost_kind: string;
+            cost_known: boolean;
+            cost_usd: number;
+            ordinal: number;
+            outcome?: string;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            source: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens: number;
+            unpriced_tokens: number;
+            unreported_calls: number;
+        };
+        UsageObservation: {
+            collection_id?: string;
+            components?: components["schemas"]["UsageComponent"][];
+            count_iteration?: boolean;
+            other_cost_usd?: number;
+            sessions?: components["schemas"]["SessionCostObservation"][];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+            version: number;
+        };
+        UsageOrigin: {
+            org_id?: string;
+            pool_grantless?: boolean;
+            publication: string;
+            run_id: string;
+            tenant_id: string;
+            version: number;
+        };
+        UsageProjection: {
+            collection_id: string;
+            lines: components["schemas"]["UsageProjectionLine"][];
+            version: number;
+        };
+        UsageProjectionLine: {
+            call_id?: string;
+            cost_known: boolean;
+            cost_usd: number;
+            kind: string;
+            ordinal?: number;
+            previous_max_usd?: number;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            session?: components["schemas"]["SessionCostObservation"];
+            source?: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+        };
+        UsageTokenSplit: {
+            cache_read: number;
+            cache_write: number;
+            input: number;
+            output: number;
         };
         UserView: {
             created_at?: string;
@@ -8810,6 +9007,18 @@ export interface components {
             kind?: string;
             secret_id?: string;
             secret_name_for_workflow?: string;
+        };
+        botLaunchSourceResponse: {
+            bindable: boolean;
+            bot_id: string;
+            diagnostics?: string[];
+            document: unknown;
+            presets?: components["schemas"]["PresetsBlock"];
+            read_refusal?: components["schemas"]["readRefusalInfo"];
+            sha256: string;
+            source: string;
+            tier: string;
+            unit?: components["schemas"]["unitInfo"];
         };
         botRolesSettingsView: {
             effective: components["schemas"]["effectiveBotRoles"];
@@ -9320,6 +9529,7 @@ export interface components {
             warning?: string;
         };
         previewCodemodeBounds: {
+            concurrent_tool_calls: number;
             cpu: string;
             memory: number;
             result_bytes: number;
@@ -9448,6 +9658,10 @@ export interface components {
             updated_at?: string;
             updated_by?: string;
         };
+        readRefusalInfo: {
+            hint?: string;
+            message: string;
+        };
         registerReq: {
             email: string;
             invitation?: string;
@@ -9492,6 +9706,24 @@ export interface components {
             runner_pool?: string;
             slug: string;
             status: string;
+        };
+        unitFileInfo: {
+            dependency?: string;
+            digest?: string;
+            imports?: string[];
+            parse_error?: string;
+            parse_errors?: number;
+            profile?: number;
+            rel: string;
+        };
+        unitInfo: {
+            files: components["schemas"]["unitFileInfo"][];
+            load_error?: string;
+            load_errors?: number;
+            main: string;
+            revision: string;
+            root: string;
+            unread?: string[];
         };
         updateApiKeyReq: {
             base_url?: string;
@@ -19725,6 +19957,63 @@ export interface operations {
         responses: {
             /** @description Response */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1BotsByNameLaunchSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botLaunchSourceResponse"];
+                };
+            };
+            /** @description a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the name resolves on no tier */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the bot resolves but not to a launchable program — the refusal a launch of it would draw */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the resolution or the reading itself failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,25 +1,34 @@
 # Engine — the domain
 
-Which package owns a behaviour, and the invariants each one carries. Exact
-questions go to `iterion map find|neighbours|impact|path` and the generated
-[map-packages.md](../../references/map-packages.md); these leaves carry the
-invariants. The product view is [docs/architecture.md](../../architecture.md).
-
+Ownership: `iterion map` and
+[map-packages.md](../../references/map-packages.md). Invariants below;
+view in [architecture.md](../../architecture.md).
 
 | Leaf | Read it when |
 |---|---|
-| [tenancy-credentials-spend.md](tenancy-credentials-spend.md) | Orgs, teams, keys, caps, platform settings. |
-| [identity-data-lifecycle.md](identity-data-lifecycle.md) | Sign-in and launch audit rows, what they carry, retention, what an erasure scrubs from them. |
-| [account-erasure.md](account-erasure.md) | What an account erasure removes, what stays a pseudonym, which store seam each half lives in. |
-| [http-failures.md](http-failures.md) | Generic HTTP failures, correlation, partial identity reads and quota propagation. |
-| [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope, sandbox wiring. |
-| [events-leases-and-schedules.md](events-leases-and-schedules.md) | The trigger spine, elections, queues, schedules, retries. |
-| [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, memory injection at compaction, marketplace, bot sources. |
-| [dsl-backend-execution.md](dsl-backend-execution.md) | The DSL pipeline, backends, runtime, store, server, forge. |
-| [dsl-and-runtime.md](dsl-and-runtime.md) | The compiled graph, explicit target capabilities and how a workflow executes. |
-| [dsl-quick-reference.md](dsl-quick-reference.md) | The exact syntax of the cross-cutting fields, one line each. |
-| [dsl-errors-resume.md](dsl-errors-resume.md) | A run fails, resumes or rewinds; a checkpoint looks torn; a pre-engine refusal must preserve a queued resume, or a reliability invariant is in question. |
-| [worktree-finalization.md](worktree-finalization.md) | A run's workspace finalization misbehaves; touching `finalizeWorktree`. |
-| [automation-surfaces.md](automation-surfaces.md) | Something launched a run and you need to know what. |
-| [bot-catalog-regeneration.md](bot-catalog-regeneration.md) | A run wrote, or did not write, a bot catalogue copy — and who hears about a refresh that failed. |
-| [run-provenance.md](run-provenance.md) | Attempt snapshots, historical workflow views, cloud source fallback, metric boundaries, and who launched a run (`run.launched` audit). |
+| [tenancy-credentials-spend.md](tenancy-credentials-spend.md) | Tenancy, credentials, spend. |
+| [identity-data-lifecycle.md](identity-data-lifecycle.md) | Sign-in/launch audit, retention, erasure. |
+| [account-erasure.md](account-erasure.md) | Account erasure, pseudonyms and store seams. |
+| [http-failures.md](http-failures.md) | HTTP failures, correlation. |
+| [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope. |
+| [events-leases-and-schedules.md](events-leases-and-schedules.md) | Triggers, elections, queues. |
+| [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, bot sources. |
+| [dsl-backend-execution.md](dsl-backend-execution.md) | DSL pipeline, backends, runtime, store, server, forge. |
+| [dsl-and-runtime.md](dsl-and-runtime.md) | Compiled graph, target capabilities, workflow execution. |
+| [dsl-quick-reference.md](dsl-quick-reference.md) | Cross-cutting field syntax. |
+| [dsl-errors-resume.md](dsl-errors-resume.md) | Failures, budgets, resume, checkpoints. |
+| [worktree-finalization.md](worktree-finalization.md) | Workspace finalization misbehaves. |
+| [automation-surfaces.md](automation-surfaces.md) | Run launch entry points. |
+| [bot-catalog-regeneration.md](bot-catalog-regeneration.md) | Bot catalogue copies, refresh failures. |
+| [run-provenance.md](run-provenance.md) | Attempts, history, fallback, metrics. |
+| [run-value-formats.md](run-value-formats.md) | Exact formats and bound writers. |
+| [run-invocation-preparation.md](run-invocation-preparation.md) | Prepared bindings and terminal writes. |
+| [run-birth.md](run-birth.md) | Birth identity, Mongo notes/streams, publication. |
+| [retained-payloads.md](retained-payloads.md) | FS/Mongo grants and cleanup limits. |
+| [run-streams.md](run-streams.md) | Mongo/FS selection, replay, lifetime. |
+| [run-alert-origin.md](run-alert-origin.md) | Registered alerts, legacy carrier. |
+| [run-ws-origin.md](run-ws-origin.md) | Expected birth, origin refusals. |
+| [run-action-origin.md](run-action-origin.md) | Bound actions. |
+| [run-log-origin.md](run-log-origin.md) | Bound log lane, five end sources. |
+| [run-cursors.md](run-cursors.md) | Cursor bounds, legacy compatibility. |
+| [run-event-origins.md](run-event-origins.md) | Event origins, readers, broker, Service feeds. |

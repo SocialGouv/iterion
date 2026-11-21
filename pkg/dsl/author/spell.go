@@ -1533,14 +1533,14 @@ func (s *speller) block(host spec.Kind, p spec.Property, k, v *yaml.Node, indent
 	s.body(body, pairs, indent+2, host.Name)
 }
 
-// sequenceEntries writes a block whose entries are ordered (fallbacks): a
-// list of objects carrying the entry's name under the sequence key.
+// sequenceEntries preserves a block's named entries without collapsing equal
+// names; their complete identity or meaningful order belongs to its consumer.
 func (s *speller) sequenceEntries(body spec.Kind, what string, k, v *yaml.Node, indent int) {
 	e := body.Entries
 	items, ok := s.sequence(v, what)
 	if !ok {
 		if d := s.report.Latest(); d != nil && v != nil && v.Kind == yaml.MappingNode {
-			d.Message = what + " is a list of routes (order is the try order), each `{" + e.SequenceKey + ": <name>, …}`, not a mapping"
+			d.Message = what + " is a list of named entries, each `{" + e.SequenceKey + ": <name>, …}`, not a mapping"
 		}
 		return
 	}
@@ -1560,7 +1560,7 @@ func (s *speller) sequenceEntries(body spec.Kind, what string, k, v *yaml.Node, 
 			s.refuse(it, "an entry of "+what+" carries its name under `"+e.SequenceKey+"`")
 			continue
 		}
-		name, ok := s.ident("`"+e.SequenceKey+"`", nameNode, false)
+		name, ok := s.scalar(e.Key, nil, "`"+e.SequenceKey+"`", nameNode)
 		if !ok {
 			continue
 		}

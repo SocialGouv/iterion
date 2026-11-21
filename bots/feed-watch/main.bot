@@ -807,7 +807,7 @@ tool fetch_feeds:
 ## digest can fire concurrently from cron.
 tool dedup_queue:
   script: |
-    import json, os, fcntl, subprocess
+    import json, os, fcntl, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     entries_file = {{input.entries_file}}
     fetch_errors = {{input.errors}}
@@ -847,7 +847,8 @@ tool dedup_queue:
                              repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
@@ -1722,16 +1723,18 @@ tool notify_silence:
                 print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
                       repr(state_dir) + ': ' + ', '.join(outside[:5]), file=sys.stderr)
             elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
+                # git's own lines go to stderr, here and below: this
+                # node's stdout is its JSON answer.
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
-                                ' (' + str(silence_days) + 'd)'], check=True)
+                                ' (' + str(silence_days) + 'd)'], check=True, stdout=sys.stderr)
                 br = subprocess.run(['git', '-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD'],
                                     capture_output=True, text=True).stdout.strip() or 'HEAD'
                 for _ in range(5):
-                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD']).returncode == 0:
+                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD'], stdout=sys.stderr).returncode == 0:
                         break
                     if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
-                                       'origin', br]).returncode != 0:
+                                       'origin', br], stdout=sys.stderr).returncode != 0:
                         subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
                         print('feed-watch: could not push silence.json (rebase conflict)', file=sys.stderr)
                         break
@@ -1768,7 +1771,7 @@ tool notify_silence:
 ## dedup, and optionally commit+push the state.
 tool commit_state:
   script: |
-    import json, os, fcntl, subprocess, datetime
+    import json, os, fcntl, subprocess, datetime, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     snapshot_ids = set({{input.snapshot_ids}} or [])
@@ -1806,7 +1809,8 @@ tool commit_state:
                              repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):

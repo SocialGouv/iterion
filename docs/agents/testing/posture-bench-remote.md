@@ -82,7 +82,7 @@ and deleted after it:
 | legs | 7/7 held | 7/7 held |
 | a compromised child's `connect`, before #3371 | **SUCCEEDED** | refused `EACCES` |
 | the same with #3371's `Confine` (leg 5, 2026-11-18, `node3`) | refused `EACCES`, and UDP + `io_uring` too | refused |
-| the **shipped** child after the v7.19.1 roll (leg 1, 2026-11-20, `node3`, runner `sha256:eaf1a690…`) | `sockets_denied:true`; `memory_bytes` = `memory_base_bytes` (84.6 MiB) + the 256 MiB room (#3383) | — |
+| re-run after the v7.19.1 roll (2026-11-20, `node3`, runner `sha256:eaf1a690…`) | **7/7 legs held**; leg 1, the **shipped** child: `sockets_denied:true`, `memory_bytes` = `memory_base_bytes` (84.6 MiB) + the 256 MiB room (#3383) | — |
 
 **The one that matters is the ABI.** Landlock gained TCP rights in ABI 4, so on
 this kernel the domain cannot refuse a socket connection: leg 5 reported the

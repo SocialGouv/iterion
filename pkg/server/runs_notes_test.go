@@ -63,7 +63,7 @@ func TestNotes_Endpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}
-		got, err := st.ListRunNotes(nil, runID) //nolint:staticcheck // fs impl ignores ctx
+		got, err := st.ListRunNotes(t.Context(), runID)
 		if err != nil {
 			t.Fatalf("ListRunNotes: %v", err)
 		}

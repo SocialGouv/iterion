@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/testfs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -80,6 +81,52 @@ func TestResolveWorkspaceCopyTimeout_GarbageEnvIsWarnedOnce(t *testing.T) {
 	}
 }
 
+// runReadyWorkspaceCopyTimeout starts the real copy before arming the phase
+// timer. The shim markers establish the subprocess premises independently of
+// scheduler/startup latency; the phase deadline is then forwarded to the copy's
+// context, where the real exec.CommandContext calls must kill both pipe legs.
+// This is a classification/kill witness, not a measurement of startup latency.
+// The separate watchdog bounds a broken phase timer. Its expiry is an explicit
+// failure: it must never substitute for the phase cancelling the real copy.
+func runReadyWorkspaceCopyTimeout(t *testing.T, r *Run, src string, ready ...string) error {
+	t.Helper()
+	copyCtx, cancelCopy := context.WithTimeout(context.Background(), 10*time.Second)
+	done := make(chan error, 1)
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		done <- r.populateWorkspace(copyCtx, src, "/workspace")
+	}()
+	defer func() { cancelCopy(); <-exited }()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for _, path := range ready {
+		for {
+			if _, err := os.Stat(path); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("copy exited before establishing its stall: %v", err)
+			case <-copyCtx.Done():
+				t.Fatalf("copy never established its stall: %v", copyCtx.Err())
+			case <-ticker.C:
+			}
+		}
+	}
+	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
+		stop := context.AfterFunc(ctx, cancelCopy)
+		defer stop()
+		return <-done
+	})
+	if copyCtx.Err() == context.DeadlineExceeded {
+		t.Fatal("copy stopped only at the watchdog: the phase deadline did not kill the stalled processes")
+	}
+	return err
+}
+
 // The same shape driven through the REAL populateWorkspace: a kubectl
 // shim on PATH that never reads its stdin and never exits is the in-pod
 // tar side of the copy pipe, wedged. The phase must strike its own
@@ -96,9 +143,10 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 	}
 	shimDir := t.TempDir()
 	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
-	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	podReady := filepath.Join(shimDir, "pod-ready")
+	t.Setenv("COPY_POD_READY", podReady)
+	// Startup deliberately exceeds the old 300ms budget (#3015).
+	testfs.WriteExecutable(t, string(shim), []byte("#!/bin/sh\nsleep 0.4\n: > \"$COPY_POD_READY\"\nexec sleep 30\n"))
 	// PATH keeps the shim's directory: the shim's own `sleep` is resolved by
 	// sh, and the host leg of the copy pipe resolves `tar` there too.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -117,9 +165,7 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 	r := &Run{driver: &Driver{logger: iterlog.Nop(), kubectl: shim}, podName: "sandbox-x", namespace: "ns"}
 
 	start := time.Now()
-	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
-		return r.populateWorkspace(ctx, src, "/workspace")
-	})
+	err := runReadyWorkspaceCopyTimeout(t, r, src, podReady)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("a wedged in-pod tar returned no error — the copy would block until the run's max_duration")
@@ -151,12 +197,13 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyCutKeepsTheHostTailsOwnCause(t *te
 	}
 	shimDir := t.TempDir()
 	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
-	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(shimDir, "tar"), []byte("#!/bin/sh\necho 'tar: file changed as we read it' >&2\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	podReady := filepath.Join(shimDir, "pod-ready")
+	t.Setenv("COPY_POD_READY", podReady)
+	// Startup deliberately exceeds the old 300ms budget (#3015).
+	testfs.WriteExecutable(t, string(shim), []byte("#!/bin/sh\nsleep 0.4\n: > \"$COPY_POD_READY\"\nexec sleep 30\n"))
+	hostReady := filepath.Join(shimDir, "host-ready")
+	t.Setenv("COPY_HOST_READY", hostReady)
+	testfs.WriteExecutable(t, filepath.Join(shimDir, "tar"), []byte("#!/bin/sh\necho 'tar: file changed as we read it' >&2\n: > \"$COPY_HOST_READY\"\nexec sleep 30\n"))
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := t.TempDir()
@@ -165,11 +212,12 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyCutKeepsTheHostTailsOwnCause(t *te
 	}
 	r := &Run{driver: &Driver{logger: iterlog.Nop(), kubectl: shim}, podName: "sandbox-x", namespace: "ns"}
 
-	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
-		return r.populateWorkspace(ctx, src, "/workspace")
-	})
+	err := runReadyWorkspaceCopyTimeout(t, r, src, podReady, hostReady)
 	if err == nil {
 		t.Fatal("a wedged in-pod tar returned no error — the copy would block until the run's max_duration")
+	}
+	if !errors.Is(err, sandbox.ErrPhaseTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the cut lost its typed phase timeout: %v", err)
 	}
 	if !strings.Contains(err.Error(), "in-pod tar extract") {
 		t.Fatalf("the cut branch must keep the wedged in-pod tar leading: %v", err)

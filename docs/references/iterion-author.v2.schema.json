@@ -138,6 +138,36 @@
       },
       "type": "object"
     },
+    "business_stores": {
+      "description": "Declared business stores; no inference from accessed files. A bare block declares none. One store per entry; the same id may name stores in different namespaces",
+      "items": {
+        "additionalProperties": false,
+        "description": "One store per entry; the same id may name stores in different namespaces",
+        "properties": {
+          "id": {
+            "description": "The entry's name",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Store kind",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Logical namespace",
+            "type": "string"
+          },
+          "required": {
+            "description": "The declared store is required (default false); does not itself add an admission gate",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "catalog": {
       "additionalProperties": false,
       "description": "The catalog identity the .bot carries in its `## ---` frontmatter; a non-empty triggers or capabilities OVERRIDES the manifest's at discovery.",
@@ -167,6 +197,12 @@
       "additionalProperties": false,
       "description": "Bounds one codemode program runs under (ADR-165): the short form names a mode, the block form declares bounds and IMPLIES on — declaring bounds for a capability that is off is not a thing to express. Every bound is clamped to the platform ceiling in the parent (scripthost.Ceiling), with C347 at compile where a declared value is above it. Durations are quoted, the way timeout: is; byte sizes and counts are bare integers, because this DSL has no byte-size form and inventing one is its own lot.",
       "properties": {
+        "concurrent_tool_calls": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget",
+          "minimum": 0,
+          "type": "integer"
+        },
         "cpu": {
           "description": "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP",
           "type": "string"
@@ -2512,6 +2548,10 @@
         "budget": {
           "$ref": "#/$defs/budget",
           "description": "Run caps, each overridable by the matching run flag"
+        },
+        "business_stores": {
+          "$ref": "#/$defs/business_stores",
+          "description": "Expected business-store identities, normalized at launch and inherited by children"
         },
         "capabilities": {
           "description": "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none",

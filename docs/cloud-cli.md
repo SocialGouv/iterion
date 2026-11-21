@@ -47,8 +47,17 @@ the team's UUID; it is refused with `--token` (a token's team is fixed at
 its mint) and with the browser flow (the approval pins the studio's active
 team).
 
-`iterion remote status` shows the logged-in instance + account;
-`iterion remote logout` forgets the credential.
+`iterion remote status` shows the logged-in instance + account, the
+version and commit the instance runs (read from its public
+`GET /api/server/info`) and this client's own version — so a session sees
+whether a roll is due without reading the code. An instance that does not
+tell its version (a release older than the route, an error, an answer that
+is not the server's info, no answer within 5 s —
+`ITERION_REMOTE_SERVER_INFO_TIMEOUT` raises it) leaves it unknown with the
+reason, and the status still succeeds. `--json` prints the whole answer,
+the one the operator MCP's `remote_status` gives: `server.version`,
+`server.commit`, `client_version`, or `server_info_error` in place of
+`server`. `iterion remote logout` forgets the credential.
 
 ### CI / scripting (environment only)
 

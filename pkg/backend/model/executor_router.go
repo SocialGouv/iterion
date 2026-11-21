@@ -146,6 +146,8 @@ func routerRoutingInstruction(candidates []string) string {
 
 // executeLLMRouterUnified is the unified LLM router path that works with any backend.
 func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]any) (map[string]any, error) {
+	// Routers retain their local policy and cannot inherit an agent correction owner.
+	ctx = WithoutOutputCorrectionOwnership(ctx)
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {

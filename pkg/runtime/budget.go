@@ -972,6 +972,18 @@ func (e *Engine) recordRetryNodeSpend(rs *runState, nodeID string, output map[st
 }
 
 func (e *Engine) recordAttemptSpend(rs *runState, nodeID string, output map[string]any, countIteration bool) {
+	if accountedInvocation(rs, nodeID) {
+		return
+	}
+	e.recordUnsettledAttemptSpend(rs, nodeID, output, countIteration)
+}
+
+// recordUnsettledNodeSpend books an auxiliary invocation outside the receipt.
+func (e *Engine) recordUnsettledNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	e.recordUnsettledAttemptSpend(rs, nodeID, output, true)
+}
+
+func (e *Engine) recordUnsettledAttemptSpend(rs *runState, nodeID string, output map[string]any, countIteration bool) {
 	spend := extractSpend(output)
 	if spend.empty() {
 		return
@@ -1002,7 +1014,7 @@ func (e *Engine) recordAttemptSpend(rs *runState, nodeID string, output map[stri
 		e.noteUnreportedCalls(ctx, rs, nodeID, spend.unreportedCalls)
 		return
 	}
-	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true, countIteration); err != nil {
+	if err := e.recordUnsettledBudgetOn(ctx, rs, nodeID, output, true, countIteration); err != nil {
 		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
 	}
 }
@@ -1048,6 +1060,23 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 // land the ledger entry (see recordFailedNodeSpend). Everything else — the
 // in-memory totals, the exceeded decision — is context-free.
 func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded, countIteration bool) error {
+	if accountedInvocation(rs, nodeID) {
+		checks := rs.budget.Check()
+		for _, w := range findWarnings(checks) {
+			_ = e.emit(ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
+		}
+		if exc := findExceeded(checks); exc != nil {
+			if !deferExceeded {
+				return e.graceOrFailBudget(rs, nodeID, exc)
+			}
+			rs.budget.noteExceeded(exc)
+		}
+		return nil
+	}
+	return e.recordUnsettledBudgetOn(ctx, rs, nodeID, output, deferExceeded, countIteration)
+}
+
+func (e *Engine) recordUnsettledBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded, countIteration bool) error {
 	spend := unbookedNodeSpend(rs, nodeID, output)
 	if readings := rs.retrySessionCosts[nodeID]; readings != nil {
 		if key, isTotal := retrySessionCost(output); isTotal {
@@ -1065,7 +1094,14 @@ func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string
 	// works for workflows with no budget: block). We only record — the
 	// pause decision happens on the pre-exec path so we anchor the
 	// checkpoint at a not-yet-executed node.
-	if e.dailyCap != nil && costUSD > 0 {
+	if rs.correctionAccounts != nil {
+		if err := rs.correctionAccounts.book(rs.runID, store.OutputCorrectionUsage{Tokens: spend.tokens, CostUSD: spend.costUSD, UnreportedCalls: spend.unreportedCalls}, countIteration); err != nil {
+			return err
+		}
+		if err := rs.correctionAccounts.flushDaily(ctx, e.dailyCap); err != nil {
+			return err
+		}
+	} else if e.dailyCap != nil && costUSD > 0 {
 		rs.costUSDTotal += costUSD
 		if _, err := e.dailyCap.Record(ctx, rs.runID, rs.costUSDTotal); err != nil {
 			e.logger.Warn("daily spend cap: record failed: %v", err)
@@ -1076,7 +1112,12 @@ func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string
 		return nil
 	}
 
-	checks := rs.budget.recordUsage(spend, countIteration)
+	var checks []budgetCheckResult
+	if rs.correctionAccounts != nil {
+		checks = rs.budget.Check()
+	} else {
+		checks = rs.budget.recordUsage(spend, countIteration)
+	}
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {

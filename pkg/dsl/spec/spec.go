@@ -586,6 +586,7 @@ var Kinds = append([]Kind{
 			prop("contract", Ident, "The bot's public contract (a top-level `contract` declaration), bound to the program (C300–C304)"),
 			block("vars", "vars", "Workflow-scoped vars (merged with the file's)"),
 			block("attachments", "attachments", "Workflow-scoped attachments"),
+			block("business_stores", "business_stores", "Expected business-store identities, normalized at launch and inherited by children"),
 			block("budget", "budget", "Run caps, each overridable by the matching run flag"),
 			block("resources", "resources", "Named semaphores and pools nodes lease with needs:"),
 			block("mcp", "mcp", "MCP servers active for the run"),
@@ -605,6 +606,14 @@ var Kinds = append([]Kind{
 			prop("capabilities", ToolList, "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none"),
 			prop("skills", SkillList, "Run-wide skill-library skills"),
 			enum("interaction", "Default interaction mode for the run's nodes that set none", "none", "human", "llm", "llm_or_human", "review", "async", "human_or_host"),
+		}},
+	{Name: "business_stores", Role: BlockRole, Opener: "business_stores", Hosts: []string{"workflow"}, Doc: "Declared business stores; no inference from accessed files. A bare block declares none.",
+		Entries: &Entries{Key: StringOrIdent, KeyName: "id", Body: "business_store", SequenceKey: "id", Doc: "One store per entry; the same id may name stores in different namespaces"}},
+	{Name: "business_store", Role: Entry, Opener: "business_stores", Hosts: []string{"business_stores"}, Doc: "Expected store identity; launch refuses missing id/kind and duplicate kind/namespace/id declarations.",
+		Properties: []Property{
+			prop("kind", StringOrIdent, "Store kind"),
+			prop("namespace", StringOrIdent, "Logical namespace"),
+			prop("required", Bool, "The declared store is required (default false); does not itself add an admission gate"),
 		}},
 	{Name: "budget", Role: BlockRole, Opener: "budget", Hosts: []string{"workflow"}, Doc: "Run caps; a zero or absent cap is the engine default, and each is overridable per run without editing the .bot.",
 		Properties: []Property{
@@ -648,6 +657,7 @@ var Kinds = append([]Kind{
 		Properties: []Property{
 			checked("mode", "on or off — the short form's value, written out (C337 on another word)", "on", "off"),
 			prop("tool_calls", Int, "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal"),
+			prop("concurrent_tool_calls", Int, "How many nested tool calls ONE program may run at once (default 1, ceiling 4; 0 means inherit). This does not change the total tool_calls budget"),
 			prop("wall", String, "How long the child may live, e.g. \"60s\" (default \"30s\", ceiling \"10m\") — the parent's backstop, including for a child that never starts"),
 			prop("cpu", String, "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP"),
 			prop("memory", Int, "Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement"),

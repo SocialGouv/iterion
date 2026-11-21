@@ -460,6 +460,19 @@ still be queued — a new runner accepts every message the old server still
 publishes (those never carry the override), and an old runner never sees a v33
 message.
 
+## v34: codemode tool-call concurrency
+
+**What rose.** `concurrent_tool_calls` travels in compiled codemode bounds
+(workflow and node) and in the launch-time `codemode_bounds` override. When
+the field is absent or zero, it inherits; the platform default is 1.
+
+**Why a bump.** A v33 runner would drop the field and silently run serially
+under the default instead of honoring the configured concurrency.
+`MinSchemaVersion` stays **27**: older messages do not need the field.
+
+**Order: runner-first.** An upgraded runner accepts all versions the previous
+server could publish; upgrade the runners before publishing v34 messages.
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 These two paths accompany the **server-first** default. Choose **one** of

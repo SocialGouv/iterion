@@ -21,7 +21,7 @@
 // One scenario per failing branch, isolated: the inline render and the
 // ?file= read each clear on their own, and a single scenario would leave one
 // of them untested while the other covers for it.
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -74,7 +74,7 @@ const docNamed = (name: string): IterDocument => ({
 // refusal (LaunchView passes the same setError to each).
 function Harness({ filePath }: { filePath: string }) {
   const [error, setError] = useState<string | null>(null);
-  const { doc, currentSource, confirmedDiskPath, fields, values } = useLaunchDoc(
+  const { doc, currentSource, confirmedDiskPath, fields, values, reload } = useLaunchDoc(
     filePath,
     setError,
   );
@@ -102,6 +102,7 @@ function Harness({ filePath }: { filePath: string }) {
       <button onClick={onSubmit} disabled={!doc}>
         Launch
       </button>
+      <button onClick={reload}>Read again</button>
     </>
   );
 }
@@ -184,10 +185,13 @@ describe("a ?file= read that failed", () => {
     await waitFor(() => expect(program()).toBe("workflow x:\n  entry: done\n"));
     expect(form()).toBe("var_of_x");
 
-    // The other reachable trigger — the app-level dock activating an editor
-    // tab. The reload is for the SAME path, so the document's tag still
-    // matches it: only clearing the answer disarms the form.
+    // A read of the SAME path that fails: the document's tag still matches
+    // it, so only clearing the answer disarms the form. The hook's `reload`
+    // is what asks again here; the page offers it on the named road alone
+    // (after a 409), and no editor event re-reads a ?file= launch — this is
+    // the hook's own contract, held for whatever asks.
     useTabsStore.getState().setActive(b);
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
 
     await waitFor(() => expect(error()).toMatch(/openFile exploded/));
     expect(program()).toBe("NO PROGRAM");

@@ -755,6 +755,9 @@
           "budget_unreported_calls": {
             "type": "integer"
           },
+          "correction_accounting": {
+            "$ref": "#/components/schemas/CorrectionAccounting"
+          },
           "cost_usd_total": {
             "type": "number"
           },
@@ -816,6 +819,12 @@
                 "type": "integer"
               },
               "type": "object"
+            },
+            "type": "object"
+          },
+          "node_failure_streaks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeFailureStreak"
             },
             "type": "object"
           },
@@ -891,6 +900,9 @@
       },
       "CodemodeBoundsRequest": {
         "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
           "cpu": {
             "type": "string"
           },
@@ -981,6 +993,53 @@
           "git_url",
           "ref",
           "path"
+        ],
+        "type": "object"
+      },
+      "CorrectionAccounting": {
+        "properties": {
+          "daily_marks": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "daily_scope_cost_usd": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "iteration_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "unpriced_marks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "unpriced_node_marks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "usage_marks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionUsage"
+            },
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
         ],
         "type": "object"
       },
@@ -2088,6 +2147,35 @@
         ],
         "type": "object"
       },
+      "InvocationUsageRoute": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reported_model": {
+            "type": "string"
+          },
+          "requested_model": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session_fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
       "Issue": {
         "properties": {
           "assignee": {
@@ -2278,6 +2366,29 @@
         },
         "type": "object"
       },
+      "Literal": {
+        "properties": {
+          "bool_val": {
+            "type": "boolean"
+          },
+          "float_val": {
+            "type": "number"
+          },
+          "int_val": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "str_val": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Maintenance": {
         "properties": {
           "fence_launches": {
@@ -2374,6 +2485,21 @@
         ],
         "type": "object"
       },
+      "NodeFailureStreak": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "count"
+        ],
+        "type": "object"
+      },
       "NodeServed": {
         "properties": {
           "backend": {
@@ -2462,6 +2588,40 @@
         ],
         "type": "object"
       },
+      "OutputCorrectionCause": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reset_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "self_imposed": {
+            "type": "boolean"
+          },
+          "timeout_nanos": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "window_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "kind"
+        ],
+        "type": "object"
+      },
       "OutputCorrectionEpisode": {
         "properties": {
           "attempts": {
@@ -2470,7 +2630,13 @@
           "budget": {
             "type": "integer"
           },
+          "cause": {
+            "$ref": "#/components/schemas/OutputCorrectionCause"
+          },
           "episode_id": {
+            "type": "string"
+          },
+          "generation": {
             "type": "string"
           },
           "input_fingerprint": {
@@ -2488,8 +2654,17 @@
           "last_violation_fingerprint": {
             "type": "string"
           },
+          "ledger_key": {
+            "type": "string"
+          },
           "node_id": {
             "type": "string"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionReservation"
+            },
+            "type": "array"
           },
           "retired_at": {
             "format": "date-time",
@@ -2498,6 +2673,9 @@
           "retired_reason": {
             "type": "string"
           },
+          "revision": {
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -2505,9 +2683,82 @@
           "status": {
             "type": "string"
           },
+          "terminal_kind": {
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "type": "object"
+      },
+      "OutputCorrectionReceipt": {
+        "properties": {
+          "observation": {
+            "$ref": "#/components/schemas/UsageObservation"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/UsageProjection"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OutputCorrectionUsage"
+          }
+        },
+        "required": [
+          "usage"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionReservation": {
+        "properties": {
+          "execution_epoch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial_usage_id": {
+            "type": "string"
+          },
+          "logical_invocation_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/UsageOrigin"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/OutputCorrectionReceipt"
+          },
+          "scope_key": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "execution_epoch",
+          "scope_key",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionUsage": {
+        "properties": {
+          "cost_usd": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3075,6 +3326,57 @@
         ],
         "type": "object"
       },
+      "Preset": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/PresetValue"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PresetValue": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Literal"
+          }
+        },
+        "type": "object"
+      },
+      "PresetsBlock": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/Preset"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "PricefeedEntry": {
         "properties": {
           "declared": {
@@ -3218,6 +3520,24 @@
         ],
         "type": "object"
       },
+      "ReportedEconomicSession": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id"
+        ],
+        "type": "object"
+      },
       "RoutingPolicy": {
         "properties": {
           "allowed_actions": {
@@ -3326,6 +3646,9 @@
             "type": "array"
           },
           "bank_state": {
+            "type": "string"
+          },
+          "birth_id": {
             "type": "string"
           },
           "bot_source_tenant": {
@@ -3560,6 +3883,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",
@@ -3781,6 +4105,9 @@
           "bank_state": {
             "type": "string"
           },
+          "birth_id": {
+            "type": "string"
+          },
           "bundle_display_name": {
             "type": "string"
           },
@@ -3896,6 +4223,7 @@
         },
         "required": [
           "id",
+          "birth_id",
           "workflow_name",
           "status",
           "created_at",
@@ -3933,6 +4261,28 @@
         },
         "required": [
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionCostObservation": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "session_id",
+          "cost_usd"
         ],
         "type": "object"
       },
@@ -4325,6 +4675,227 @@
           "name",
           "token_last4",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "UsageComponent": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_kind": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "source",
+          "tokens",
+          "unpriced_tokens",
+          "unreported_calls",
+          "cost_known",
+          "cost_kind",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageObservation": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/UsageComponent"
+            },
+            "type": "array"
+          },
+          "count_iteration": {
+            "type": "boolean"
+          },
+          "other_cost_usd": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionCostObservation"
+            },
+            "type": "array"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "UsageOrigin": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "pool_grantless": {
+            "type": "boolean"
+          },
+          "publication": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "publication",
+          "tenant_id"
+        ],
+        "type": "object"
+      },
+      "UsageProjection": {
+        "properties": {
+          "collection_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/UsageProjectionLine"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection_id",
+          "version",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "UsageProjectionLine": {
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "cost_known": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "previous_max_usd": {
+            "type": "number"
+          },
+          "reported_session": {
+            "$ref": "#/components/schemas/ReportedEconomicSession"
+          },
+          "route": {
+            "$ref": "#/components/schemas/InvocationUsageRoute"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionCostObservation"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_split": {
+            "$ref": "#/components/schemas/UsageTokenSplit"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "unpriced_tokens": {
+            "type": "integer"
+          },
+          "unreported_calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "cost_known",
+          "cost_usd"
+        ],
+        "type": "object"
+      },
+      "UsageTokenSplit": {
+        "properties": {
+          "cache_read": {
+            "type": "integer"
+          },
+          "cache_write": {
+            "type": "integer"
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "cache_read",
+          "cache_write"
         ],
         "type": "object"
       },
@@ -5155,6 +5726,50 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "botLaunchSourceResponse": {
+        "properties": {
+          "bindable": {
+            "type": "boolean"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "document": {},
+          "presets": {
+            "$ref": "#/components/schemas/PresetsBlock"
+          },
+          "read_refusal": {
+            "$ref": "#/components/schemas/readRefusalInfo"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/unitInfo"
+          }
+        },
+        "required": [
+          "bot_id",
+          "tier",
+          "source",
+          "sha256",
+          "document",
+          "bindable"
+        ],
         "type": "object"
       },
       "botRolesSettingsView": {
@@ -6902,6 +7517,9 @@
       },
       "previewCodemodeBounds": {
         "properties": {
+          "concurrent_tool_calls": {
+            "type": "integer"
+          },
           "cpu": {
             "type": "string"
           },
@@ -6926,6 +7544,7 @@
         },
         "required": [
           "tool_calls",
+          "concurrent_tool_calls",
           "wall",
           "cpu",
           "memory",
@@ -7367,6 +7986,20 @@
         ],
         "type": "object"
       },
+      "readRefusalInfo": {
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
       "registerReq": {
         "properties": {
           "email": {
@@ -7517,6 +8150,76 @@
           "name",
           "slug",
           "status"
+        ],
+        "type": "object"
+      },
+      "unitFileInfo": {
+        "properties": {
+          "dependency": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "imports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parse_error": {
+            "type": "string"
+          },
+          "parse_errors": {
+            "type": "integer"
+          },
+          "profile": {
+            "type": "integer"
+          },
+          "rel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rel"
+        ],
+        "type": "object"
+      },
+      "unitInfo": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/unitFileInfo"
+            },
+            "type": "array"
+          },
+          "load_error": {
+            "type": "string"
+          },
+          "load_errors": {
+            "type": "integer"
+          },
+          "main": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "unread": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "root",
+          "main",
+          "revision",
+          "files"
         ],
         "type": "object"
       },
@@ -18653,6 +19356,53 @@
           "bots"
         ]
       }
+    },
+    "/api/v1/bots/{name}/launch-source": {
+      "get": {
+        "description": "The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/\u003cname\u003e.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.",
+        "operationId": "getV1BotsByNameLaunchSource",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botLaunchSourceResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "403": {
+            "description": "a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected"
+          },
+          "404": {
+            "description": "the name resolves on no tier"
+          },
+          "422": {
+            "description": "the bot resolves but not to a launchable program — the refusal a launch of it would draw"
+          },
+          "500": {
+            "description": "the resolution or the reading itself failed"
+          },
+          "503": {
+            "description": "a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry"
+          }
+        },
+        "summary": "GET /api/v1/bots/{name}/launch-source",
+        "tags": [
+          "bots"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/v1/bots/{name}/overlay": {
       "parameters": [

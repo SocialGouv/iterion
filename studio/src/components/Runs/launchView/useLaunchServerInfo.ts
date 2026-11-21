@@ -7,7 +7,11 @@ import { useQuery } from "@tanstack/react-query";
 import { getServerInfo } from "@/api/runs";
 import type { ServerInfo } from "@/api/types";
 
-export function useLaunchServerInfo(): ServerInfo | null {
+export function useLaunchServerInfo(): {
+  serverInfo: ServerInfo | null;
+  /** True until the first answer or failure: the mode is not known yet. */
+  serverInfoPending: boolean;
+} {
   // A fetch failure is non-fatal by design: limits remain unknown (null),
   // the UI shows no bandeau, and the server still rejects oversized
   // uploads on the wire.
@@ -15,5 +19,5 @@ export function useLaunchServerInfo(): ServerInfo | null {
     queryKey: ["server-info"],
     queryFn: getServerInfo,
   });
-  return query.data ?? null;
+  return { serverInfo: query.data ?? null, serverInfoPending: query.isPending };
 }

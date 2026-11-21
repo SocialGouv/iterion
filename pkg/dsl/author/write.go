@@ -1199,6 +1199,7 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 		p.str("mode", cb.Mode)
 	}
 	p.int64("tool_calls", cb.ToolCalls)
+	p.int64("concurrent_tool_calls", cb.ConcurrentToolCalls)
 	p.str("wall", cb.Wall)
 	p.str("cpu", cb.CPU)
 	p.int64("memory", cb.Memory)
@@ -1441,6 +1442,20 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	}
 	if wf.Attachments != nil {
 		p.set("attachments", w.attachments(wf.Attachments))
+	}
+	if wf.BusinessStores != nil {
+		items := make([]*yaml.Node, 0, len(wf.BusinessStores))
+		for _, declaration := range wf.BusinessStores {
+			entry := w.props("business_store")
+			entry.lead.set("id", str(declaration.ID))
+			entry.str("kind", declaration.Kind)
+			entry.str("namespace", declaration.Namespace)
+			if declaration.Required != nil {
+				entry.set("required", boolNode(*declaration.Required))
+			}
+			items = append(items, entry.node())
+		}
+		p.set("business_stores", blockSeq(items))
 	}
 	if wf.Budget != nil {
 		b := w.props("budget")

@@ -142,12 +142,17 @@ func (b *StoreInboxBinder) Bind(ctx context.Context, runID string) InboxHook {
 	if b == nil || b.Store == nil || runID == "" {
 		return nil
 	}
+	binding, bound := store.RunDataBindingFrom(ctx)
+	scoped, _ := b.Store.(store.ScopedQueuedInboxVersioner)
 	return &storeInboxHook{
-		store:      b.Store,
-		publish:    b.Publish,
-		runID:      runID,
-		activeNode: NodeIDFromContext(ctx),
-		versioner:  asInboxVersioner(b.Store),
+		binding:         binding,
+		bound:           bound,
+		scopedVersioner: scoped,
+		store:           b.Store,
+		publish:         b.Publish,
+		runID:           runID,
+		activeNode:      NodeIDFromContext(ctx),
+		versioner:       asInboxVersioner(b.Store),
 	}
 }
 
@@ -164,14 +169,17 @@ func asInboxVersioner(s store.RunStore) store.QueuedInboxVersioner {
 // stable home for the cross-iteration state (last delivered IDs +
 // last observed inbox version) so the closures stay garbage-free.
 type storeInboxHook struct {
-	store         store.RunStore
-	publish       func(store.Event)
-	runID         string
-	activeNode    string
-	versioner     store.QueuedInboxVersioner
-	lastDelivered []string
-	lastVersion   uint64
-	versionSeen   bool
+	store           store.RunStore
+	publish         func(store.Event)
+	runID           string
+	activeNode      string
+	versioner       store.QueuedInboxVersioner
+	scopedVersioner store.ScopedQueuedInboxVersioner
+	binding         store.RunDataBinding
+	bound           bool
+	lastDelivered   []string
+	lastVersion     uint64
+	versionSeen     bool
 }
 
 // Drain transitions queued→delivered and returns texts in FIFO order.
@@ -179,23 +187,59 @@ type storeInboxHook struct {
 // fast-skips loading the JSONL when the counter is unchanged — the
 // common case for a busy tool loop on a run with no queued messages.
 func (h *storeInboxHook) Drain(ctx context.Context) []string {
-	if h.versioner != nil {
-		v := h.versioner.QueuedInboxVersion(h.runID)
-		if h.versionSeen && v == h.lastVersion {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return nil
+	}
+	var version uint64
+	versioned := false
+	if h.scopedVersioner != nil {
+		version, err = h.scopedVersioner.QueuedInboxVersionContext(ctx, h.runID)
+		if err != nil {
 			return nil
 		}
-		h.lastVersion = v
-		h.versionSeen = true
+		versioned = true
+	} else if _, bound := store.RunDataBindingFrom(ctx); !bound && h.versioner != nil {
+		version = h.versioner.QueuedInboxVersion(h.runID)
+		versioned = true
 	}
-	texts, ids, _ := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if versioned && h.versionSeen && version == h.lastVersion {
+		return nil
+	}
+	texts, ids, err := store.DrainPendingForNode(ctx, h.store, h.publish, h.runID, h.activeNode)
+	if err != nil {
+		return nil
+	}
+	if versioned {
+		h.lastVersion, h.versionSeen = version, true
+	}
 	if len(ids) > 0 {
 		h.lastDelivered = ids
 	}
 	return texts
 }
 
+// operationContext keeps the Bind-time observation but the current operation's
+// cancellation. A different binding cannot silently retarget an existing hook.
+func (h *storeInboxHook) operationContext(ctx context.Context) (context.Context, error) {
+	if h.bound {
+		return store.WithRunDataBinding(ctx, h.binding)
+	}
+	if ctx == nil {
+		return nil, store.ErrRunDataBindingRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return ctx, nil
+}
+
 // Consume marks the previously-drained messages as consumed.
 func (h *storeInboxHook) Consume(ctx context.Context) {
+	ctx, err := h.operationContext(ctx)
+	if err != nil {
+		return
+	}
 	if len(h.lastDelivered) == 0 {
 		return
 	}
@@ -414,12 +458,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// pre-task permission_policy envelope: the in-container
 		// `iterion __claw-runner` rebuilds the policy through the same
 		// parser and enforces it in its own tool loop (see
-		// executeViaSandboxRunner). What CANNOT cross is an Ask
-		// decision — the runner has no seam to pause the parent run for
-		// a human — so a policy that can ever produce one (mode ask, or
-		// any explicit ask rule, which outranks mode deny) is refused
-		// loudly rather than silently degraded to deny; pi treats the
-		// same combination as fail-not-degrade.
+		// executeViaSandboxRunner). The launcher does not support permission
+		// pauses on this path: resuming one requires binding a one-time grant
+		// to the approved call and consuming it at dispatch. Refuse any policy
+		// that can Ask rather than silently degrading it to Deny.
 		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
 				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
@@ -828,7 +870,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// declared `on` this backend could not serve before building the task —
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
-		installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
+		if err := installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				// Both directions travel this seam (#3290): the ceiling REDUCES
 				// an over-reaching bound, the floor RAISES one the child could
@@ -840,7 +882,9 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			if b.logger != nil {
 				b.logger.Warn("[%s] %s", task.NodeID, msg)
 			}
-		})
+		}); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
 	}
 
 	// The tool-step budget the node execution shares (claw_step_budget.go):
@@ -2243,6 +2287,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		mirror(snapshot)
 	}
 	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
+	// Let the post-Wait pipe reaper report a reply write cut first.
+	mux.SetReplyDrainTimeout(2 * clawPipeDrainGrace)
 	// The raw line a decode error quotes crosses the run's pass before its
 	// 256-byte cut, or a value straddling the cut publishes its head into
 	// the node's error (iterion#2822).
@@ -2398,6 +2444,9 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv))
 	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
+	if rejectSandboxedPermissionPause(&res) {
+		return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+	}
 	if ioRes.Error != "" {
 		if ioRes.ProviderError != nil {
 			provider := *ioRes.ProviderError
@@ -3874,6 +3923,22 @@ func refusedMCPServerSummary(refused map[string]delegate.MCPLauncherRefusal) str
 	return "servers " + strings.Join(quoted, ", ")
 }
 
+// rejectSandboxedPermissionPause enforces the launcher's no-Ask contract on
+// incoming results as well as on outgoing tasks. Ordinary ask_user pauses
+// carry no permission marker and keep their resume state.
+func rejectSandboxedPermissionPause(res *delegate.Result) bool {
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	if _, marked := questions[permission.InteractionMarkerKey]; !marked {
+		return false
+	}
+	delete(res.Output, "_needs_interaction")
+	delete(res.Output, "_interaction_questions")
+	res.PendingConversation = nil
+	res.PendingToolUseID = ""
+	res.PendingCommandNarrowing = nil
+	return true
+}
+
 // refuseToolsWithNoSandboxPlacement refuses a sandboxed task carrying a tool
 // neither side of the sandbox may serve: the container has no form of it and
 // the launcher would run it on the host (tool.PlacementRefused, which every
@@ -4140,10 +4205,11 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 	tools := make([]GenerationTool, len(defs))
 	for i, d := range defs {
 		tools[i] = GenerationTool{
-			Name:        d.Name,
-			Description: d.Description,
-			InputSchema: d.InputSchema,
-			Execute:     d.Execute,
+			Name:           d.Name,
+			Description:    d.Description,
+			InputSchema:    d.InputSchema,
+			Execute:        d.Execute,
+			concurrentSafe: d.ConcurrentSafe,
 		}
 	}
 	return tools

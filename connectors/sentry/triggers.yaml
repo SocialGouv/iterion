@@ -100,4 +100,6 @@ triggers:
         type: enum
         options: [critical, warning, resolved]
         default: [critical, warning]
+      # A list filter: an incident in any of the chosen projects, by slug.
+      - { id: project, from: 'payload.data.metric_alert.projects', type: list }
     sample: samples/metric-alert.json

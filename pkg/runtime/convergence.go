@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -116,6 +117,27 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					// WRAPPED, because the classification asks the CHAIN
 					// (IsAmbiguousEffect) and not only the code.
 					Cause: amb,
+				}
+			}
+			// A tool-contract refusal needs no agreement either: ONE branch
+			// refused for what its recipe printed or for what its body reads
+			// (model.ToolContractViolation) is refused the same way on every
+			// replay, so a wait_all join can never pass — and the catch-all
+			// below is on the auto-resume allow-list, whose resume re-enters
+			// the router and re-runs every branch's side effects to learn
+			// that again. commonBranchFailureCode cannot answer for it: the
+			// refusal is the executor's typed failure, not a RuntimeError.
+			// The aggregate quotes THAT branch — not the first that failed
+			// by id, which may be a sibling's unrelated exit status — and
+			// wraps it, so the refusal and its remedy are what the run's
+			// error says and what errors.As finds.
+			if refused := firstContractViolationBranchErr(ordered); refused != nil {
+				return "", &RuntimeError{
+					Code: ErrCodeToolFailedPermanent,
+					Message: fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed, and the tool-node contract refused one: %v",
+						convergenceNodeID, len(failedBranches), refused),
+					NodeID: convergenceNodeID,
+					Cause:  refused,
 				}
 			}
 			// When every failed branch carries the SAME typed code, the
@@ -408,6 +430,22 @@ func firstAmbiguousBranchErr(results []*branchResult) error {
 			continue
 		}
 		if IsAmbiguousEffect(r.err) {
+			return r.err
+		}
+	}
+	return nil
+}
+
+// firstContractViolationBranchErr returns the error of the first branch a
+// tool-contract refusal ended, nil when none was. Which branch is not the
+// fact read from it — that one exists is.
+func firstContractViolationBranchErr(results []*branchResult) error {
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var violation model.ToolContractViolation
+		if errors.As(r.err, &violation) {
 			return r.err
 		}
 	}

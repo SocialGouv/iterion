@@ -33,7 +33,7 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 	}
 	ctx := store.WithIdentity(context.Background(), "team", "user")
 	wf := &ir.Workflow{Name: "team_bot"}
-	bounds := &scripthost.Limits{ToolCalls: 4096, Wall: 90 * time.Second}
+	bounds := &scripthost.Limits{ToolCalls: 4096, ConcurrentToolCalls: 3, Wall: 90 * time.Second}
 	spec := runview.LaunchSpec{
 		FilePath:       "team.bot",
 		Source:         "workflow team_bot:\n  start -> done\n",
@@ -56,12 +56,12 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 		t.Fatalf("published %d messages, want 2 (launch + resume)", len(published))
 	}
 	launch, resume := published[0], published[1]
-	if launch.Codemode != "off" || launch.CodemodeBounds == nil || launch.CodemodeBounds.ToolCalls != 4096 {
+	if launch.Codemode != "off" || launch.CodemodeBounds == nil || launch.CodemodeBounds.ToolCalls != 4096 || launch.CodemodeBounds.ConcurrentToolCalls != 3 {
 		t.Errorf("launch carried Codemode=%q bounds=%+v, want the spec's override", launch.Codemode, launch.CodemodeBounds)
 	}
 	// The RESUME message replays the launch's choice — from the run doc the
 	// launch stamped, because a bare ResumeSpec carries no codemode.
-	if resume.Codemode != "off" || resume.CodemodeBounds == nil || resume.CodemodeBounds.ToolCalls != 4096 {
+	if resume.Codemode != "off" || resume.CodemodeBounds == nil || resume.CodemodeBounds.ToolCalls != 4096 || resume.CodemodeBounds.ConcurrentToolCalls != 3 {
 		t.Errorf("resume carried Codemode=%q bounds=%+v, want the run doc's replay of the launch's choice", resume.Codemode, resume.CodemodeBounds)
 	}
 	// And the doc itself carries the stamp, which is what makes every OTHER
@@ -70,7 +70,7 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if doc.CodemodeOverride != "off" || doc.CodemodeBoundsOverride == nil || doc.CodemodeBoundsOverride.ToolCalls != 4096 {
+	if doc.CodemodeOverride != "off" || doc.CodemodeBoundsOverride == nil || doc.CodemodeBoundsOverride.ToolCalls != 4096 || doc.CodemodeBoundsOverride.ConcurrentToolCalls != 3 {
 		t.Errorf("run doc CodemodeOverride=%q bounds=%+v, want the launch's override stamped", doc.CodemodeOverride, doc.CodemodeBoundsOverride)
 	}
 }

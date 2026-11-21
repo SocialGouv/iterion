@@ -32,11 +32,18 @@ func validateToolBlobKind(kind string) error {
 // tools/<runID>/<toolUseID>/<kind>. Idempotent — re-writing the same key
 // replaces the prior bytes. Returns the byte size written.
 func (s *Store) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
 	if err := validateToolBlobKind(kind); err != nil {
 		return 0, err
 	}
-	if err := s.blob.PutToolBlob(ctx, runID, toolUseID, kind, body); err != nil {
+	if err := objects.PutToolBlob(ctx, runID, toolUseID, kind, body); err != nil {
 		return 0, fmt.Errorf("store/mongo: write tool blob %s/%s/%s: %w", runID, toolUseID, kind, err)
+	}
+	if err := s.checkRunObjects(ctx, runID); err != nil {
+		return 0, err
 	}
 	return int64(len(body)), nil
 }
@@ -52,10 +59,14 @@ func (s *Store) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string
 // 404), exactly as OpenAttachment gates the attachment blob. S3 keys are
 // not tenant-prefixed, matching artifacts + attachments.
 func (s *Store) ReadToolBlob(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return nil, 0, false, runObjectsReadError(err)
+	}
 	if err := validateToolBlobKind(kind); err != nil {
 		return nil, 0, false, err
 	}
-	data, total, eof, err := s.blob.GetToolBlobRange(ctx, runID, toolUseID, kind, offset, limit)
+	data, total, eof, err := objects.GetToolBlobRange(ctx, runID, toolUseID, kind, offset, limit)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
 			return nil, 0, true, fmt.Errorf("store/mongo: tool blob %s/%s/%s not found: %w", runID, toolUseID, kind, os.ErrNotExist)

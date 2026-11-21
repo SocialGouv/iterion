@@ -132,6 +132,10 @@ export interface WatcherCursor {
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
+  // The run's birth identity: a view opened from this row expects it, so a
+  // run replaced since the listing is refused rather than shown. "" is a
+  // historical run; absent, a server that predates birth exposure.
+  birth_id?: string;
   // Deterministic, human-friendly run label. Empty for legacy runs
   // persisted before this field existed; UI falls back to workflow_name.
   name?: string;
@@ -346,6 +350,11 @@ export interface RunHeader {
   attempts?: RunAttempt[];
   subbot_children?: Record<string, string>;
   id: string;
+  // The run's birth identity (store-owned; a run deleted and recreated
+  // under the same ID has another). The page sends it back as the expected
+  // birth of its requests (@/lib/lostRuns). "" is a historical run; absent,
+  // a server that predates birth exposure.
+  birth_id?: string;
   // The team the run belongs to (ADR-103): by-id reads are served from
   // the run's team, so the console can disclose that the run being viewed
   // lives outside the caller's active team. Empty on legacy runs.
@@ -771,6 +780,8 @@ export interface RunRepo {
 // to open each project first.
 export interface GlobalActiveRun {
   id: string;
+  // The run's birth identity in its store (store_path), as on RunSummary.
+  birth_id?: string;
   name?: string;
   parent_run_id?: string;
   workflow_name: string;
@@ -782,6 +793,9 @@ export interface GlobalActiveRun {
   created_at: string;
   updated_at: string;
   store_path: string;
+  // True when store_path is the store of the daemon that served the row: a
+  // view of the run there names no ?store= and keeps the expected birth.
+  own_store?: boolean;
   workspace_dir?: string;
 }
 
@@ -907,7 +921,8 @@ export interface DownloadOutcome {
 }
 
 export interface CreateRunRequest {
-  file_path: string;
+  // Absent on a launch that names a bot (bot_id) and nothing else.
+  file_path?: string;
   // Inline workflow source — required in cloud mode (no shared FS),
   // ignored in local mode where file_path resolves on disk.
   source?: string;
@@ -923,11 +938,20 @@ export interface CreateRunRequest {
   // catalog bot launches without uploading its bytes. A catalog-shaped
   // file_path is inferred to the same id when this is omitted.
   bot_id?: string;
+  // Pins a launch naming a bot to the program its form rendered: the sha256
+  // GET /api/v1/bots/{name}/launch-source issued. The server refuses with
+  // 409 `bot_source_changed` when the bot's entry source is no longer that
+  // one. Only beside bot_id with no source: an inline source is its own
+  // program, and the server refuses a pin it cannot check.
+  expect_source_sha256?: string;
   run_id?: string;
   vars?: Record<string, string>;
   // Host-owned cross-project delegation. The server resolves source-run bot
   // provenance and injects the failure envelope; the browser supplies no path.
   source_run_id?: string;
+  // The birth the page expects of source_run_id (createRun fills it when
+  // known); the server refuses a replaced source with 409.
+  source_run_birth?: string;
   instructions?: string;
   // Name of an in-source preset (presets: block) to apply before vars.
   preset?: string;
@@ -1051,6 +1075,7 @@ export interface CodemodeBoundsOverride {
   script_bytes?: number;
   result_bytes?: number;
   tool_result_bytes?: number;
+  concurrent_tool_calls?: number;
 }
 
 export interface PreviewCostNode {

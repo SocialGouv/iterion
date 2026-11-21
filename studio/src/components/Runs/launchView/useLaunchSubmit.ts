@@ -4,15 +4,31 @@
 // confirmation, and the createRun submission itself (including the
 // stage-a-forge-repo step for "create" repo targets).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
+import { ApiError } from "@/api/client";
 import { createForgeRepo } from "@/api/forgeConnections";
 import { createRun } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo, VarField } from "@/api/types";
+import { useMaybeAuth } from "@/auth/AuthContext";
 import { errorMessage } from "@/lib/errorHints";
-import { launchCarriesProgram, sourceForLaunch } from "@/lib/launchSource";
+import {
+  launchCarriesProgram,
+  sourceForLaunch,
+  type NamedBotProgram,
+} from "@/lib/launchSource";
+import {
+  botLaunchKey,
+  bufferLaunchKey,
+  fileLaunchKey,
+  launchFailureSentence,
+  sendLaunch,
+  useLaunchInFlight,
+  type LaunchTarget,
+} from "@/lib/sendLaunch";
 import { isVarMissing } from "@/lib/varValidation";
+import { useTabsStore } from "@/store/tabs";
 
 import { type AttachmentValue } from "../AttachmentFieldInput";
 import { buildBudgetPayload } from "./budgetPayload";
@@ -28,6 +44,19 @@ export interface UseLaunchSubmitArgs {
   filePath: string;
   doc: IterDocument | null;
   currentSource: string | null;
+  /** Set on a launch that NAMES its bot (a cloud launch by slug): the
+   *  pinned program its read issued, `null` until that read lands. Absent on
+   *  every other launch. Such a launch posts the bot's id and that digest,
+   *  never the text or a path. */
+  namedBot?: NamedBotProgram | null;
+  /** Told when the server refused the launch because the bot changed under
+   *  the form (409 `bot_source_changed`): the page then offers to reload the
+   *  bot's program. Reset to false as each launch starts. */
+  onProgramChanged?: (changed: boolean) => void;
+  /** Told when a launch drew no answer about its run (a network failure, a
+   *  gateway's 5xx): where the target's runs are listed, so the page offers
+   *  to look before a second launch. Null as each launch starts. */
+  onUnanswered?: (runsHref: string | null) => void;
   confirmedDiskPath: string | null;
   serverInfo: ServerInfo | null;
   fields: VarField[];
@@ -45,6 +74,9 @@ export function useLaunchSubmit({
   filePath,
   doc,
   currentSource,
+  namedBot,
+  onProgramChanged,
+  onUnanswered,
   confirmedDiskPath,
   serverInfo,
   fields,
@@ -58,7 +90,38 @@ export function useLaunchSubmit({
   setError,
 }: UseLaunchSubmitArgs) {
   const [, setLocation] = useLocation();
-  const [submitting, setSubmitting] = useState(false);
+  // What this form launches, as the server resolved it — the key its launch
+  // holds while in flight (lib/sendLaunch). A bot is its canonical id, the one
+  // the launch-source read answered, in the team the session is scoped to:
+  // never the URL's spelling of it, which the server folds onto one bot. A
+  // file is its resolved path; the unsaved buffer is its editor tab's. Empty
+  // while a named bot's read has not landed: nothing is launchable then.
+  const teamScope = useMaybeAuth()?.activeTeamID ?? "";
+  const bufferTab = useTabsStore((s) => s.activeEditorTabId) ?? "";
+  const launchKey =
+    namedBot !== undefined
+      ? namedBot
+        ? botLaunchKey(teamScope, namedBot.id)
+        : ""
+      : filePath
+        ? fileLaunchKey(teamScope, filePath, serverInfo?.work_dir)
+        : bufferLaunchKey(bufferTab);
+  // In flight for the TARGET, from any surface that launches it (this form,
+  // the bot's Test pane): held in a store that outlives the form, so the
+  // target is still held when the operator comes back while its launch is
+  // pending — and another target's form is not.
+  const submitting = useLaunchInFlight(launchKey);
+  // What is on screen as of the last commit, for an answer that lands later:
+  // the form can move to another target while a launch is in flight, or
+  // leave the screen altogether. That launch's outcome is then not this
+  // form's to show, and sendLaunch announces it.
+  const onScreen = useRef<string | null>(launchKey);
+  useEffect(() => {
+    onScreen.current = launchKey;
+    return () => {
+      onScreen.current = null;
+    };
+  }, [launchKey]);
   // The document the user is being asked to run WITHOUT a sandbox — set
   // when they click Launch on a workflow with no sandbox active, so the
   // ConfirmDialog makes it a deliberate choice (host execution carries real
@@ -148,8 +211,10 @@ export function useLaunchSubmit({
   // directly when the user accepts the warning.
   const launchRun = async () => {
     // A launch names its program: the inline text of the editor document this
-    // form renders, or — outside cloud — the ?file= path the server reads
-    // itself (launchCarriesProgram). That text is one /api/unparse round trip
+    // form renders, — outside cloud — the ?file= path the server reads
+    // itself, or a bot by its id, pinned to the digest of the program this
+    // form renders (launchCarriesProgram). The digest is one read behind the
+    // bot's slug. The text is one /api/unparse round trip
     // behind the document, and the document is the ACTIVE editor tab's: this
     // route reads whichever tab that is (LaunchDocStoreProvider), and the
     // sidebar's tab list elects another one without leaving the route — its ×
@@ -160,7 +225,7 @@ export function useLaunchSubmit({
     // here directly) can all submit inside that window. Refused here, the one
     // place every launch passes, rather than posted for the server to refuse
     // by name over fields this form never showed.
-    if (!launchCarriesProgram({ filePath, source: currentSource, serverInfo })) {
+    if (!launchCarriesProgram({ filePath, source: currentSource, serverInfo, namedBot })) {
       setError(
         "This workflow is still being prepared — there is nothing to launch yet. Try again in a moment.",
       );
@@ -176,8 +241,17 @@ export function useLaunchSubmit({
       setError(missingTitle);
       return;
     }
-    setSubmitting(true);
+    // The target this launch is sent for, and what a notice calls it once
+    // this form is no longer the one on screen.
+    const sentFor = launchKey;
+    const sentTarget: LaunchTarget = {
+      key: sentFor,
+      label: namedBot ? `the bot ${namedBot.id}` : filePath ? filePath : "the unsaved workflow",
+      runsHref: namedBot ? `/runs?bot=${encodeURIComponent(namedBot.id)}` : "/runs",
+    };
     setError(null);
+    onProgramChanged?.(false);
+    onUnanswered?.(null);
     setRepoTargetCreateError(null);
     // Resolve the repo target (attach / create / active / none). For
     // "create" we first mint the forge repo, then feed its clone_url +
@@ -186,6 +260,7 @@ export function useLaunchSubmit({
     // actionable in-place (409 name taken, 422 App perms).
     let repoUrl: string | undefined;
     let connectionID: string | undefined;
+    let createRepo: (() => Promise<void>) | undefined;
     if (showRepoTarget && repoTargetState && repoRequirement && teamID) {
       switch (repoTargetState.mode) {
         case "active":
@@ -202,43 +277,61 @@ export function useLaunchSubmit({
           }
           break;
         }
-        case "create":
-          try {
+        case "create": {
+          // Minted by the launch itself (sendLaunch's `prepare`): the target
+          // is held from before the repository exists, and a failure of this
+          // step is "the launch did not start", heard wherever the form is.
+          const create = repoTargetState;
+          const branch = repoRequirement.default_branch;
+          createRepo = async () => {
             const created = await createForgeRepo(teamID, {
-              connection_id: repoTargetState.createConnectionID,
-              owner: repoTargetState.createOwner || undefined,
-              name: repoTargetState.createName.trim(),
-              private: repoTargetState.createPrivate,
-              default_branch: repoRequirement.default_branch || undefined,
+              connection_id: create.createConnectionID,
+              owner: create.createOwner || undefined,
+              name: create.createName.trim(),
+              private: create.createPrivate,
+              default_branch: branch || undefined,
               init_readme: true,
             });
             repoUrl = created.clone_url;
-            connectionID = repoTargetState.createConnectionID;
-          } catch (e) {
-            setRepoTargetCreateError(errorMessage(e));
-            setSubmitting(false);
-            return;
-          }
+            connectionID = create.createConnectionID;
+          };
           break;
+        }
         case "none":
           // Explicit skip — send nothing new.
           break;
       }
     }
-    try {
-      const attachmentsPayload: Record<string, string> = {};
-      for (const f of attachmentFields) {
-        const a = attachments[f.name];
-        if (a?.uploadId) attachmentsPayload[f.name] = a.uploadId;
-      }
-      const res = await createRun({
-        file_path: filePath,
-        source: sourceForLaunch({
-          filePath,
-          source: currentSource,
-          confirmedDiskPath,
-          serverInfo,
-        }),
+    const attachmentsPayload: Record<string, string> = {};
+    for (const f of attachmentFields) {
+      const a = attachments[f.name];
+      if (a?.uploadId) attachmentsPayload[f.name] = a.uploadId;
+    }
+    const sent = await sendLaunch({
+      target: sentTarget,
+      onScreen: () => onScreen.current === sentFor,
+      navigate: setLocation,
+      prepare: createRepo,
+      preparing: "creating the repository",
+      send: () =>
+        createRun({
+        // The program, one of three ways (launchCarriesProgram). A launch
+        // that names its bot posts the id and the digest its read issued and
+        // NOTHING of the text: the server resolves the tier itself, so the
+        // run is funded, bound and attributed as that bot (an inline source
+        // names no bot, pkg/server/runs_launch.go), and it refuses the launch
+        // if the bot is no longer the program this form shows.
+        ...(namedBot
+          ? { bot_id: namedBot.id, expect_source_sha256: namedBot.sha256 }
+          : {
+              file_path: filePath,
+              source: sourceForLaunch({
+                filePath,
+                source: currentSource,
+                confirmedDiskPath,
+                serverInfo,
+              }),
+            }),
         // Only touched values are sent: a var left at its declared
         // default (auto-managed or not) is omitted so the server applies
         // its own default + ${...} placeholder expansion. Keys the active
@@ -296,11 +389,40 @@ export function useLaunchSubmit({
           : undefined,
         repo_url: repoUrl,
         connection_id: connectionID,
-      });
-      setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
-    } catch (e) {
-      setError(errorMessage(e));
-      setSubmitting(false);
+      }),
+    });
+    // Off screen, the outcome was announced and is not this form's to apply.
+    if (!sent.onScreen) return;
+    switch (sent.outcome.kind) {
+      case "started":
+        setLocation(`/runs/${encodeURIComponent(sent.outcome.runID)}`);
+        return;
+      case "not-started":
+        // Inline in the repository section: actionable in place (409 name
+        // taken, 422 App permissions).
+        setRepoTargetCreateError(errorMessage(sent.outcome.error));
+        return;
+      case "failed":
+        // What the failure means for the run is the helper's to say, here as
+        // in a notice: an outcome that said nothing of the run is not a plain
+        // failure — the run may exist, and the next click may start a second.
+        if (sent.notice.kind === "unanswered") {
+          setError(sent.notice.message);
+          onUnanswered?.(sent.notice.runsHref ?? null);
+          return;
+        }
+        if (sent.notice.kind === "not-started") {
+          setError(sent.notice.message);
+          return;
+        }
+        setError(launchFailureSentence(sent.outcome.error));
+        // The bot changed under the form: the page offers the remedy.
+        if (
+          sent.outcome.error instanceof ApiError &&
+          sent.outcome.error.errorCode === "bot_source_changed"
+        ) {
+          onProgramChanged?.(true);
+        }
     }
   };
 

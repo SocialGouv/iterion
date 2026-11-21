@@ -65,7 +65,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
 | `internal/yamlx` | centralizes the repository's yaml.v3 entry points so the canonical style lives in one place: strict unmarshaling (unknown fields rejected) and… | — |
-| `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
+| `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `ObservedLane`, `Sink` |
 | `pkg/artifactlabels` | derives semantic labels for a published artifact from the SHAPE of its output data — so an artifact groups under "Plans", "Verdicts", etc. | — |
 | `pkg/askusermcp` | holds the ask-user MCP tool surface shared by the two transports that expose it to a claude_code session: - the stdio server (`iterion`… | — |
 | `pkg/assistantmission` | persists bounded, host-authorized control loops between a conversational assistant and one target run. | `Store` |
@@ -92,7 +92,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `ActionTransport`, `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `SinkSecretRefResolver`, `ToolBlobWriter`, `TurnWriter` |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `ActionTransport`, `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `SinkSecretRefResolver`, `ToolBlobWriter`, `ToolContractViolation`, `TurnWriter` |
 | `pkg/backend/modelroute` | the one reading of a model spec: which provider routes it, which id goes on the wire, and which id names its capabilities. | — |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — |
@@ -231,7 +231,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/unit/unittest` | how a test outside pkg/dsl/unit takes a loader's two answers as one unit: the whole load. | — |
 | `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — |
-| `pkg/errtrack` | iterion's optional error-tracking seam. | — |
+| `pkg/errtrack` | iterion's optional error-tracking seam. | `AmbiguousEffect` |
 | `pkg/eventbus` | the internal publish/subscribe spine that carries trigger.Event values from producers (native board, run completion, forge webhooks, schedule ticks,… | `Bus` |
 | `pkg/forge` | iterion's OUTBOUND forge-integration layer: it connects a team to a GitLab / GitHub / Forgejo account (OAuth or PAT), lists that account's repos, and… | `Admin`, `AutoMergeArmer`, `AvatarReader`, `AvatarSetter`, `BoardBindingStore`, `BoardClient`, `CommitStatusClient`, `CommitStatusLister`, `FileClient`, `IssueClient`, `MergeApprover`, `MergeabilityReader`, `OAuthAppProvisioner`, `OAuthAppStore`, `OAuthExchanger`, `PermissionClient`, `ProjectBotMinter`, `ProvisionApprovalStore`, `PullClient`, `PullReviewerSetter`, `RepoCreator`, `RepoIntegrationStore`, `ReviewClient`, `ReviewRequestWithdrawer`, `ReviewerAssigner`, `SelfRotator`, `TokenRefresher`, `WorkflowDispatcher` |
 | `pkg/forge/forgejo` | the Forgejo/Gitea implementation of forge.Admin. | — |
@@ -262,6 +262,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/modelcatalog` | crosses the four sources that together answer "which models can I actually use here": 	model.KnownModelSpecs() — what iterion knows about (curated… | — |
 | `pkg/modelprefs` | persists an operator's chosen model/backend/effort for a long-lived surface, so the choice survives the surface rather than being re-made every time… | `Store` |
 | `pkg/notify` | delivers run-completion webhooks — a generic "this run reached a terminal state, here is its final answer" callback POSTed to a URL supplied at… | — |
+| `pkg/numeric` | reads materialized numbers without rounding their integer domain or order. | — |
 | `pkg/operatormcp` | implements the operator-facing iterion MCP tool surface served by `iterion mcp` — the seam that lets any MCP client (Claude Code, the desktop, an… | — |
 | `pkg/orgusage` | meters per-org (tenant) monthly run launches and LLM spend, and enforces the launch-time caps. | `Counter` |
 | `pkg/pat` | implements personal access tokens — long-lived bearer credentials for programmatic API access (CI jobs, SDKs, curl) where the 15-minute JWT +… | `Store` |
@@ -272,6 +273,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/projectenv` | builds immutable per-project process environments for a unified local Studio. | — |
 | `pkg/queue` | defines the message contract exchanged between the iterion server (publisher) and the iterion runner (consumer). | — |
 | `pkg/queue/nats` | wraps the NATS / JetStream / KV layer for iterion's cloud queue. | — |
+| `pkg/recordcodec` | adapts explicitly selected record fields to exact-value frames. | `Codec` |
 | `pkg/reliability` | centralises the staged rollout knobs and the small compatibility/baseline reports operators need while enabling workflow reliability contracts. | — |
 | `pkg/repograph` | builds one deterministic graph of this repository: Go packages and the symbols they declare, the calls between them, the links between documentation… | — |
 | `pkg/repomap` | generates this repository's discoverability commons: small, committed indexes that let an agent — one working on the repo, or a bot running inside… | `Extractor` |
@@ -284,10 +286,10 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `CapabilityDenial`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
-| `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `ObservedEventFeed`, `RunLoader` |
+| `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `BoundObservationSource`, `EventCursorSource`, `EventSubscription`, `LogSubscription`, `MongoSelection`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
-| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `CommandCancellationOwner`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
+| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `BindPathIdentity`, `Builder`, `CommandCancellationOwner`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `RootOpener`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
 | `pkg/sandbox/devcontainer` | parses the subset of devcontainer.json fields iterion's sandbox driver consumes. | — |
 | `pkg/sandbox/docker` | implements the Docker/Podman sandbox driver. | — |
 | `pkg/sandbox/execenv` | owns the dedicated host relay, separate from the guest leaf. | — |
@@ -299,6 +301,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — |
 | `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` |
 | `pkg/scripthost` | runs model-authored JavaScript in a child process that holds no credential and no capability. | `ToolServer` |
+| `pkg/scripthost/toolindex` | codemode's discovery surface (CM-3, ADR-165): the catalogue of the tools a program may call, their TypeScript declarations, a BM25 index over them,… | — |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
 | `pkg/secure/hostfold` | folds a URL hostname to the name a dial resolves. | — |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | `HostResolver` |
@@ -307,8 +310,8 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/server/projects` | manages the studio's per-user project registry. | — |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` |
 | `pkg/skilllib` | implements iterion's first-class skill library: a standalone, operator-curated store of Claude-Code-style SKILL.md skills, stored globally… | — |
-| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `AttemptStore`, `BackendSessionStore`, `CredSlotStore`, `IRBlobStore`, `InteractionAnswerCAS`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `PreEngineRefusalRecorder`, `QueuedAttemptClaimer`, `QueuedAttemptStore`, `QueuedFlipper`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedResumeReleaser`, `QueuedRunCreator`, `RetryCircuitStore`, `RouteDecisionStore`, `RunBudgetOverridesPatcher`, `RunDiffBlobStore`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunProbeAnswerStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `ScratchBankStore`, `SpendStore`, `StagingStore`, `TeamAliveRunsReader`, `ToolBlobStore`, `TurnStore`, `Unwrapper`, `WatcherCursorStore` |
-| `pkg/store/blob` | defines the artifact-blob interface implemented by S3 (cloud) and (potentially) a local filesystem variant for testing. | `Client`, `ScratchBanker` |
+| `pkg/store` | implements the file-backed persistence layer for iterion runs. | `AttemptStore`, `BackendSessionStore`, `BoundObservationStore`, `ContextIdentityStore`, `ContextPIDStore`, `CredSlotStore`, `EventAppender`, `EventObservationSelection`, `FilesystemStreamSelection`, `FilesystemStreamStore`, `IRBlobStore`, `InteractionAnswerCAS`, `ObservedEventProducer`, `ObservedExecutionStore`, `ObservedFilesystemEventDecoder`, `OutputCorrectionCASStore`, `OutputCorrectionStore`, `PIDStore`, `ParentedRunCreator`, `PlanStore`, `PreEngineRefusalRecorder`, `PresignedAttachmentReader`, `QueuedAttemptClaimer`, `QueuedAttemptStore`, `QueuedFlipper`, `QueuedInboxVersioner`, `QueuedMessageInsertOnceStore`, `QueuedResumeReleaser`, `QueuedRunCreator`, `RetryCircuitStore`, `RouteDecisionStore`, `RunBirthReservation`, `RunBirthStore`, `RunBudgetOverridesPatcher`, `RunDataHeaderStore`, `RunDiffBlobStore`, `RunExecutionStore`, `RunFilesGrant`, `RunFilesGrantStore`, `RunFilesGrantUploader`, `RunFilesStore`, `RunFilesUploader`, `RunGitMetaStore`, `RunInvocationPreparation`, `RunListingStore`, `RunLock`, `RunLogStore`, `RunNoteStore`, `RunOutcomeCASStore`, `RunProbeAnswerStore`, `RunRetryStore`, `RunStore`, `RunTagStore`, `RunValueFormatCreator`, `ScopedQueuedInboxVersioner`, `ScratchBankStore`, `SpendStore`, `StagingStore`, `TeamAliveRunsReader`, `ToolBlobStore`, `TurnStore`, `Unwrapper`, `WatcherCursorStore` |
+| `pkg/store/blob` | defines the artifact-blob interface implemented by S3 (cloud) and (potentially) a local filesystem variant for testing. | `ArtifactObjects`, `Client`, `IRObjects`, `IncarnationArtifacts`, `IncarnationIR`, `IncarnationRunObjects`, `RunObjects`, `ScratchBanker`, `ValueFormatArtifacts`, `ValueFormatRunObjects` |
 | `pkg/store/mongo` | implements the cloud-mode RunStore on top of MongoDB for run metadata + events + interactions, paired with an external blob.Client (S3) for artifact… | `LockProvider` |
 | `pkg/store/storetest` | exposes the conformance suite that every store.RunStore backend must satisfy. | — |
 | `pkg/subbotcontracts` | reads the `subbot` children of a workflow for the contracts they keep — what bundlelint holds a parent's `with:` to (C255). | — |
@@ -321,6 +324,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/usernotify` | delivers user-addressed notifications for run lifecycle moments — a run pausing on a human form, finishing, failing — to per-user channels (web… | `PrefsStore`, `SentStore`, `Sink` |
 | `pkg/usernotify/webpush` | the Web Push (RFC 8030 + VAPID) usernotify.Sink: it delivers a Notification to every browser PushSubscription registered by each recipient, via the… | `SubscriptionStore` |
 | `pkg/valkey` | wraps a go-redis client used to share ephemeral server state across replicas (forge OAuth/CSRF state, board-MCP run tokens, auth rate-limit buckets). | — |
+| `pkg/valuecodec` | preserves structured values across explicitly versioned transports. | — |
 | `pkg/webhooks` | iterion's inbound-webhook spine: long-lived, per-org webhook tokens that authenticate an external caller (a forge, CI, a script) and authorize it to… | `CommandDiscovery`, `ConfigStore`, `Counter`, `DeferredLaunchStore`, `DeliveryStore` |
 | `pkg/webhooks/generic` | decodes the bot-agnostic JSON shape iterion accepts on /api/webhooks/generic/{id}. | — |
 | `pkg/webhooks/gitlab` | decodes GitLab webhook payloads into the narrow, normalized shape iterion's inbound handler consumes. | — |

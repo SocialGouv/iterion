@@ -41,6 +41,7 @@ func (e *ClawExecutor) executeDelegate(ctx context.Context, backend delegate.Bac
 	task.ReasoningEffort = applied
 	res, err := backend.Execute(ctx, e.taskForModel(task))
 	recordReasoningEffort(&res, task.ReasoningEffortSource, requested, applied, mappedBy)
+	observeExecutionUsage(ctx, task, res)
 	return res, err
 }
 
@@ -387,3 +388,6 @@ func (e *ClawExecutor) taskForModel(task delegate.Task) delegate.Task {
 	}
 	return task
 }
+
+// ExecutionAccountingVersion advertises the installed raw-result collector.
+func (*ClawExecutor) ExecutionAccountingVersion() int { return ExecutionAccountingProtocol }

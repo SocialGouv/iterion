@@ -55,7 +55,9 @@ type Opts struct {
 // RunWithOpts executes the full conformance suite with backend-
 // specific overrides.
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
+	t.Run("ExecutionCorrection", func(t *testing.T) { RunExecutionCorrectionConformance(t, factory) })
 	t.Run("AttemptSnapshots", func(t *testing.T) { AttemptSnapshots(t, factory(t)) })
+	t.Run("BirthIdentity", func(t *testing.T) { testBirthIdentity(t, factory(t)) })
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })
@@ -66,12 +68,15 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("SessionLedgerSurvivesTheFailureCheckpoint", func(t *testing.T) { testSessionLedgerSurvivesTheFailureCheckpoint(t, factory(t)) })
+	t.Run("NodeFailureStreaksFollowTheCheckpoint", func(t *testing.T) { testNodeFailureStreaksFollowTheCheckpoint(t, factory(t)) })
 	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
 	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("MergeExitExpectedBirth", func(t *testing.T) { testMergeExitExpectedBirth(t, factory(t)) })
+	t.Run("MergeClaimExpectedBirth", func(t *testing.T) { testMergeClaimExpectedBirth(t, factory(t)) })
 	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
@@ -110,6 +115,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
 	t.Run("WatcherCursorStore", func(t *testing.T) { testWatcherCursorStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
+	t.Run("BoundDeleteRefusesASuccessor", func(t *testing.T) { testBoundDeleteRefusesASuccessor(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
@@ -3401,7 +3407,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	notStale := time.Now().Add(-15 * time.Minute)
 
 	// Entry: an unset merge_status is claimable, prior comes back "".
-	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed || prior != "" {
 		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
 	}
@@ -3409,7 +3415,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatal("claim must return its token")
 	}
 	// A held (fresh) claim refuses the second claimant.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
 	}
@@ -3445,7 +3451,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		t.Fatalf("merged record damaged: %+v", got)
 	}
 	// And "merged" is terminal for the claim too.
-	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale, store.ExpectedBirth{})
 	if err != nil || claimed || prior != store.MergeStatusMerged {
 		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
 	}
@@ -3459,14 +3465,14 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale)
+	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{})
 	if err != nil {
 		t.Fatalf("seed claim: %v", err)
 	}
-	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale, store.ExpectedBirth{}); err != nil || claimed {
 		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
 	}
-	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second), store.ExpectedBirth{})
 	if err != nil || !claimed || prior != store.MergeStatusMerging {
 		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
 	}
@@ -3494,7 +3500,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		[]store.MergeStatus{""}); err != nil || !changed {
 		t.Fatalf("seed stampless merging = (%t, %v)", changed, err)
 	}
-	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale)
+	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale, store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("stampless merging must be claimable = (%t, %v)", claimed, err)
 	}
@@ -3510,7 +3516,7 @@ func testMergeClaimCAS(t *testing.T, s store.RunStore) {
 		if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: st}, []store.MergeStatus{""}); err != nil || !changed {
 			t.Fatalf("seed %s = (%t, %v)", st, changed, err)
 		}
-		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale)
+		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale, store.ExpectedBirth{})
 		if err != nil || !claimed || prior != st {
 			t.Fatalf("claim on %s = (%t, %q, %v), want (true, %s, nil)", st, claimed, prior, err, st)
 		}
@@ -3553,7 +3559,7 @@ func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC(), store.ExpectedBirth{})
 	if err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
@@ -3695,6 +3701,62 @@ func testSessionLedgerSurvivesTheFailureCheckpoint(t *testing.T, s store.RunStor
 	}
 	if r.Checkpoint == nil || !reflect.DeepEqual(r.Checkpoint.SessionLedger, want) {
 		t.Fatalf("session ledger = %+v, want %+v", r.Checkpoint, want)
+	}
+}
+
+// testNodeFailureStreaksFollowTheCheckpoint: the streak of identical failures
+// a tool node's command left is what makes a resumed run — on any replica —
+// read the next identical failure as a repeat rather than as a first one. It
+// rides the checkpoint a resumable failure persists, so every backend must
+// hand it back as written; and the checkpoint written after it replaces it
+// whole, so a node that then succeeded leaves no count behind.
+func testNodeFailureStreaksFollowTheCheckpoint(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-failure-streaks"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	streaks := func() map[string]store.NodeFailureStreak {
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		if r.Checkpoint == nil {
+			t.Fatal("the run lost its checkpoint")
+		}
+		return r.Checkpoint.NodeFailureStreaks
+	}
+	want := map[string]store.NodeFailureStreak{
+		"merge":  {Fingerprint: "sha256:5f0c1f1b8a4a4d5f8b7b6f5a3c2e1d0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b", Count: 1},
+		"verify": {Fingerprint: "sha256:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9", Count: 4},
+	}
+	cp := &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: want}
+	if err := s.FailRunResumable(ctx, runID, cp, "the runner went away", store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failure streaks after a resumable failure = %+v, want %+v", got, want)
+	}
+
+	// The next checkpoint carries the count the engine reached, not a merge
+	// of the two.
+	next := map[string]store.NodeFailureStreak{"merge": {Fingerprint: want["merge"].Fingerprint, Count: 2}}
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "merge", NodeFailureStreaks: next},
+		"node \"merge\" execution failed", store.FailureToolFailedPermanent); err != nil {
+		t.Fatalf("FailRunResumable (second): %v", err)
+	}
+	if got := streaks(); !reflect.DeepEqual(got, next) {
+		t.Fatalf("failure streaks after the second failure = %+v, want %+v", got, next)
+	}
+
+	// And a checkpoint with none leaves none: a node's success ends its streak
+	// durably.
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "done"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if got := streaks(); len(got) != 0 {
+		t.Fatalf("failure streaks survived a checkpoint that carries none: %+v", got)
 	}
 }
 

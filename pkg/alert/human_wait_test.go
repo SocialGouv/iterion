@@ -21,7 +21,7 @@ func TestStallReadsPersistedHumanWaitAndRearms(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now()
-	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ time.Time) bool {
+	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ store.RunObservation, _ bool, _ time.Time) bool {
 		child, err := s.LoadRun(ctx, "child")
 		return err == nil && child.Status.IsPaused()
 	}))
@@ -35,7 +35,7 @@ func TestStallReadsPersistedHumanWaitAndRearms(t *testing.T) {
 	if err := s.UpdateRunStatus(ctx, "child", store.RunStatusRunning, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.checkStalls(base.Add(11 * time.Minute)); len(got) != 1 || got[0].Kind != KindStall {
+	if got := m.checkStalls(base.Add(11 * time.Minute)); len(got) != 1 || got[0].a.Kind != KindStall {
 		t.Fatalf("genuine silence after the wait was muted: %+v", got)
 	}
 }
@@ -44,7 +44,7 @@ func TestHumanWaitLookupDoesNotBlockObserveOrAlertFromAStaleView(t *testing.T) {
 	base := time.Now()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ time.Time) bool {
+	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ store.RunObservation, _ bool, _ time.Time) bool {
 		close(entered)
 		select {
 		case <-release:
@@ -54,7 +54,7 @@ func TestHumanWaitLookupDoesNotBlockObserveOrAlertFromAStaleView(t *testing.T) {
 	}))
 	defer m.Stop()
 	m.Observe(store.Event{RunID: "r", Type: store.EventNodeStarted, Timestamp: base})
-	done := make(chan []Alert, 1)
+	done := make(chan []delivery, 1)
 	go func() { done <- m.checkStalls(base.Add(10 * time.Minute)) }()
 	<-entered
 	// Observe must remain available while the persisted lookup is blocked.
@@ -77,14 +77,14 @@ func TestHumanWaitLookupDoesNotBlockObserveOrAlertFromAStaleView(t *testing.T) {
 
 func TestStopCancelsHumanWaitLookup(t *testing.T) {
 	entered := make(chan struct{})
-	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ time.Time) bool {
+	m := NewManager(WithStallTimeout(time.Minute), WithHumanWaitLookup(func(ctx context.Context, _ string, _ store.RunObservation, _ bool, _ time.Time) bool {
 		close(entered)
 		<-ctx.Done()
 		return false
 	}))
 	base := time.Now()
 	m.Observe(store.Event{RunID: "r", Type: store.EventNodeStarted, Timestamp: base})
-	done := make(chan []Alert, 1)
+	done := make(chan []delivery, 1)
 	go func() { done <- m.checkStalls(base.Add(10 * time.Minute)) }()
 	<-entered
 	m.Stop()

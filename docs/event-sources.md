@@ -266,8 +266,9 @@ example is a fictional `probe` vendor, loaded as written by
   `jira.issue.changed` (a JQL the operator writes, without `ORDER BY`,
   checkpointed by `updated` and read oldest first, so a scan the page bound
   cuts reads on at the next tick; its first scan reads the last day, so a
-  backfill reaches no further back; its notes are the package's
-  `setup-poll.md`).
+  backfill reaches no further back; narrowed by `project`, `issue_type`,
+  `status` or a `label` list filter, as the webhook triggers are; its notes
+  are the package's `setup-poll.md`).
 - **Re-binding** a subscription to the query of another, existing poller
   activates it on that poller's sequence. A revision it already received
   through its first poller is not launched again when the other poller

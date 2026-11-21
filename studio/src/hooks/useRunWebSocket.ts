@@ -7,6 +7,8 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import { isRunLost, lostRunAddressedBy, markRunLost, onRunLost, tagSnapshotStore } from "@/lib/lostRuns";
+import { storeOverrideFor, storeParamOfURL } from "@/lib/storeOverride";
 import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import { handleAlertEvent } from "./runWs/alerts";
@@ -19,6 +21,8 @@ import {
 import {
   INITIAL_RECONNECT_DELAY_MS,
   isInboundQuiet,
+  isInvalidExpectationClose,
+  isScopeLostClose,
   isTerminalRunStatus,
   nextReconnectDelay,
 } from "./runWs/policy";
@@ -48,6 +52,12 @@ export interface RunWsHandle {
  * on disconnect with exponential backoff (1s → 30s) and resumes from
  * the last seen seq via subscribe{from_seq}, so missed events are
  * replayed before the live tail resumes.
+ *
+ * A close the server names scope_lost is the exception: the run the
+ * socket was opened on is gone (replaced or deleted under its ID) or the
+ * caller's scope no longer holds. Resuming would attach this run's cursors
+ * to whatever run holds the ID now, so the hook stops — wsState "lost" —
+ * and only a reload starts over.
  */
 export function useRunWebSocket(runId: string | null): RunWsHandle {
   const wsRef = useRef<WebSocket | null>(null);
@@ -102,9 +112,31 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       logsRequestedRef.current = false;
     }
     prevRunIdRef.current = runId;
-
     const store = runStoreRef.current;
     const setWsState = store.getState().setWsState;
+    // The store this socket dials: the page's override for the page's run,
+    // the daemon's own otherwise. An override that is not a store path is
+    // never dropped to the daemon's own store: no socket is dialed (the
+    // snapshot request reports the error).
+    let viewStore: string;
+    try {
+      viewStore = storeOverrideFor(runId);
+    } catch (err) {
+      console.error(`[run ws] ${runId}: not dialed:`, err);
+      setWsState("closed");
+      return;
+    }
+    // A run this page lost in that store — a socket on it closed
+    // scope_lost, in this view or another — is never dialed again: every
+    // reconnect path (backoff, watchdog, focus/online revalidation, a URL
+    // lookup resolving late) checks the page's registry, and a view opened
+    // on it starts lost.
+    const lost = () => isRunLost(viewStore, runId);
+
+    if (lost()) {
+      setWsState("lost");
+      return;
+    }
     const applySnapshot = store.getState().applySnapshot;
     const applyEventsBatch = store.getState().applyEventsBatch;
     const applyLogChunk = store.getState().applyLogChunk;
@@ -156,12 +188,26 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       } catch {
         // Could not resolve URL (e.g. desktop bindings not yet ready) — fall
         // through to the reconnect timer rather than crashing the run view.
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || lost()) return;
         setWsState("reconnecting");
         scheduleReconnect();
         return;
       }
       if (!aliveRef.current) return; // tear-down raced the await
+      // The run may have been lost while the URL was looked up (another
+      // socket of this view closed scope_lost meanwhile): checked again
+      // right before the open, on the run ID and on the URL itself.
+      if (lost() || lostRunAddressedBy(url) !== null) {
+        setWsState("lost");
+        return;
+      }
+      // This socket's snapshots are keyed by the store it dialed, whatever
+      // store the page shows when they land.
+      const dialStore = storeParamOfURL(url);
+      const socketSinks: RunWsMessageSinks = {
+        ...sinks,
+        applySnapshot: (snap) => applySnapshot(tagSnapshotStore(snap, dialStore)),
+      };
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
@@ -199,7 +245,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         lastInboundAtRef.current = Date.now();
         try {
           const env = JSON.parse(msgEv.data) as WsEnvelope;
-          routeRunWsMessage(env, sinks);
+          routeRunWsMessage(env, socketSinks);
         } catch (err) {
           // A single malformed envelope shouldn't kill the stream, but
           // silently swallowing it hid genuine bugs (reducer crashes on
@@ -210,12 +256,33 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         // Drop the wsRef only if it still points at THIS socket — a
         // rapid runId change can race two connect() invocations, and
         // we don't want the older socket's late onclose to null out
         // the newer one.
         if (wsRef.current === ws) wsRef.current = null;
+        if (isScopeLostClose(ev.reason)) {
+          // The page's registry refuses this run of the dialed store from
+          // now on: every request and socket addressing it, in any view,
+          // until a reload.
+          markRunLost(dialStore, runId);
+          heartbeat.stop();
+          if (reconnectTimer.current) {
+            clearTimeout(reconnectTimer.current);
+            reconnectTimer.current = null;
+          }
+          setWsState("lost");
+          return;
+        }
+        // invalid_expected_birth: the dial's expectation is not a birth — a
+        // client defect a redial would only repeat. The socket stays closed.
+        if (isInvalidExpectationClose(ev.reason)) {
+          heartbeat.stop();
+          console.error("[run ws] the server refused the socket's expected birth:", ev.reason);
+          setWsState("closed");
+          return;
+        }
         if (!aliveRef.current) {
           setWsState("closed");
           return;
@@ -230,7 +297,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     };
 
     const scheduleReconnect = () => {
-      if (!aliveRef.current) return;
+      if (!aliveRef.current || lost()) return;
       // Defensive: clear any timer still armed from a previous failure path
       // before scheduling a new one. Two stacked onclose handlers (e.g. when
       // a reconnectToken bump races an in-flight close on the prior socket)
@@ -250,7 +317,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     // visibility/online listeners can't route recovery through the normal
     // onclose→scheduleReconnect path — they must redial directly.
     const forceReconnect = () => {
-      if (!aliveRef.current || runIsTerminal()) return;
+      if (!aliveRef.current || lost() || runIsTerminal()) return;
       heartbeat.stop();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
@@ -282,7 +349,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     // ~45s watchdog would, so recovery feels instant. We only redial when
     // the connection actually looks stale/down and the run is still live.
     const revalidate = () => {
-      if (!aliveRef.current || runIsTerminal()) return;
+      if (!aliveRef.current || lost() || runIsTerminal()) return;
       const wsDown = runStoreRef.current.getState().wsState !== "open";
       const stale = isInboundQuiet(Date.now(), lastInboundAtRef.current);
       if (wsDown || stale) forceReconnect();
@@ -294,10 +361,38 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("online", onOnline);
 
+    // Whoever detects the loss of this run in this socket's store — a 409
+    // run_origin_lost to any request, a snapshot of another birth, another
+    // socket's scope_lost — this socket stops too: closed, never redialed,
+    // the view lost. A run of the same ID in another store is another run.
+    const offLost = onRunLost((lostStore, lostRun) => {
+      if (lostRun !== runId || lostStore !== viewStore || !aliveRef.current) return;
+      heartbeat.stop();
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try {
+          ws.close();
+        } catch {
+          // already closing/closed
+        }
+        wsRef.current = null;
+      }
+      setWsState("lost");
+    });
+
     void connect();
 
     return () => {
       aliveRef.current = false;
+      offLost();
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("online", onOnline);
       heartbeat.stop();
@@ -334,7 +429,11 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       // RunLogPanel + NodeDetailPanel Logs consumers were still
       // mounted, then the new ws.onopen saw logsRequestedRef=false
       // and never re-subscribed.
-      runStoreRef.current.getState().setWsState("closed");
+      //
+      // A lost run stays lost in the store that showed it: a later view on
+      // the same store (a test-run pane's "Open full run") must not read
+      // "closed" and hydrate whatever run holds the ID now.
+      runStoreRef.current.getState().setWsState(lost() ? "lost" : "closed");
     };
   }, [runId, reconnectToken]);
 

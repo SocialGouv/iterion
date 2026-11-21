@@ -116,6 +116,66 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/browser/attach", s.handleBrowserAttach)
 }
 
+// storeParam is the query parameter naming the store a run lives in, for a
+// view of a run outside the server's own store (resolveCrossStore).
+const storeParam = "store"
+
+// normalizeOwnStore removes a `?store=` that names the server's own store
+// (isOwnStore) before the request is scoped, gated or handled: the desktop's
+// run links name the run's store even when the destination daemon serves it,
+// and such a request is a request for the primary run — its live path, its
+// actions, its expected birth. Any other `?store=` is left as sent: a foreign
+// store, read by the cross-store routes as it always was.
+func (s *Server) normalizeOwnStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if values := r.URL.Query()[storeParam]; len(values) > 0 && s.namesOwnStore(values) {
+			r = withoutQueryParam(r, storeParam)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// namesOwnStore reports whether every value names the server's own store.
+func (s *Server) namesOwnStore(values []string) bool {
+	for _, v := range values {
+		if !s.isOwnStore(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// isOwnStore reports whether path resolves (absolute, symlinks followed) to
+// the server's own store directory: the one its run console serves, as the
+// service resolved it (store.ResolveStoreDir of the work dir and the
+// override) — a default studio configures no StoreDir. A path that does not
+// resolve is not.
+func (s *Server) isOwnStore(path string) bool {
+	if path == "" || s.runs == nil || s.runs.StoreDir() == "" {
+		return false
+	}
+	own, err := resolvedDir(s.runs.StoreDir())
+	if err != nil {
+		return false
+	}
+	named, err := resolvedDir(path)
+	return err == nil && named == own
+}
+
+func resolvedDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+// foreignStore reports whether a request names a store other than the
+// server's own: normalizeOwnStore already removed one naming its own.
+func foreignStore(r *http.Request) bool {
+	return r.URL.Query().Get(storeParam) != ""
+}
+
 // resolveCrossStore inspects the `?store=` query parameter and, when
 // it's a permitted iterion store path under the iterion home the operator
 // chose (store.InheritedIterionHome: the $ITERION_HOME they exported, else

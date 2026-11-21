@@ -256,7 +256,7 @@ func (s *Store) SettleCredSlotAdmission(ctx context.Context, runID string, queue
 		"queued_at":              queuedAt,
 		"cred_admission_pending": true,
 	}))
-	if _, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(bson.M{
+	if _, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(bson.M{
 		"$unset": bson.M{"cred_admission_pending": ""},
 		"$set":   bson.M{"updated_at": time.Now().UTC()},
 	})); err != nil {

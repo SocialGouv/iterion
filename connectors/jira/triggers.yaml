@@ -61,10 +61,12 @@ triggers:
           The issue's REST URL. Jira's payload carries no browse URL, and the
           language cannot rewrite one, so this link needs the API credential.
       - { name: created_at, from: 'payload.issue.fields.created' }
+    # A list filter matches an issue carrying any of the chosen labels.
     filters:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.issue.fields.status.name', type: string }
+      - { id: label, from: 'payload.issue.fields.labels', type: list }
     sample: samples/issue-created.json
 
   - id: jira.issue.updated
@@ -95,6 +97,11 @@ triggers:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.issue.fields.status.name', type: string }
+      - { id: label, from: 'payload.issue.fields.labels', type: list }
+      # Every edit is a `jira:issue_updated`: this one keeps the deliveries
+      # that changed any of the chosen fields — `status`, `assignee` — and
+      # drops the others. It reads the field names `updated_fields` does.
+      - { id: updated_field, from: 'map(payload.changelog.items, i => i.field)', type: list }
     sample: samples/issue-updated.json
 
   - id: jira.comment.created
@@ -129,6 +136,7 @@ triggers:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.issue.fields.status.name', type: string }
+      - { id: label, from: 'payload.issue.fields.labels', type: list }
     sample: samples/comment-created.json
 
   - id: jira.comment.updated
@@ -163,6 +171,7 @@ triggers:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.issue.fields.status.name', type: string }
+      - { id: label, from: 'payload.issue.fields.labels', type: list }
     sample: samples/comment-updated.json
 
   - id: jira.comment.deleted
@@ -195,6 +204,7 @@ triggers:
       - { id: project, from: 'payload.issue.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.issue.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.issue.fields.status.name', type: string }
+      - { id: label, from: 'payload.issue.fields.labels', type: list }
     sample: samples/comment-deleted.json
 
   - id: jira.issue.changed
@@ -273,4 +283,5 @@ triggers:
       - { id: project, from: 'payload.fields.project.key', type: string }
       - { id: issue_type, from: 'payload.fields.issuetype.name', type: string }
       - { id: status, from: 'payload.fields.status.name', type: string }
+      - { id: label, from: 'payload.fields.labels', type: list }
     sample: samples/issue-search.json

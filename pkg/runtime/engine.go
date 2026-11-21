@@ -120,13 +120,7 @@ type OutputCorrector interface {
 // OutputCorrectionUsage is optional accounting returned by a corrector that
 // performs its own model call. The runtime folds it into the node's normal
 // `_tokens`/`_cost_usd` metadata before budget enforcement.
-type OutputCorrectionUsage struct {
-	Tokens  int
-	CostUSD float64
-	// UnreportedCalls has no field yet because no implementer exists
-	// (the interface is test-only): when a second OutputCorrectorWithUsage
-	// appears, the correction call's unreported count comes with it.
-}
+type OutputCorrectionUsage = store.OutputCorrectionUsage
 
 // OutputCorrectorWithUsage extends OutputCorrector for executors that can
 // report the correction call's spend. Executors may implement either
@@ -165,11 +159,12 @@ type varsSetter interface{ SetVars(map[string]any) }
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	resourceScope *runResourceScope
-	workflow      *ir.Workflow
-	store         store.RunStore
-	executor      NodeExecutor
-	logger        *iterlog.Logger
+	terminationWriteTimeout time.Duration
+	resourceScope           *runResourceScope
+	workflow                *ir.Workflow
+	store                   store.RunStore
+	executor                NodeExecutor
+	logger                  *iterlog.Logger
 	// seamWarnOnce keeps the "this executor cannot answer the seams
 	// admission reads" warning to one line per engine: admission asks per
 	// node, per branch, on every fan-out.
@@ -210,6 +205,8 @@ type Engine struct {
 	routingPolicy          *store.RoutingPolicy      // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
 	budgetAsk              *ir.BudgetOverrides       // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs        bool                      // when true, reject runtime schema mismatches instead of warning
+	toolStdoutWrapped      bool                      // the output-validation dial's explicit off: a tool recipe's non-JSON stdout under `output:` is wrapped as {"result": …} instead of failing the node
+	outputRefsOwed         bool                      // a tool body reading an output field its producer declared and did not supply fails the node before the body runs; off renders the hole (EnvOutputRefs)
 	outputCorrectionBudget int                       // bounded invalid-output correction calls per node invocation
 	// parallelSaveWindow coalesces routine fan-out boundary checkpoints into
 	// one durable write per window (#561); zero keeps the legacy synchronous
@@ -218,6 +215,9 @@ type Engine struct {
 	parallelSaveWindow time.Duration
 	forceResume        bool // when true, skip workflow hash check on resume
 	acceptScratchLoss  bool // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	// resumeRunCheck judges the run Resume loads by ID before any step of
+	// the resume acts on it (WithResumeRunCheck); nil checks nothing.
+	resumeRunCheck func(*store.Run) error
 	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106). Each
@@ -447,6 +447,14 @@ func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode, childSt
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
 // terminal output (mapped to outputs.<subbot>.<field>). Wired by the CLI /
 // runview layer where compiling + running a child engine is possible.
+//
+// The callback receives the parent's original invocation context. A custom
+// launcher must explicitly prepare the new child's identity and format before
+// building its executor or calling Engine.Run; passing this context directly
+// to a different run ID is refused. runview.PrepareSubbotInvocation implements
+// the child-birth handoff for adapters outside this package. Keep the original
+// parent context for parent events such as OnChildAttached. A format binding
+// is not an execution grant; parent accounting/ownership must not be inherited.
 type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]any, error)
 
 // New creates a new Engine for a raw workflow.
@@ -456,7 +464,8 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: defaultOutputValidation(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
+	validation := outputValidationFromEnv()
+	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: validation == outputValidationStrict, toolStdoutWrapped: validation == outputValidationOff, outputRefsOwed: defaultOutputRefsOwed(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -510,6 +519,8 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 //     collector returns. TestFanOutAbandonedBranchDoesNotRaceRunState
 //     exercises that window under -race.
 type runState struct {
+	correctionAccounts   *correctionAccounts
+	correctionInvocation *correctionInvocation
 	// ctx is the per-run context. Stored on runState (despite the
 	// usual "no context in struct" rule) because helpers.go threads
 	// `rs *runState` deeply through emit/failRun*/checkpoint paths
@@ -707,6 +718,12 @@ type runState struct {
 	// reset them after a successful execution. Keys are created lazily.
 	nodeAttempts map[string]map[ErrorCode]int
 
+	// nodeFailureStreaks holds, per tool node, the fingerprint of its last
+	// command failure and how many executions in a row ended on it — the
+	// count an identical repeat is promoted on (identical_failure.go). It
+	// rides the checkpoint beside nodeAttempts. Keys are created lazily.
+	nodeFailureStreaks map[string]store.NodeFailureStreak
+
 	// retrySessionCosts holds cost readings already booked during an in-place
 	// recovery sequence. Tokens always count calls; only an explicitly
 	// session-total cost with the same backend and session can overlap.
@@ -787,7 +804,11 @@ type resumeBackendState struct {
 // outcome first, nominally the publisher's cancel — the returned decision
 // is the DOCUMENT's, re-read: the returned error must agree with what the
 // run actually says, not with this attempt's losing read.
-func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) (store.RunStatus, store.FailureCode) {
+func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) (store.RunStatus, store.FailureCode, error) {
+	// Authority/format refusals are not an execution failure of this row.
+	if errors.Is(cause, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(cause) {
+		return "", "", cause
+	}
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg, code := setupFailureStatus(ctx, phase, cause)
 	remedy := setupFailureRemedy(cause, code)
@@ -803,18 +824,23 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 				// declined CAS means a peer got there first with its own
 				// reason, and a second event would contradict the document.
 				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code, remedy)
-				return status, code
+				return status, code, cause
 			}
-			if cur, lerr := e.store.LoadRun(writeCtx, runID); lerr == nil && cur != nil {
-				return cur.Status, cur.FailureCode
+			if _, cur, lerr := store.LoadRunWithValueFormat(writeCtx, e.store, runID); lerr == nil && cur != nil {
+				return cur.Status, cur.FailureCode, cause
+			} else if errors.Is(lerr, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(lerr) {
+				return "", "", lerr
 			}
-			return status, code
+			return status, code, cause
+		}
+		if errors.Is(err, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(err) {
+			return "", "", err
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
 	}
-	return status, code
+	return status, code, cause
 }
 
 // recordSetupOutcome writes the setup phase's verdict on the run and reports
@@ -1004,6 +1030,9 @@ func setupFailureCode(cause error) store.FailureCode {
 // A setup site that returns without this mapping keeps the runner's
 // generic reading.
 func setupErrFrom(status store.RunStatus, code store.FailureCode, err error) error {
+	if errors.Is(err, errCorrectionOwnershipLost) || store.IsValueFormatRefusal(err) {
+		return err
+	}
 	switch {
 	case status == store.RunStatusCancelled:
 		return fmt.Errorf("%w: %v", ErrRunCancelled, err)
@@ -1043,6 +1072,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		sessionLedger:      delegate.NewSessionLedger(nil),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
+		nodeFailureStreaks: make(map[string]store.NodeFailureStreak),
 		budget:             e.newRunBudget(),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
@@ -1051,6 +1081,12 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 	// Publish the run's budget so the active-duration stamping callback
 	// (runview Service / runner) can read its monotonic elapsed. nil when
 	// the workflow declares no budget — ActiveElapsed then returns 0.
+	if e.correctionProtocolCapable() {
+		if rs.budget == nil {
+			rs.budget = &SharedBudget{logger: e.logger, startedAt: time.Now(), warningsEmitted: map[string]bool{}}
+		}
+		rs.correctionAccounts, _ = newCorrectionAccounts(rs.budget, nil)
+	}
 	e.activeBudget.Store(rs.budget)
 	return rs
 }

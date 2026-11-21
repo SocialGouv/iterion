@@ -90,9 +90,17 @@ type detachedSpec struct {
 	// from scratch, so anything not passed here refuses where the
 	// admitting boundary chose to ride.
 	AllowUnknownInputs bool
-	Timeout            time.Duration
-	MergeInto          string // worktree finalization, Launch only
-	BranchName         string // worktree finalization, Launch only
+	// LogBuf is the run's log buffer the launch or resume created
+	// (prepareRunLogNoFile): the one the exit watcher drops.
+	LogBuf *RunLogBuffer
+	// LogOwner holds the buffer's log bail until the exit watcher takes the
+	// run over: spawnDetached transfers it synchronously before the watcher
+	// goroutine exists, and the caller's Abandon releases it when the spawn
+	// never happened.
+	LogOwner   *runLogOwner
+	Timeout    time.Duration
+	MergeInto  string // worktree finalization, Launch only
+	BranchName string // worktree finalization, Launch only
 	// AutoMemory forwards the run-level auto-memory override as the CLI's
 	// --auto-memory flag. The subprocess re-resolves the knob from scratch,
 	// so anything not passed here is silently replaced by the workflow's own
@@ -291,6 +299,9 @@ func appendCodemodeArgs(args []string, codemode string, b *ir.CodemodeBounds) []
 	if b.ToolCalls > 0 {
 		args = append(args, "--codemode-tool-calls", strconv.FormatInt(b.ToolCalls, 10))
 	}
+	if b.ConcurrentToolCalls > 0 {
+		args = append(args, "--codemode-concurrent-tool-calls", strconv.FormatInt(b.ConcurrentToolCalls, 10))
+	}
 	if b.ToolResultBytes > 0 {
 		args = append(args, "--codemode-tool-result-bytes", strconv.FormatInt(b.ToolResultBytes, 10))
 	}
@@ -390,28 +401,41 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 	// Watcher: cmd.Wait() blocks until the runner exits, after which
 	// we tidy up the .pid file (in case the runner was SIGKILL'd
 	// before its own deferred RemovePIDFile ran), drop subscribers,
-	// and Deregister — the last step closes done.
-	go func() {
-		_ = cmd.Wait()
-		if pidS := store.AsPIDStore(s.store); pidS != nil {
-			_ = pidS.RemovePIDFile(spec.RunID)
-		}
-		// Mirror spawnRun's pause handling: a paused runner exits like a
-		// terminal one, but the run is only dormant — keep WS subscribers
-		// so the pause/resume events reach them (the resume's tailers
-		// publish to the same broker runID).
-		paused := false
-		if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), spec.RunID); err == nil {
-			paused = r.Status.IsPaused()
-		}
-		if !paused {
-			s.broker.CloseRun(spec.RunID)
-		}
-		s.dropRunLog(spec.RunID)
-		s.manager.Deregister(spec.RunID)
-	}()
+	// and Deregister — the last step closes done. The bail changes hands
+	// synchronously BEFORE the goroutine exists (a launcher's late Abandon
+	// must not release a live run's log lane).
+	spec.LogOwner.Transfer()
+	go waitDetachedExit(s, spec.RunID, spec.LogBuf, func() { _ = cmd.Wait() })
 
 	return &LaunchResult{RunID: spec.RunID, Done: done}, nil
+}
+
+// waitDetachedExit is the detached runner's exit watcher: it waits for the
+// process, tidies the .pid file, and ends the run's log epoch by the status
+// the runner left — paused keeps the stream for the resume, terminal finishes
+// it, and a status still running means the runner was killed without a fin
+// (logEndLost, a typed error at the subscriber).
+func waitDetachedExit(s *Service, runID string, logBuf *RunLogBuffer, wait func()) {
+	wait()
+	if pidS := store.AsPIDStore(s.store); pidS != nil {
+		_ = pidS.RemovePIDFile(runID)
+	}
+	// Mirror spawnRun's pause handling: a paused runner exits like a
+	// terminal one, but the run is only dormant — keep WS subscribers so
+	// the pause/resume events reach them (the resume's tailers publish to
+	// the same broker runID).
+	end, paused := logEndLost, false
+	if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), runID); err == nil {
+		end, paused = classifyLogExit(r.Status), r.Status.IsPaused()
+	}
+	if !paused {
+		s.closeRunAndReleaseAlerts(runID)
+	}
+	if logBuf != nil {
+		logBuf.setLogEnd(end)
+	}
+	s.dropRunLog(runID, logBuf)
+	s.manager.Deregister(runID)
 }
 
 // launchDetached is the Launch path that delegates to a spawned
@@ -437,7 +461,11 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// Pre-flight only: the spawned runner compiles its own copy and the
 	// engine it roots resolves its own cwd. The service's effective workdir
 	// is the launch surface's answer for the synchronous checks (#1800).
-	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
+	wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
+	if err != nil {
+		return nil, err
+	}
+	ctxContract, err := s.resolveExecutionContext(parent, runID, spec, wf, cs.Hash)
 	if err != nil {
 		return nil, err
 	}
@@ -459,20 +487,19 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
-	// The runner subprocess (`iterion run`) has no flag to carry either of
-	// these, so they are stamped here or not at all — a dropped SourceRef
+	// The runner subprocess (`iterion run`) reads its context and provenance
+	// from the precreated document — a dropped SourceRef
 	// leaves a scheduled run reading as "manual" and invisible to the
 	// overlap gate's source.schedule_id query.
-	if spec.ParentRunID != "" || spec.SourceRef != nil || spec.Budget != nil {
-		created.ParentRunID = spec.ParentRunID
-		if spec.SourceRef != nil {
-			src := *spec.SourceRef
-			created.Source = &src
-		}
-		created.BudgetOverrides = RunBudgetOverrides(spec.Budget)
-		if err := s.store.SaveRun(context.Background(), created); err != nil {
-			return nil, fmt.Errorf("runview: save run provenance: %w", err)
-		}
+	created.ExecutionContext = ctxContract
+	created.ParentRunID = spec.ParentRunID
+	if spec.SourceRef != nil {
+		src := *spec.SourceRef
+		created.Source = &src
+	}
+	created.BudgetOverrides = RunBudgetOverrides(spec.Budget)
+	if err := s.store.SaveRun(context.Background(), created); err != nil {
+		return nil, fmt.Errorf("runview: save run provenance: %w", err)
 	}
 
 	// The staged uploads the launch names are promoted before the hand-off:
@@ -483,7 +510,6 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, err.Error()); uerr != nil {
 			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
 		}
-		s.dropRunLog(runID)
 		return nil, fmt.Errorf("runview: %w", err)
 	}
 
@@ -511,7 +537,13 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// the file-based tailer's output. In detached mode we explicitly
 	// skip the file-tee path: the runner subprocess owns run.log on
 	// disk and a duplicate writer here would corrupt it.
-	s.prepareRunLogNoFile(runID)
+	logBuf := s.prepareRunLogNoFile(parent, runID)
+	// The runner subprocess writes run.log under the store's root, so the
+	// epoch is durable whenever that root exists — the capture is team-blind
+	// because a detached run's document is not read under the launcher's
+	// identity.
+	logOwner := s.ownRunLog(store.TeamBlind(parent), runID, logBuf, s.detachedLogDurability())
+	defer logOwner.Abandon()
 
 	res, err := s.spawnDetached(parent, detachedSpec{
 		Command:            runnerCommandRun,
@@ -519,7 +551,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		FilePath:           spec.FilePath,
 		BundleDir:          spec.BundleDir,
 		Vars:               spec.Vars,
-		StoreDir:           s.storeDir,
+		StoreDir:           s.StoreRoot(),
 		AllowUnknownInputs: spec.AllowUnknownInputs,
 		Timeout:            spec.Timeout,
 		MergeInto:          spec.MergeInto,
@@ -532,14 +564,17 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Supervisors:        spec.Supervisors,
 		Permission:         spec.Permission,
 		Budget:             spec.Budget,
+		LogBuf:             logBuf,
+		LogOwner:           logOwner,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
 		// as a phantom "running" run forever — mark it failed instead.
+		// The run is terminal then, so the deferred Abandon ends its log
+		// epoch as terminal.
 		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, "runner failed to start: "+err.Error()); uerr != nil {
 			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
 		}
-		s.dropRunLog(runID)
 		return nil, err
 	}
 
@@ -547,8 +582,8 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// broker.Subscribe(runID) see events the runner writes to
 	// events.jsonl. It runs until the run terminates (signaled via
 	// the closed Done channel from spawnDetached's watcher).
-	startEventSource(s, runID, res.Done)
-	startLogSource(s, runID, res.Done)
+	startObservedEventSource(s, runID, res.Done, parent)
+	startLogSource(s, runID, logBuf, res.Done)
 
 	return res, nil
 }
@@ -576,11 +611,12 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 			codemodeBounds = r.CodemodeBoundsOverride
 		}
 	}
-	s.prepareRunLogNoFile(spec.RunID)
+	logBuf := s.prepareRunLogNoFile(parent, spec.RunID)
+	logOwner := s.ownRunLog(store.TeamBlind(parent), spec.RunID, logBuf, s.detachedLogDurability())
+	defer logOwner.Abandon()
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)
 	if convErr != nil {
-		s.dropRunLog(spec.RunID)
 		return nil, convErr
 	}
 
@@ -589,7 +625,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		RunID:             spec.RunID,
 		FilePath:          spec.FilePath,
 		Answers:           answers,
-		StoreDir:          s.storeDir,
+		StoreDir:          s.StoreRoot(),
 		AutoMemory:        spec.AutoMemory,
 		AmbientContext:    spec.AmbientContext,
 		Codemode:          codemode,
@@ -604,15 +640,16 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec, permis
 		// override so the detached CLI subprocess raises the cap too.
 		// Without it a --max-cost-usd on a detached resume was inert
 		// — the child ran the launch-time figure that killed the run.
-		Budget: spec.Budget,
+		Budget:   spec.Budget,
+		LogBuf:   logBuf,
+		LogOwner: logOwner,
 	})
 	if err != nil {
-		s.dropRunLog(spec.RunID)
 		return nil, err
 	}
 
-	startEventSource(s, spec.RunID, res.Done)
-	startLogSource(s, spec.RunID, res.Done)
+	startObservedEventSource(s, spec.RunID, res.Done, parent)
+	startLogSource(s, spec.RunID, logBuf, res.Done)
 
 	return res, nil
 }

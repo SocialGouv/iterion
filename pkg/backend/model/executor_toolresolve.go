@@ -822,6 +822,12 @@ func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDe
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
+	// Only the static, read-only checkers have an audited parallel path.
+	switch policy.(type) {
+	case *tool.Policy, *tool.RulePolicy:
+	default:
+		t.ConcurrentSafe = false
+	}
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		if err := policy.CheckContext(e.toolPolicyContext(ctx, executionCtx, node, name, qualifiedName, input)); err != nil {
 			return "", err
