@@ -572,18 +572,6 @@ func (s *Service) launchSourceFacts(ctx context.Context, parentRunID, delegation
 	return out, pool, nil
 }
 
-// hookEventObservers builds ExecutorSpec.EventObservers for every
-// in-process execution (launch AND resume): the caller's extra observers
-// plus the broker. Backend-hook events (assistant_text, tool_*, llm_*)
-// never fire the engine's observer, so without the broker here a
-// declared supervisor observing via ObserveRun — and any live broker
-// subscriber of an in-process run — is blind to the agent's own words.
-// Subscribers dedup by Seq, and the two event sets are disjoint, so
-// nothing arrives twice.
-func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Event) {
-	return append(append([]func(store.Event){}, extra...), s.broker.Publish)
-}
-
 // foldAndScreen folds the resolved routing policy's override cells under
 // the launch's own rows, refuses the (backend, provider) pair the
 // per-field composition can assemble from two entries (#2637) and the
@@ -805,7 +793,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Workflow:       wf,
 		Vars:           spec.Vars,
 		Store:          s.store,
-		EventObservers: s.hookEventObservers(spec.ExtraObservers),
+		EventObservers: spec.ExtraObservers,
+		EventBroker:    s.broker,
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -1612,7 +1601,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
-		EventObservers: s.hookEventObservers(nil),
+		EventBroker:    s.broker,
 		AutoMemory:     autoMemory,
 		BoardRegister:  s.boardRegister,
 		BoardRevoke:    s.boardRevoke,

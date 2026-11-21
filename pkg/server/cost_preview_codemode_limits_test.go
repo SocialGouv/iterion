@@ -22,12 +22,12 @@ func TestPreviewCostCarriesTheCodemodeLimitsFromScriptHost(t *testing.T) {
 	def := scripthost.DefaultLimits()
 	ceil := scripthost.Ceiling()
 
-	if d := got.CodemodeLimits.Default; d.ToolCalls != def.ToolCalls || d.Memory != def.Memory ||
+	if d := got.CodemodeLimits.Default; d.ToolCalls != def.ToolCalls || d.ConcurrentToolCalls != def.ConcurrentToolCalls || d.Memory != def.Memory ||
 		d.ScriptBytes != def.ScriptBytes || d.ResultBytes != def.ResultBytes ||
 		d.ToolResultBytes != def.ToolResultBytes || d.Wall != def.Wall.String() || d.CPU != def.CPU.String() {
 		t.Errorf("default = %+v, want scripthost.DefaultLimits() %+v (durations as %q/%q)", d, def, def.Wall, def.CPU)
 	}
-	if c := got.CodemodeLimits.Ceiling; c.ToolCalls != ceil.ToolCalls || c.Memory != ceil.Memory ||
+	if c := got.CodemodeLimits.Ceiling; c.ToolCalls != ceil.ToolCalls || c.ConcurrentToolCalls != ceil.ConcurrentToolCalls || c.Memory != ceil.Memory ||
 		c.ScriptBytes != ceil.ScriptBytes || c.ResultBytes != ceil.ResultBytes ||
 		c.ToolResultBytes != ceil.ToolResultBytes || c.Wall != ceil.Wall.String() || c.CPU != ceil.CPU.String() {
 		t.Errorf("ceiling = %+v, want scripthost.Ceiling() %+v", c, ceil)

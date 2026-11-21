@@ -6,7 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
+	"time"
 )
+
+// Each queue has a fixed number of slots for line-capped envelopes.
+const (
+	multiplexerPendingCalls   = 4
+	multiplexerPendingReplies = 4
+)
+
+const defaultMultiplexerReplyDrain = time.Second
+
+const multiplexerBusy = "launcher: tool/ask_user relay is at capacity"
 
 // MultiplexerHandler dispatches the launcher-side responses to envelopes
 // the runner emits mid-stream. All four hooks are optional: nil means
@@ -14,11 +26,9 @@ import (
 // runner" (for tool_call / ask_user — they need a reply) or "drop
 // silently" (for session_capture / event — fire-and-forget by design).
 //
-// V2-1 ships the multiplexer with all hooks nil-safe so the only path
-// exercised in the existing wire (task → result) keeps working
-// unchanged. V2-2 wires OnToolCall to the in-process tool registry +
-// MCP manager; V2-3 wires OnAskUser to the engine pause path; V2-4
-// wires OnSessionCapture to the session store for compaction-retry.
+// Tool and Ask hooks share a serial worker and must stop when their context
+// is cancelled. Event and capture hooks run in wire order, independently of
+// the worker: any state shared across the two lanes needs synchronization.
 type MultiplexerHandler struct {
 	// OnToolCall executes a tool the runner asked for and returns
 	// the (output, err) pair the launcher will forward back as a
@@ -48,21 +58,32 @@ type MultiplexerHandler struct {
 // runner's stdin, and returns the terminal [IOResult] when a
 // [EnvelopeResult] arrives.
 //
-// Single-use: callers construct one per runner invocation.
+// Single-use: callers construct one per runner invocation. Run closes the
+// launcher ends if they implement [io.Closer], to interrupt pending I/O on
+// shutdown. A stream that can block must support concurrent Close that wakes
+// its pending operation.
 type Multiplexer struct {
-	reader  *EnvelopeReader
-	writer  *EnvelopeWriter
-	handler MultiplexerHandler
+	reader     *EnvelopeReader
+	writer     *EnvelopeWriter
+	handler    MultiplexerHandler
+	stdout     io.Closer
+	stdin      io.Closer
+	replyDrain time.Duration
 }
 
 // NewMultiplexer wraps the runner's stdout reader + stdin writer.
 // The handler may be the zero value (all hooks nil) — see
 // [MultiplexerHandler].
 func NewMultiplexer(stdout io.Reader, stdin io.Writer, h MultiplexerHandler) *Multiplexer {
+	stdoutCloser, _ := stdout.(io.Closer)
+	stdinCloser, _ := stdin.(io.Closer)
 	return &Multiplexer{
-		reader:  NewEnvelopeReader(stdout),
-		writer:  NewEnvelopeWriter(stdin),
-		handler: h,
+		reader:     NewEnvelopeReader(stdout),
+		writer:     NewEnvelopeWriter(stdin),
+		handler:    h,
+		stdout:     stdoutCloser,
+		stdin:      stdinCloser,
+		replyDrain: defaultMultiplexerReplyDrain,
 	}
 }
 
@@ -80,38 +101,211 @@ func (m *Multiplexer) SetRedactor(redact func(string) string) {
 	m.reader.SetRedactor(redact)
 }
 
-// Run drives the loop. Returns the terminal [IOResult] when a
-// [EnvelopeResult] is received, or [io.EOF] / a wire-format error
-// when the runner closed the channel without sending one. Honours
-// ctx — when ctx is cancelled, the next envelope dispatch returns
-// ctx.Err() promptly (the underlying [EnvelopeReader] doesn't itself
-// listen on ctx, so callers wanting interrupt-driven cancellation
-// should also close the runner's stdout from outside).
+// SetReplyDrainTimeout bounds how long a terminal result may wait for
+// outstanding replies. A launcher that already reaps its owned pipes gives
+// that reaper time to report the underlying write error. Call before Run.
+func (m *Multiplexer) SetReplyDrainTimeout(timeout time.Duration) {
+	m.replyDrain = timeout
+}
+
+// Run drives the relay until a terminal result, cancellation or a wire
+// failure. Shutdown cancels outstanding work, interrupts the pipes and joins
+// the workers before returning. Send is only for the initial seed, before Run.
 func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return IOResult{}, err
-		}
-		env, err := m.reader.Read()
+	ctx, stop := context.WithCancelCause(ctx)
+	workCtx, stopWork := context.WithCancel(ctx)
+	calls := make(chan func() (Envelope, error), multiplexerPendingCalls)
+	replies := make(chan Envelope, multiplexerPendingReplies)
+	queueReply := func(reply Envelope, err error) error {
 		if err != nil {
+			return err
+		}
+		// Bound retained bytes even for a launcher-provided Ask answer.
+		if len(reply.Data)+len(reply.ID) >= MaxEnvelopeLineBytes {
+			return fmt.Errorf("delegate: %s reply exceeds the relay line cap: %w", reply.Type, ErrEnvelopeLineTooLong)
+		}
+		select {
+		case replies <- reply:
+			return nil
+		default:
+			return errors.New("delegate: reply backlog full; cannot queue correlated reply")
+		}
+	}
+
+	var wg sync.WaitGroup
+	var handlerPanic any
+	defer func() {
+		stopWork()
+		stop(nil)
+		if m.stdout != nil {
+			_ = m.stdout.Close()
+		}
+		if m.stdin != nil {
+			_ = m.stdin.Close()
+		}
+		wg.Wait()
+		if handlerPanic != nil {
+			panic(handlerPanic)
+		}
+	}()
+
+	// The router asks for each read after the previous envelope is routed.
+	// A slow ordered callback must not prefetch an answer past the pipe
+	// owner's drain boundary.
+	type readResult struct {
+		env Envelope
+		err error
+	}
+	readNext := make(chan struct{})
+	incoming := make(chan readResult)
+	wg.Go(func() {
+		for {
+			select {
+			case <-readNext:
+			case <-ctx.Done():
+				return
+			}
+			env, err := m.reader.Read()
+			select {
+			case incoming <- readResult{env, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil || env.Type == EnvelopeResult {
+				return
+			}
+		}
+	})
+
+	// Tool calls and Ask share one FIFO execution lane. The runner cannot
+	// opt a call into parallel execution or bypass the launcher handler.
+	workerDone := make(chan struct{})
+	wg.Go(func() {
+		defer close(workerDone)
+		defer func() {
+			if p := recover(); p != nil {
+				// Re-panic on the caller's stack after shutdown, like a
+				// synchronous handler. A worker panic must not kill the process.
+				handlerPanic = p
+				stop(errors.New("delegate: relay handler panicked"))
+			}
+		}()
+		for {
+			select {
+			case <-workCtx.Done():
+				return
+			case call := <-calls:
+				if workCtx.Err() != nil {
+					return
+				}
+				if err := queueReply(call()); err != nil {
+					stop(err)
+					return
+				}
+			}
+		}
+	})
+	writerDone := make(chan struct{})
+	written := 0
+	wg.Go(func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case reply, ok := <-replies:
+				if !ok || ctx.Err() != nil {
+					return
+				}
+				if err := m.writer.Write(reply); err != nil {
+					stop(err)
+					return
+				}
+				written++
+			}
+		}
+	})
+
+	requests := 0
+	for {
+		select {
+		case readNext <- struct{}{}:
+		case <-ctx.Done():
+			return IOResult{}, context.Cause(ctx)
+		}
+		var r readResult
+		select {
+		case <-ctx.Done():
+			return IOResult{}, context.Cause(ctx)
+		case r = <-incoming:
+		}
+		if err := context.Cause(ctx); err != nil {
 			return IOResult{}, err
 		}
+		if r.err != nil {
+			return IOResult{}, r.err
+		}
+		env := r.env
 		switch env.Type {
 		case EnvelopeResult:
 			var ioRes IOResult
 			if err := json.Unmarshal(env.Data, &ioRes); err != nil {
 				return IOResult{}, fmt.Errorf("delegate: decode IOResult: %w", err)
 			}
+			// Do not turn a premature terminal into success by dropping
+			// unanswered requests. Stop effects, but give an active
+			// handler's reply and queued replies a bounded write drain.
+			stopWork()
+			timer := time.NewTimer(m.replyDrain)
+			defer timer.Stop()
+			wait := func(done <-chan struct{}) error {
+				select {
+				case <-done:
+					return context.Cause(ctx)
+				case <-ctx.Done():
+					return context.Cause(ctx)
+				case <-timer.C:
+					return errors.New("delegate: terminal result arrived with replies still pending at the relay drain deadline")
+				}
+			}
+			if err := wait(workerDone); err != nil {
+				return IOResult{}, err
+			}
+			close(replies)
+			if err := wait(writerDone); err != nil {
+				return IOResult{}, err
+			}
+			if written != requests {
+				return IOResult{}, fmt.Errorf("delegate: terminal result arrived with %d unanswered requests", requests-written)
+			}
 			return ioRes, nil
 
 		case EnvelopeToolCall:
-			if err := m.handleToolCall(ctx, env); err != nil {
-				return IOResult{}, err
+			requests++
+			var call ToolCallData
+			if err := json.Unmarshal(env.Data, &call); err != nil {
+				return IOResult{}, fmt.Errorf("delegate: decode tool_call: %w", err)
+			}
+			select {
+			case calls <- func() (Envelope, error) { return m.handleToolCall(workCtx, env.ID, call) }:
+			default:
+				if err := queueReply(newToolResultData(env.ID, ToolResultData{Error: multiplexerBusy})); err != nil {
+					return IOResult{}, err
+				}
 			}
 
 		case EnvelopeAskUser:
-			if err := m.handleAskUser(ctx, env); err != nil {
-				return IOResult{}, err
+			requests++
+			var data AskUserData
+			if err := json.Unmarshal(env.Data, &data); err != nil {
+				return IOResult{}, fmt.Errorf("delegate: decode ask_user: %w", err)
+			}
+			select {
+			case calls <- func() (Envelope, error) { return m.handleAskUser(workCtx, env.ID, data) }:
+			default:
+				if err := queueReply(askUserErrorReply(env.ID, multiplexerBusy)); err != nil {
+					return IOResult{}, err
+				}
 			}
 
 		case EnvelopeSessionCapture:
@@ -128,19 +322,12 @@ func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
 			}
 
 		default:
-			// Unknown envelope types: ignore for forward compatibility.
-			// Future runner versions may emit envelopes a launcher
-			// doesn't yet understand; dropping them is preferable to
-			// failing the run.
+			// Ignore unknown types for forward compatibility.
 		}
 	}
 }
 
-func (m *Multiplexer) handleToolCall(ctx context.Context, env Envelope) error {
-	var call ToolCallData
-	if err := json.Unmarshal(env.Data, &call); err != nil {
-		return fmt.Errorf("delegate: decode tool_call: %w", err)
-	}
+func (m *Multiplexer) handleToolCall(ctx context.Context, id string, call ToolCallData) (Envelope, error) {
 	var (
 		output  string
 		callErr error
@@ -173,49 +360,23 @@ func (m *Multiplexer) handleToolCall(ctx context.Context, env Envelope) error {
 	// Clamped before it goes on the wire: a host-side tool can return more
 	// than the channel's line cap, and an unclamped line kills the whole
 	// IPC instead of handing the model a bounded result.
-	reply, err := newToolResultData(env.ID, data)
-	if err != nil {
-		return err
-	}
-	return m.writer.Write(reply)
+	return newToolResultData(id, data)
 }
 
-func (m *Multiplexer) handleAskUser(ctx context.Context, env Envelope) error {
-	var data AskUserData
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		return fmt.Errorf("delegate: decode ask_user: %w", err)
+func (m *Multiplexer) handleAskUser(ctx context.Context, id string, data AskUserData) (Envelope, error) {
+	if m.handler.OnAskUser == nil {
+		return askUserErrorReply(id, "launcher: no ask_user handler registered")
 	}
-	var answers map[string]string
-	if m.handler.OnAskUser != nil {
-		var err error
-		answers, err = m.handler.OnAskUser(ctx, data)
-		if err != nil {
-			// Surface the error back to the runner so the proxy
-			// ask_user closure can return it as a Go error inside
-			// the LLM loop. The launcher itself does NOT abort the
-			// multiplexer — the runner decides whether the failure
-			// is fatal.
-			return m.replyAskUserError(env.ID, err.Error())
-		}
-	} else {
-		return m.replyAskUserError(env.ID, "launcher: no ask_user handler registered")
-	}
-	reply, err := NewAskUserAnswerEnvelope(env.ID, answers)
+	answers, err := m.handler.OnAskUser(ctx, data)
 	if err != nil {
-		return err
+		// The runner decides whether an Ask handler failure is fatal.
+		return askUserErrorReply(id, err.Error())
 	}
-	return m.writer.Write(reply)
+	return NewAskUserAnswerEnvelope(id, answers)
 }
 
-// replyAskUserError encodes an ask_user failure into the answers map
-// using the conventional `__error__` key the runner-side proxy
-// recognises and translates into a Go error.
-func (m *Multiplexer) replyAskUserError(id, errMsg string) error {
-	reply, err := NewAskUserAnswerEnvelope(id, map[string]string{AskUserErrorKey: errMsg})
-	if err != nil {
-		return err
-	}
-	return m.writer.Write(reply)
+func askUserErrorReply(id, errMsg string) (Envelope, error) {
+	return NewAskUserAnswerEnvelope(id, map[string]string{AskUserErrorKey: errMsg})
 }
 
 // AskUserErrorKey is the conventional answers-map key used to surface

@@ -177,7 +177,7 @@ survivors by design.
 
 ## The author's surface
 
-Seven bounds are declared in the `.bot`, as the `codemode:` block; the names,
+Eight bounds are declared in the `.bot`, as the `codemode:` block; the names,
 defaults and ceilings are in [dsl.md](../../dsl.md).
 
 **The conventions are borrowed, not invented.** A duration is a quoted string,

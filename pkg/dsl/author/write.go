@@ -1199,6 +1199,7 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 		p.str("mode", cb.Mode)
 	}
 	p.int64("tool_calls", cb.ToolCalls)
+	p.int64("concurrent_tool_calls", cb.ConcurrentToolCalls)
 	p.str("wall", cb.Wall)
 	p.str("cpu", cb.CPU)
 	p.int64("memory", cb.Memory)

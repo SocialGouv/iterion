@@ -291,6 +291,9 @@ func appendCodemodeArgs(args []string, codemode string, b *ir.CodemodeBounds) []
 	if b.ToolCalls > 0 {
 		args = append(args, "--codemode-tool-calls", strconv.FormatInt(b.ToolCalls, 10))
 	}
+	if b.ConcurrentToolCalls > 0 {
+		args = append(args, "--codemode-concurrent-tool-calls", strconv.FormatInt(b.ConcurrentToolCalls, 10))
+	}
 	if b.ToolResultBytes > 0 {
 		args = append(args, "--codemode-tool-result-bytes", strconv.FormatInt(b.ToolResultBytes, 10))
 	}

@@ -242,6 +242,9 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		if b.ToolCalls > 0 {
 			body["tool_calls"] = b.ToolCalls
 		}
+		if b.ConcurrentToolCalls > 0 {
+			body["concurrent_tool_calls"] = b.ConcurrentToolCalls
+		}
 		if b.Wall > 0 {
 			body["wall"] = b.Wall.String()
 		}
