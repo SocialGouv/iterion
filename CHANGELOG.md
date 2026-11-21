@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.24.2](https://github.com/SocialGouv/iterion/compare/v7.24.1...v7.24.2) (2026-11-21)
+
+### Bug Fixes
+
+* **claw:** reject unsupported sandbox permission pauses ([#3504](https://github.com/SocialGouv/iterion/issues/3504)) ([cc1132b](https://github.com/SocialGouv/iterion/commit/cc1132b22183ea79d6165ea0d2e786979f1dae2d))
+
+    <details><summary>why</summary>
+
+    Remove the inbound guard to verify that the boundary test fails, then restore it and run the targeted suite ten times with and without the race detector.
+
+    </details>
+* **studio:** launch named cloud bots from a pinned program ([#3505](https://github.com/SocialGouv/iterion/issues/3505)) ([de9b6ad](https://github.com/SocialGouv/iterion/commit/de9b6ad1d0665d6e8b9536254c015692f181439d)), closes [#3416](https://github.com/SocialGouv/iterion/issues/3416)
+
+    <details><summary>why</summary>
+
+    Resolve the launch form from the active team and pin its compiled program. Keep launch state and deferred requests scoped to their originating target, account, and team.
+
+    </details>
+
 ## [7.24.1](https://github.com/SocialGouv/iterion/compare/v7.24.0...v7.24.1) (2026-11-21)
 
 ### Bug Fixes
