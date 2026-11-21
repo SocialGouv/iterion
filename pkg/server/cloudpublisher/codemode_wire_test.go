@@ -33,7 +33,7 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 	}
 	ctx := store.WithIdentity(context.Background(), "team", "user")
 	wf := &ir.Workflow{Name: "team_bot"}
-	bounds := &scripthost.Limits{ToolCalls: 4096, ConcurrentToolCalls: 3, Wall: 90 * time.Second}
+	bounds := &scripthost.Limits{ToolCalls: 4096, ConcurrentToolCalls: 3, Wall: 90 * time.Second, StoreEntries: 48, StoreBytes: 262144}
 	spec := runview.LaunchSpec{
 		FilePath:       "team.bot",
 		Source:         "workflow team_bot:\n  start -> done\n",
@@ -56,13 +56,31 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 		t.Fatalf("published %d messages, want 2 (launch + resume)", len(published))
 	}
 	launch, resume := published[0], published[1]
-	if launch.Codemode != "off" || launch.CodemodeBounds == nil || launch.CodemodeBounds.ToolCalls != 4096 || launch.CodemodeBounds.ConcurrentToolCalls != 3 {
+	if launch.Codemode != "off" || launch.CodemodeBounds == nil || launch.CodemodeBounds.ToolCalls != 4096 || launch.CodemodeBounds.ConcurrentToolCalls != 3 || launch.CodemodeBounds.StoreEntries != 48 || launch.CodemodeBounds.StoreBytes != 262144 {
 		t.Errorf("launch carried Codemode=%q bounds=%+v, want the spec's override", launch.Codemode, launch.CodemodeBounds)
 	}
 	// The RESUME message replays the launch's choice — from the run doc the
 	// launch stamped, because a bare ResumeSpec carries no codemode.
-	if resume.Codemode != "off" || resume.CodemodeBounds == nil || resume.CodemodeBounds.ToolCalls != 4096 || resume.CodemodeBounds.ConcurrentToolCalls != 3 {
+	if resume.Codemode != "off" || resume.CodemodeBounds == nil || resume.CodemodeBounds.ToolCalls != 4096 || resume.CodemodeBounds.ConcurrentToolCalls != 3 || resume.CodemodeBounds.StoreEntries != 48 || resume.CodemodeBounds.StoreBytes != 262144 {
 		t.Errorf("resume carried Codemode=%q bounds=%+v, want the run doc's replay of the launch's choice", resume.Codemode, resume.CodemodeBounds)
+	}
+	if resume.Resume == nil || resume.Resume.CodemodeQuota != nil {
+		t.Fatalf("silent resume carried a quota patch: %+v", resume.Resume)
+	}
+	if err := st.UpdateRunStatus(ctx, "run-codemode", store.RunStatusFailedResumable, "needs quota restatement"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{
+		RunID: "run-codemode", Source: spec.Source, CodemodeBounds: &ir.CodemodeBounds{StoreBytes: 131072},
+	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+		t.Fatalf("SubmitResume (partial): %v", err)
+	}
+	partial := published[2]
+	if got := partial.Resume.CodemodeQuota; got == nil || got.Bytes != 131072 || got.Entries != 0 || got.QueuedAt.IsZero() {
+		t.Fatalf("partial resume patch = %+v, want bytes only", got)
+	}
+	if got := partial.CodemodeBounds; got == nil || got.StoreEntries != 48 || got.StoreBytes != 131072 || got.ToolCalls != bounds.ToolCalls {
+		t.Fatalf("partial resume replay = %+v, want merged quota and the launch's tool bounds", got)
 	}
 	// And the doc itself carries the stamp, which is what makes every OTHER
 	// resume surface (sweeper, WS answers) able to replay it.
@@ -70,7 +88,10 @@ func TestSubmitLaunchAndResumeCarryTheCodemodeOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if doc.CodemodeOverride != "off" || doc.CodemodeBoundsOverride == nil || doc.CodemodeBoundsOverride.ToolCalls != 4096 || doc.CodemodeBoundsOverride.ConcurrentToolCalls != 3 {
+	if marker := partial.Resume.CodemodeQuota.QueuedAt; doc.QueuedAt == nil || !doc.QueuedAt.Equal(marker) || partial.PublishedAtRFC == marker.Format(time.RFC3339Nano) {
+		t.Fatalf("marker=%s durable=%v publication=%s; want exact flip, separate from publication", marker, doc.QueuedAt, partial.PublishedAtRFC)
+	}
+	if doc.CodemodeOverride != "off" || doc.CodemodeBoundsOverride == nil || doc.CodemodeBoundsOverride.ToolCalls != 4096 || doc.CodemodeBoundsOverride.ConcurrentToolCalls != 3 || doc.CodemodeBoundsOverride.StoreEntries != 48 || doc.CodemodeBoundsOverride.StoreBytes != 262144 {
 		t.Errorf("run doc CodemodeOverride=%q bounds=%+v, want the launch's override stamped", doc.CodemodeOverride, doc.CodemodeBoundsOverride)
 	}
 }

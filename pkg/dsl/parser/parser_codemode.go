@@ -70,7 +70,7 @@ func (p *parser) parseCodemodeBlock(host string) *ast.CodemodeBlock {
 			}
 			break
 		}
-		p.parseCodemodeProp(cb, t)
+		p.parseCodemodeProp(cb, t, host)
 	}
 	if cb.Mode == "" {
 		// Block form without an explicit mode → the bounds imply on.
@@ -86,7 +86,7 @@ func (p *parser) parseCodemodeBlock(host string) *ast.CodemodeBlock {
 // a position instead of a parser error with no vocabulary for units. Byte
 // sizes and counts are bare integers — this DSL has no byte-size value form
 // and the repository vendors no parser for one.
-func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token) {
+func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token, host string) {
 	if propTok.Type != TokenIdent && !isKeywordToken(propTok.Type) {
 		p.addError(DiagUnexpectedToken, propTok, "unexpected token "+strconv.Quote(propTok.Value)+" in codemode block")
 		p.next()
@@ -116,6 +116,19 @@ func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token) {
 		cb.ResultBytes = p.expectInt64()
 	case "tool_result_bytes":
 		cb.ToolResultBytes = p.expectInt64()
+	case "store_entries", "store_bytes":
+		value := p.expectInt64()
+		if host != "workflow" {
+			p.addErrorHint(DiagInvalidValue, propTok, name+" sets a run-wide quota and is not allowed on "+host,
+				"Move it to the workflow codemode block or set it as a run launch override.")
+		} else if value < 0 {
+			p.addErrorHint(DiagInvalidValue, propTok, name+" must be non-negative",
+				"Declare a positive quota, or use zero to inherit.")
+		} else if name == "store_entries" {
+			cb.StoreEntries = value
+		} else {
+			cb.StoreBytes = value
+		}
 	default:
 		p.unknownProperty("codemode", propTok, name)
 		p.skipUnknownProperty()

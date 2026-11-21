@@ -284,6 +284,7 @@ var (
 	remoteResumeMaxDuration         string
 	remoteResumeMaxIterations       int
 	remoteResumeMaxParallelBranches int
+	remoteResumeCodemodeFlags       codemodeFlagSet
 )
 
 var remoteRunsResumeCmd = &cobra.Command{
@@ -292,6 +293,9 @@ var remoteRunsResumeCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteResumeUsageBlocked {
+			if remoteResumeCodemodeFlags.storeEntries != 0 || remoteResumeCodemodeFlags.storeBytes != 0 {
+				return fmt.Errorf("codemode store quotas require a single run id; they cannot be restated with --usage-blocked")
+			}
 			if len(args) > 0 {
 				return fmt.Errorf("--usage-blocked resumes every usage-blocked run; pass no run id")
 			}
@@ -305,16 +309,18 @@ var remoteRunsResumeCmd = &cobra.Command{
 		}
 		answers := strings.TrimPrefix(remoteResumeAnswers, "@")
 		return cli.RemoteRunsResume(cmd.Context(), c, p, args[0], cli.RemoteRunsResumeOptions{
-			AnswersFile:         answers,
-			FilePath:            remoteResumeFile,
-			Force:               remoteResumeForce,
-			AcceptScratchLoss:   remoteResumeAcceptScratchLoss,
-			Timeout:             remoteResumeTimeout,
-			MaxCostUSD:          remoteResumeMaxCostUSD,
-			MaxTokens:           remoteResumeMaxTokens,
-			MaxDuration:         remoteResumeMaxDuration,
-			MaxIterations:       remoteResumeMaxIterations,
-			MaxParallelBranches: remoteResumeMaxParallelBranches,
+			AnswersFile:          answers,
+			FilePath:             remoteResumeFile,
+			Force:                remoteResumeForce,
+			AcceptScratchLoss:    remoteResumeAcceptScratchLoss,
+			Timeout:              remoteResumeTimeout,
+			MaxCostUSD:           remoteResumeMaxCostUSD,
+			MaxTokens:            remoteResumeMaxTokens,
+			MaxDuration:          remoteResumeMaxDuration,
+			MaxIterations:        remoteResumeMaxIterations,
+			MaxParallelBranches:  remoteResumeMaxParallelBranches,
+			CodemodeStoreEntries: remoteResumeCodemodeFlags.storeEntries,
+			CodemodeStoreBytes:   remoteResumeCodemodeFlags.storeBytes,
 		})
 	}),
 }
@@ -638,6 +644,7 @@ func init() {
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeUsageBlocked, "usage-blocked", false, "Resume EVERY run parked on a provider usage window (failed_resumable + USAGE_LIMIT_BLOCKED) — the one command after a forfait reset; each resume walks the full admission gate, so a run whose window is still shut re-fails at its preflight before anything spends and re-arms at the announced date")
 	remoteRunsResumeCmd.Flags().BoolVar(&remoteResumeAcceptScratchLoss, "accept-scratch-loss", false, "Resume although the run's scratch does not travel (SCRATCH_NOT_PORTABLE): without it, or with an older bank — --force does not accept that")
 	remoteRunsResumeCmd.Flags().StringVar(&remoteResumeTimeout, "timeout", "", "New timeout for the resumed run")
+	remoteResumeCodemodeFlags.registerStore(remoteRunsResumeCmd.Flags())
 	// #652 part 2: the local `iterion resume` accepts --max-* to raise
 	// the cap; the remote equivalent now does too. Non-zero beats the
 	// run doc's persisted launch ask on THIS resume; zero inherits.

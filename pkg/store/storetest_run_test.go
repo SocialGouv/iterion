@@ -72,3 +72,11 @@ func TestToolApprovalSpendSurvivesFilesystemReopen(t *testing.T) {
 		t.Fatalf("spent approval after reopen: won=%v err=%v", won, err)
 	}
 }
+
+func TestConformance_FilesystemCodemodeScratch(t *testing.T) {
+	s, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.CodemodeScratch(t, s, store.Open(s.Root()))
+}

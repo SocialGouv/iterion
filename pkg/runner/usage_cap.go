@@ -747,6 +747,11 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if logger != nil {
 		logger.Warn("runner: run %s not started — %s", msg.RunID, d.Reason)
 	}
+	if msg.Resume != nil && msg.Resume.CodemodeQuota != nil && !msg.Resume.CodemodeQuotaSpent {
+		// The sweeper replays the durable run, not this publication's
+		// unclaimed quota intent. Do not arm a quota-free retry.
+		return &unappliedQuotaUsageRefusal{reason: d.Reason}
+	}
 	// The status flip is what makes the retry armable: ScheduleRunRetry
 	// conditions on failed_resumable, and a run stopped before its first
 	// node has never been marked anything. Without this the retry silently

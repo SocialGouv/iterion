@@ -32,6 +32,7 @@ type GenerationTool struct {
 
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
+	codemodeState CodemodeState
 	// Model is the routing spec the client was resolved from
 	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
 	// exactly once: pass the spec, never an id already stripped — a model id

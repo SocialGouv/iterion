@@ -52,8 +52,9 @@ const ScriptHostToolName = "codemode"
 // the funnel. A broker outside would need the funnel widened, which is the
 // same thing as giving the funnel a second door.
 type scriptToolServer struct {
-	d   *toolDispatcher
-	ctx context.Context
+	d     *toolDispatcher
+	ctx   context.Context
+	state CodemodeState
 
 	// withheld is the tool the script host itself is bound to, withheld so a
 	// script cannot nest another script host. Empty while no DSL attribute

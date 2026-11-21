@@ -275,10 +275,14 @@ type Engine struct {
 	permissionOverride       string                               // persisted run-level tool gate choice
 	codemodeOverride         string                               // persisted launch-time codemode choice (ADR-165)
 	codemodeBoundsOverride   *scripthost.Limits                   // persisted launch-time codemode bounds raise
-	botOrigin                *store.BotOrigin                     // workflow code provenance, distinct from the triggering action
-	delegation               *store.RunDelegation                 // optional host-owned worker linkage
-	worktreeBaseCommit       string                               // explicit verified base for delegated worktrees
-	budgetOverrides          *store.RunBudgetOverrides            // raw launch/resume budget intent, persisted for every later engine rebuild
+	activeResumePauseHandoff string                               // fence of the locally claimed pause handoff
+	resumePauseBudget        *store.ResumePauseBudget
+	resumeCodemodeQueuedAt   time.Time                   // exact queued marker for a published quota restatement
+	resumeCodemodeQuota      store.CodemodeScratchLimits // explicit quota-only restatement for the resume claim
+	botOrigin                *store.BotOrigin            // workflow code provenance, distinct from the triggering action
+	delegation               *store.RunDelegation        // optional host-owned worker linkage
+	worktreeBaseCommit       string                      // explicit verified base for delegated worktrees
+	budgetOverrides          *store.RunBudgetOverrides   // raw launch/resume budget intent, persisted for every later engine rebuild
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an
@@ -527,11 +531,12 @@ type runState struct {
 	// where adding ctx to every signature would 80+ call sites with
 	// no semantic gain — the lifetime of rs IS the lifetime of ctx.
 	// Set in Run() before execLoop().
-	ctx       context.Context
-	runID     string
-	runInputs map[string]any
-	vars      map[string]any
-	outputs   map[string]map[string]any
+	ctx           context.Context
+	runID         string
+	codemodeState model.CodemodeState
+	runInputs     map[string]any
+	vars          map[string]any
+	outputs       map[string]map[string]any
 	// inheritedOutputs is the immutable outer/trunk output snapshot visible
 	// to a branch. Branch-local outputs remain in outputs; contract dependency
 	// collection consults both to mirror the scope used to build node input.
@@ -628,10 +633,12 @@ type runState struct {
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
-	events           *runEvents
-	artifactVersions map[string]int
-	nodeSessions     map[string]store.NodeSessionSlot
-	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	events                    *runEvents
+	artifactVersions          map[string]int
+	nodeSessions              map[string]store.NodeSessionSlot
+	pauseSessionRef           string // in-flight CLI ask_user pack (ADR-089)
+	delegateHandoffRun        *store.Run
+	delegateHandoffCheckpoint *store.Checkpoint // original delegate envelope until the successor is durable
 	// sessionLedger records the background work a CLI session's processes
 	// lost, per session id (delegate.SessionLedger). One
 	// ledger per run, shared by the trunk and every branch — its entries are

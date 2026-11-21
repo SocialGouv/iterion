@@ -117,6 +117,53 @@ func ResolveCodemodeBounds(run, node, workflow *CodemodeBounds) *CodemodeBounds 
 	return &out
 }
 
+// ResolveCodemodeStoreLimits resolves the quota of the one bank shared by a
+// run, field by field. Only the launch and the workflow may choose it; a
+// node never does. Zero inherits and the platform ceiling always applies.
+func ResolveCodemodeStoreLimits(run, workflow *CodemodeBounds) (entries, bytes int64) {
+	defaults, ceiling := scripthost.DefaultLimits(), scripthost.Ceiling()
+	entries, bytes = defaults.StoreEntries, defaults.StoreBytes
+	for _, rung := range []*CodemodeBounds{workflow, run} {
+		if rung == nil {
+			continue
+		}
+		if rung.StoreEntries > 0 {
+			entries = rung.StoreEntries
+		}
+		if rung.StoreBytes > 0 {
+			bytes = rung.StoreBytes
+		}
+	}
+	return min(entries, ceiling.StoreEntries), min(bytes, ceiling.StoreBytes)
+}
+
+// ReplayCodemodeBounds keeps existing replacement semantics when a restatement
+// includes a per-program bound. Restating only bank quotas leaves per-program
+// bounds untouched, and each omitted quota keeps its previous value. The
+// result is an execution snapshot, not an explicit quota patch for a claim.
+func ReplayCodemodeBounds(restated, prior *CodemodeBounds) *CodemodeBounds {
+	if restated == nil {
+		return prior
+	}
+	if prior == nil {
+		return restated
+	}
+	entries, bytes := restated.StoreEntries, restated.StoreBytes
+	out := *restated
+	out.StoreEntries, out.StoreBytes = 0, 0
+	if out == (CodemodeBounds{}) && (entries > 0 || bytes > 0) {
+		out = *prior
+	}
+	out.StoreEntries, out.StoreBytes = entries, bytes
+	if out.StoreEntries == 0 {
+		out.StoreEntries = prior.StoreEntries
+	}
+	if out.StoreBytes == 0 {
+		out.StoreBytes = prior.StoreBytes
+	}
+	return &out
+}
+
 // CodemodeBoundsAboveCeiling names every field of b that is above the
 // platform ceiling, as "<property> <declared> > <ceiling>" phrases in the
 // order the DSL block lists them. Empty means nothing is above it.
@@ -151,6 +198,8 @@ func CodemodeBoundsAboveCeiling(b *CodemodeBounds) []string {
 	num("script_bytes", b.ScriptBytes, ceil.ScriptBytes)
 	num("result_bytes", b.ResultBytes, ceil.ResultBytes)
 	num("tool_result_bytes", b.ToolResultBytes, ceil.ToolResultBytes)
+	num("store_entries", b.StoreEntries, ceil.StoreEntries)
+	num("store_bytes", b.StoreBytes, ceil.StoreBytes)
 	return over
 }
 
@@ -169,7 +218,8 @@ func ValidCodemode(v string) bool {
 func CodemodeBoundsSet(b *CodemodeBounds) bool {
 	return b != nil && (b.Wall > 0 || b.CPU > 0 || b.Memory > 0 ||
 		b.ScriptBytes > 0 || b.ResultBytes > 0 ||
-		b.ToolCalls > 0 || b.ConcurrentToolCalls > 0 || b.ToolResultBytes > 0)
+		b.ToolCalls > 0 || b.ConcurrentToolCalls > 0 || b.ToolResultBytes > 0 ||
+		b.StoreEntries > 0 || b.StoreBytes > 0)
 }
 
 // CodemodeBoundsNegativeField names the first property of b set BELOW zero,
@@ -202,6 +252,8 @@ func CodemodeBoundsNegativeField(b *CodemodeBounds) string {
 		checkInt("script_bytes", b.ScriptBytes),
 		checkInt("result_bytes", b.ResultBytes),
 		checkInt("tool_result_bytes", b.ToolResultBytes),
+		checkInt("store_entries", b.StoreEntries),
+		checkInt("store_bytes", b.StoreBytes),
 	} {
 		if name != "" {
 			return name

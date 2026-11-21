@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +61,14 @@ func (s *FilesystemRunStore) DeleteRun(ctx context.Context, id string) error {
 // deleteRunContent writes the tombstone and removes the run's content under
 // mu, which it takes itself (a *Locked helper is one whose caller holds mu).
 func (s *FilesystemRunStore) deleteRunContent(ctx context.Context, id string) error {
+	if ctx == nil {
+		return ErrInvalidValueFormat
+	}
+	scratchLock, err := s.lockCodemodeScratch(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = scratchLock.Unlock() }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	lock, err := s.acquireRunWriteLock(id)
@@ -76,8 +87,32 @@ func (s *FilesystemRunStore) deleteRunContent(ctx context.Context, id string) er
 		return fmt.Errorf("store: delete run %s: %w", id, err)
 	}
 	marker := filepath.Join(dir, deletionMarkerName)
-	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), filePerm); err != nil {
-		return fmt.Errorf("store: write deletion marker for %s: %w", id, err)
+	// Preserve the tenant of a scoped run even after the sweep removes run.json.
+	// A repeat deletion leaves the existing marker (and owner) intact.
+	if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
+		body := []byte(time.Now().UTC().Format(time.RFC3339Nano) + "\n")
+		raw, err := os.ReadFile(s.runJSONPath(id))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("store: read deletion marker owner for %s: %w", id, err)
+		}
+		if err == nil {
+			tenant, err := streamCanonicalTenant(ctx, raw)
+			if err != nil {
+				return fmt.Errorf("store: read deletion marker owner for %s: %w", id, err)
+			}
+			if tenant != "" {
+				owner, err := json.Marshal(tenant)
+				if err != nil {
+					return fmt.Errorf("store: encode deletion marker tenant: %w", err)
+				}
+				body = append(body, owner...)
+			}
+		}
+		if err := WriteFileAtomic(marker, body, filePerm); err != nil {
+			return fmt.Errorf("store: write deletion marker for %s: %w", id, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("store: check deletion marker for %s: %w", id, err)
 	}
 	// Remove everything EXCEPT the marker.
 	entries, err := os.ReadDir(dir)
@@ -95,6 +130,24 @@ func (s *FilesystemRunStore) deleteRunContent(ctx context.Context, id string) er
 	return nil
 }
 
+// readDeletionMarkerTenant distinguishes live runs from both legacy and
+// tenant-bound tombstones. Legacy markers have just a timestamp line.
+func (s *FilesystemRunStore) readDeletionMarkerTenant(id string) (string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(s.runDir(id), deletionMarkerName))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: read deletion marker: %w", err)
+	}
+	_, body, _ := bytes.Cut(data, []byte{'\n'})
+	var tenant string
+	if len(body) != 0 && json.Unmarshal(body, &tenant) != nil {
+		return "", false, errors.New("store: invalid deletion marker tenant")
+	}
+	return tenant, true, nil
+}
+
 // PruneDeletionMarkers removes tombstone directories whose marker is
 // older than cutoff. The marker's mtime is its creation instant.
 func (s *FilesystemRunStore) PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error) {
@@ -104,8 +157,6 @@ func (s *FilesystemRunStore) PruneDeletionMarkers(ctx context.Context, cutoff ti
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	runsDir := filepath.Join(s.root, "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -137,9 +188,16 @@ func (s *FilesystemRunStore) PruneDeletionMarkers(ctx context.Context, cutoff ti
 	return reaped, nil
 }
 
-// The scan is only a candidate list. Re-read the marker under the same lock
-// as creation/deletion, and release it before visiting another run ID.
+// The scan is only a candidate list. Take locks in the same order as deletion:
+// the scratch stripe before mu, then the stable run metadata lock.
 func (s *FilesystemRunStore) pruneDeletionMarker(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	scratchLock, err := s.lockCodemodeScratch(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = scratchLock.Unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	lock, err := s.acquireRunWriteLock(id)
 	if err != nil {
 		return false, err
@@ -147,7 +205,13 @@ func (s *FilesystemRunStore) pruneDeletionMarker(ctx context.Context, id string,
 	defer func() { _ = lock.Unlock() }()
 	dir := s.runDir(id)
 	info, err := os.Stat(filepath.Join(dir, deletionMarkerName))
-	if err != nil || info.ModTime().After(cutoff) {
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: recheck deletion marker %s: %w", id, err)
+	}
+	if info.ModTime().After(cutoff) {
 		return false, nil
 	}
 	if err := s.checkDeletionHeaderLocked(ctx, id); err != nil {
@@ -160,8 +224,8 @@ func (s *FilesystemRunStore) pruneDeletionMarker(ctx context.Context, id string,
 }
 
 // A failed cleanup can retain run.json beside its marker. Validate its raw
-// header even though ordinary loadRunRaw refuses tombstones. Completed old
-// tombstones have no document; this does not invent a new marker format.
+// header even though ordinary loadRunRaw refuses tombstones. Completed
+// tombstones can retain only the marker, without run.json.
 // Unbound callers (the prune, the CLI, internal deletes) check the format
 // only: the strict header parser refuses shapes the format read accepts. A
 // context carrying a run data binding is compared with the run it would

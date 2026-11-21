@@ -677,6 +677,8 @@ A block opened by `codemode:` inside `workflow`, `agent`, `judge`.
 | `script_bytes` | int | Bytes the program source may hold (default 262144, ceiling 4194304); refused parent-side before the spawn |
 | `result_bytes` | int | Bytes the program's returned value may hold (default 1048576, ceiling 8388608); refused child-side, where it is produced |
 | `tool_result_bytes` | int | Bytes ONE tool result handed back to a program may hold (default 65536, ceiling 1048576), cut on a rune boundary and flagged as cut. Separate from result_bytes: the point of codemode is that a program reads far more than it reports |
+| `store_entries` | int | Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit) |
+| `store_bytes` | int | Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit) |
 
 ### sandbox
 

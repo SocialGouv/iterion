@@ -43,6 +43,22 @@ func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (s
 		return "", nil
 	}
 	mode := normCodemode(cb.Mode)
+	// The AST JSON entry point does not go through the parser.
+	for _, quota := range []struct {
+		name  string
+		value int64
+	}{{"store_entries", cb.StoreEntries}, {"store_bytes", cb.StoreBytes}} {
+		if quota.value == 0 {
+			continue
+		}
+		if scope != "workflow" {
+			c.errorfAtProperty(DiagInvalidCodemodeStoreQuota, scope, name, "codemode",
+				"%s %q declares %s: a run-wide quota is only allowed at workflow or run scope", scope, name, quota.name)
+		} else if quota.value < 0 {
+			c.errorfAtProperty(DiagInvalidCodemodeStoreQuota, scope, name, "codemode",
+				"%s %q declares %s: a quota must be non-negative", scope, name, quota.name)
+		}
+	}
 	// At the node rung an explicit `off` beats any workflow `on`
 	// (ResolveCodemode takes the nearest declared value), so no program of
 	// this node runs and its own bounds bound nothing.
@@ -83,6 +99,8 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 		ScriptBytes:         cb.ScriptBytes,
 		ResultBytes:         cb.ResultBytes,
 		ToolResultBytes:     cb.ToolResultBytes,
+		StoreEntries:        cb.StoreEntries,
+		StoreBytes:          cb.StoreBytes,
 	}
 	// Gated with the census, for the same reason and at the same place: on an
 	// inert block a C349 saying "the DEFAULT applies instead" is text about an
@@ -99,7 +117,7 @@ func (c *compiler) codemodeBounds(cb *ast.CodemodeBlock, scope, name string, rep
 	if reportCeiling {
 		for _, phrase := range CodemodeBoundsAboveCeiling(&b) {
 			c.warnfAtProperty(DiagCodemodeBoundAboveCeiling, scope, name, "codemode",
-				"%s %q declares a codemode bound above the platform ceiling (%s): it is clamped to the ceiling where the program is spawned, not refused. Lower the value to say what will happen",
+				"%s %q declares a codemode bound above the platform ceiling (%s): it is clamped to the ceiling before use, not refused. Lower the value to say what will happen",
 				scope, name, phrase)
 		}
 		// The FLOOR half of the same story (#3290): a memory bound below the

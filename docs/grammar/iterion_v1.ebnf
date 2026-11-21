@@ -244,7 +244,9 @@ codemode_prop = "mode" ":" codemode_mode NEWLINE
               | "memory" ":" INT_LIT NEWLINE
               | "script_bytes" ":" INT_LIT NEWLINE
               | "result_bytes" ":" INT_LIT NEWLINE
-              | "tool_result_bytes" ":" INT_LIT NEWLINE ;
+              | "tool_result_bytes" ":" INT_LIT NEWLINE
+              | "store_entries" ":" INT_LIT NEWLINE
+              | "store_bytes" ":" INT_LIT NEWLINE ;
 loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;

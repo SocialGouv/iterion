@@ -508,6 +508,7 @@ func routeSchemas() map[string]routeOp {
 			request:  previewCostRequest{},
 			response: previewCostResponse{},
 		},
+		"POST /api/runs/{id}/resume": {request: resumeRunRequest{}},
 
 		// Model registry — known x usable x capabilities x pricing. Typed so
 		// the studio's picker (and every LaunchView node row) reads the same

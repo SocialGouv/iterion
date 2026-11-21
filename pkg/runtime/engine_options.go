@@ -643,6 +643,16 @@ func WithCodemodeOverride(mode string, bounds *scripthost.Limits) EngineOption {
 	return func(e *Engine) { e.codemodeOverride, e.codemodeBoundsOverride = mode, bounds }
 }
 
+// WithResumeCodemodeQuota supplies only the quota dimensions explicitly restated at resume.
+func WithResumeCodemodeQuota(quota store.CodemodeScratchLimits) EngineOption {
+	return func(e *Engine) { e.resumeCodemodeQuota = quota }
+}
+
+// WithResumeCodemodeQueuedAt pins a published quota restatement to its exact queued marker.
+func WithResumeCodemodeQueuedAt(at time.Time) EngineOption {
+	return func(e *Engine) { e.resumeCodemodeQueuedAt = at }
+}
+
 // WithRoutingPolicy pins the launch-frozen outcome contract on the
 // engine; it is persisted on the run doc at start (same
 // replay-from-the-doc doctrine as the model pins).

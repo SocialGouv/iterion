@@ -73,11 +73,12 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// store before the LLM loop starts. Anything else before the task
 	// envelope is a protocol error.
 	var (
-		ioTask          delegate.IOTask
-		replaySnapshots [][]byte
-		policyCfg       *permission.PolicyConfig
-		sawGateway      bool
-		announcedTrust  *store.RunTrust
+		ioTask           delegate.IOTask
+		replaySnapshots  [][]byte
+		policyCfg        *permission.PolicyConfig
+		sawGateway       bool
+		sawCodemodeState bool
+		announcedTrust   *store.RunTrust
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -102,6 +103,14 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			// factory. Values never ride this envelope — the forwarded
 			// env carries them.
 			sawGateway = true
+			continue
+		}
+		if env.Type == delegate.EnvelopeCodemodeStateV1 {
+			if sawCodemodeState || env.ID != "" || len(env.Data) != 0 {
+				return emitFatal(dispatcher, stderr, errors.New("invalid codemode state v1 capability marker"))
+			}
+			sawCodemodeState = true
+			dispatcher.reader.OmitDecodePayload()
 			continue
 		}
 		if env.Type == delegate.EnvelopeWorkspaceTrust {
@@ -136,6 +145,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// failure would be an opaque unknown-provider. Name the skew instead.
 	if modelroute.Parse(ioTask.Model).Gateway() && !sawGateway {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("gateway task %q received without the gateway capability marker — the host binary predates gateway support; upgrade the host", ioTask.Model))
+	}
+
+	if sawCodemodeState != ioTask.CodemodeState || (sawCodemodeState && !ioTask.Codemode) {
+		return emitFatal(dispatcher, stderr, errors.New("codemode state v1 capability marker and task disagree — upgrade launcher and runner together"))
+	}
+	if sawCodemodeState {
+		ctx = model.WithCodemodeState(ctx, runnerCodemodeState{dispatcher})
+	} else {
+		ctx = model.WithCodemodeState(ctx, nil)
 	}
 
 	// start() must run AFTER the synchronous bootstrap loop above:

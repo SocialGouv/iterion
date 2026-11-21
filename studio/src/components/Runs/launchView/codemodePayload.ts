@@ -22,6 +22,8 @@ export interface CodemodeFieldValues {
   scriptBytes: string;
   resultBytes: string;
   toolResultBytes: string;
+  storeEntries: string;
+  storeBytes: string;
 }
 
 export const emptyCodemodeFieldValues: CodemodeFieldValues = {
@@ -33,6 +35,8 @@ export const emptyCodemodeFieldValues: CodemodeFieldValues = {
   scriptBytes: "",
   resultBytes: "",
   toolResultBytes: "",
+  storeEntries: "",
+  storeBytes: "",
 };
 
 export interface CodemodePayload {
@@ -89,6 +93,10 @@ export function buildCodemodePayload(
   if (result !== undefined) bounds.result_bytes = result;
   const toolResult = positiveNumber(fields.toolResultBytes);
   if (toolResult !== undefined) bounds.tool_result_bytes = toolResult;
+  const storeEntries = positiveNumber(fields.storeEntries);
+  if (storeEntries !== undefined) bounds.store_entries = storeEntries;
+  const storeBytes = positiveNumber(fields.storeBytes);
+  if (storeBytes !== undefined) bounds.store_bytes = storeBytes;
 
   if (Object.keys(bounds).length > 0) out.codemode_bounds = bounds;
   return out;
@@ -139,6 +147,8 @@ export function unreadableFields(fields: CodemodeFieldValues): string[] {
     ["script_bytes", fields.scriptBytes],
     ["result_bytes", fields.resultBytes],
     ["tool_result_bytes", fields.toolResultBytes],
+    ["store_entries", fields.storeEntries],
+    ["store_bytes", fields.storeBytes],
   ];
   const out: string[] = [];
   for (const [name, raw] of numeric) {
@@ -207,5 +217,7 @@ export function overCeiling(
   num("script_bytes", fields.scriptBytes, ceil.script_bytes);
   num("result_bytes", fields.resultBytes, ceil.result_bytes);
   num("tool_result_bytes", fields.toolResultBytes, ceil.tool_result_bytes);
+  num("store_entries", fields.storeEntries, ceil.store_entries);
+  num("store_bytes", fields.storeBytes, ceil.store_bytes);
   return over;
 }

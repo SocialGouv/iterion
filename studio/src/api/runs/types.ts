@@ -1075,6 +1075,8 @@ export interface CodemodeBoundsOverride {
   script_bytes?: number;
   result_bytes?: number;
   tool_result_bytes?: number;
+  store_entries?: number;
+  store_bytes?: number;
   concurrent_tool_calls?: number;
 }
 
@@ -1208,6 +1210,7 @@ export interface RewindRunResponse {
 }
 
 export interface ResumeRunRequest {
+  codemode_store?: Pick<CodemodeBoundsOverride, "store_entries" | "store_bytes">;
   file_path?: string;
   // See CreateRunRequest.source.
   source?: string;

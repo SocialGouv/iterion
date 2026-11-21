@@ -76,7 +76,7 @@ func (r *Runner) recordPreEngineRefusal(ctx context.Context, msg *queue.RunMessa
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	q := store.PreEngineRefusalRequest{Phase: v.Phase, Code: v.Code, Message: message, Hint: v.Hint, PublishedAt: publishedAt, Disposition: v.Disposition, FinalStatus: v.FinalStatus,
+	q := store.PreEngineRefusalRequest{Phase: v.Phase, Code: v.Code, Message: message, Hint: v.Hint, PublishedAt: publishedAt, ExactQueuedAt: codemodeQuotaQueuedAt(msg), Disposition: v.Disposition, FinalStatus: v.FinalStatus,
 		LeaveQueued: v.Disposition == store.PreEngineFinalVerdict && r.releasesRefusedResumes(msg)}
 	result, err := recorder.RecordPreEngineRefusal(idCtx, msg.RunID, q)
 	if err != nil {

@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // Capabilities expose les caractéristiques optionnelles d'un backend
@@ -485,6 +488,12 @@ func NextQueuedAt(at time.Time, prior *time.Time) time.Time {
 	return m
 }
 
+// MatchesExactQueuedAt tests an optional exact attempt fence. The precision
+// check keeps sub-millisecond inputs from matching only on Mongo.
+func MatchesExactQueuedAt(stored *time.Time, exact time.Time) bool {
+	return exact.IsZero() || (exact.Equal(QueuedFlipAt(exact)) && stored != nil && stored.Equal(exact))
+}
+
 // PublishAt is a message's published_at for an attempt whose identity
 // instant is notBefore — the run's marker, or the instant the lease its
 // grant opened was acquired: now, but never inside notBefore's
@@ -556,6 +565,50 @@ type QueuedAttemptClaimer interface {
 // that has none.
 func AsQueuedAttemptClaimer(s RunStore) QueuedAttemptClaimer {
 	return capability[QueuedAttemptClaimer](s)
+}
+
+// CodemodeQuotaResumeClaim pins a direct resume to its observed row or a
+// queued resume to the publication's exact attempt marker.
+type CodemodeQuotaResumeClaim struct {
+	ExpectedStatus  RunStatus
+	ExpectedVersion int64
+	QueuedAt        time.Time
+	PauseHandoff    *ResumePauseHandoff
+}
+
+func (c CodemodeQuotaResumeClaim) Validate(quota CodemodeScratchLimits) error {
+	replay := quota == (CodemodeScratchLimits{})
+	if quota.Entries < 0 || quota.Bytes < 0 {
+		return fmt.Errorf("invalid codemode resume quota (entries=%d, bytes=%d)", quota.Entries, quota.Bytes)
+	}
+	if c.ExpectedStatus == RunStatusQueued || replay {
+		if c.QueuedAt.IsZero() || !c.QueuedAt.Equal(QueuedFlipAt(c.QueuedAt)) {
+			return fmt.Errorf("queued codemode resume requires an exact queue marker at millisecond precision")
+		}
+	} else if !c.QueuedAt.IsZero() {
+		return fmt.Errorf("direct codemode resume claim must not carry a queue marker")
+	}
+	if c.ExpectedStatus == RunStatusQueued {
+		if replay {
+			return fmt.Errorf("queued codemode resume requires at least one positive quota dimension")
+		}
+	} else if !c.ExpectedStatus.CanOperatorResume() || c.ExpectedVersion < 0 {
+		return fmt.Errorf("invalid codemode resume claim (status=%q, version=%d)", c.ExpectedStatus, c.ExpectedVersion)
+	}
+	return nil
+}
+
+// CodemodeQuotaResumeClaimer restates the nonzero quota dimensions in the
+// same CAS that claims the run and consumes any persisted pause pointer.
+// A nil result and nil error means the claim lost without changing the row.
+// A winning claim returns the merged durable bounds.
+type CodemodeQuotaResumeClaimer interface {
+	ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim CodemodeQuotaResumeClaim, quota CodemodeScratchLimits) (*scripthost.Limits, error)
+}
+
+// AsCodemodeQuotaResumeClaimer finds the atomic quota claim through decorators.
+func AsCodemodeQuotaResumeClaimer(s RunStore) CodemodeQuotaResumeClaimer {
+	return capability[CodemodeQuotaResumeClaimer](s)
 }
 
 // PIDStore is an optional interface implemented only by

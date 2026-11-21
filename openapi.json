@@ -857,6 +857,12 @@
           "recovery_pause": {
             "type": "boolean"
           },
+          "resume_pause_cost_readings": {
+            "items": {
+              "$ref": "#/components/schemas/ResumePauseCostReading"
+            },
+            "type": "array"
+          },
           "round_robin_counters": {
             "additionalProperties": {
               "type": "integer"
@@ -917,6 +923,12 @@
             "type": "integer"
           },
           "script_bytes": {
+            "type": "integer"
+          },
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
             "type": "integer"
           },
           "tool_calls": {
@@ -3539,6 +3551,25 @@
         "required": [
           "backend",
           "session_id"
+        ],
+        "type": "object"
+      },
+      "ResumePauseCostReading": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "usd": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "backend",
+          "session",
+          "usd"
         ],
         "type": "object"
       },
@@ -6714,6 +6745,26 @@
         ],
         "type": "object"
       },
+      "launchBudgetSpec": {
+        "properties": {
+          "max_cost_usd": {
+            "type": "number"
+          },
+          "max_duration": {
+            "type": "string"
+          },
+          "max_iterations": {
+            "type": "integer"
+          },
+          "max_parallel_branches": {
+            "type": "integer"
+          },
+          "max_tokens": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "legalDocumentView": {
         "properties": {
           "accessibility": {
@@ -7536,6 +7587,12 @@
           "script_bytes": {
             "type": "integer"
           },
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
+            "type": "integer"
+          },
           "tool_calls": {
             "type": "integer"
           },
@@ -7554,7 +7611,9 @@
           "memory",
           "script_bytes",
           "result_bytes",
-          "tool_result_bytes"
+          "tool_result_bytes",
+          "store_entries",
+          "store_bytes"
         ],
         "type": "object"
       },
@@ -8023,6 +8082,53 @@
           "email",
           "password"
         ],
+        "type": "object"
+      },
+      "resumeCodemodeStoreRequest": {
+        "properties": {
+          "store_bytes": {
+            "type": "integer"
+          },
+          "store_entries": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "resumeRunRequest": {
+        "properties": {
+          "accept_scratch_loss": {
+            "type": "boolean"
+          },
+          "answers": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/launchBudgetSpec"
+          },
+          "codemode_store": {
+            "$ref": "#/components/schemas/resumeCodemodeStoreRequest"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "routingPolicyView": {
@@ -15413,6 +15519,16 @@
       ],
       "post": {
         "operationId": "postRunsByIdResume",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/resumeRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response"

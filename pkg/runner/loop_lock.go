@@ -109,11 +109,23 @@ func (r *Runner) executeHoldingLease(runCtx context.Context, runCancel context.C
 		runCancel(nil)
 		hold.stop()
 	}()
+	// An exact delivery must prove ownership before any metadata write.
+	exact := msg.Resume != nil && msg.Resume.CodemodeQuota != nil
+	if exact {
+		if err := r.spendResumeIntent(runCtx, msg, r.cfg.Logger); err != nil {
+			return err
+		}
+	}
 	// Stamped under the lock, before any work: the pair (launcher build,
 	// runner build) is what makes a version skew readable from the run
 	// itself, and an IR that will not load must not be the first place an
 	// operator learns of one.
-	r.recordRunnerBuild(runCtx, msg, preRun)
+	if !exact {
+		r.recordRunnerBuild(runCtx, msg, preRun)
+		if err := r.spendResumeIntent(runCtx, msg, r.cfg.Logger); err != nil {
+			return err
+		}
+	}
 	return r.executeRun(runCtx, msg, usageOut, hold.engineReturned)
 }
 

@@ -337,6 +337,8 @@ type CodemodeBoundsRequest struct {
 	ScriptBytes         int64  `json:"script_bytes,omitempty"`
 	ResultBytes         int64  `json:"result_bytes,omitempty"`
 	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries        int64  `json:"store_entries,omitempty"`
+	StoreBytes          int64  `json:"store_bytes,omitempty"`
 }
 
 // toBounds converts the request shape to the resolver's, parsing the two
@@ -358,6 +360,8 @@ func (b *CodemodeBoundsRequest) ToBounds() (*ir.CodemodeBounds, error) {
 		ScriptBytes:         b.ScriptBytes,
 		ResultBytes:         b.ResultBytes,
 		ToolResultBytes:     b.ToolResultBytes,
+		StoreEntries:        b.StoreEntries,
+		StoreBytes:          b.StoreBytes,
 	}
 	if name := ir.CodemodeBoundsNegativeField(out); name != "" {
 		return nil, fmt.Errorf("codemode_bounds.%s: a bound is negative — a bound is a size or a count, not a signal", name)

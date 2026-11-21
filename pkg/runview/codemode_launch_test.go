@@ -22,12 +22,12 @@ import (
 func TestDetachedForwardingCarriesTheLaunchsCodemode(t *testing.T) {
 	t.Parallel()
 	args := appendCodemodeArgs(nil, "off", &ir.CodemodeBounds{
-		ToolCalls: 256, ConcurrentToolCalls: 3,
+		ToolCalls: 256, ConcurrentToolCalls: 3, StoreEntries: 48, StoreBytes: 262144,
 		Wall:   90 * time.Second,
 		Memory: 1 << 30,
 	})
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--codemode off", "--codemode-tool-calls 256", "--codemode-concurrent-tool-calls 3", "--codemode-wall 1m30s", "--codemode-memory 1073741824"} {
+	for _, want := range []string{"--codemode off", "--codemode-tool-calls 256", "--codemode-concurrent-tool-calls 3", "--codemode-wall 1m30s", "--codemode-memory 1073741824", "--codemode-store-entries 48", "--codemode-store-bytes 262144"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("detached args %q miss %q — the subprocess would not know", joined, want)
 		}

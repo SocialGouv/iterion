@@ -889,6 +889,8 @@ func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveSc
 	}
 	ctx = tool.WithBuiltinAliases(ctx, bundle.AllowsToolAliases(manifest))
 	ctx = model.WithSessionLedger(ctx, rs.sessionLedger)
+	// A branch shares the bank, not the trunk's conversation identity.
+	ctx = model.WithCodemodeState(ctx, rs.codemodeState)
 	// The tool-node contract rides the same wiring point as the snapshot it
 	// is judged against, so no dispatch site holds a node to one without the
 	// other.

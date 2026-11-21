@@ -714,6 +714,8 @@ type jsonCodemodeBlock struct {
 	ScriptBytes         int64  `json:"script_bytes,omitempty"`
 	ResultBytes         int64  `json:"result_bytes,omitempty"`
 	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries        int64  `json:"store_entries,omitempty"`
+	StoreBytes          int64  `json:"store_bytes,omitempty"`
 }
 
 // bounded mirrors ast.CodemodeBlock.Bounded: any bound declared.
@@ -722,7 +724,7 @@ func (c *jsonCodemodeBlock) bounded() bool {
 		return false
 	}
 	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
-		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
 }
 
 // MarshalJSON writes the short form while there is nothing but a mode to say.
@@ -766,6 +768,8 @@ func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
 		ScriptBytes:         c.ScriptBytes,
 		ResultBytes:         c.ResultBytes,
 		ToolResultBytes:     c.ToolResultBytes,
+		StoreEntries:        c.StoreEntries,
+		StoreBytes:          c.StoreBytes,
 	}
 }
 
@@ -809,6 +813,8 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 		ScriptBytes:         j.ScriptBytes,
 		ResultBytes:         j.ResultBytes,
 		ToolResultBytes:     j.ToolResultBytes,
+		StoreEntries:        j.StoreEntries,
+		StoreBytes:          j.StoreBytes,
 	}
 }
 

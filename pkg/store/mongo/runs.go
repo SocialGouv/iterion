@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
@@ -51,7 +52,7 @@ func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunI
 // not-found, never a leak. Refuses documents written by a future
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
-	r, err := s.loadRunValueRecord(ctx, id)
+	r, err := s.loadRunValueRecord(ctx, id, options.FindOne().SetProjection(bson.M{codemodeScratchField: 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ var _ store.RunListingStore = (*Store)(nil)
 // LoadRun: a projection must not become a second, laxer door.
 func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, error) {
 	r, err := s.loadRunValueRecord(ctx, id,
-		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0}))
+		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0, codemodeScratchField: 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +358,8 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// this read and the replacement one optimistic transaction.
 	var previous bson.M
 	var formatPreimage *store.Run
-	previousRaw, ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID}))).Raw()
+	previousRaw, ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
+		options.FindOne().SetProjection(bson.M{codemodeScratchField: 0})).Raw()
 	if ferr != nil && !errors.Is(ferr, mongo.ErrNoDocuments) {
 		return fmt.Errorf("store/mongo: read run %s before replacement: %w", r.ID, ferr)
 	}
@@ -464,6 +466,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
 	delete(doc, "pre_engine_refusal")
+	delete(doc, resumePauseHandoffField)
 	delete(doc, "error")
 	delete(doc, "routing_policy")
 	delete(doc, "spent_tool_approvals")
@@ -512,6 +515,9 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		docError = bson.M{"$literal": r.Error}
 	}
 	computed := bson.M{
+		// The private bank is carried directly from the live document,
+		// never through this ordinary saver or its public Run projection.
+		codemodeScratchField:       bson.M{"$ifNull": bson.A{"$" + codemodeScratchField, "$$REMOVE"}},
 		"spent_tool_approvals":     bson.M{"$ifNull": bson.A{"$spent_tool_approvals", "$$REMOVE"}},
 		"unresolved_tool_approval": bson.M{"$ifNull": bson.A{"$unresolved_tool_approval", "$$REMOVE"}},
 		"tool_approval_claim":      bson.M{"$cond": bson.A{bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", store.RunStatusRunning}}, r.Status == store.RunStatusRunning}}, bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}, "$$REMOVE"}},
@@ -555,6 +561,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 				nil,
 			}},
 		}},
+	}
+	if r.Status.CarriesResumePauseHandoff() {
+		// Only the persisted marker has authority across metadata saves.
+		computed[resumePauseHandoffField] = bson.M{"$ifNull": bson.A{"$" + resumePauseHandoffField, "$$REMOVE"}}
 	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is
@@ -1474,6 +1484,9 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		// state into paused must clear finished_at too.
 		set["finished_at"] = "$$REMOVE"
 	}
+	if !status.CarriesResumePauseHandoff() {
+		set[resumePauseHandoffField] = "$$REMOVE"
+	}
 	if terminal {
 		seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
 		set["outcome_seq"] = bson.M{"$cond": bson.A{statusChanged,
@@ -1568,6 +1581,9 @@ func (s *Store) updateRunOutcome(ctx context.Context, id string, status store.Ru
 	if expected != nil {
 		filter["$and"] = bson.A{correctionVersionFilter(expected.Version), correctionEpochFilter(expected.Epoch)}
 	}
+	if !applyExactQueuedAt(filter, meta.ExactQueuedAt) {
+		return false, nil
+	}
 	if len(expectedFrom) > 0 {
 		filter["status"] = bson.M{"$in": expectedFrom}
 	}
@@ -1611,6 +1627,78 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+var _ store.CodemodeQuotaResumeClaimer = (*Store)(nil)
+
+// ClaimResumeWithCodemodeQuota implements store.CodemodeQuotaResumeClaimer.
+func (s *Store) ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim store.CodemodeQuotaResumeClaim, quota store.CodemodeScratchLimits) (*scripthost.Limits, error) {
+	if err := claim.Validate(quota); err != nil {
+		return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+	}
+	execution, fenced := store.ResumeExecutionClaimFromContext(ctx)
+	if fenced {
+		if err := execution.Validate(); err != nil {
+			return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+		}
+	}
+	const boundsField = "codemode_bounds_override"
+	// The bounds struct uses BSON's default lowercase field names, not its
+	// JSON wire names. Merge only the dimensions stated by the caller, keeping
+	// any other overrides (including fields from newer binaries) intact.
+	patch := bson.M{}
+	if quota.Entries != 0 {
+		patch["storeentries"] = quota.Entries
+	}
+	if quota.Bytes != 0 {
+		patch["storebytes"] = quota.Bytes
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": claim.ExpectedStatus}))
+	if !claim.QueuedAt.IsZero() {
+		filter["queued_at"] = claim.QueuedAt
+	}
+	set := statusTransitionSet(store.RunStatusRunning, "", store.RunOutcomeMeta{}, time.Now().UTC())
+	if fenced {
+		filter["$and"] = bson.A{correctionVersionFilter(claim.ExpectedVersion), correctionEpochFilter(execution.ExpectedEpoch)}
+		set["execution_epoch"] = bson.M{"$literal": execution.NextEpoch}
+	} else if claim.ExpectedStatus != store.RunStatusQueued {
+		filter["$and"] = bson.A{correctionVersionFilter(claim.ExpectedVersion)}
+	}
+	if quota == (store.CodemodeScratchLimits{}) {
+		filter["codemode_quota_claimed_at"] = claim.QueuedAt
+		filter[boundsField] = bson.M{"$type": "object"}
+	} else {
+		if !claim.QueuedAt.IsZero() {
+			set["codemode_quota_claimed_at"] = claim.QueuedAt
+		}
+		set[boundsField] = bson.M{"$mergeObjects": bson.A{bson.M{"$ifNull": bson.A{"$" + boundsField, bson.M{}}}, patch}}
+	}
+	guard, err := s.prepareRunMetadataFormat(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if claim.PauseHandoff != nil {
+		handoff, err := valueRecordDocument(ctx, guard.original.Format, store.ExactResumePauseHandoff, claim.PauseHandoff)
+		if err != nil {
+			return nil, fmt.Errorf("store/mongo: encode quota claim pause handoff %s: %w", id, err)
+		}
+		set[resumePauseHandoffField] = bson.M{"$literal": handoff}
+	}
+	var after struct {
+		Bounds *scripthost.Limits `bson:"codemode_bounds_override"`
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{boundsField: 1, "_id": 0})
+	if s.afterRunMetadataPrepare != nil {
+		s.afterRunMetadataPrepare(id)
+	}
+	err = s.runs.FindOneAndUpdate(ctx, guard.filter(ctx, filter), statusTransitionPipeline(set), opts).Decode(&after)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, guard.checkMiss(ctx, s)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: claim resume with codemode quota %s: %w", id, err)
+	}
+	return after.Bounds, nil
 }
 
 // mergeStatusFilter builds the merge_status clause for a CAS filter:
@@ -1881,6 +1969,9 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	}
 	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC(), "execution_epoch": store.NewExecutionEpoch()}
 	unset := bson.M{"await_answers_waits": "", "cred_admission_pending": ""}
+	if !prior.Status.CarriesResumePauseHandoff() {
+		unset[resumePauseHandoffField] = ""
+	}
 	field := func(key string, val any, empty bool) {
 		if empty {
 			unset[key] = ""
@@ -1918,6 +2009,29 @@ func (s *Store) ClaimQueuedRunIfAttempt(ctx context.Context, id string, publishe
 	return s.transitionQueuedAttempt(ctx, id, store.RunStatusRunning, "", publishedAt, store.RunOutcomeMeta{})
 }
 
+func queuedAttemptClauses(publishedAt time.Time) bson.A {
+	return bson.A{
+		bson.M{"queued_at": bson.M{"$lte": publishedAt}},
+		// Legacy queued documents have no newer attempt marker, so the
+		// delivery is the best available identity.
+		bson.M{"queued_at": nil},
+	}
+}
+
+// applyExactQueuedAt adds an optional exact queue marker, rejecting values
+// BSON would silently round down to a different instant.
+func applyExactQueuedAt(filter bson.M, exact time.Time) bool {
+	if exact.IsZero() {
+		return true
+	}
+	if !exact.Equal(store.QueuedFlipAt(exact)) {
+		return false
+	}
+	delete(filter, "$or")
+	filter["queued_at"] = exact
+	return true
+}
+
 // transitionQueuedAttempt moves the queue attempt publishedAt names, and
 // only that one, out of queued: queued_at and status are matched in the SAME
 // update, so a concurrent resume cannot slip a newer attempt between a read
@@ -1927,14 +2041,11 @@ func (s *Store) transitionQueuedAttempt(ctx context.Context, id string, to store
 	filter := notDeleted(withTenantFilter(ctx, bson.M{
 		"_id":    id,
 		"status": store.RunStatusQueued,
-		"$or": bson.A{
-			bson.M{"queued_at": bson.M{"$lte": publishedAt}},
-			// Legacy queued documents predate QueuedAt. They have no newer
-			// attempt marker, so the delivery is the best available identity.
-			bson.M{"queued_at": bson.M{"$exists": false}},
-			bson.M{"queued_at": nil},
-		},
+		"$or":    queuedAttemptClauses(publishedAt),
 	}))
+	if !applyExactQueuedAt(filter, meta.ExactQueuedAt) {
+		return false, nil
+	}
 	// The filter pins status=queued, so the transition-gated episode
 	// increment fires on a terminal target; meta rides the same write as
 	// the flip.
@@ -1991,7 +2102,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		set := bson.M{"status": string(store.RunStatusPausedWaitingHuman), "checkpoint": bson.M{"$literal": whole}, "updated_at": now,
 			"version":         bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 			"execution_epoch": executionEpochExpr(bson.M{"$ne": bson.A{"$status", string(store.RunStatusPausedWaitingHuman)}}),
-			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE"}
+			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE", resumePauseHandoffField: "$$REMOVE"}
 		// A fresh exact pause re-arms the approval cycle: its own claim/spend
 		// identity is the durable continuation of the cycle it replaces, so a
 		// marker an earlier ambiguous dispatch left (the force-resume path)

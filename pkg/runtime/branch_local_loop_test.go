@@ -553,9 +553,28 @@ func TestFanOutEachSiblingHumanGatesResumeOneScopeAtATime(t *testing.T) {
 	if err := eng.Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("first run = %v, want pause", err)
 	}
+	answers := map[string]any{"approved": true}
+	fault := &quotaClaimFaultStore{codemodeStateWrappedStore: codemodeStateWrappedStore{runStore}, fail: true}
+	eng = New(wf, fault, exec, WithResumeCodemodeQuota(store.CodemodeScratchLimits{Entries: 7}))
+	since := cfEventCount(t, runStore, runID)
+	if err := eng.Resume(t.Context(), runID, answers); !errors.Is(err, errQuotaClaimWrite) {
+		t.Fatalf("first resume should refuse the injected claim: %v", err)
+	}
+	if writes := cfWritesSince(t, runStore, runID, since); len(writes) != 0 {
+		t.Fatalf("refused parallel claim wrote resume effects: %v", writes)
+	}
+	answerFault := handoffAnswerFaultStore{codemodeStateWrappedStore{runStore}, "before write"}
+	eng = New(wf, answerFault, exec, WithResumeCodemodeQuota(store.CodemodeScratchLimits{Entries: 7}))
+	if err := eng.Resume(t.Context(), runID, answers); !errors.Is(err, errHandoffAnswerWrite) {
+		t.Fatalf("claimed resume should stop at the injected answer failure: %v", err)
+	}
+	parked, err := runStore.LoadRun(t.Context(), runID)
+	if err != nil || parked.Status != store.RunStatusFailedResumable || parked.ResumePauseHandoff == nil || parked.Checkpoint.Parallel == nil || parked.Checkpoint.Parallel.PendingBranchID == "" {
+		t.Fatalf("missing parked branch handoff: %v", err)
+	}
 	eng = New(wf, runStore, exec)
-	if err := eng.Resume(context.Background(), runID, map[string]any{"approved": true}); !errors.Is(err, ErrRunPaused) {
-		t.Fatalf("first resume = %v, want sibling pause", err)
+	if err := eng.Resume(t.Context(), runID, answers); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("retry = %v, want sibling pause", err)
 	}
 	eng = New(wf, runStore, exec)
 	if err := eng.Resume(context.Background(), runID, map[string]any{"approved": true}); err != nil {

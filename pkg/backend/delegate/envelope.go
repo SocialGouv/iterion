@@ -241,7 +241,8 @@ type EnvelopeReader struct {
 	// BEFORE the 256-byte cut: a cut that lands inside a declared value
 	// leaves a head no downstream pass recognises (iterion#2822). The
 	// multiplexer's consumer installs the run's pass before Run.
-	redact func(string) string
+	redact            func(string) string
+	omitDecodePayload bool
 }
 
 // NewEnvelopeReader wraps r with a [bufio.Scanner] sized for the
@@ -258,6 +259,12 @@ func NewEnvelopeReader(r io.Reader) *EnvelopeReader {
 // before its cut. Call before the read loop; the reader is single-goroutine.
 func (er *EnvelopeReader) SetRedactor(redact func(string) string) {
 	er.redact = redact
+}
+
+// OmitDecodePayload disables raw line excerpts for a stream that can carry
+// private state. A malformed line need not have a parseable type field.
+func (er *EnvelopeReader) OmitDecodePayload() {
+	er.omitDecodePayload = true
 }
 
 // quotedLine returns the raw line with the pass applied, ready for the
@@ -286,6 +293,9 @@ func (er *EnvelopeReader) Read() (Envelope, error) {
 	}
 	var env Envelope
 	if err := json.Unmarshal(er.scanner.Bytes(), &env); err != nil {
+		if er.omitDecodePayload {
+			return Envelope{}, errors.New("delegate: decode envelope: invalid frame on private state stream")
+		}
 		return Envelope{}, fmt.Errorf("delegate: decode envelope: %w (line=%q)", err, truncate(er.quotedLine(), 256))
 	}
 	return env, nil

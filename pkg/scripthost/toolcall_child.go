@@ -94,6 +94,9 @@ func (b *toolBridge) install(vm *goja.Runtime) error {
 	if err := vm.Get("call").ToObject(vm).Set("parallel", b.parallel(vm)); err != nil {
 		return err
 	}
+	if err := b.installState(vm); err != nil {
+		return err
+	}
 	return b.installDiscovery(vm)
 }
 

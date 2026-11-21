@@ -21,12 +21,12 @@ const defaultMultiplexerReplyDrain = time.Second
 const multiplexerBusy = "launcher: tool/ask_user relay is at capacity"
 
 // MultiplexerHandler dispatches the launcher-side responses to envelopes
-// the runner emits mid-stream. All four hooks are optional: nil means
+// the runner emits mid-stream. Hooks are optional: nil means
 // "treat as not-implemented and surface a structured error to the
 // runner" (for tool_call / ask_user — they need a reply) or "drop
 // silently" (for session_capture / event — fire-and-forget by design).
 //
-// Tool and Ask hooks share a serial worker and must stop when their context
+// Tool, Ask and state hooks share a serial worker and must stop when their context
 // is cancelled. Event and capture hooks run in wire order, independently of
 // the worker: any state shared across the two lanes needs synchronization.
 type MultiplexerHandler struct {
@@ -35,6 +35,10 @@ type MultiplexerHandler struct {
 	// [EnvelopeToolResult]. The id is opaque to the handler — the
 	// multiplexer routes the response back by ID automatically.
 	OnToolCall func(ctx context.Context, name string, input json.RawMessage) (string, error)
+
+	// OnCodemodeState serves only the run bank bound by the launcher. It
+	// is not a tool call and cannot reach the tool registry.
+	OnCodemodeState func(ctx context.Context, req StateRequest) (StateReply, error)
 
 	// OnAskUser routes a runner-side ask_user request through the
 	// engine's pause path and returns the answers map once the run
@@ -77,8 +81,12 @@ type Multiplexer struct {
 func NewMultiplexer(stdout io.Reader, stdin io.Writer, h MultiplexerHandler) *Multiplexer {
 	stdoutCloser, _ := stdout.(io.Closer)
 	stdinCloser, _ := stdin.(io.Closer)
+	reader := NewEnvelopeReader(stdout)
+	if h.OnCodemodeState != nil {
+		reader.OmitDecodePayload()
+	}
 	return &Multiplexer{
-		reader:     NewEnvelopeReader(stdout),
+		reader:     reader,
 		writer:     NewEnvelopeWriter(stdin),
 		handler:    h,
 		stdout:     stdoutCloser,
@@ -177,7 +185,7 @@ func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
 		}
 	})
 
-	// Tool calls and Ask share one FIFO execution lane. The runner cannot
+	// Tool calls, Ask and state share one FIFO execution lane. The runner cannot
 	// opt a call into parallel execution or bypass the launcher handler.
 	workerDone := make(chan struct{})
 	wg.Go(func() {
@@ -290,6 +298,25 @@ func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
 			case calls <- func() (Envelope, error) { return m.handleToolCall(workCtx, env.ID, call) }:
 			default:
 				if err := queueReply(newToolResultData(env.ID, ToolResultData{Error: multiplexerBusy})); err != nil {
+					return IOResult{}, err
+				}
+			}
+
+		case EnvelopeStateRequest:
+			requests++
+			req, err := decodeStateRequest(env)
+			if err != nil {
+				return IOResult{}, err
+			}
+			deadline := req.LauncherDeadline(time.Now())
+			select {
+			case calls <- func() (Envelope, error) {
+				stateCtx, cancel := context.WithDeadline(workCtx, deadline)
+				defer cancel()
+				return m.handleState(stateCtx, env.ID, req)
+			}:
+			default:
+				if err := queueReply(stateEnvelope(EnvelopeStateReply, env.ID, StateReply{Op: req.Op, Code: StateUnavailable})); err != nil {
 					return IOResult{}, err
 				}
 			}

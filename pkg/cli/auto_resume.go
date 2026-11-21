@@ -197,8 +197,9 @@ func usageLimitDelay(err error, pol retrypolicy.Policy, now time.Time) time.Dura
 	return delay
 }
 
-// autoResumeLoop drives the bounded run-level auto-resume. It re-uses eng (so
-// launch overrides carry over) and returns the final engine error. A no-op
+// autoResumeLoop drives the bounded run-level auto-resume. It reuses eng so
+// launch overrides carry over; the engine consumes any explicit resume quota
+// patch at its first successful claim. It returns the final engine error. A no-op
 // (returns err unchanged) when disabled, when err is nil/paused/cancelled, or
 // when the failure is not auto-recoverable.
 func autoResumeLoop(
