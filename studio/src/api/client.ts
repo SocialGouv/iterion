@@ -126,12 +126,19 @@ export {
 // validates it against the session's grants. Absent (nothing adopted yet),
 // no header goes out and the request scopes exactly as before.
 let explicitTeam: string | null = null;
+let teamGeneration = 0;
+
+export function currentRequestTeamGeneration(): number {
+  return teamGeneration;
+}
 
 // publishExplicitTeam is called by the auth context at every adoption point
 // (bootstrap, switch, identity re-read) and cleared on sign-out: what a tab
 // displays is what its requests scope to.
 export function publishExplicitTeam(teamID: string | null): void {
+  if (explicitTeam === teamID) return;
   explicitTeam = teamID;
+  teamGeneration++;
 }
 
 let sessionGeneration = 0;
@@ -644,6 +651,7 @@ type RenewalStage = "fresh" | "replayed" | "refreshed";
 
 async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, stage: RenewalStage): Promise<T> {
   const generation = sessionGeneration;
+  const sentTeamGeneration = teamGeneration;
   const sentAt = Date.now();
   const res = await fetch(fullPath, {
     credentials: "include",
@@ -679,10 +687,10 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
   // reaching the pane means the desktop's refresh already failed, and recovery
   // is driven from the shell (cloud:auth-expired → re-login → reload). We still
   // fire onUnauthorized so the pane's AuthGate can surface the expired state.
-  if (res.status === 401 && generation === sessionGeneration) {
+  if (res.status === 401 && generation === sessionGeneration && sentTeamGeneration === teamGeneration) {
     if (stage !== "refreshed" && !isScopedPane() && !fullPath.endsWith("/auth/refresh")) {
       const renewal = stage === "replayed" ? await presentRefreshToken("request") : await renewAfterRefusal(sentAt, "request");
-      if (generation === sessionGeneration) {
+      if (generation === sessionGeneration && sentTeamGeneration === teamGeneration) {
         if (renewal.kind === "superseded") return sendRequest<T>(fullPath, init, "replayed");
         if (renewal.kind === "renewed") return sendRequest<T>(fullPath, init, "refreshed");
         if (renewal.kind === "unavailable") throw new SessionRenewalUnavailableError(renewal.status);

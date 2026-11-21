@@ -6119,6 +6119,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{name}/launch-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/bots/{name}/launch-source
+         * @description The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.
+         */
+        get: operations["getV1BotsByNameLaunchSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{name}/overlay": {
         parameters: {
             query?: never;
@@ -7939,6 +7961,14 @@ export interface components {
             parent_run_id?: string;
             root_run_id?: string;
         };
+        Literal: {
+            bool_val?: boolean;
+            float_val?: number;
+            int_val?: number;
+            kind?: string;
+            raw?: string;
+            str_val?: string;
+        };
         Maintenance: {
             fence_launches: boolean;
             reason: string;
@@ -8179,6 +8209,21 @@ export interface components {
             published_at?: string;
             /** Format: date-time */
             queued_at?: string;
+        };
+        Preset: {
+            description?: string;
+            display_name?: string;
+            name?: string;
+            prompt?: string;
+            skills?: string[];
+            values?: components["schemas"]["PresetValue"][];
+        };
+        PresetValue: {
+            key?: string;
+            value?: components["schemas"]["Literal"];
+        };
+        PresetsBlock: {
+            entries?: components["schemas"]["Preset"][];
         };
         PricefeedEntry: {
             declared?: boolean;
@@ -8818,6 +8863,18 @@ export interface components {
             secret_id?: string;
             secret_name_for_workflow?: string;
         };
+        botLaunchSourceResponse: {
+            bindable: boolean;
+            bot_id: string;
+            diagnostics?: string[];
+            document: unknown;
+            presets?: components["schemas"]["PresetsBlock"];
+            read_refusal?: components["schemas"]["readRefusalInfo"];
+            sha256: string;
+            source: string;
+            tier: string;
+            unit?: components["schemas"]["unitInfo"];
+        };
         botRolesSettingsView: {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
@@ -9455,6 +9512,10 @@ export interface components {
             updated_at?: string;
             updated_by?: string;
         };
+        readRefusalInfo: {
+            hint?: string;
+            message: string;
+        };
         registerReq: {
             email: string;
             invitation?: string;
@@ -9499,6 +9560,24 @@ export interface components {
             runner_pool?: string;
             slug: string;
             status: string;
+        };
+        unitFileInfo: {
+            dependency?: string;
+            digest?: string;
+            imports?: string[];
+            parse_error?: string;
+            parse_errors?: number;
+            profile?: number;
+            rel: string;
+        };
+        unitInfo: {
+            files: components["schemas"]["unitFileInfo"][];
+            load_error?: string;
+            load_errors?: number;
+            main: string;
+            revision: string;
+            root: string;
+            unread?: string[];
         };
         updateApiKeyReq: {
             base_url?: string;
@@ -19732,6 +19811,63 @@ export interface operations {
         responses: {
             /** @description Response */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1BotsByNameLaunchSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botLaunchSourceResponse"];
+                };
+            };
+            /** @description a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the name resolves on no tier */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the bot resolves but not to a launchable program — the refusal a launch of it would draw */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the resolution or the reading itself failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

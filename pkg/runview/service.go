@@ -335,6 +335,15 @@ type LaunchSpec struct {
 	// compile opens BundleDir with it as the main (bundle.OpenDirEntry).
 	// Empty means main.bot.
 	BundleEntry string
+	// ExpectProgramHash pins the launch to a program its caller read: the
+	// workflow identity (CompiledSource.Hash — the main, the bundle's
+	// prompts/ and presets/, the fragments and the include closure) that
+	// LaunchProgramHash answered for it. It is held on the publisher lane
+	// alone: the launch is refused (ErrProgramChanged) when the compile whose
+	// result is published reads another program (checkPinnedProgram). A lane
+	// that reads the bot again after accepting the launch refuses a pin
+	// outright (ErrLaunchPinUnsupported). Empty compares nothing.
+	ExpectProgramHash string
 	// BotBundle carries the immutable collection and its origin to the cloud
 	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef

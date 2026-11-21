@@ -81,6 +81,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
 	s.mux.HandleFunc("POST /api/v1/bots/import", s.handleBotImport)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
+	// The program a launch naming this bot runs, with the digest a launch
+	// form pins its launch to (expect_source_sha256).
+	s.mux.HandleFunc("GET /api/v1/bots/{name}/launch-source", s.handleBotLaunchSource)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)
 	// Pipeline Boards are a bot-bound execution projection layered alongside

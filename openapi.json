@@ -2284,6 +2284,29 @@
         },
         "type": "object"
       },
+      "Literal": {
+        "properties": {
+          "bool_val": {
+            "type": "boolean"
+          },
+          "float_val": {
+            "type": "number"
+          },
+          "int_val": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "str_val": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Maintenance": {
         "properties": {
           "fence_launches": {
@@ -3094,6 +3117,57 @@
           "message",
           "observed_at"
         ],
+        "type": "object"
+      },
+      "Preset": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/PresetValue"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PresetValue": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Literal"
+          }
+        },
+        "type": "object"
+      },
+      "PresetsBlock": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/Preset"
+            },
+            "type": "array"
+          }
+        },
         "type": "object"
       },
       "PricefeedEntry": {
@@ -5176,6 +5250,50 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "botLaunchSourceResponse": {
+        "properties": {
+          "bindable": {
+            "type": "boolean"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "document": {},
+          "presets": {
+            "$ref": "#/components/schemas/PresetsBlock"
+          },
+          "read_refusal": {
+            "$ref": "#/components/schemas/readRefusalInfo"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/unitInfo"
+          }
+        },
+        "required": [
+          "bot_id",
+          "tier",
+          "source",
+          "sha256",
+          "document",
+          "bindable"
+        ],
         "type": "object"
       },
       "botRolesSettingsView": {
@@ -7388,6 +7506,20 @@
         ],
         "type": "object"
       },
+      "readRefusalInfo": {
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
       "registerReq": {
         "properties": {
           "email": {
@@ -7538,6 +7670,76 @@
           "name",
           "slug",
           "status"
+        ],
+        "type": "object"
+      },
+      "unitFileInfo": {
+        "properties": {
+          "dependency": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "imports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parse_error": {
+            "type": "string"
+          },
+          "parse_errors": {
+            "type": "integer"
+          },
+          "profile": {
+            "type": "integer"
+          },
+          "rel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rel"
+        ],
+        "type": "object"
+      },
+      "unitInfo": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/unitFileInfo"
+            },
+            "type": "array"
+          },
+          "load_error": {
+            "type": "string"
+          },
+          "load_errors": {
+            "type": "integer"
+          },
+          "main": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "unread": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "root",
+          "main",
+          "revision",
+          "files"
         ],
         "type": "object"
       },
@@ -18674,6 +18876,53 @@
           "bots"
         ]
       }
+    },
+    "/api/v1/bots/{name}/launch-source": {
+      "get": {
+        "description": "The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/\u003cname\u003e.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.",
+        "operationId": "getV1BotsByNameLaunchSource",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botLaunchSourceResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "403": {
+            "description": "a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected"
+          },
+          "404": {
+            "description": "the name resolves on no tier"
+          },
+          "422": {
+            "description": "the bot resolves but not to a launchable program — the refusal a launch of it would draw"
+          },
+          "500": {
+            "description": "the resolution or the reading itself failed"
+          },
+          "503": {
+            "description": "a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry"
+          }
+        },
+        "summary": "GET /api/v1/bots/{name}/launch-source",
+        "tags": [
+          "bots"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/v1/bots/{name}/overlay": {
       "parameters": [

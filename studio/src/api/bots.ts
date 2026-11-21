@@ -4,7 +4,7 @@
 import type { CatalogRefreshed } from "@/lib/catalogStale";
 
 import { apiRequest } from "./client";
-import type { PresetsBlock, VarsBlock } from "./types";
+import type { IterDocument, PresetsBlock, ReadRefusal, UnitInfo, VarsBlock } from "./types";
 
 const BASE = "/api/v1/bots";
 
@@ -408,6 +408,44 @@ export async function listBotsWithDiagnostics(): Promise<{
  *  yet (cache miss / page reload while a modal is open). */
 export function getBot(name: string): Promise<BotEntryWithSchema> {
   return apiRequest<BotEntryWithSchema>(`${BASE}/${encodeURIComponent(name)}`);
+}
+
+/** BotLaunchSource is the program a launch naming a bot runs, as the server
+ *  resolves it for the active team now (team row, then platform override,
+ *  then baked catalog — the launch's own resolution). Mirrors
+ *  botLaunchSourceResponse in pkg/server/bots_launch_source.go. */
+export interface BotLaunchSource {
+  /** The canonical id of the tier that serves: what the launch posts back
+   *  as `bot_id`. */
+  bot_id: string;
+  /** The tier that serves, in a run's own words: "team", "platform", "baked". */
+  tier: string;
+  /** The entry source the launch compiles. */
+  source: string;
+  /** The identity the server issued for the WHOLE program — the entry
+   *  source, the bundle's prompts and presets, its fragments and included
+   *  files: what the launch posts back as `expect_source_sha256`. Never
+   *  computed in the browser. */
+  sha256: string;
+  document: IterDocument;
+  diagnostics?: string[];
+  /** Set when the bot is in several files: the unit's per-file verdict. */
+  unit?: UnitInfo;
+  bindable: boolean;
+  read_refusal?: ReadRefusal;
+  /** The presets a launch of this program applies: its own `presets:` block
+   *  overlaid by the bundle's presets/<name>.md. Read with the program and
+   *  covered by `sha256`, unlike the registry listing's — which is as old as
+   *  the session. Absent when there is none. */
+  presets?: PresetsBlock;
+}
+
+/** getBotLaunchSource reads the program a launch naming this bot runs. The
+ *  server refuses (403) a caller who may not read the serving tier's text —
+ *  a team's own bot takes the right to edit the team's bots, a platform
+ *  override a platform admin. */
+export function getBotLaunchSource(name: string): Promise<BotLaunchSource> {
+  return apiRequest<BotLaunchSource>(`${BASE}/${encodeURIComponent(name)}/launch-source`);
 }
 
 /** updateBot writes a bot's manifest metadata (Bot metadata panel) and

@@ -189,7 +189,14 @@ func (p *snapshotProducers) dir(ctx context.Context, s *Server, teamID, from str
 	}
 	resolved, err := s.resolveBotTieredRaw(ctx, teamID, from, "")
 	if err != nil {
-		return "", fmt.Errorf("%w: resolve bundle %s: %v", errBotSnapshotResolve, from, err)
+		if isTierReadRefusal(err) {
+			// The caller's standing, not a tier that failed: neither
+			// transient nor remembered, and answered whole.
+			return "", err
+		}
+		// The cause stays in the chain: a caller tells a tier that did not
+		// answer from a bundle that does not resolve.
+		return "", fmt.Errorf("%w: resolve bundle %s: %w", errBotSnapshotResolve, from, err)
 	}
 	if resolved == nil {
 		p.dirs[from] = ""

@@ -6,18 +6,20 @@
 // inline: RunConversationView + AgentChatboxInline over the per-run
 // store, so no full RunView tab is needed.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Cross1Icon } from "@radix-ui/react-icons";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 
 import { createRun } from "@/api/runs";
 import type { RunStatus } from "@/api/runs";
 import type { VarField } from "@/api/types";
+import { useMaybeAuth } from "@/auth/AuthContext";
 import RunConversationView from "@/components/Runs/conversation/RunConversationView";
-import { literalToString } from "@/components/Runs/launchView/utils";
+import { buildVarsPayload } from "@/components/Runs/launchView/varsPayload";
 import { STATUS_VARIANT, labelForStatus } from "@/components/Runs/runStatusMeta";
 import { useRunSnapshot } from "@/components/Runs/runView/useRunSnapshot";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
+import { defaultStringFor } from "@/components/shared/VarFieldInput";
 import {
   Badge,
   Button,
@@ -28,11 +30,22 @@ import {
 } from "@/components/ui";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import { errorMessage } from "@/lib/errorHints";
+import {
+  botLaunchKey,
+  fileLaunchKey,
+  sendLaunch,
+  useLaunchInFlight,
+  type LaunchTarget,
+} from "@/lib/sendLaunch";
 import { RunStoreProvider, getOrCreateRunStore, useRunStore } from "@/store/run";
+import { useServerInfoStore } from "@/store/serverInfo";
+import type { BotLaunch } from "@/views/Bots/botPaths";
 
 export interface TestRunPaneProps {
-  /** Workspace-relative .bot path to run (botLaunchFile output). */
-  file: string;
+  /** How the bot under test is launched (botLaunch): by its slug in cloud —
+   *  the server resolves the tier and the run carries the bot's identity —
+   *  or by its workspace-relative .bot path locally. */
+  launch: BotLaunch;
   /** The bot's declared vars — rendered as quick inputs pre-filled with
    *  their defaults so a required-var bot can still be test-launched. */
   vars?: VarField[];
@@ -46,7 +59,37 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
   "cancelled",
 ]);
 
-export default function TestRunPane({ file, vars = [], onClose }: TestRunPaneProps) {
+// The pane of ONE target. Everything it holds — the run it shows, the values
+// typed, whether it is still shown at an answer — is that target's, so it is
+// keyed by what it launches (the launch key, team included): rendered again
+// for another bot or under another team, by a parent that kept it mounted, it
+// starts from nothing instead of showing one bot's run or posting one bot's
+// values under another.
+export default function TestRunPane(props: TestRunPaneProps) {
+  const teamScope = useMaybeAuth()?.activeTeamID ?? "";
+  const workDir = useServerInfoStore((s) => s.info?.work_dir);
+  const { launch } = props;
+  const target: LaunchTarget =
+    launch.by === "bot"
+      ? {
+          key: botLaunchKey(teamScope, launch.bot),
+          label: `the bot ${launch.bot}`,
+          runsHref: `/runs?bot=${encodeURIComponent(launch.bot)}`,
+        }
+      : {
+          key: fileLaunchKey(teamScope, launch.file, workDir),
+          label: launch.file,
+          runsHref: "/runs",
+        };
+  return <TargetPane key={target.key} target={target} {...props} />;
+}
+
+function TargetPane({
+  launch,
+  vars = [],
+  onClose,
+  target,
+}: TestRunPaneProps & { target: LaunchTarget }) {
   const [runId, setRunId] = useState<string | null>(null);
 
   return (
@@ -65,7 +108,7 @@ export default function TestRunPane({ file, vars = [], onClose }: TestRunPanePro
         )}
       </header>
       {runId === null ? (
-        <TestLaunchForm file={file} vars={vars} onStarted={setRunId} />
+        <TestLaunchForm launch={launch} vars={vars} target={target} onStarted={setRunId} />
       ) : (
         // key remounts the live subtree (snapshot fetch + WS) per run.
         <LiveTestRun key={runId} runId={runId} onReset={() => setRunId(null)} />
@@ -79,45 +122,84 @@ export default function TestRunPane({ file, vars = [], onClose }: TestRunPanePro
 // ---------------------------------------------------------------------------
 
 function TestLaunchForm({
-  file,
+  launch,
   vars,
+  target,
   onStarted,
 }: {
-  file: string;
+  launch: BotLaunch;
   vars: VarField[];
+  /** What this pane launches — the same target, under the same key, as the
+   *  launch form of this bot (lib/sendLaunch): a launch from either holds the
+   *  other, and neither starts a second run while the first is pending. */
+  target: LaunchTarget;
   onStarted: (runId: string) => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(vars.map((f) => [f.name, literalToString(f.default)])),
+    // The baseline the payload is compared with (buildVarsPayload), so an
+    // untouched field is exactly its default.
+    Object.fromEntries(vars.map((f) => [f.name, defaultStringFor(f)])),
   );
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Where to look before testing again, after a launch that drew no answer
+  // about its run.
+  const [unansweredRuns, setUnansweredRuns] = useState<string | null>(null);
+  const [, navigate] = useLocation();
+  const busy = useLaunchInFlight(target.key);
+  // The pane is closed, or its page left, while a launch is in flight: its
+  // answer is then announced by sendLaunch instead of shown here.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
 
   const start = async () => {
-    setBusy(true);
     setError(null);
-    try {
-      const sendVars: Record<string, string> = {};
-      for (const [k, v] of Object.entries(values)) {
-        if (v.trim() !== "") sendVars[k] = v;
-      }
-      const res = await createRun({
-        file_path: file,
-        merge_into: "none",
-        ...(Object.keys(sendVars).length > 0 ? { vars: sendVars } : {}),
-      });
-      onStarted(res.run_id);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
+    setUnansweredRuns(null);
+    // Only what the operator touched (buildVarsPayload, the launch form's
+    // rule). The pre-filled values are the session's picture of the bot's
+    // defaults, and the launch is by id: an untouched one is the server's
+    // to apply from the program as it is NOW — echoed back it would
+    // override a default changed since, be refused for a var the program
+    // dropped, and break a `${...}` default the server expands.
+    const sendVars = buildVarsPayload(vars, values);
+    const sent = await sendLaunch({
+      target,
+      onScreen: () => shown.current,
+      navigate,
+      send: () =>
+        createRun({
+          ...(launch.by === "bot" ? { bot_id: launch.bot } : { file_path: launch.file }),
+          merge_into: "none",
+          ...(sendVars ? { vars: sendVars } : {}),
+        }),
+    });
+    if (!sent.onScreen) return;
+    if (sent.outcome.kind === "started") {
+      onStarted(sent.outcome.runID);
+      return;
     }
+    // What the failure means for the run is the helper's to say (launchNotice):
+    // an outcome that said nothing of it is not a plain failure.
+    if (sent.notice.kind === "unanswered") {
+      setError(sent.notice.message);
+      setUnansweredRuns(sent.notice.runsHref ?? null);
+      return;
+    }
+    setError(sent.notice.kind === "not-started" ? sent.notice.message : errorMessage(sent.outcome.error));
   };
 
   return (
     <div className="flex flex-col gap-3 p-3">
       <p className="text-xs text-fg-muted">
-        Launches a contained run of <code className="font-mono text-fg-default">{file}</code> —
+        Launches a contained run of{" "}
+        <code className="font-mono text-fg-default">
+          {launch.by === "bot" ? launch.bot : launch.file}
+        </code>{" "}
+        —
         commits land on a storage branch only (no merge into your checked-out branch).
       </p>
 
@@ -146,8 +228,19 @@ function TestLaunchForm({
       )}
 
       {error && (
-        <InlineBanner tone="danger" title="Test launch failed">
+        <InlineBanner
+          tone={unansweredRuns ? "warning" : "danger"}
+          title={unansweredRuns ? "No answer from the test launch" : "Test launch failed"}
+        >
           {error}
+          {unansweredRuns && (
+            <>
+              {" "}
+              <Link href={unansweredRuns} className="underline underline-offset-2">
+                Open its runs
+              </Link>
+            </>
+          )}
         </InlineBanner>
       )}
 

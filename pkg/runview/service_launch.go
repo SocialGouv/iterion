@@ -291,6 +291,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
 		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
+	// A pin rides the same refusal: only the publisher lane runs the program
+	// its compile read (ErrLaunchPinUnsupported says why), and this is the one
+	// place every other lane — detached, parked behind the pipeline cap, in
+	// process — is still ahead, before a compile, a run document or a queue
+	// slot exists.
+	if spec.ExpectProgramHash != "" && s.publisher == nil {
+		return nil, ErrLaunchPinUnsupported
+	}
 	// The trust is settled: the launch is published under it only on an
 	// admission that judged it (ADR-162 decision 5). The one choke point every
 	// launch surface crosses, so a surface whose gate judged the request
@@ -365,6 +373,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// the launch surface's answer for the pre-flight checks (#1800).
 		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir), spec.Trust)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkPinnedProgram(spec, cs); err != nil {
 			return nil, err
 		}
 		// Fail before persisting/publishing a queued run. The runner repeats
