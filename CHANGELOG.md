@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.26.0](https://github.com/SocialGouv/iterion/compare/v7.25.0...v7.26.0) (2026-11-21)
+
+### Features
+
+* **store,runview:** bind exact run data and streams to their origin ([#3507](https://github.com/SocialGouv/iterion/issues/3507)) ([a47e4e9](https://github.com/SocialGouv/iterion/commit/a47e4e988a63a92ec4357a71a4c6fcd7821ee651)), references [#3257](https://github.com/SocialGouv/iterion/issues/3257) [#3013](https://github.com/SocialGouv/iterion/issues/3013) [#3283](https://github.com/SocialGouv/iterion/issues/3283) [#3283](https://github.com/SocialGouv/iterion/issues/3283)
+
+    <details><summary>why</summary>
+
+    Squashes the 36 checkpoint commits ff01ed4a3..d28a6f818 of the Exact chantier onto v7.0.0. Their commit-by-commit history stays on backup/exact-r54-a401bcb5a.
+
+    </details>
+
 ## [7.25.0](https://github.com/SocialGouv/iterion/compare/v7.24.2...v7.25.0) (2026-11-21)
 
 ### Features
