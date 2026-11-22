@@ -237,9 +237,11 @@ runner:
     cooldownPeriod: 60
     pollingInterval: 5
     lagThreshold: 1
-    # JetStream consumer name. Override per-release in multi-tenant
-    # installs to avoid collision when several iterion releases share
-    # a NATS cluster.
+    # Durable consumer the scaler measures. The runner always binds the
+    # constant iterion-runners (no runner setting renames it), so keep this
+    # value: any other name points the scaler at a consumer no runner binds.
+    # A consumer name is scoped to its stream, so renaming it separates
+    # nothing between releases that share a NATS cluster.
     consumerName: iterion-runners
     # JetStream account the stream lives in. Required by the KEDA scaler;
     # single-tenant JetStream (no NATS accounts) uses the global default "$G".
