@@ -439,6 +439,12 @@ func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []Gene
 		if allowed != nil && !allowed[t.Name] {
 			continue
 		}
+		// A child conversation runs no codemode program — GenerateTextDirect,
+		// never installCodemode — so a tool its parent deferred to the
+		// codemode catalogue would be unreachable here: neither declared to
+		// the child nor callable from a program it does not have. The
+		// deferral is the parent's, and stops at the delegation.
+		t.catalogueOnly = false
 		out = append(out, t)
 	}
 	return out

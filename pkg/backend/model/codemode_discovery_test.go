@@ -23,7 +23,7 @@ func discoveryTools() []GenerationTool {
 func installedCodemode(t *testing.T, tools []GenerationTool) GenerationTool {
 	t.Helper()
 	opts := GenerationOptions{Tools: append([]GenerationTool(nil), tools...)}
-	if err := installCodemode(&opts, nil, nil, nil); err != nil {
+	if err := installCodemode(&opts, false, nil, nil, nil); err != nil {
 		t.Fatalf("installCodemode: %v", err)
 	}
 	return opts.Tools[len(opts.Tools)-1]
@@ -76,7 +76,7 @@ func TestAProgramDiscoversTheNodesToolsThroughTheDoor(t *testing.T) {
 	t.Parallel()
 
 	opts := GenerationOptions{Tools: discoveryTools()}
-	if err := installCodemodeOn(&opts, childHost(), &scripthost.Limits{Memory: 1 << 30}); err != nil {
+	if err := installCodemodeOn(&opts, childHost(), false, &scripthost.Limits{Memory: 1 << 30}); err != nil {
 		t.Fatalf("installCodemodeOn: %v", err)
 	}
 	cm := opts.Tools[len(opts.Tools)-1]

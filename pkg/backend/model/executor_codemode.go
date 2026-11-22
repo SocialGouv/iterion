@@ -72,3 +72,17 @@ func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.C
 		Remedy:     ir.CodemodeRemedy(backendName),
 	}
 }
+
+// codemodeDeferOn resolves the node's defer state (ir.ResolveCodemodeDefer)
+// beside codemodePolicy, over the same node/workflow rungs. There is no run
+// rung to read: no launch surface carries the value (no queue field, no CLI
+// flag), so the run parameter is "" here as it is in the compiler — the
+// resolver keeps the rung for the day a launch override exists.
+//
+// It is read only where the policy is ON — the build site answers
+// policy.On && deferOn, because a deferral without the catalogue it defers
+// to bounds nothing and demoting tools on a codemode-off node would strand
+// them behind a program the model has no way to run.
+func (e *ClawExecutor) codemodeDeferOn(f backendFields) bool {
+	return ir.ResolveCodemodeDefer("", f.codemodeDefer, e.wfCodemodeDefer) == "on"
+}

@@ -26,7 +26,7 @@ func TestCodemodeStateReachesSeparateScriptChildren(t *testing.T) {
 	run := func(bank CodemodeState, source string) string {
 		t.Helper()
 		opts := GenerationOptions{codemodeState: bank}
-		if err := installCodemodeOn(&opts, childHost(), &scripthost.Limits{Memory: 1 << 30}); err != nil {
+		if err := installCodemodeOn(&opts, childHost(), false, &scripthost.Limits{Memory: 1 << 30}); err != nil {
 			t.Fatal(err)
 		}
 		_, ctx := newToolDispatcher(t.Context(), nil, nil, nil, nil, nil, nil)

@@ -1963,30 +1963,38 @@ func writeAgentFields(b *buf, f llmFields) {
 // Writing it among the blocks instead would reorder those files to say the
 // same thing — allowed, since fmt only promises the same program, but a
 // reordering nobody asked for is a diff reviewers have to read.
+//
+// A declared `defer` also takes the block form: the short form has no way to
+// carry it, and writing the short form there would drop the property.
 func codemodeShortMode(cb *ast.CodemodeBlock) string {
-	if cb == nil || cb.Bounded() {
+	if cb == nil || cb.Bounded() || cb.Defer != "" {
 		return ""
 	}
 	return cb.Mode
 }
 
 // writeCodemodeBlock writes the indented `codemode:` block, and nothing at
-// all unless a bound is declared — the mode-only case is the short form,
-// handled by codemodeShortMode above.
+// all unless a bound or a `defer` is declared — the mode-only case is the
+// short form, handled by codemodeShortMode above.
 //
 // `mode:` is written first and only when it is not the implied `on`: the
 // block form implies the capability it bounds, so emitting `mode: on` beside
 // bounds would add a line the author did not write and the parser does not
 // need. An explicit `off` IS written — it is the one the author must see,
-// since it makes the bounds beside it inert (C348).
+// since it makes the bounds beside it inert (C348). `defer:` is written as
+// declared, empty meaning unset: it is not a bound, so there is no implied
+// value to omit — what the author wrote is what comes back.
 func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
-	if cb == nil || !cb.Bounded() {
+	if cb == nil || (!cb.Bounded() && cb.Defer == "") {
 		return
 	}
 	inner := indent + "  "
 	fmt.Fprintf(b, "%scodemode:\n", indent)
 	if cb.Mode != "" && cb.Mode != "on" {
 		fmt.Fprintf(b, "%smode: %s\n", inner, cb.Mode)
+	}
+	if cb.Defer != "" {
+		fmt.Fprintf(b, "%sdefer: %s\n", inner, cb.Defer)
 	}
 	// The order of the DSL block's own listing, so the written form and the
 	// reference read alike.

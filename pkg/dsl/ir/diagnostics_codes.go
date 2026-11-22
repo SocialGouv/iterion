@@ -546,4 +546,14 @@ const (
 	DiagRecoveryAgentNoTools DiagCode = "C352" // policy: recover reaches rung 4 on a workflow the source routes to claw, with no recovery.agent_tools: and no workflow codemode — the recovery agent is served no tool (warning)
 
 	DiagInvalidCodemodeStoreQuota DiagCode = "C353" // codemode store quota is negative or declared at node scope (error)
+
+	DiagInvalidCodemodeDefer DiagCode = "C354" // codemode defer: value not one of on|off (error)
+
+	// The deferral's own C348: `defer: on` declared on a node whose codemode
+	// is off by its own declaration. Not an error — the node keeps its tools
+	// declared and loses nothing — but the property the author wrote bounds
+	// nothing, and C348 is the form that says so. Workflow rung exempt, for
+	// the reason C348 states: the workflow's defer is a default every node
+	// that turns codemode on itself inherits.
+	DiagCodemodeDeferWithModeOff DiagCode = "C355" // codemode defer: on declared beside `mode: off` on a node — no program runs, so the deferral is inert (warning)
 )

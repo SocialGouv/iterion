@@ -480,12 +480,18 @@ func TestTheShippedCellsAreExactlyTheLoopsThatInstallTheTool(t *testing.T) {
 					// (TestCodemodeChangesNothingOnTheWireToASandboxRunner),
 					// and production is the NON-sandboxed path, so this
 					// one call is what carries it there.
-					if len(call.Args) < 2 {
+					if len(call.Args) < 3 {
 						t.Errorf("%s: installCodemode called with %d argument(s)", rel, len(call.Args))
 					} else {
-						sel, ok := call.Args[1].(*ast.SelectorExpr)
+						// The defer state rides the same rule: the TASK's
+						// resolved field, never a literal that would defer
+						// (or not) every node whatever its author wrote.
+						if sel, ok := call.Args[1].(*ast.SelectorExpr); !ok || sel.Sel == nil || sel.Sel.Name != "CodemodeDefer" {
+							t.Errorf("%s: installCodemode's defer argument is %T, want the task's .CodemodeDefer", rel, call.Args[1])
+						}
+						sel, ok := call.Args[2].(*ast.SelectorExpr)
 						if !ok || sel.Sel == nil || sel.Sel.Name != "CodemodeBounds" {
-							t.Errorf("%s: installCodemode's bounds argument is %T, want the task's .CodemodeBounds — a literal there runs every program on the defaults", rel, call.Args[1])
+							t.Errorf("%s: installCodemode's bounds argument is %T, want the task's .CodemodeBounds — a literal there runs every program on the defaults", rel, call.Args[2])
 						}
 					}
 				}

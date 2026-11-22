@@ -207,6 +207,11 @@
           "description": "The child's CPU-seconds ceiling, e.g. \"30s\" (default \"10s\", ceiling \"5m\"); RLIMIT_CPU's unit is seconds, so the value is rounded UP",
           "type": "string"
         },
+        "defer": {
+          "description": "Defer this node's own `tools:` list to the codemode catalogue: on or off, off the default (C354 on another word). On, the author's tools are not declared to the model on the wire — the program discovers them with call.search, reads a declaration with call.describe and calls one by name — while the runtime's own appends (interaction, board, runs, agent, todo_write, memory) and the withheld classes stay declared, as does any tool the node's permission policy can ask about or the catalogue bound does not keep whole. Applied only to unsandboxed execution: a sandboxed runner declares every tool, and the build warns. Inert as written beside `mode: off` (C355). A block holding only `defer:` still implies `mode: on`, like any block",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
         "memory": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "Bytes the program may GROW the child's data segment by, above what the script host holds before the program runs: RLIMIT_DATA is that footprint plus this (default 268435456, floor 67108864, ceiling 2147483648). Room, not a total, so the number does not shrink as the binary grows (#3383). A bound under the floor is RAISED to it at spawn and reported (C350) — below the floor a Go child crashes rather than refusing, which is #3290's measurement",

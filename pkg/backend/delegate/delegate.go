@@ -304,6 +304,17 @@ type ToolDef struct {
 	// ConcurrentSafe attests the native implementation, not the tool name.
 	// Zero is exclusive. This field does not cross the sandbox IPC.
 	ConcurrentSafe bool
+
+	// AuthorDeclared reports that this definition resolved from an entry the
+	// node's own `tools:` list contributed — not from a runtime append
+	// (interaction, board, runs, agent, todo_write, memory), not from an
+	// ambient wildcard. It is the first condition a deferring node reads to
+	// decide which tools join the codemode catalogue instead of the wire
+	// (the full rule is model.markCatalogueOnly's); everything else stays
+	// declared.
+	// In-process only: it does not cross the sandbox IPC, where the runner
+	// serves every tool declared.
+	AuthorDeclared bool
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -776,6 +787,23 @@ type Task struct {
 	// it, and the zero value is off, so a task built outside the executor
 	// gets no script host rather than an accidental one.
 	Codemode bool
+
+	// CodemodeDefer says the node's AUTHOR-DECLARED tools are demoted to
+	// catalogue-only: they stay callable through the node's door — the
+	// codemode tool's catalogue, call.search and call.describe read them,
+	// and a program calls one by name — but they are not declared to the
+	// model on the wire. The runtime's own appends (interaction, board,
+	// runs, agent, todo_write, memory) and the withheld classes (the ask
+	// channel, the iterion control surface, sub-agents, the script host
+	// itself) stay declared whatever this says.
+	//
+	// It is the RESOLVED decision, like Codemode, and it only means anything
+	// where Codemode is on: deferral is an optimization over the codemode
+	// catalogue, not a capability of its own. It does NOT cross the sandbox
+	// envelope (ToIOTask): a runner built before the field — and a runner
+	// after it, deliberately — serves the node's tools declared, which is
+	// today's behaviour and the safe fallback for an optimization.
+	CodemodeDefer bool
 
 	// CodemodeBounds are the bounds ONE program of this node runs under, as
 	// the author declared them and the executor resolved them (node over

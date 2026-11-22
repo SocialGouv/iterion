@@ -272,6 +272,14 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	}
 
 	for _, gt := range opts.Tools {
+		// The catalogue-only tools a deferring node holds stay out of the
+		// wire: this loop is the flag's ONLY visibility reader, so a tool
+		// demoted here is unknown to the model while every other reader —
+		// the tool map, the dispatch door, the codemode catalogue and its
+		// description index — still serves it by name.
+		if gt.catalogueOnly {
+			continue
+		}
 		var schema api.InputSchema
 		if len(gt.InputSchema) > 0 {
 			if err := json.Unmarshal(gt.InputSchema, &schema); err != nil {

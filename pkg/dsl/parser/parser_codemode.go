@@ -100,6 +100,10 @@ func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token, host st
 	switch name {
 	case "mode":
 		cb.Mode = p.expectIdent()
+	case "defer":
+		// Read as written; the compiler narrows it to on/off (C354), the way
+		// it narrows `mode` (C337).
+		cb.Defer = p.expectIdent()
 	case "tool_calls":
 		cb.ToolCalls = p.expectInt64()
 	case "concurrent_tool_calls":

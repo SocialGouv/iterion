@@ -55,6 +55,57 @@ and the dispatch pin narrows by. So the index cannot list a tool the door
 refuses (`TestTheIndexListsWhatTheDoorServesAProgram`), and a withheld tool is
 not discoverable from a program either.
 
+## The defer split (CM-14, #3450)
+
+A node that declares `codemode: defer: on` (the DSL block property, resolved
+node-over-workflow like `mode:`) moves its **author-declared** tools out of
+the request's tool array and into the catalogue: `buildRequest` — the flag's
+only visibility reader — skips them on the wire, while the tool map, the
+door, the index and the catalogue keep serving them. The program calls one by
+name; `call.search` finds it; `call.describe` returns its declaration; the
+model sees none of its bytes. The rule is `author-declared AND not
+withheld AND not runtime-appended`: the runtime's own appends (the ask
+channel, `todo_write`, the board/runs/watch families, sub-agents, memory) and
+the withheld classes stay declared whatever the deferral says — an author
+entry the runtime would append anyway included, through one record
+(`runtimeAppends`) the append site writes and the marker reads — so the node
+never loses its posture or its way back to the operator. Two more vetoes
+keep the deferral from ever removing reach, both read in `installCodemodeOn`
+between the one catalogue bound and the description:
+
+- **An Ask-able tool is never deferred.** Inside a program an Ask degrades
+  to a refusal, so a tool the node's policy can ask about keeps its direct
+  call: `(*permission.Policy).CanAskAbout` on the tool_use name, against
+  `opts.Permission` — the object the dispatcher gates with (ask mode, ask
+  rules, argument-scoped ones included). Under `permission: ask` nothing is
+  demoted, and no complement is paid.
+- **Only what the bound keeps whole is demoted.** `toolindex.Bound` leaves
+  out tools past 256 and over-long names, and drops oversized schemas; such
+  a tool stays declared, so it is never off the wire AND out of the index.
+
+A child conversation does not inherit the split (`filterSubagentTools`
+clears it): it has no program. A direct call naming a deferred tool still
+executes. The
+description gains one constant complement sentence where at least one tool
+was demoted — a pure function of the demoted set, byte-stable like the rest
+of the prefix — and claw's `tool_search` (whose catalogue is wider than
+any node's list) marks a catalogue-only match `program_only` without its
+schema: the declaration is what `call.describe` returns inside the program,
+not bytes the conversation re-spends.
+
+Measured on the real in-process families through the real registry
+(`TestTheDeferralMeasuredOnTheRealFamilies`): the deferral pays when the
+author's tools carry real schemas — a hundred synthetic 1 KiB-schema tools
+shrink the wire by 93 % — and can cost a few hundred bytes on a node whose
+author tool is a bare builtin, where the complement sentence plus the index
+entry outweigh the removed schema-less entry. It is additive on the compiled
+form: a consumer built before the field reads nothing and serves every tool
+declared, which is the same fallback a runner gets — the field does not
+cross the sandbox envelope, so a sandboxed node runs today's behaviour by
+construction, and the build warns once per node. On iterion.cloud that
+means every bot of a source the isolation floor sandboxes: the deferral is
+an unsandboxed-only optimization today.
+
 ## The catalogue bounds
 
 The catalogue crosses into the child inside the request document. The child

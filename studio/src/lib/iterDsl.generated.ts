@@ -250,6 +250,7 @@ export const iterDslPropertiesByKind = {
   "codemode": [
     "concurrent_tool_calls",
     "cpu",
+    "defer",
     "memory",
     "mode",
     "result_bytes",

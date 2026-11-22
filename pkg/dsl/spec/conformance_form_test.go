@@ -255,7 +255,11 @@ func TestTheBodyWitnessDistinguishesTheBodies(t *testing.T) {
 		t.Errorf("both bodies witness as %q — a wrong Body: would pass the form sweep", sandbox)
 	}
 	// And each is a property of ITS own kind, not of the other's.
-	for body, want := range map[string]string{"sandbox": "image", "codemode": "tool_calls"} {
+	// codemode's witness is `defer:` since the deferral property joined the
+	// block: it is the first post-`mode` property whose form has a one-line
+	// witness, it names codemode alone (sandbox has no `defer`), and it
+	// tells the two bodies apart exactly as the test asks.
+	for body, want := range map[string]string{"sandbox": "image", "codemode": "defer"} {
 		if got := bodyWitness(body); !strings.HasPrefix(got, want+":") {
 			t.Errorf("bodyWitness(%q) = %q, want a %s line", body, got, want)
 		}

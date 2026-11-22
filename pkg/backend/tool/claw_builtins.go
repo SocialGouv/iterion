@@ -576,7 +576,8 @@ func RegisterClawToolSearch(reg *Registry, snapshot ToolSnapshot) error {
 			return "", err
 		}
 		if executable, ok := NodeExecutableToolsFrom(ctx); ok {
-			return enrichToolSearchResult(raw, tools, executable)
+			catalogueOnly, deferred := CatalogueOnlyToolsFrom(ctx)
+			return enrichToolSearchResult(raw, tools, executable, catalogueOnly, deferred)
 		}
 		return raw, nil
 	}

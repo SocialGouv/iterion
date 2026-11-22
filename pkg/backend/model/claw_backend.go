@@ -914,7 +914,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
 		opts.codemodeState = codemodeStateFrom(ctx)
-		if err := installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
+		if err := installCodemode(&opts, task.CodemodeDefer, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				// Both directions travel this seam (#3290): the ceiling REDUCES
 				// an over-reaching bound, the floor RAISES one the child could
@@ -4350,6 +4350,10 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 			InputSchema:    d.InputSchema,
 			Execute:        d.Execute,
 			concurrentSafe: d.ConcurrentSafe,
+			// The authorship travels with the definition: a deferring node
+			// demotes exactly the tools the author's own `tools:` list
+			// contributed, and never one the runtime appended.
+			authorDeclared: d.AuthorDeclared,
 		}
 	}
 	return tools

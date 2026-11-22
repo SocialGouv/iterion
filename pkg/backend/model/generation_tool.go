@@ -28,6 +28,25 @@ type GenerationTool struct {
 
 	// concurrentSafe follows the actual native Execute closure.
 	concurrentSafe bool
+
+	// authorDeclared follows the ToolDef that resolved this tool: the entry
+	// came from the node's own `tools:` list, not from a runtime append.
+	// Set once at the conversion from ToolDefs, read once at the deferral
+	// marking; it has no reader after that.
+	authorDeclared bool
+
+	// catalogueOnly demotes the tool from the wire: buildRequest's tool loop
+	// skips it, so no request declares it to the model. Everything else —
+	// the tool map a direct call resolves against, the door a program
+	// reaches, the catalogue the description's index and call.search read —
+	// is built from the SAME slice, so the tool stays callable, searchable
+	// and describable; the flag's only reader is that one loop. Set when a
+	// deferring node installs codemode, by markCatalogueOnly — author-declared,
+	// kept whole by the catalogue bound (which also excludes the withheld
+	// classes), and never Ask-able under the node's policy; every other tool
+	// stays declared, and where the node does not defer no tool carries it,
+	// which is what keeps a deferred-off request byte-identical to today's.
+	catalogueOnly bool
 }
 
 // GenerationOptions configures a direct generation call.
