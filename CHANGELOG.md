@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.29.0](https://github.com/SocialGouv/iterion/compare/v7.28.0...v7.29.0) (2026-11-22)
+
+### Features
+
+* **codemode:** carry structured tool results into scripts ([#3515](https://github.com/SocialGouv/iterion/issues/3515)) ([801f9db](https://github.com/SocialGouv/iterion/commit/801f9dbf607c89f089ca4af34bd95d27086bb499))
+
+    <details><summary>why</summary>
+
+    Keep MCP structuredContent beside the model-facing text: a rich-result sink armed on each nested call's own context, a structured payload on the result frame behind protocol v5, and additive fields on the value call() returns, dropped with explicit metadata past the operator's own ToolResultBytes bound. Failed calls never observe, so the Read auto-retry cannot leave a stale payload beside its text. Claw bash re-caps its output to the script's budget, cutting with its own metadata instead of the…
+
+    </details>
+
 ## [7.28.0](https://github.com/SocialGouv/iterion/compare/v7.27.0...v7.28.0) (2026-11-22)
 
 ### Features
