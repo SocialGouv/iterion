@@ -91,6 +91,10 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 			// nothing, and a reader of the retry task would see a node asking
 			// for a budget it cannot spend.
 			retryTask.CodemodeBounds = nil
+			// And the deferral: it means nothing without the capability it
+			// defers to, and a retry task reading defer-on would describe a
+			// split no loop of this turn performs.
+			retryTask.CodemodeDefer = false
 			retryTask.ToolMaxSteps = 0
 			retryTask.Sandbox = nil
 			return schemaReask{task: retryTask, mode: ReaskContinueConversation}

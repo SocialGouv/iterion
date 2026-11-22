@@ -706,6 +706,7 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 // every golden to say the same thing.
 type jsonCodemodeBlock struct {
 	Mode                string `json:"mode,omitempty"`
+	Defer               string `json:"defer,omitempty"`
 	ToolCalls           int64  `json:"tool_calls,omitempty"`
 	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
 	Wall                string `json:"wall,omitempty"`
@@ -718,12 +719,14 @@ type jsonCodemodeBlock struct {
 	StoreBytes          int64  `json:"store_bytes,omitempty"`
 }
 
-// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared.
+// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared. A declared
+// `defer` counts too — it is a property only the block form can carry, so a
+// defer-only block must take the object form or the transport would drop it.
 func (c *jsonCodemodeBlock) bounded() bool {
 	if c == nil {
 		return false
 	}
-	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+	return c.Defer != "" || c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
 		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
 }
 
@@ -760,6 +763,7 @@ func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
 	}
 	return &jsonCodemodeBlock{
 		Mode:                c.Mode,
+		Defer:               c.Defer,
 		ToolCalls:           c.ToolCalls,
 		ConcurrentToolCalls: c.ConcurrentToolCalls,
 		Wall:                c.Wall,
@@ -805,6 +809,7 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 	}
 	return &CodemodeBlock{
 		Mode:                mode,
+		Defer:               j.Defer,
 		ToolCalls:           j.ToolCalls,
 		ConcurrentToolCalls: j.ConcurrentToolCalls,
 		Wall:                j.Wall,

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
@@ -31,6 +33,18 @@ call(name, input) runs one of this node's tools and returns {text, isError, trun
 call.parallel([{name, input}, …]) accepts up to four independent calls and returns entries in input order. Each entry has {status, text, isError, truncated, remaining}; an ok entry from a tool with a structured result also carries structured. status is "ok", "error", or "budget". Tool failures and budget refusals are entries, not exceptions. Every entry reports the same remaining budget after admitting the batch. Like call(), call.parallel() is synchronous. Only audited native glob and workspace_grep can overlap, where policy, hooks and limits allow it; other calls run exclusively. Cancellation does not undo effects that have already started.
 
 Prefer this when the work is many calls, or one call whose output you only need a part of; call a tool directly when you need exactly one result.`
+
+// codemodeDeferredComplement is appended to the description of a node that
+// DEMOTED at least one tool to catalogue-only, after the constant preamble
+// and before the index: some of the tools the index lists are not on the
+// model's tool list. It says what is true and no more — they are not
+// declared, and a program reaches them — and deliberately does not claim a
+// direct call is impossible: the dispatcher's map is the union, so a
+// tool_use naming one still executes. It is a constant, not a composed
+// string — the description sits inside the cached prompt prefix, so the
+// text is a pure function of the node's demoted set and must not move
+// between turns.
+const codemodeDeferredComplement = `Some of the tools below are not declared to you as tools on this turn: they live in this catalogue only. Reach them from a program — call.search finds one, call.describe returns its TypeScript declaration, and call(name, input) runs it.`
 
 // codemodeInputSchema is the one argument: the program.
 //
@@ -60,6 +74,16 @@ var codemodeInputSchema = json.RawMessage(`{
 // the same list a direct call is resolved against, so the node's own door is
 // what a program reaches.
 //
+// `deferred` is the node's resolved defer state (CM-14). On, the author's
+// tools are demoted HERE — markCatalogueOnly, between the one catalogue
+// bound and the description — because both of its vetoes read what only
+// this point holds: the bounded catalogue (a tool the bound does not keep
+// whole would lose reach off the wire) and opts.Permission, the policy the
+// dispatcher gates the direct path with. The description then gains the
+// catalogue-only complement exactly when at least one tool was demoted, so
+// a deferring node that demotes nothing pays no bytes for a sentence that
+// would be false, and an undeferred node stays byte-identical to today's.
+//
 // `want` is the author's declared bounds, already resolved node-over-workflow
 // by the executor; nil means nobody chose. It is passed THROUGH, not
 // inspected: Limits.Clamp in the parent is what fills the unset fields from
@@ -73,23 +97,30 @@ var codemodeInputSchema = json.RawMessage(`{
 // catalogue each script receives both come from this one snapshot, through
 // the same withheld predicate the door narrows by, so the index cannot list a
 // tool the door refuses.
-func installCodemode(opts *GenerationOptions, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
-	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, want)
+func installCodemode(opts *GenerationOptions, deferred bool, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
+	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, deferred, want)
 }
 
 // installCodemodeOn is installCodemode on a given host: production passes the
 // host above, tests pass one whose child is the test binary — so the wiring a
 // test drives is the wiring that ships, catalogue included.
-func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, want *scripthost.Limits) error {
+func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred bool, want *scripthost.Limits) error {
 	var limits scripthost.Limits
 	if want != nil {
 		limits = *want
 	}
 	catalog := scriptCatalog(opts.Tools, ScriptHostToolName)
-	description, err := codemodeToolDescription(catalog)
+	// The ONE bound of this snapshot: the index is composed from it, the
+	// deferral reads it, and Host.Run bounds the same catalogue with the
+	// same deterministic function, so all three see one set.
+	bounded, omitted, err := toolindex.Bound(catalog)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", ScriptHostToolName, err)
 	}
+	if deferred {
+		markCatalogueOnly(opts.Tools, bounded, opts.Permission)
+	}
+	description := codemodeToolDescription(bounded, omitted, anyCatalogueOnly(opts.Tools))
 	if opts.codemodeState != nil {
 		description += "\n\ncall.store(key, value) writes a JSON value to this run’s shared state; call.load(key) reads it. A missing key returns undefined, not null. Both are synchronous, count against the script call budget, and cannot dispatch tools. The bank is bounded; handle invalid input and quota errors without retrying the same write."
 	}
@@ -111,15 +142,69 @@ func scriptCatalog(tools []GenerationTool, self string) []toolindex.Tool {
 	return out
 }
 
-// codemodeToolDescription is the preamble and the node's index, bounded the
-// way the child's catalogue is — [toolindex.Bound] is deterministic, so the
-// index a model reads and the catalogue a program searches are the same set.
-func codemodeToolDescription(catalog []toolindex.Tool) (string, error) {
-	bounded, omitted, err := toolindex.Bound(catalog)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", ScriptHostToolName, err)
+// markCatalogueOnly demotes, on a deferring node, every AUTHOR-DECLARED tool
+// the deferral can take off the wire WITHOUT removing reach — buildRequest's
+// loop is the flag's only reader; the tool map, the door and the catalogue
+// keep serving the tool. A tool is demoted only when all three hold:
+//
+//   - it is author-declared (resolveToolsForNode's marker: the author's own
+//     entry, and not a name the runtime appends — runtimeAppends);
+//   - the bounded catalogue keeps it WHOLE — present, schema not omitted.
+//     toolindex.Bound leaves out the tools past MaxTools and the over-long
+//     names, and drops oversized schemas; demoting one of those would take
+//     it off the wire AND out of the index and call.search, or leave a
+//     program to call it blind. Catalogue membership also carries the
+//     withheld veto: scriptCatalog keeps no withheld tool, so a tool that
+//     pauses the run, answers for the node or nests a script is never in
+//     `bounded`, and never demoted;
+//   - the node's permission policy can never Ask about it
+//     ((*permission.Policy).CanAskAbout, asked with the name the dispatcher
+//     evaluates a direct call with — GenerationTool.Name is the tool_use
+//     name). Inside a program an Ask degrades to a refusal, so a demoted
+//     Ask-able tool would have no usable call at all: it keeps its direct
+//     one. `policy` is opts.Permission, the object the dispatcher gates
+//     with, not a re-parse.
+//
+// Every flag is assigned, so a tool that fails a veto is explicitly
+// declared rather than left at whatever it held.
+func markCatalogueOnly(tools []GenerationTool, bounded []toolindex.Tool, policy *permission.Policy) {
+	whole := make(map[string]bool, len(bounded))
+	for _, t := range bounded {
+		if t.SchemaOmitted == 0 {
+			whole[t.Name] = true
+		}
 	}
-	return codemodeDescription + "\n\nTools a program can call:\n" + toolindex.New(bounded, omitted).Lines(), nil
+	for i := range tools {
+		t := &tools[i]
+		t.catalogueOnly = t.authorDeclared &&
+			whole[strings.TrimSpace(t.Name)] &&
+			!policy.CanAskAbout(t.Name)
+	}
+}
+
+// anyCatalogueOnly reports whether the node demoted at least one tool off
+// the wire — the fact the catalogue-only complement states.
+func anyCatalogueOnly(tools []GenerationTool) bool {
+	for _, t := range tools {
+		if t.catalogueOnly {
+			return true
+		}
+	}
+	return false
+}
+
+// codemodeToolDescription is the preamble and the node's index, composed
+// from the catalogue as [toolindex.Bound] bounded it — the bound the child's
+// catalogue gets too, so the index a model reads and the catalogue a program
+// searches are the same set. demoted appends the catalogue-only complement
+// between preamble and index: a pure function of the node's demoted set, so
+// the cached prefix stays byte-stable within one node.
+func codemodeToolDescription(bounded []toolindex.Tool, omitted int, demoted bool) string {
+	description := codemodeDescription
+	if demoted {
+		description += "\n\n" + codemodeDeferredComplement
+	}
+	return description + "\n\nTools a program can call:\n" + toolindex.New(bounded, omitted).Lines()
 }
 
 // codemodeTool is the tool whose input is a program.

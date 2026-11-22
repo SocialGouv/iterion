@@ -116,7 +116,7 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 // Action's rung-4 `recovery: agent_tools:` (the two lists C135 covers, same
 // reach). The tools the ENGINE appends are out of it: ultracode grants `agent`
 // to every claw node that restricts its list
-// (executor_build_task.withClawOrchestrationTools), and a warning on a line
+// (executor_build_task.clawOrchestrationTool), and a warning on a line
 // the author never wrote would report an engine choice as an authoring
 // mistake — the rewritten tool description and the ultracode grant's own
 // refusal clause are what speak there.

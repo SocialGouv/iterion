@@ -1210,6 +1210,7 @@ type SandboxBlock struct {
 // "nobody chose" — so an explicit `tool_calls: 0` is the default, not a ban.
 type CodemodeBlock struct {
 	Mode                string // "on" | "off" | "" (inherit when on a node)
+	Defer               string // "on" | "off" | "" (off): the node's own `tools:` list joins the codemode catalogue instead of the wire
 	ToolCalls           int64  // tool_calls: nested calls one program may make
 	ConcurrentToolCalls int64  // concurrent_tool_calls: nested calls in flight in one program
 	Wall                string // wall: the child's lifetime, e.g. "60s"

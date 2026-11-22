@@ -257,6 +257,7 @@ type ClawExecutor struct {
 	// ADR-132 §1 forbids the environment as a source for what a node is
 	// configured with.
 	wfCodemode               string
+	wfCodemodeDefer          string
 	wfCodemodeBounds         *ir.CodemodeBounds
 	codemodeOverride         string
 	codemodeBoundsOverride   *ir.CodemodeBounds
@@ -1192,6 +1193,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		autoMemoryEnvDefault:     envGetenv(context.Background(), automemory.ModeEnv),
 		wfAmbientContext:         wf.AmbientContext,
 		wfCodemode:               wf.Codemode,
+		wfCodemodeDefer:          wf.CodemodeDefer,
 		wfCodemodeBounds:         wf.CodemodeBounds,
 		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,

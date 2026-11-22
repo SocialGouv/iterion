@@ -244,13 +244,25 @@ func (d *toolDispatcher) dispatchWithApproval(ctx context.Context, tu toolUseBlo
 		}
 	}
 	names := make([]string, 0, len(d.toolMap))
-	for name := range d.toolMap {
+	catalogue := make([]string, 0, len(d.toolMap))
+	for name, t := range d.toolMap {
 		if narrowed && !keep(name) {
 			continue
 		}
 		names = append(names, name)
+		if t.catalogueOnly {
+			catalogue = append(catalogue, name)
+		}
 	}
 	ctx = tool.WithNodeExecutableTools(ctx, names)
+	// The deferral split, pinned from the SAME loop the executable set is
+	// derived from — the narrowing included, so a caller whose filter
+	// excludes a catalogue-only tool reads it as unavailable like any
+	// other. Only a deferring node pins anything, so a node without the
+	// split answers as it always has.
+	if len(catalogue) > 0 {
+		ctx = tool.WithCatalogueOnlyTools(ctx, catalogue)
+	}
 	return executeOneToolWithApproval(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy, approval)
 }
 

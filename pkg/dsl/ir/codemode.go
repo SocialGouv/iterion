@@ -211,6 +211,40 @@ func ValidCodemode(v string) bool {
 	return normCodemode(v) == "" || slices.Contains(CodemodeValues, normCodemode(v))
 }
 
+// ValidCodemodeDefer is ValidCodemode for the defer property: the same two
+// spellings, "" meaning inherit. It is the predicate the compiler judges the
+// block's value with (C354), so a second surface that grows a launch rung
+// validates with this rather than re-deriving the set.
+func ValidCodemodeDefer(v string) bool {
+	return normCodemode(v) == "" || slices.Contains(CodemodeValues, normCodemode(v))
+}
+
+// ResolveCodemodeDefer decides whether a node defers its own `tools:` list to
+// the codemode catalogue, nearest rung first: the launch request's value,
+// then the node's, then the workflow's, then "" — which reads as off.
+//
+// There is deliberately NO launch surface carrying the value yet (no queue
+// field, no CLI flag — the queue's SchemaVersion was not bumped for it), so
+// today every caller passes "" at the run rung. The rung exists because the
+// attribute is a configuration the operator may one day override per run,
+// and ResolveCodemode is the shape a second switch beside it must take —
+// nearest-wins, "" inherit, no environment rung (ADR-132 §1).
+//
+// The two ladders are walked SEPARATELY, and that has one reach worth
+// stating: a launch override of the MODE (ResolveCodemode's run rung) turns
+// codemode on for a node whose own block says `mode: off` — and this
+// resolver then answers that node's `defer: on` as written, so the deferral
+// goes live with it. That is the parity C348 has for the bounds beside
+// `mode: off`, and why C355 says "inert as written", never "inert".
+func ResolveCodemodeDefer(run, node, workflow string) string {
+	for _, v := range []string{normCodemode(run), normCodemode(node), normCodemode(workflow)} {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // CodemodeBoundsSet reports whether the launch (or an author) set ANY field
 // of b. It is the launch's half of C348: bounds beside a run-level
 // `codemode: off` are inert, and the launch path warns rather than refuses —

@@ -190,6 +190,7 @@ nodes:
     ambient_context: none
     codemode:
       mode: "on"
+      defer: "on"
       tool_calls: 256
       concurrent_tool_calls: 3
       wall: "2m"

@@ -1188,7 +1188,7 @@ func (w *writer) memory(m *ast.MemoryBlock) *yaml.Node {
 // also what keeps every document written before the bounds existed
 // byte-identical: `codemode: on` reads and writes as it did.
 func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
-	if !cb.Bounded() {
+	if !cb.Bounded() && cb.Defer == "" {
 		return str(cb.Mode)
 	}
 	p := w.props("codemode")
@@ -1198,6 +1198,9 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 	if cb.Mode != "" && cb.Mode != "on" {
 		p.str("mode", cb.Mode)
 	}
+	// defer: is written as declared, empty meaning unset — there is no
+	// implied value to omit, so what the author wrote comes back.
+	p.str("defer", cb.Defer)
 	p.int64("tool_calls", cb.ToolCalls)
 	p.int64("concurrent_tool_calls", cb.ConcurrentToolCalls)
 	p.str("wall", cb.Wall)

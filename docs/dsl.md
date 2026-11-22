@@ -387,7 +387,7 @@ agent reviewer:
   max_tokens: 12000
   reasoning_effort: high
   ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
-  codemode: off           ## on|off, or a block of bounds (implies on) — the model composes its calls as code (claw only, ADR-165)
+  codemode: off           ## on|off, or a block of bounds (+ defer:) (implies on) — the model composes its calls as code (claw only, ADR-165)
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -494,6 +494,51 @@ and a second attempt at the same task crossed the bound and was refused with
 *"the script has spent its budget of 64 tool calls"*. `tool_calls` is the bound
 a real sweep meets first; the byte bounds bite on large tool results, and
 `wall`/`cpu` on a program that computes rather than calls.
+
+Inside the block, `defer: on` moves the node's own `tools:` list out of the
+request's tool array and into the codemode catalogue: the model no longer
+carries those tools' schemas on the wire, and reaches them from a program —
+`call.search` finds one, `call.describe` reads its declaration, `call(name,
+input)` runs it — while the runtime's own appends (the ask channel,
+`todo_write`, the board/runs/watch families, sub-agents, memory) and every
+withheld class stay declared whatever it says — and so does a tool the
+author lists that the runtime appends anyway (`todo_write`, and the
+auto-memory trio where auto-memory is on). **An Ask-able tool is never
+deferred**: inside a program an Ask degrades to a refusal, so a tool the
+node's permission policy can ask about — `permission: ask`, or any `ask:`
+rule naming it, argument-scoped ones like `Bash(git push:*)` included —
+keeps its direct call, and under `permission: ask` nothing is deferred at
+all. Nor is a tool the catalogue bound does not keep whole (past 256 tools,
+an over-long name, an oversized schema): deferral never takes a tool off the
+wire that the program could not reach whole either. Resolved like `mode:` (node over
+workflow, `""` inherits, off by default; **C354** on another value), inert
+as written beside a node's own `mode: off` (**C355**, a warning — the tools
+stay declared; a launch override that turns codemode on makes the defer
+live, as it does the bounds C348 names). claw's `tool_search` marks a
+deferred match `program_only` and hands out no schema for it: the
+declaration is what `call.describe` returns inside the program. A direct
+call naming a deferred tool still executes — the node's door is the union;
+deferral changes what the model is TOLD, not what it may run. A
+sub-agent's conversation does not inherit it: it has no program to reach a
+catalogue with, so every tool its filter grants it is declared. Measured on
+the real families: the deferral pays when the author's tools carry real
+schemas (a hundred 1 KiB-schema tools shrink the tool array by 93 %) and
+costs a few hundred bytes on a node whose only author tool is a bare
+builtin.
+
+**The deferral applies only to unsandboxed execution.** The sandbox
+crossing does not carry it — deliberately, with no queue schema bump — so a
+sandboxed node runs with every tool declared, and the build says so once
+per node on the run log. On iterion.cloud that is every bot of a source
+the isolation floor sandboxes (a team's bots, any non-operator source):
+there `defer: on` changes nothing on the wire today. A runner built before
+the field behaves the same way, which is the safe direction for an
+optimization (#3450).
+
+A block whose only line is `defer:` is still a block, and a block implies
+`mode: on`: `codemode:` with `defer: off` alone under it turns codemode ON
+for the node. Write `mode: off` beside it — or the short form
+`codemode: off` — to keep it off.
 
 `ambient_context: none | workspace | operator | all` picks what the node
 inherits from its surroundings besides its prompt (ADR-119): the

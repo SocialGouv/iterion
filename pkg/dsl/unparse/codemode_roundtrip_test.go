@@ -171,3 +171,47 @@ workflow w:
 		t.Errorf("not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }
+
+// A declared `defer` takes the block form — the short form has no way to
+// carry it, and collapsing it there would silently turn the deferral off,
+// the program's meaning changing under a formatter that promised to keep it.
+func TestADeclaredDeferRoundTripsAsABlock(t *testing.T) {
+	t.Parallel()
+	src := `agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    defer: on
+    tool_calls: 128
+
+workflow w:
+  entry: a
+  a -> done
+`
+	got := render(t, src)
+	if !strings.Contains(got, "defer: on") {
+		t.Fatalf("the declared defer was dropped, which turns the deferral off:\n%s", got)
+	}
+	if strings.Contains(got, "\n  codemode: on\n") {
+		t.Errorf("a defer-only neighbourhood collapsed to the short form, which cannot carry it:\n%s", got)
+	}
+	// Written as declared: `defer: off` is not an implied value to omit.
+	src = `agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    mode: off
+    defer: off
+
+workflow w:
+  entry: a
+  a -> done
+`
+	got = render(t, src)
+	if !strings.Contains(got, "defer: off") {
+		t.Fatalf("the declared `defer: off` was dropped:\n%s", got)
+	}
+	if again := render(t, got); again != got {
+		t.Errorf("not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}

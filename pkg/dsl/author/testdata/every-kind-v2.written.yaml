@@ -201,6 +201,7 @@ nodes:
     auto_memory: off
     ambient_context: none
     codemode:
+      defer: on
       tool_calls: 256
       concurrent_tool_calls: 3
       wall: 2m

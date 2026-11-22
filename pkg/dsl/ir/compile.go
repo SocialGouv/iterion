@@ -773,7 +773,7 @@ func (c *compiler) compile() *Workflow {
 		interaction = &im
 	}
 
-	wfCodemode, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
+	wfCodemode, wfCodemodeDefer, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
 
 	w := &Workflow{
 		Name:                wf.Name,
@@ -809,6 +809,7 @@ func (c *compiler) compile() *Workflow {
 		AutoMemory:          wf.AutoMemory,
 		AmbientContext:      wf.AmbientContext,
 		Codemode:            wfCodemode,
+		CodemodeDefer:       wfCodemodeDefer,
 		CodemodeBounds:      wfCodemodeBounds,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
 		RepoDevbox:          wf.RepoDevbox,
@@ -1179,7 +1180,7 @@ func (c *compiler) compileAgents() {
 		if !ok {
 			continue
 		}
-		agentCodemode, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent", a.Name)
+		agentCodemode, agentCodemodeDefer, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent", a.Name)
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
@@ -1206,6 +1207,7 @@ func (c *compiler) compileAgents() {
 			AutoMemory:        a.AutoMemory,
 			AmbientContext:    a.AmbientContext,
 			Codemode:          agentCodemode,
+			CodemodeDefer:     agentCodemodeDefer,
 			CodemodeBounds:    agentCodemodeBounds,
 			Permission:        a.Permission,
 			PermissionAllow:   a.Allow,
@@ -1226,7 +1228,7 @@ func (c *compiler) compileJudges() {
 		if !ok {
 			continue
 		}
-		judgeCodemode, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge", j.Name)
+		judgeCodemode, judgeCodemodeDefer, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge", j.Name)
 		c.nodes[j.Name] = &JudgeNode{
 			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
@@ -1252,6 +1254,7 @@ func (c *compiler) compileJudges() {
 			AutoMemory:        j.AutoMemory,
 			AmbientContext:    j.AmbientContext,
 			Codemode:          judgeCodemode,
+			CodemodeDefer:     judgeCodemodeDefer,
 			CodemodeBounds:    judgeCodemodeBounds,
 			Permission:        j.Permission,
 			PermissionAllow:   j.Allow,

@@ -38,11 +38,21 @@ import (
 // that pkg/queue's v32 rationale calls the correctness bug the additive-field
 // rule exists for — and dropping `mode: off` turned codemode on for the whole
 // bot. TestTheWorkflowRungsBoundsAreADefaultNotDeadText holds it.
-func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (string, *CodemodeBounds) {
+func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (string, string, *CodemodeBounds) {
 	if cb == nil {
-		return "", nil
+		return "", "", nil
 	}
 	mode := normCodemode(cb.Mode)
+	// The same vocabulary mode: is held to, judged the same way: a value the
+	// compiler accepts (ValidCodemodeDefer) or an error naming the accepted
+	// spellings. The raw text is normalized before the check, matching C337,
+	// which reports the value the IR carries.
+	deferMode := normCodemode(cb.Defer)
+	if !ValidCodemodeDefer(deferMode) {
+		c.errorfAtProperty(DiagInvalidCodemodeDefer, scope, name, "codemode",
+			"%s %q declares codemode defer: %q; valid values are on, off — or drop the line to keep the tools declared (the default)",
+			scope, name, cb.Defer)
+	}
 	// The AST JSON entry point does not go through the parser.
 	for _, quota := range []struct {
 		name  string
@@ -69,7 +79,21 @@ func (c *compiler) compileCodemode(cb *ast.CodemodeBlock, scope, name string) (s
 			"%s %q declares codemode bounds beside `mode: off`: no program of this node runs, so the bounds bound nothing. Drop `mode: off` to use them, or drop the bounds",
 			scope, name)
 	}
-	return mode, bounds
+	// The defer twin, same rung and same shape: a deferral is INERT as
+	// written, not an error — the node keeps its tools declared and loses
+	// nothing. As WRITTEN, because a launch override of codemode outranks the
+	// node's `mode: off` (ResolveCodemode's run rung) and makes the declared
+	// defer live — C348 has the same reach for the bounds, and the message
+	// says so rather than promising what a launch can change. At the
+	// workflow rung it is a DEFAULT like the bounds there: a node that turns
+	// codemode on itself inherits it, so it is not dead text and is left
+	// alone.
+	if inert && deferMode == "on" {
+		c.warnfAtProperty(DiagCodemodeDeferWithModeOff, scope, name, "codemode",
+			"%s %q declares codemode defer: on beside `mode: off`: as written no program of this node runs, so the deferral is inert and the tools stay declared — unless a launch override turns codemode on, which makes this defer live. Drop `mode: off` to use the deferral, or drop the defer line",
+			scope, name)
+	}
+	return mode, deferMode, bounds
 }
 
 // codemodeBounds reads the bound properties, parsing the two durations.
