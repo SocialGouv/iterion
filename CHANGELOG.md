@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.31.0](https://github.com/SocialGouv/iterion/compare/v7.30.0...v7.31.0) (2026-11-22)
+
+### Features
+
+* **codemode:** defer author tools to the discovery catalogue ([#3517](https://github.com/SocialGouv/iterion/issues/3517)) ([381fd7c](https://github.com/SocialGouv/iterion/commit/381fd7cbd9c73df97cd40d8addfeab5ff37ddd86))
+
+    <details><summary>why</summary>
+
+    A `codemode: defer: on` node stops declaring the author's own tools to the model: they stay in the dispatcher's map, the program catalogue and its description index, so a program finds them with call.search, reads them with call.describe and runs them through the same door. Tools the runtime appends, the classes a program may not reach, tools the node's permission policy can ask about, and tools the catalogue bound does not keep whole all stay declared, so deferral never removes a usable call.…
+
+    </details>
+
 ## [7.30.0](https://github.com/SocialGouv/iterion/compare/v7.29.0...v7.30.0) (2026-11-22)
 
 ### Features
