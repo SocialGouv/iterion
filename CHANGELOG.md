@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.28.0](https://github.com/SocialGouv/iterion/compare/v7.27.0...v7.28.0) (2026-11-22)
+
+### Features
+
+* **codemode:** persist bounded state across scripts in a run ([#3509](https://github.com/SocialGouv/iterion/issues/3509)) ([cd45b08](https://github.com/SocialGouv/iterion/commit/cd45b08db60329ef4c4f6e7175fa87db1f51eafa))
+
+    <details><summary>why</summary>
+
+    Exercise quota claim, delegate continuation, and cumulative cost regressions. Isolated mutants restore the stale attempt predicate, lost accounting, and early delegate retirement.
+
+    </details>
+
 ## [7.27.0](https://github.com/SocialGouv/iterion/compare/v7.26.0...v7.27.0) (2026-11-22)
 
 ### Features
