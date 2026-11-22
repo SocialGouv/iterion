@@ -181,7 +181,7 @@ const (
 	// C154 is allocated from the free C154-C169 band: C113-C119 belong to the
 	// fan_out_each/groups epic and C120-C122 are taken, so the permission
 	// family cannot grow contiguously from C112.
-	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
+	DiagGatedCLIBackendSandbox DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw whose ask-capable policy can reach a container-executed tool (the approval channel serves launcher-placed asks only), and the workflow does not opt out of the sandbox (warning)
 	DiagIndexOnScalar          DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout     DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	DiagFileFieldNotHuman      DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)

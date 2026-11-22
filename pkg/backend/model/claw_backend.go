@@ -454,22 +454,23 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	}
 
 	approval := exactClawApprovalFrom(ctx)
-	if approval != nil && task.Sandbox != nil {
-		return delegate.Result{}, fmt.Errorf("claw: exact approval cannot resume in a sandbox")
-	}
 	if task.Sandbox != nil {
 		// The permission gate crosses the sandbox IPC boundary as a
 		// pre-task permission_policy envelope: the in-container
 		// `iterion __claw-runner` rebuilds the policy through the same
 		// parser and enforces it in its own tool loop (see
-		// executeViaSandboxRunner). The launcher does not support permission
-		// pauses on this path: resuming one requires binding a one-time grant
-		// to the approved call and consuming it at dispatch. Refuse any policy
-		// that can Ask rather than silently degrading it to Deny.
-		if task.Permission.CanAsk() {
-			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run the workflow unsandboxed (`sandbox: none` / `--sandbox none`), or route the node to claude_code",
-				task.NodeID, task.Permission.Mode)
+		// executeViaSandboxRunner). A policy that can Ask is SERVED, not
+		// refused, since the approval channel (#3513): the launcher
+		// announces the channel pre-task, and a permission Ask crosses as
+		// permission_ask — the held claim spends and executes, or the run
+		// suspends for a human and the re-asked approval is served on
+		// resume (including an exact approval resumed across the channel:
+		// the ctx approval above is read by the ask handler, which is why
+		// the old exact-approval-in-sandbox refusal is gone). The gate is
+		// still re-checked on THIS side at every ask and every forwarded
+		// call, so the runner's verdict stays a request, never a verdict.
+		if !task.Permission.CanAsk() && approval != nil {
+			return delegate.Result{}, fmt.Errorf("claw: exact approval resumed under a policy that no longer asks — the claim cannot be served across the sandbox")
 		}
 		// The async question pair is served by the launcher, which does not
 		// bind it to the run's question channel on this path: a task wired
@@ -480,6 +481,37 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
+		// The channel's enabled scope is LAUNCHER-placed asks only: the
+		// launcher consumes the approval AND executes the call, so it
+		// cannot certify a container-executed one. A node pairing an
+		// ask-capable policy with container-executed tools is refused here,
+		// explicitly and before the spawn — not degraded to per-call
+		// denials the model silently works around.
+		if task.Permission.CanAsk() {
+			var container []string
+			for _, td := range task.ToolDefs {
+				placement, _ := tool.SandboxPlacementOf(td.Name)
+				if placement == tool.PlacementLauncher {
+					continue
+				}
+				// Only a container tool this policy could ever ask about
+				// keeps the node out of the served scope: an ask rule
+				// scoped to launcher-placed tools leaves the container
+				// tools on their mode default, and those never pause.
+				// Argument scopes count — a scoped rule can fire on SOME
+				// invocation of the tool, and that invocation would
+				// degrade to a per-call denial.
+				if task.Permission.CanAskAbout(td.Name) {
+					container = append(container, td.Name)
+				}
+			}
+			if len(container) > 0 {
+				sort.Strings(container)
+				return delegate.Result{}, fmt.Errorf(
+					"claw backend: node %q pairs an ask-capable policy with container-executed tools (%s) — the approval channel serves launcher-placed tools only (MCP, in-memory registries); scope the ask rules to launcher-placed tools, drop the container tools, or run unsandboxed (`sandbox: none` / `--sandbox none`)",
+					task.NodeID, strings.Join(container, ", "))
+			}
+		}
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
 			return delegate.Result{}, err
 		}
@@ -668,7 +700,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			resultText = "(no answer provided)"
 		}
 		isErr := false
-
 		// Permission-gate resume: when the pending tool_use is a real
 		// action the gate paused on (not the ask_user infra tool), the
 		// operator's answer is an authorization decision, not a question
@@ -676,15 +707,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// executor (from the runtime's GrantInputKey); here we just replace
 		// the tool_result with the right instruction so the agent re-issues
 		// the now-authorized call (which then runs through the normal tool
-		// loop) or adapts on denial.
+		// loop) or adapts on denial. On the approval channel's runner side
+		// the allow-once instruction is the SAME re-issue text: the text is
+		// display only — the launcher re-authorizes the re-issued call by
+		// exact bytes (the held claim spends on a match, defers to a fresh
+		// pause on any difference) — so a container that holds no claim
+		// still tells the model the truth about the operator's answer.
 		if name, _, ok := findPendingToolUse(prior, task.ResumePendingToolUseID); ok &&
 			!permission.IsInfrastructureTool(name) && task.Permission.Enabled() {
-			if allow, always := permission.ParseExactApprovalAnswer(task.ResumeAnswer); allow && always {
-				resultText = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
-			} else {
-				resultText = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
-				isErr = true
-			}
+			resultText, isErr = resumeAnswerToolResult(task.ResumeAnswer, sandboxApprovalForwarderFrom(ctx) != nil)
 		}
 
 		if approval == nil {
@@ -2323,7 +2354,14 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			iterlog.BlockPreviewRendered(diag, maxFieldSize))
 	}()
 
-	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	// approvalSpent records that this crossing's launcher consumed an
+	// approval claim: a crossing that fails afterwards has an unknown
+	// outcome for the approved call, and the failure is typed ambiguous
+	// below so no retry replays it. The same state carries the deferred
+	// asks, which a returned pause must bind to before it checkpoints.
+	crossing := newCrossingApprovalState()
+	approvalSpent := &crossing.spent
+	handler, stranded := b.multiplexerHandler(ctx, task, seed, crossing)
 	handler.OnCodemodeState = stateRelay
 	mirror := handler.OnSessionCapture
 	handler.OnSessionCapture = func(snapshot json.RawMessage) {
@@ -2362,6 +2400,26 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			_ = cmd.Process.Kill()
 			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send permission_policy: %w", err)
+		}
+		// The approval channel (#3513), before the task with the same
+		// position guarantee: a runner too old to know the type fatals on
+		// "unexpected envelope before task", and a runner without the
+		// announcement refuses an ask-capable policy outright (its bootstrap
+		// twin). Announced only for a policy that can Ask — the runner-side
+		// twin refuses the same predicate, so the two sides cannot disagree
+		// about whether the channel exists.
+		if task.Permission.CanAsk() {
+			approvalEnv, err := delegate.NewApprovalChannelEnvelope()
+			if err != nil {
+				_ = cmd.Process.Kill()
+				_ = wait()
+				return delegate.Result{}, fmt.Errorf("claw backend: build approval_channel envelope: %w", err)
+			}
+			if err := mux.Send(approvalEnv); err != nil {
+				_ = cmd.Process.Kill()
+				_ = wait()
+				return delegate.Result{}, fmt.Errorf("claw backend: send approval_channel: %w", err)
+			}
 		}
 	}
 
@@ -2462,8 +2520,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 				stderr: runnerStderr(),
 			}
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
-			redactedThrough(task.RedactSecrets, runErr), runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
+			redactedThrough(task.RedactSecrets, runErr), runnerStderr()), approvalSpent)
 	}
 	if errors.Is(runErr, io.EOF) && ioRes.Error == "" && waitErr == nil {
 		// Runner closed stdout without sending a result envelope and
@@ -2474,7 +2532,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 
 	if waitErr != nil && ioRes.Error == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr()), approvalSpent)
 	}
 	// What the container's call spent rides the result as the runner's own
 	// walk named it through the crossing's record (ADR-161 decision 8: the
@@ -2499,10 +2557,33 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv))
 	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
-	if rejectSandboxedPermissionPause(&res) {
-		return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+	// A permission-marked pause from the crossing is legitimate only under
+	// the approval channel (#3513): announced iff the policy can Ask — the
+	// same predicate the runner-side twin refuses on, so the two sides
+	// cannot disagree about whether a pause may exist. Under the channel
+	// the pause must bind to an ask THIS launcher deferred: its question
+	// and marker are replaced with this side's own words, and one that
+	// matches no deferred ask is refused — a hostile or stale container
+	// process never chooses what the human reads. Without the channel, a
+	// runner raising one is stripped and fails the node (the #3504
+	// boundary).
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	_, pauseMarked := questions[permission.InteractionMarkerKey]
+	switch {
+	case res.Output["_needs_interaction"] == true && pauseMarked && task.Permission.CanAsk():
+		if err := crossing.bindRelayedPause(&res); err != nil {
+			return res, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
+		}
+	case res.Output["_needs_interaction"] == true && pauseMarked:
+		if rejectSandboxedPermissionPause(&res) {
+			return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+		}
 	}
 	if ioRes.Error != "" {
+		wrappedErr := crossingFailureAfterSpend(fmt.Errorf("claw backend: runner: %s", runnerError), approvalSpent)
+		if _, ambiguous := wrappedErr.(*approvedDispatchInterrupted); ambiguous {
+			return res, wrappedErr
+		}
 		if ioRes.ProviderError != nil {
 			provider := *ioRes.ProviderError
 			provider.Message = redactedFarSide(task, provider.Message)
@@ -3991,6 +4072,7 @@ func rejectSandboxedPermissionPause(res *delegate.Result) bool {
 	res.PendingConversation = nil
 	res.PendingToolUseID = ""
 	res.PendingCommandNarrowing = nil
+	res.PendingPermissionInput = nil
 	return true
 }
 
@@ -4094,7 +4176,7 @@ func canonicalMCPToolName(name string) string {
 // whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
 // stamp a pause result the crossing produced while stranded, so the fact
 // travels with the pause (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed, approvalSpent *crossingApprovalState) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -4123,6 +4205,9 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	stranded.Store(seed.refused || task.SessionStranded)
 	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
+		OnPermissionAsk: func(askCtx context.Context, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+			return b.servePermissionAsk(askCtx, task, toolByName, toolNames, approvalSpent, ask)
+		},
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
 			// A runner forwards the name the tool was advertised under — its
 			// proxy closure captures it — so any other spelling is not one an
@@ -4317,4 +4402,28 @@ func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
 			}
 		}
 	}
+}
+
+// resumeAnswerToolResult shapes the operator's resume answer into the
+// tool_result the pending permission-gated call gets. With the approval
+// channel live (the runner side, which holds no claim), an allow-once
+// answer carries the same re-issue instruction an allow-always does: the
+// authorization is not in the text — the launcher re-authorizes the
+// re-issued call by exact bytes, spending the held claim on a match and
+// deferring to a fresh pause on any difference. Without the channel the
+// legacy split stands: allow-always re-issues under the applied grant,
+// every other answer is a denial the model adapts to.
+func resumeAnswerToolResult(answer string, channelLive bool) (string, bool) {
+	text := answer
+	if text == "" {
+		text = "(no answer provided)"
+	}
+	isErr := false
+	if allow, always := permission.ParseExactApprovalAnswer(text); allow && (always || channelLive) {
+		text = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
+	} else {
+		text = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
+		isErr = true
+	}
+	return text, isErr
 }

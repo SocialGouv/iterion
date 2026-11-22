@@ -95,6 +95,41 @@ const (
 	// runner refuses before any model call.
 	EnvelopeWorkspaceTrust EnvelopeType = "workspace_trust"
 
+	// EnvelopeApprovalChannel: launcher → runner, BEFORE the task envelope,
+	// and ONLY for a task whose permission policy can produce an Ask
+	// decision (the same CanAsk predicate the launcher's pre-spawn refusal
+	// checks). Data is [ApprovalChannelData]. It announces that this
+	// launcher can serve permission pauses for the crossing, so the runner
+	// may suspend on a permission Ask instead of refusing the node.
+	//
+	// The pre-task position is load-bearing, like permission_policy: a
+	// runner binary too old to know the type fatals on "unexpected envelope
+	// before task" instead of running an ask-gated node with no channel, so
+	// a mixed-version fleet fails CLOSED with no protocol handshake. The
+	// runner-side twin refuses the reverse: an ask-capable policy that
+	// arrives WITHOUT the announcement names the host/runner version skew.
+	EnvelopeApprovalChannel EnvelopeType = "approval_channel"
+
+	// EnvelopePermissionAsk: runner → launcher, mid-stream. The runner's
+	// permission gate produced an Ask verdict on a captured exact tool call
+	// and the approval channel is announced, so the runner forwards the
+	// candidate and blocks pending the decision — BEFORE any tool_call
+	// envelope for that call. Data is [PermissionAskData]. ID is unique
+	// across the run; the launcher MUST reply with
+	// [EnvelopePermissionDecision] carrying the same ID. While blocked, an
+	// unknown mid-stream envelope is a refusal for THIS decision, never a
+	// silent drop.
+	EnvelopePermissionAsk EnvelopeType = "permission_ask"
+
+	// EnvelopePermissionDecision: launcher → runner, mid-stream. The
+	// launcher's answer to a [EnvelopePermissionAsk]. ID matches the ask.
+	// Data is [PermissionDecisionData]: an allow carries the REAL tool
+	// result — the launcher consumed the approval and executed the tool
+	// itself, so the approval never reaches any PolicyConfig — and the
+	// runner appends that result to the transcript; a deny carries the
+	// reason and the runner renders the usual refusal tool_result.
+	EnvelopePermissionDecision EnvelopeType = "permission_decision"
+
 	// EnvelopeEvent: runner → launcher. Observability passthrough —
 	// the runner forwards events that should be appended to the run's
 	// events.jsonl. Data is [EventData].
@@ -478,4 +513,124 @@ func NewWorkspaceTrustEnvelope(trust store.RunTrust) (Envelope, error) {
 		return Envelope{}, fmt.Errorf("marshal workspace trust: %w", err)
 	}
 	return Envelope{Type: EnvelopeWorkspaceTrust, Data: data}, nil
+}
+
+// ApprovalChannelV1 is the only protocol version of the approval channel
+// this tree speaks. The version rides the payload so a future revision
+// fails closed on a version check instead of misparsing.
+const ApprovalChannelV1 = 1
+
+// ApprovalChannelData is the payload of an [EnvelopeApprovalChannel].
+// Like gateway_v1 it is a capability marker, not a value carrier: the
+// announcement says "this launcher serves permission pauses", nothing
+// else. The approval itself never travels on this wire.
+type ApprovalChannelData struct {
+	Version int `json:"version"`
+}
+
+// NewApprovalChannelEnvelope announces the approval channel ahead of the
+// task, at [ApprovalChannelV1]. See EnvelopeApprovalChannel for why it is
+// sent at all.
+func NewApprovalChannelEnvelope() (Envelope, error) {
+	data, err := json.Marshal(ApprovalChannelData{Version: ApprovalChannelV1})
+	if err != nil {
+		return Envelope{}, fmt.Errorf("marshal approval channel: %w", err)
+	}
+	return Envelope{Type: EnvelopeApprovalChannel, Data: data}, nil
+}
+
+// The placement values a [PermissionAskData] carries: the wire form of
+// tool.SandboxPlacement's String() names. pkg/backend/delegate cannot
+// import pkg/backend/tool (the latter imports this package), so the
+// payload carries the string and the runner — which has the package —
+// fills it; the launcher re-derives the placement from its own registry
+// and compares.
+const (
+	// PermissionPlacementSandbox: the tool executes inside the runner
+	// container. A sandbox-placed ask is refused by the launcher this
+	// slice: the launcher cannot certify execution it does not host.
+	PermissionPlacementSandbox = "sandbox"
+	// PermissionPlacementLauncher: the tool is served by the launcher
+	// (an MCP client, an in-memory registry). The only placement this
+	// slice approves: the launcher binds the candidate, consumes the
+	// approval and executes the call itself.
+	PermissionPlacementLauncher = "launcher"
+)
+
+// PermissionAskData is the payload of an [EnvelopePermissionAsk]. It is
+// the candidate the launcher binds against its own registry, policy and
+// pending approval state: the registered tool name, the placement the
+// runner classified it under, the EXACT complete JSON input (the same
+// canonical bytes a permission pause captures in-process — the approval
+// is bound to these bytes, not a re-derivation), and the human-facing
+// prompt. It carries no conversation: the pause's checkpoint conversation
+// comes from the host session mirror, not from this envelope.
+type PermissionAskData struct {
+	ToolName  string          `json:"tool_name"`
+	Placement string          `json:"placement"`
+	Input     json.RawMessage `json:"input"`
+	Question  string          `json:"question,omitempty"`
+	// Marker identifies the rule that produced the Ask, in the permission
+	// package's marker form (the same map an in-process pause carries) —
+	// display and audit only; the binding is tool+input.
+	Marker map[string]any `json:"marker,omitempty"`
+}
+
+// NewPermissionAskEnvelope builds a permission_ask envelope. ID must be
+// unique across the run so the matching permission_decision can be routed
+// back to the waiting goroutine on the runner side.
+func NewPermissionAskEnvelope(id string, data PermissionAskData) (Envelope, error) {
+	buf, err := json.Marshal(data)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("delegate: marshal permission_ask: %w", err)
+	}
+	return Envelope{Type: EnvelopePermissionAsk, ID: id, Data: buf}, nil
+}
+
+// The decisions a [PermissionDecisionData] carries. There is no
+// "allow always" on the wire: a standing grant is launcher-side state —
+// the runner re-asks on the next call and the launcher answers from its
+// own grant without pausing, so the runner-side gate stays stateless.
+const (
+	PermissionDecisionAllow = "allow"
+	PermissionDecisionDeny  = "deny"
+	// PermissionDecisionDefer: the launcher is suspending the RUN for this
+	// approval — it does not answer allow/deny on this crossing. The runner
+	// raises the same pause the in-process gate raises, and the pause flows
+	// back through the terminal result to the engine's checkpoint; a human
+	// answers on resume, and the RE-asked approval is then served from the
+	// held claim. Only a launcher that could not record the deferral
+	// (busy, no handler, handler failure) answers with a terminal-shaped
+	// failure reply instead — the ask aborts, no unrecorded pause is
+	// raised.
+	PermissionDecisionDefer = "defer"
+)
+
+// PermissionDecisionData is the payload of an [EnvelopePermissionDecision].
+// Exactly one outcome per decision:
+//
+//   - Allow: the launcher approved AND executed the call; Output (or
+//     Error, when the execution itself failed) is the real tool result
+//     the runner appends to the transcript.
+//   - Deny: Error is the refusal reason the runner renders as the
+//     synthetic isError tool_result.
+type PermissionDecisionData struct {
+	Decision string `json:"decision"`
+	Output   string `json:"output,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// NewPermissionDecisionEnvelope builds a permission_decision envelope.
+// ID MUST match the corresponding [EnvelopePermissionAsk]. Output and
+// Error are clamped to [MaxToolResultBytes] like a tool_result: the
+// launcher executes the tool host-side and its result obeys the same
+// bound the tool_call path applies.
+func NewPermissionDecisionEnvelope(id string, data PermissionDecisionData) (Envelope, error) {
+	data.Output = clampToolText(data.Output)
+	data.Error = clampToolText(data.Error)
+	buf, err := json.Marshal(data)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("delegate: marshal permission_decision: %w", err)
+	}
+	return Envelope{Type: EnvelopePermissionDecision, ID: id, Data: buf}, nil
 }

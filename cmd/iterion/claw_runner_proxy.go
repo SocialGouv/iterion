@@ -38,6 +38,14 @@ type proxyDispatcher struct {
 
 	nextID atomic.Uint64
 
+	// approvalInFlight / approvalCh hold the approval ask currently
+	// blocking (guarded by mu). While one blocks, mid-stream traffic that
+	// names no pending call is a protocol breach: the dispatcher refuses
+	// THIS ask instead of ignoring it — a decision can never be trusted
+	// after unknown traffic on the channel the decision rides.
+	approvalInFlight string
+	approvalCh       chan delegate.Envelope
+
 	done chan struct{} // closed AFTER failAllPending — see start()
 }
 
@@ -104,17 +112,63 @@ func (d *proxyDispatcher) start() {
 // (V2-4) session_replay; all carry the ID of their corresponding
 // outbound request.
 func (d *proxyDispatcher) route(env delegate.Envelope) {
-	if env.ID == "" {
+	if env.ID != "" {
+		d.mu.Lock()
+		ch, ok := d.pending[env.ID]
+		if ok {
+			delete(d.pending, env.ID)
+		}
+		d.mu.Unlock()
+		if ok {
+			ch <- env
+			return
+		}
+	}
+	// The correlated permission_decision for the approval ask in flight:
+	// the ask holds its own channel (not in pending), so route() delivers
+	// here. A decision for any OTHER id is a stale reply to a consumed or
+	// cancelled ask — dropped below.
+	if env.Type == delegate.EnvelopePermissionDecision {
+		d.mu.Lock()
+		ch := d.approvalCh
+		inFlight := d.approvalInFlight
+		if ch != nil && env.ID == inFlight {
+			d.approvalInFlight = ""
+			d.approvalCh = nil
+		} else {
+			ch = nil
+		}
+		d.mu.Unlock()
+		if ch != nil {
+			ch <- env
+			return
+		}
+	}
+	// A mid-stream envelope that names no pending call. While an approval
+	// ask blocks, this is a protocol breach — refuse THIS ask instead of
+	// ignoring it: unknown traffic on the channel the decision rides makes
+	// the channel untrustworthy, and a decision accepted after it would
+	// authorize a call on corrupted grounds. Correlated reply types with
+	// an unknown ID are stale replies to already-consumed asks — dropped
+	// as before.
+	switch env.Type {
+	case delegate.EnvelopeToolResult, delegate.EnvelopeAskUserAnswer, delegate.EnvelopePermissionDecision:
 		return
 	}
 	d.mu.Lock()
-	ch, ok := d.pending[env.ID]
-	if ok {
-		delete(d.pending, env.ID)
+	id := d.approvalInFlight
+	var refusal chan delegate.Envelope
+	if id != "" {
+		refusal = d.approvalCh
+		d.approvalInFlight = ""
+		d.approvalCh = nil
 	}
 	d.mu.Unlock()
-	if ok {
-		ch <- env
+	if refusal != nil {
+		// Forward the real envelope: the round trip rejects any
+		// non-decision reply and reads the reason from its payload, so
+		// the failure carries what actually arrived.
+		refusal <- env
 	}
 }
 
@@ -133,6 +187,18 @@ func (d *proxyDispatcher) failAllPending(err error) {
 		env, _ := delegate.NewToolResultEnvelope(id, "", err.Error())
 		ch <- env
 		delete(d.pending, id)
+	}
+	// The approval ask holds its own channel (it is not in pending): fail
+	// it too, so a dying channel unblocks the gate mid-ask with the same
+	// synthetic shape route() refuses on.
+	if d.approvalCh != nil {
+		ch := d.approvalCh
+		id := d.approvalInFlight
+		d.approvalInFlight = ""
+		d.approvalCh = nil
+		ch <- delegate.Envelope{Type: delegate.EnvelopeResult, ID: id,
+			Data: json.RawMessage(fmt.Sprintf(`{"error":%q}`,
+				fmt.Sprintf("runner: envelope channel closed while the permission ask %s was pending: %v", id, err)))}
 	}
 }
 

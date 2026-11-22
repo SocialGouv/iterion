@@ -46,6 +46,16 @@ type MultiplexerHandler struct {
 	// [EnvelopeAskUserAnswer] correlated by id.
 	OnAskUser func(ctx context.Context, data AskUserData) (map[string]string, error)
 
+	// OnPermissionAsk serves the approval channel's ask (#3513): the
+	// runner's permission gate produced an Ask verdict on a captured exact
+	// call. The handler binds the candidate (registered tool, placement,
+	// current policy verdict, held approval state) and returns the
+	// decision; an allow carries the REAL tool result — the launcher
+	// consumed the approval and executed the call itself. A defer means
+	// the launcher is suspending the run for this approval; the runner
+	// raises the pause instead.
+	OnPermissionAsk func(ctx context.Context, ask PermissionAskData) (PermissionDecisionData, error)
+
 	// OnSessionCapture stores a runner-emitted session snapshot for
 	// compaction-retry. Fire-and-forget — the multiplexer doesn't
 	// echo a reply and proceeds with the next envelope.
@@ -335,6 +345,24 @@ func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
 				}
 			}
 
+		case EnvelopePermissionAsk:
+			requests++
+			var ask PermissionAskData
+			if err := json.Unmarshal(env.Data, &ask); err != nil {
+				return IOResult{}, fmt.Errorf("delegate: decode permission_ask: %w", err)
+			}
+			select {
+			case calls <- func() (Envelope, error) { return m.handlePermissionAsk(workCtx, env.ID, ask) }:
+			default:
+				// At capacity: the launcher cannot serve this approval now.
+				// Fail the ask — never a denial, and never a pause the
+				// launcher could not record: the runner aborts with the
+				// reason and the node fails for a retry to serve.
+				if err := queueReply(permissionAskFailureReply(env.ID, multiplexerBusy), nil); err != nil {
+					return IOResult{}, err
+				}
+			}
+
 		case EnvelopeSessionCapture:
 			if m.handler.OnSessionCapture != nil {
 				m.handler.OnSessionCapture(env.Data)
@@ -400,6 +428,32 @@ func (m *Multiplexer) handleAskUser(ctx context.Context, id string, data AskUser
 		return askUserErrorReply(id, err.Error())
 	}
 	return NewAskUserAnswerEnvelope(id, answers)
+}
+
+func (m *Multiplexer) handlePermissionAsk(ctx context.Context, id string, ask PermissionAskData) (Envelope, error) {
+	if m.handler.OnPermissionAsk == nil {
+		// No approval handler: this launcher cannot serve the channel at
+		// all (it should never have announced it). Fail the ask — the
+		// same direction as the busy path.
+		return permissionAskFailureReply(id, "launcher: no approval handler registered"), nil
+	}
+	decision, err := m.handler.OnPermissionAsk(ctx, ask)
+	if err != nil {
+		// The handler failed before a decision: fail the ask. A pause
+		// must be recorded by the handler to be trusted, and an unrecorded
+		// one would only refuse at the launcher's binding.
+		return permissionAskFailureReply(id, err.Error()), nil
+	}
+	return NewPermissionDecisionEnvelope(id, decision)
+}
+
+// permissionAskFailureReply builds the terminal-shaped failure reply an
+// unservable ask gets (busy, no handler, handler error): the runner's
+// round trip reads the reason from it and aborts the ask — the node
+// fails for a retry to serve, and no unrecorded pause is ever raised.
+func permissionAskFailureReply(id, reason string) Envelope {
+	buf, _ := json.Marshal(IOResult{Error: reason})
+	return Envelope{Type: EnvelopeResult, ID: id, Data: buf}
 }
 
 func askUserErrorReply(id, errMsg string) (Envelope, error) {

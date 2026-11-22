@@ -42,7 +42,7 @@ func TestMultiplexerHandler_RefusesEveryToolNotPlacedOnTheLauncher(t *testing.T)
 	contained := append(tool.SandboxPlacedTools(tool.PlacementSandbox), tool.SandboxPlacedTools(tool.PlacementRefused)...)
 	contained = append(contained, "unclassified_future_tool")
 	task, ran := placementTask(contained)
-	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 
 	for _, name := range contained {
 		out, err := handler.OnToolCall(context.Background(), name, json.RawMessage(`{}`))
@@ -87,7 +87,7 @@ func TestMultiplexerHandler_EnforcesThePermissionGateOnForwardedCalls(t *testing
 		}
 		task, ran := placementTask([]string{name})
 		task.Permission = pol
-		handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+		handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 
 		_, err = handler.OnToolCall(context.Background(), name, json.RawMessage(`{"title":"x"}`))
 		if tc.wantDeny {
@@ -161,7 +161,7 @@ func gateForwardedCall(t *testing.T, allow, deny []string, name, input string) (
 		t.Fatalf("NewPolicy: %v", err)
 	}
 	task, ran := identityTask(pol)
-	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 	_, callErr := handler.OnToolCall(context.Background(), name, json.RawMessage(input))
 	return callErr, *ran
 }
@@ -236,7 +236,7 @@ func TestMultiplexerHandler_GatesTheIdentityBuildTaskProduces(t *testing.T) {
 			t.Fatalf("NewPolicy: %v", err)
 		}
 		task.Permission = pol
-		handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+		handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 		if _, err := handler.OnToolCall(context.Background(), "mcp_github_delete_repo", json.RawMessage(`{}`)); err == nil || ran {
 			t.Errorf("tool_policy=%v: an FQN deny did not bind the tool buildTask advertised: err=%v ran=%v", withToolPolicy, err, ran)
 		}
@@ -256,7 +256,7 @@ func TestMultiplexerHandler_RecordsARefusedForwardedCall(t *testing.T) {
 	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{}, WithClawLogger(iterlog.New(iterlog.LevelInfo, &logged)))
 	task, _ := placementTask([]string{"bash"})
 
-	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 	if _, err := handler.OnToolCall(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("a forwarded bash call was not refused")
 	}
@@ -275,7 +275,7 @@ func TestMultiplexerHandler_ExecutesLauncherPlacedTools(t *testing.T) {
 	t.Parallel()
 	names := append(tool.SandboxPlacedTools(tool.PlacementLauncher), "mcp_github_create_issue")
 	task, ran := placementTask(names)
-	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 
 	for _, name := range names {
 		if _, err := handler.OnToolCall(context.Background(), name, json.RawMessage(`{}`)); err != nil {

@@ -767,7 +767,7 @@ func TestMultiplexerHandler_PinsTheNodesExecutableToolsOnTheForwardedCall(t *tes
 			}},
 		},
 	}
-	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, newCrossingApprovalState())
 	if _, err := handler.OnToolCall(context.Background(), "tool_search", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("OnToolCall: %v", err)
 	}
