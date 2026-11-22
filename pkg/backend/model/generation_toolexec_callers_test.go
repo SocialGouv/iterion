@@ -185,11 +185,12 @@ func TestEverySiteRunningAnExecuteNamesItsGate(t *testing.T) {
 // form of what the doc comment promises: anything dispatching on a node's
 // behalf takes the door.
 var toolFunnelCallers = map[string]map[string]bool{
-	// The door. dispatch is the only way in, which is what makes the
-	// dispatcher's pipeline unavoidable rather than merely available.
-	"executeOneTool": {"dispatch": true},
-	// The last step before a tool's own closure runs.
-	"runToolExecution": {"executeOneTool": true},
+	// Ordinary dispatch and the saved-call resume share the dispatcher pin,
+	// lifecycle hooks, command narrowing and permission checks.
+	"dispatchWithApproval":       {"dispatch": true, "Execute": true},
+	"executeOneTool":             {}, // Direct entry for isolated tests only.
+	"executeOneToolWithApproval": {"dispatchWithApproval": true, "executeOneTool": true},
+	"runToolExecution":           {"executeOneToolWithApproval": true},
 }
 
 // TestTheToolFunnelIsReachedOnlyThroughTheDoor refuses a second dispatch path.

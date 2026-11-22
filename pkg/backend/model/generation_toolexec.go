@@ -213,6 +213,10 @@ func newToolDispatcher(
 // "not pinned" rather than guessing. The table is frozen at construction;
 // each call derives its pin by applying the caller's narrowing to that table.
 func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.ContentBlock, error) {
+	return d.dispatchWithApproval(ctx, tu, nil)
+}
+
+func (d *toolDispatcher) dispatchWithApproval(ctx context.Context, tu toolUseBlock, approval *exactDispatchApproval) (api.ContentBlock, error) {
 	if owner, _ := ctx.Value(dispatcherNodeKey{}).(*toolDispatcher); owner != d {
 		return *refusalOutcome(fmt.Sprintf(
 			"tool %q: refused before dispatch — this context did not come from this node's dispatcher. "+
@@ -247,7 +251,7 @@ func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.Con
 		names = append(names, name)
 	}
 	ctx = tool.WithNodeExecutableTools(ctx, names)
-	return executeOneTool(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy)
+	return executeOneToolWithApproval(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy, approval)
 }
 
 // executeToolsDirect runs each tool_use block and builds tool_result content blocks.
@@ -305,6 +309,20 @@ func executeOneTool(
 	materialize func(string) string,
 	policy *permission.Policy,
 ) (api.ContentBlock, error) {
+	return executeOneToolWithApproval(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy, nil)
+}
+
+func executeOneToolWithApproval(
+	ctx context.Context,
+	tu toolUseBlock,
+	toolMap map[string]*GenerationTool,
+	onToolStarted func(ToolCallInfo),
+	onToolCall func(ToolCallInfo),
+	runner *hooks.Runner,
+	materialize func(string) string,
+	policy *permission.Policy,
+	approval *exactDispatchApproval,
+) (api.ContentBlock, error) {
 	gt, ok := lookupGenerationTool(toolMap, tu.Name)
 	if !ok {
 		return unknownToolResult(tu, onToolCall), nil
@@ -346,7 +364,13 @@ func executeOneTool(
 		}
 	}
 
-	if refusal, abort := permissionGateOutcome(ctx, policy, tu, hookInput, onToolCall); abort != nil {
+	if approval != nil {
+		if err := approval.authorize(ctx, tu, gt, policy, hookInput, materialize); err != nil {
+			return api.ContentBlock{}, err
+		}
+		// Dispatch the same bytes that were checked, not a second materialization.
+		materialize = nil
+	} else if refusal, abort := permissionGateOutcome(ctx, policy, tu, hookInput, onToolCall); abort != nil {
 		return api.ContentBlock{}, abort
 	} else if refusal != nil {
 		return *refusal, nil
@@ -356,6 +380,20 @@ func executeOneTool(
 		return api.ContentBlock{}, err
 	}
 	output, err := runToolExecution(ctx, gt, tu, materialize, onToolStarted, onToolCall)
+	// The tool returned, so its verdict is known: an ordinary error shapes
+	// into the is_error result the model reads. Only a dispatch that never
+	// returned — a cancelled context, or a tool that asked for a pause
+	// instead of answering — is ambiguous.
+	if approval != nil && err != nil {
+		interrupted := ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		var ask *delegate.ErrAskUser
+		if errors.As(err, &ask) {
+			interrupted = true
+		}
+		if interrupted {
+			return api.ContentBlock{}, &approvedDispatchInterrupted{cause: err}
+		}
+	}
 	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err)
 }
 
@@ -478,10 +516,15 @@ func permissionGateOutcome(ctx context.Context, policy *permission.Policy, tu to
 		// (and grants), so on resume the re-issued call passes the
 		// now-updated gate. Stamp the pending tool_use ID exactly
 		// like the ask_user suspension in shapeToolOutcome.
+		exact, err := permission.CanonicalApprovalInput(json.RawMessage(tu.PartialJSON))
+		if err != nil {
+			return refusalOutcome("cannot request approval: "+err.Error(), tu, onToolCall), nil
+		}
 		return nil, &delegate.ErrAskUser{
 			Question:         permission.AskPrompt(tu.Name, hookInput, rule),
 			PendingToolUseID: tu.ID,
 			PermissionMarker: permission.Marker(tu.Name, hookInput, rule),
+			PermissionInput:  exact,
 		}
 	}
 	// permission.Allow falls through to execution.

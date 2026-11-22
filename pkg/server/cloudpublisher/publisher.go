@@ -4772,6 +4772,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if loadErr != nil {
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
+	if err := runtime.CheckApprovalReplay(prior); err != nil && !spec.Force {
+		return err
+	}
 	// A checked resume republishes the run its surface admitted: the run
 	// service verified its own earlier read, and the document is read again
 	// here, so it is compared again — a successor recreated under the ID
@@ -4817,6 +4820,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// credential-pool lease or publish. Transitioning to queued also stamps
 	// QueuedAt, the durable attempt marker used to reject stale deliveries —
 	// and the flip hands back what it replaced, read in the same write, for
+	// the rollback below.
+	var exactPause bool
+	var interactionID string
+	if priorStatus == store.RunStatusPausedWaitingHuman && prior.Checkpoint != nil {
+		exactPause = len(prior.Checkpoint.BackendPermissionInput) != 0
+		interactionID = prior.Checkpoint.InteractionID
+	}
+	if err := delegate.CheckApprovalAnswer(spec.Answers, exactPause, interactionID); err != nil {
+		return fmt.Errorf("cloudpublisher: %w", err)
+	}
 	// the rollback below. A checked resume's claim is bound to the origin it
 	// verified: the flip compares the birth in its own write (the FS lock,
 	// Mongo's bound metadata predicate), so a successor recreated since the
@@ -4830,7 +4843,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	var flip store.QueuedFlip
 	var claimed bool
 	var claimErr error
-	if flipper != nil {
+	if priorStatus == store.RunStatusPausedWaitingHuman || spec.Force {
+		bound := store.AsRevisionQueuedFlipper(p.store)
+		if bound == nil {
+			return fmt.Errorf("cloudpublisher: store does not support revision-bound human resume")
+		}
+		flipper = bound
+		// A forced resume is the operator's acknowledgement past an
+		// unresolved approved dispatch (CheckApprovalReplay above): the
+		// acknowledged flip is what carries it to the queue.
+		if spec.Force {
+			flip, claimed, claimErr = bound.FlipAcknowledgedRevisionToQueued(claimCtx, spec.RunID, priorStatus, time.Now(), prior.CASVersion)
+		} else {
+			flip, claimed, claimErr = bound.FlipRevisionToQueued(claimCtx, spec.RunID, priorStatus, time.Now(), prior.CASVersion)
+		}
+	} else if flipper != nil {
 		flip, claimed, claimErr = flipper.FlipToQueued(claimCtx, spec.RunID, priorStatus, time.Now())
 	} else {
 		claimed, claimErr = p.store.UpdateRunStatusIf(claimCtx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})

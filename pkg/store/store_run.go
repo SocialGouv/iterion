@@ -119,6 +119,12 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 		// Work on a copy: the caller's struct must not observe the
 		// bookkeeping (the Mongo implementation doesn't mutate either).
 		rr := *r
+		rr.SpentToolApprovals = persisted.SpentToolApprovals
+		rr.UnresolvedToolApproval = persisted.UnresolvedToolApproval
+		rr.ToolApprovalClaim = nil
+		if rr.Status == RunStatusRunning && persisted.Status == RunStatusRunning {
+			rr.ToolApprovalClaim = persisted.ToolApprovalClaim
+		}
 		rr.PreEngineRefusal = preEngineRefusalForSave(&rr, persisted)
 		if rr.PreEngineRefusal != nil {
 			rr.Error = rr.PreEngineRefusal.Message
@@ -192,6 +198,9 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 	// creation is not a transition, and a reactor must not treat an
 	// imported/fixture document as a fresh outcome.
 	rr := *r
+	rr.SpentToolApprovals = nil
+	rr.UnresolvedToolApproval = ""
+	rr.ToolApprovalClaim = nil
 	rr.PreEngineRefusal = nil
 	rr.OutcomeSeq = 0
 	rr.ContinuationState = ""
@@ -656,6 +665,24 @@ var _ QueuedFlipper = (*FilesystemRunStore)(nil)
 // FlipToQueued flips a run to queued for a resume, returning what it
 // replaced — see QueuedFlipper.
 func (s *FilesystemRunStore) FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (QueuedFlip, bool, error) {
+	return s.flipToQueued(ctx, id, from, at, nil, false)
+}
+
+func (s *FilesystemRunStore) FlipRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return QueuedFlip{}, false, err
+	}
+	return s.flipToQueued(ctx, id, from, at, &version, false)
+}
+
+func (s *FilesystemRunStore) FlipAcknowledgedRevisionToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version int64) (QueuedFlip, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return QueuedFlip{}, false, err
+	}
+	return s.flipToQueued(ctx, id, from, at, &version, true)
+}
+
+func (s *FilesystemRunStore) flipToQueued(ctx context.Context, id string, from RunStatus, at time.Time, version *int64, acknowledged bool) (QueuedFlip, bool, error) {
 	if at.IsZero() {
 		return QueuedFlip{}, false, fmt.Errorf("store: flip %s to queued without an attempt marker", id)
 	}
@@ -665,7 +692,7 @@ func (s *FilesystemRunStore) FlipToQueued(ctx context.Context, id string, from R
 		return QueuedFlip{}, false, err
 	}
 	defer unlock()
-	if r.Status != from {
+	if r.Status != from || (r.UnresolvedToolApproval != "" && !acknowledged) || (version != nil && r.CASVersion != *version) {
 		return QueuedFlip{}, false, nil
 	}
 	marker := NextQueuedAt(at, r.QueuedAt)
@@ -806,6 +833,7 @@ func transitionRunStatus(r *Run, status RunStatus, runErr string, meta RunOutcom
 	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
 	transition := r.Status != status
 	if transition || status != RunStatusRunning {
+		r.ToolApprovalClaim = nil
 		r.AwaitAnswersWaits = nil
 	}
 	if terminal && transition {
@@ -966,8 +994,16 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
+	r.ToolApprovalClaim = nil
 	r.PreEngineRefusal = nil
 	r.AwaitAnswersWaits = nil
+	// A fresh exact pause re-arms the approval cycle: its own claim/spend
+	// identity is the durable continuation of the cycle it replaces, so a
+	// marker an earlier ambiguous dispatch left (the force-resume path)
+	// must not block answering THIS pause.
+	if cp != nil && len(cp.BackendPermissionInput) != 0 {
+		r.UnresolvedToolApproval = ""
+	}
 	// A paused run has no platform continuation statement — same
 	// discipline as FailureCode below.
 	r.ContinuationState = ""

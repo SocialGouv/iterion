@@ -66,7 +66,7 @@ func TestCorrectionCompositionThreeDispatchEntries(t *testing.T) {
 			if entry == "reinvoke" {
 				rs := e.newRunState("correction", nil)
 				rs.ctx = ctx
-				err = e.reInvokeBackend(ctx, rs, "worker", wf.Nodes["worker"], &model.ErrNeedsInteraction{NodeID: "worker", Backend: delegate.BackendClaudeCode, SessionID: "session-worker", Questions: map[string]any{"question": "ok?"}}, map[string]any{"answer": "yes"}, 0)
+				err = e.reInvokeBackend(ctx, rs, "worker", wf.Nodes["worker"], &model.ErrNeedsInteraction{NodeID: "worker", Backend: delegate.BackendClaudeCode, SessionID: "session-worker", Questions: map[string]any{"question": "ok?"}}, map[string]any{"answer": "yes"}, 0, nil)
 			} else {
 				err = e.Run(ctx, "correction", nil)
 			}

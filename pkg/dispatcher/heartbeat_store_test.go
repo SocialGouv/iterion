@@ -215,6 +215,7 @@ func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 		"AsRunFilesStore":          func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
 		"AsScratchBankStore":       func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
 		"AsSpendStore":             func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
+		"AsToolApprovalSpender":    func(s store.RunStore) bool { return store.AsToolApprovalSpender(s) != nil },
 	}
 	files, err := filepath.Glob(filepath.Join("..", "runtime", "*.go"))
 	if err != nil {

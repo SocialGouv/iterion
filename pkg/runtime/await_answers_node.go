@@ -189,7 +189,7 @@ func (e *Engine) handleAwaitEscalation(ctx context.Context, rs *runState, nodeID
 				fmt.Sprintf("await_answers escalation on node %q: collect answers: %v", nodeID, cerr))
 		}
 		e.logger.Info("await_answers on node %q: all questions answered during escalation — resuming without pause", nodeID)
-		return e.reInvokeBackend(ctx, rs, nodeID, node, ni, map[string]any{delegate.AskUserQuestionKey: text}, depth)
+		return e.reInvokeBackend(ctx, rs, nodeID, node, ni, map[string]any{delegate.AskUserQuestionKey: text}, depth, nil)
 	}
 
 	// Refresh the pause payload with the live pending set (some questions

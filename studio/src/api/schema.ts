@@ -7469,6 +7469,8 @@ export interface components {
             backend_conversation?: string;
             backend_name?: string;
             backend_pending_tool_use_id?: string;
+            /** Format: byte */
+            backend_permission_input?: string;
             backend_session_fingerprint?: string;
             backend_session_id?: string;
             backend_session_state_ref?: string;

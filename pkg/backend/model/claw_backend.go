@@ -453,6 +453,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	approval := exactClawApprovalFrom(ctx)
+	if approval != nil && task.Sandbox != nil {
+		return delegate.Result{}, fmt.Errorf("claw: exact approval cannot resume in a sandbox")
+	}
 	if task.Sandbox != nil {
 		// The permission gate crosses the sandbox IPC boundary as a
 		// pre-task permission_policy envelope: the in-container
@@ -536,6 +540,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		UnmaterializeSecrets:  task.UnmaterializeSecrets,
 		NamesSecret:           task.NamesSecret,
 		ScreenModelText:       task.ScreenModelText,
+		RedactApprovalText:    task.RedactSecrets,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's
@@ -646,7 +651,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// suffix.
 	if len(task.ResumeConversation) > 0 {
 		var prior []api.Message
-		if err := json.Unmarshal(task.ResumeConversation, &prior); err != nil {
+		if !json.Valid(task.ResumeConversation) {
+			return delegate.Result{}, fmt.Errorf("claw backend: invalid resume conversation JSON")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(task.ResumeConversation))
+		decoder.UseNumber()
+		if err := decoder.Decode(&prior); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: decode resume conversation: %w", err)
 		}
 		if task.ResumePendingToolUseID == "" {
@@ -669,7 +679,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// loop) or adapts on denial.
 		if name, _, ok := findPendingToolUse(prior, task.ResumePendingToolUseID); ok &&
 			!permission.IsInfrastructureTool(name) && task.Permission.Enabled() {
-			if allow, _ := permission.ParseAnswer(task.ResumeAnswer); allow {
+			if allow, always := permission.ParseExactApprovalAnswer(task.ResumeAnswer); allow && always {
 				resultText = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
 			} else {
 				resultText = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
@@ -677,14 +687,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			}
 		}
 
-		prior = append(prior, api.Message{
-			Role: "user",
-			Content: []api.ContentBlock{api.ToolResult{
-				ToolUseID: task.ResumePendingToolUseID,
-				Content:   resultText,
-				IsError:   isErr,
-			}.ToContentBlock()},
-		})
+		if approval == nil {
+			prior = append(prior, api.Message{
+				Role: "user",
+				Content: []api.ContentBlock{api.ToolResult{
+					ToolUseID: task.ResumePendingToolUseID,
+					Content:   resultText,
+					IsError:   isErr,
+				}.ToContentBlock()},
+			})
+		}
 		opts.Messages = prior
 	}
 
@@ -887,6 +899,26 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
+	if approval != nil {
+		pending, err := pendingClawApproval(task.ResumeConversation, task.ResumePendingToolUseID)
+		if err != nil || pending.Name != approval.toolName || len(opts.Messages) == 0 {
+			return delegate.Result{}, fmt.Errorf("claw: exact approval has no matching pending conversation")
+		}
+		dispatcher, dispatchCtx := newToolDispatcher(WithoutExactClawApproval(ctx), buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		call := toolUseBlock{ID: task.ResumePendingToolUseID, Name: pending.Name, PartialJSON: string(pending.Input)}
+		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval)
+		if err != nil {
+			return delegate.Result{}, err
+		}
+		blocks := []api.ContentBlock{block}
+		unmaterializeEchoingResults(blocks, []toolUseBlock{call}, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
+		opts.Messages = append(opts.Messages, api.Message{Role: "user", Content: blocks})
+		// The approved call is dispatched and its real result appended: the
+		// transcript already carries it, so later retries, usage-window
+		// parking and session fallback cannot replay it — restore them.
+		ctx = WithoutExactClawApproval(ctx)
+	}
+
 	// The tool-step budget the node execution shares (claw_step_budget.go):
 	// pinned once the loop's tools are final — codemode adds its own — so the
 	// first pass, every retryLoop attempt and the tool-use nudge are each
@@ -946,6 +978,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// anchor to its next attempt.
 	res.ToolTurns = stepBudget.turnsRun()
 	res.ToolTurnsAnchor = stepBudget.anchorReport()
+	if approval != nil && genErr != nil {
+		var interrupted *approvedDispatchInterrupted
+		if !errors.As(genErr, &interrupted) {
+			genErr = &approvedDispatchInterrupted{cause: genErr}
+		}
+	}
 	return res, genErr
 }
 
@@ -1013,7 +1051,7 @@ func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (d
 	// retryable to the transport, but the window shuts for hours, and every
 	// re-issue within seconds only meets it again. The node stops on it and
 	// the run parks (clawUsageWindow types it at Execute's exit).
-	for attempt := 1; err != nil && isRetryable(err) && !delegate.IsUsageWindow(clawUsageWindow(err, time.Now())); attempt++ {
+	for attempt := 1; err != nil && exactClawApprovalFrom(ctx) == nil && isRetryable(err) && !delegate.IsUsageWindow(clawUsageWindow(err, time.Now())); attempt++ {
 		// Error-adaptive budget: a connectivity failure gets the larger
 		// transient budget to ride out a brief outage.
 		maxAttempts := b.retry.effectiveMaxAttempts(err)
@@ -1104,6 +1142,7 @@ func askUserResult(err error) (delegate.Result, bool) {
 		},
 		BackendName:             delegate.BackendClaw,
 		PendingConversation:     ask.Conversation,
+		PendingPermissionInput:  ask.PermissionInput,
 		PendingToolUseID:        ask.PendingToolUseID,
 		PendingCommandNarrowing: ask.CommandNarrowing,
 	}, true

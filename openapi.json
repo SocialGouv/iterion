@@ -722,6 +722,10 @@
           "backend_pending_tool_use_id": {
             "type": "string"
           },
+          "backend_permission_input": {
+            "format": "byte",
+            "type": "string"
+          },
           "backend_session_fingerprint": {
             "type": "string"
           },

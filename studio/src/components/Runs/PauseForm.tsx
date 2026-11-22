@@ -45,7 +45,7 @@ const ASK_USER_KEY = "ask_user_response";
 
 type ForceRetry =
   | { kind: "form" }
-  | { kind: "decision"; decision: string };
+  | { kind: "decision"; decision: string; interactionId?: string };
 
 // The most identifying argument of a tool call, for compact display.
 function briefInput(input?: Record<string, unknown>): string {
@@ -147,10 +147,20 @@ export default function PauseForm({
   // approval buttons ("allow"/"allow always"/"deny" become a grant rule
   // or refusal) and by the structured-options buttons (the picked
   // option's id, or typed free text).
-  const decide = async (decision: string, force = false) => {
+  const decide = async (
+    decision: string,
+    force = false,
+    interactionId = !force && typeof questions?._approval_interaction_id === "string"
+      ? questions._approval_interaction_id
+      : undefined,
+  ) => {
+    const answers = {
+      [ASK_USER_KEY]: decision,
+      ...(interactionId ? { _approval_interaction_id: interactionId } : {}),
+    };
     if (onStage) {
       onStage({
-        answers: { [ASK_USER_KEY]: decision },
+        answers,
         source: resolvedSource,
         ...(force ? { force: true } : {}),
       });
@@ -162,7 +172,7 @@ export default function PauseForm({
     setForceRetry(null);
     try {
       await resumeRun(runId, {
-        answers: { [ASK_USER_KEY]: decision },
+        answers,
         source: resolvedSource,
         ...(force ? { force: true } : {}),
       });
@@ -171,7 +181,7 @@ export default function PauseForm({
       const msg = errorMessage(e);
       setError(msg);
       if (isForceResumeRequiredError(e)) {
-        setForceRetry({ kind: "decision", decision });
+        setForceRetry({ kind: "decision", decision, interactionId });
       }
     } finally {
       setBusy(false);
@@ -189,7 +199,7 @@ export default function PauseForm({
         disabled={busy}
         onClick={() => {
           if (forceRetry.kind === "decision") {
-            void decide(forceRetry.decision, true);
+            void decide(forceRetry.decision, true, forceRetry.interactionId);
           } else {
             void onSubmit(undefined, true);
           }
@@ -215,7 +225,9 @@ export default function PauseForm({
 
   if (marker) {
     const prompt = String(questions[ASK_USER_KEY] ?? "");
-    const arg = briefInput(marker.input);
+    const arg = typeof marker.exact_input_json === "string"
+      ? marker.exact_input_json
+      : briefInput(marker.input);
     return (
       <div className="space-y-3">
         {message && <p className="text-fg-muted text-micro">{message}</p>}

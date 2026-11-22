@@ -45,7 +45,7 @@ func TestObservedLostAuthorityIsNonOutcome(t *testing.T) {
 			if mode == "reinvoke" {
 				rs := e.newRunState("correction", nil)
 				rs.ctx = x.context(context.Background())
-				err = e.reInvokeBackend(rs.ctx, rs, "worker", wf.Nodes["worker"], &model.ErrNeedsInteraction{NodeID: "worker", Backend: delegate.BackendClaudeCode, SessionID: "s", Questions: map[string]any{"q": "yes?"}}, map[string]any{"answer": "yes"}, 0)
+				err = e.reInvokeBackend(rs.ctx, rs, "worker", wf.Nodes["worker"], &model.ErrNeedsInteraction{NodeID: "worker", Backend: delegate.BackendClaudeCode, SessionID: "s", Questions: map[string]any{"q": "yes?"}}, map[string]any{"answer": "yes"}, 0, nil)
 			} else {
 				err = e.Run(context.Background(), "correction", nil)
 			}

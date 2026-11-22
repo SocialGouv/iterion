@@ -280,7 +280,7 @@ func (e *Engine) hydratePauseSession(ctx context.Context, rs *runState, nodeInpu
 	}
 }
 
-func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.Node, output map[string]any) error {
+func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.Node, output map[string]any, deferCheckpoint bool) error {
 	blob := takeSessionStateBlob(output)
 	llm, ok := node.(ir.LLMNode)
 	if !ok || llm.GetSession() != ir.SessionPersist {
@@ -310,9 +310,14 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 				e.logger.Warn("[%s/persist] no packed session blob; slot cleared", node.NodeID())
 			}
 			e.emitPersistDegraded(rs, node.NodeID(), "no packed CLI session files (sandbox host_state, missing config dir, or packer error)")
-			if err := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); err != nil {
-				return err
+			if !deferCheckpoint {
+				if err := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); err != nil {
+					return err
+				}
 			}
+		}
+		if deferCheckpoint {
+			return nil
 		}
 		if old.StateRef != "" {
 			e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
@@ -329,6 +334,9 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 			e.logger.Warn("persist: put slot: %v", err)
 		}
 		e.emitPersistDegraded(rs, node.NodeID(), "backend session store put failed")
+		if deferCheckpoint {
+			return nil
+		}
 		if cpErr := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); cpErr != nil {
 			return cpErr
 		}
@@ -345,6 +353,9 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		SessionID:   sid,
 		Fingerprint: fp,
 		StateRef:    ref,
+	}
+	if deferCheckpoint {
+		return nil
 	}
 	cp := buildCheckpoint(rs, node.NodeID())
 	if err := e.store.SaveCheckpoint(ctx, rs.runID, cp); err != nil {

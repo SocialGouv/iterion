@@ -1059,6 +1059,9 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
 		return err
 	}
+	if err := runtime.CheckApprovalReplay(r); err != nil && !spec.Force {
+		return err
+	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
@@ -1191,6 +1194,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if spec.ExpectedStatus != "" && r.Status != spec.ExpectedStatus {
 		return nil, fmt.Errorf("runview: run %q status changed: got %s, expected %s", r.ID, r.Status, spec.ExpectedStatus)
+	}
+	if err := runtime.CheckApprovalReplay(r); err != nil && !spec.Force {
+		return nil, err
 	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
@@ -1516,6 +1522,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			}
 			if spec.ExpectedStatus != "" && r2.Status != spec.ExpectedStatus {
 				return fmt.Errorf("runview: run %q status changed: got %s, expected %s", r2.ID, r2.Status, spec.ExpectedStatus)
+			}
+			if err := runtime.CheckApprovalReplay(r2); err != nil && !spec.Force {
+				return err
 			}
 			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err

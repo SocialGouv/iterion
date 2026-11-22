@@ -737,7 +737,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// it never reaches schema validation, downstream refs, or the store.
 	e.emitVerifiedActionIfPresent(rs, currentNodeID, output)
 
-	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
+	if err := e.commitPersistSlot(ctx, rs, node, output, false); err != nil {
 		return "", err
 	}
 

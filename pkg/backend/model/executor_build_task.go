@@ -858,6 +858,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	lifetime.syncMemory = syncAutoMemory
 
 	chain := collapseHintOnlyChain(e.resolveChain(node), backendName)
+	if exactClawApprovalFrom(ctx) != nil {
+		if backendName != delegate.BackendClaw || len(chain) == 0 || (chain[0].Backend != "" && chain[0].Backend != delegate.BackendClaw) {
+			return nil, fmt.Errorf("model: node %q cannot resume an exact claw approval on another backend", f.id)
+		}
+		chain = chain[:1]
+	}
 	build := e.newElementBuilder(f.id, backendName, backend,
 		func(ctx context.Context, bn string) (*delegate.Task, error) {
 			// The base backend's task is already built above; only an
@@ -998,6 +1004,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				// hand a claw conversation to claude_code.
 				Backend:          servingBackendName,
 				Conversation:     result.PendingConversation,
+				PermissionInput:  result.PendingPermissionInput,
 				PendingToolUseID: result.PendingToolUseID,
 				// The narrowing the paused generation held rides beside the
 				// conversation (#1717): the resume re-pins it, so the bound
@@ -1113,6 +1120,9 @@ func (e *ClawExecutor) validateAndRetry(
 		validationErr := validateStructuredResult(result, schema)
 		if validationErr == nil {
 			return result, nil
+		}
+		if exactClawApprovalFrom(ctx) != nil {
+			return result, validationErr
 		}
 		if text := textOf(result.Output); strings.Contains(text, "API Error:") {
 			line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
