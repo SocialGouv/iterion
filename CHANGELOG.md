@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.30.0](https://github.com/SocialGouv/iterion/compare/v7.29.0...v7.30.0) (2026-11-22)
+
+### Features
+
+* **claw:** serve sandbox permission approvals across the launcher IPC ([#3514](https://github.com/SocialGouv/iterion/issues/3514)) ([b50e977](https://github.com/SocialGouv/iterion/commit/b50e977e352170e72dfd69b6607233de96eace46)), references [#3513](https://github.com/SocialGouv/iterion/issues/3513) [#3510](https://github.com/SocialGouv/iterion/issues/3510) [3504/#3505](https://github.com/SocialGouv/iterion/issues/3505)
+
+    <details><summary>why</summary>
+
+    C136 kept sandboxed claw nodes with ask-capable permission policies refused outright. The approval channel (#3513) serves them without ever copying an approval into PolicyConfig:
+
+    </details>
+
 ## [7.29.0](https://github.com/SocialGouv/iterion/compare/v7.28.0...v7.29.0) (2026-11-22)
 
 ### Features
