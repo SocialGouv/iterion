@@ -62,6 +62,12 @@ type toolBridge struct {
 	// the child from the request's catalogue, so a lookup costs no round trip
 	// and the parent serves nothing but calls. Nil means an empty index.
 	index *toolindex.Index
+
+	// parse is the ENGINE's original JSON.parse, resolved at install time so a
+	// program that replaces JSON.parse cannot disarm the decoding of what
+	// arrives on the channel. It decodes a result frame's structured payload
+	// (CM-7) and the run-state values; installState reads it through here.
+	parse goja.Callable
 }
 
 func newToolBridge(replies io.Reader, calls io.Writer, limits Limits) *toolBridge {
@@ -88,6 +94,11 @@ var errToolChannelBroken = errors.New("scripthost: the tool channel is broken")
 // arguments or as new frame types, not as a second global: the script surface
 // is part of the prompt cache's prefix, so churning it churns the cache.
 func (b *toolBridge) install(vm *goja.Runtime) error {
+	parse, ok := goja.AssertFunction(vm.Get("JSON").ToObject(vm).Get("parse"))
+	if !ok {
+		return errors.New("scripthost: JSON.parse is unavailable")
+	}
+	b.parse = parse
 	if err := vm.Set("call", b.call(vm)); err != nil {
 		return err
 	}
@@ -233,7 +244,43 @@ func (b *toolBridge) call(vm *goja.Runtime) func(goja.FunctionCall) goja.Value {
 		must(obj.Set("isError", false))
 		must(obj.Set("truncated", out.Truncated))
 		must(obj.Set("remaining", out.Remaining))
+		b.setResultStructured(vm, obj, out)
 		return obj
+	}
+}
+
+// setResultStructured sets a result object's structured fields (CM-7) from a
+// result frame.
+//
+// `structured` becomes the payload as a script VALUE — decoded through the
+// engine's own JSON.parse, the same engine function [encodeValue] mirrors on
+// the encode side. Parsing here rather than handing the raw string over is
+// the difference between `r.structured.field` working and a program having to
+// JSON.parse a string itself; a program that wants the raw bytes still has
+// them, via JSON.stringify.
+//
+// The metadata is honest by omission: when a payload was dropped past the
+// bound, `structured` stays undefined and `structuredTruncated`/
+// `structuredBytes` say so; when nothing was dropped the flag is false and the
+// size stays unset. An error result carries neither — its throw has no
+// structured fields, so the object would claim metadata about a payload that
+// was never sent.
+func (b *toolBridge) setResultStructured(vm *goja.Runtime, obj *goja.Object, f Frame) {
+	if len(f.Structured) > 0 {
+		val, err := b.parse(goja.Undefined(), vm.ToValue(string(f.Structured)))
+		if err != nil {
+			// The parent marshals this payload with json.Marshal, so it is
+			// valid JSON by construction; a parse failure here is wire or
+			// state corruption, the same broken channel a state value's
+			// parse failure is. Interrupt keeps it uncatchable.
+			vm.Interrupt(errToolChannelBroken)
+			panic(vm.NewGoError(errToolChannelBroken))
+		}
+		must(obj.Set("structured", val))
+	}
+	must(obj.Set("structuredTruncated", f.StructuredTruncated))
+	if f.StructuredBytes != 0 {
+		must(obj.Set("structuredBytes", f.StructuredBytes))
 	}
 }
 
@@ -308,6 +355,9 @@ func (b *toolBridge) parallel(vm *goja.Runtime) func(goja.FunctionCall) goja.Val
 			must(item.Set("isError", r.IsError))
 			must(item.Set("truncated", r.Truncated))
 			must(item.Set("remaining", r.Remaining))
+			if status == "ok" {
+				b.setResultStructured(vm, item, r)
+			}
 			out[i] = item
 		}
 		return vm.NewArray(out...)

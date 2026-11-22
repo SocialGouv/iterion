@@ -20,6 +20,20 @@ Every result gives the same post-admission `remaining`. A dispatcher abort
 or a broken tool channel ends the script. Cancellation cannot undo effects
 an already-started tool performed.
 
+## Structured results
+
+A tool that reports a structured result (MCP `structuredContent`) hands it to
+the program as `structured`, a JSON value, beside the text — in `call()`'s
+result object and in every `ok` batch entry. The parent clips it against
+`tool_result_bytes` whole: a payload past the bound is dropped, never cut in
+half, and the result then reports `structuredTruncated: true` plus
+`structuredBytes`, the size the program was shorted. When nothing was
+dropped the flag is `false`, so `structuredTruncated === false` and no
+`structured` means the tool sent none. A failed call throws without the
+structured fields — an error carries no payload. Bash output is re-capped to
+the same bound when called from a program, so its `truncated` cut and the
+structured drop report one budget.
+
 `concurrent_tool_calls` inherits like the other codemode limits. Its default
 is 1 (serial), and the platform ceiling is 4. This limit bounds work in flight,
 not the batch's cardinality. A tool without an audited concurrency capability

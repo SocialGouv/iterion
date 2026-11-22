@@ -28,7 +28,8 @@ witness that was seen to fail without it are in
 statements measurement refuted, three of them in this page.
 
 **And the binding between them**: descriptors 3 and 4, newline-delimited JSON,
-one global, `call(name, input)`, with discovery, [batches](codemode-concurrency.md) and [run state](codemode-state.md).
+one global, `call(name, input)`, with discovery, [batches and structured
+results](codemode-concurrency.md) and [run state](codemode-state.md).
 The parent dispatches through `d.dispatch`. Both forms block in JavaScript:
 the VM does not pump an event loop. `scriptToolServer` lives in
 `pkg/backend/model` because it must: the dispatcher, its context key and its

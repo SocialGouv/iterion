@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/claw/internal/api"
 	"github.com/SocialGouv/iterion/pkg/claw/internal/permissions"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"io"
 	"math"
 	"math/big"
@@ -117,19 +118,53 @@ func bashStderr() io.Writer {
 	return os.Stderr
 }
 
-// bashOutput keeps the first maxOutputSize bytes and discards the rest as it
+// bashOutput keeps the first `cap` bytes and discards the rest as it
 // arrives, so a command's whole output never lives in memory at once: the
 // bound holds WHILE the command runs, not only once it returns. A build that
 // prints hundreds of megabytes therefore costs a fixed buffer, for as long as
 // its timeout allows it to keep printing.
 //
+// The capacity is fixed at construction by [newBashOutput] and the buffer
+// never grows: whatever the command prints, the run allocates once.
+//
 // Stdout and Stderr are set to this same pointer on purpose — os/exec gives
 // both streams one descriptor when the two writers are interface-equal, which
 // is what serializes the writes instead of racing two goroutines on the array.
 type bashOutput struct {
-	data      [maxOutputSize]byte
+	data      []byte
 	size      int
 	truncated bool
+}
+
+// newBashOutput allocates the buffer a bash run captures into, sized to the
+// effective output cap resolved by [bashOutputCap]. Callers pass a positive
+// capacity; the buffer never grows past it.
+func newBashOutput(capacity int) *bashOutput {
+	return &bashOutput{data: make([]byte, capacity)}
+}
+
+// bashOutputCap resolves ONE bash call's output cap: the script result budget
+// armed on the call's context when the call runs inside a codemode program
+// (CM-8 — the script's result bound, not the tool's historical 10 KiB), the
+// historical maxOutputSize otherwise.
+//
+// A budget above the scripthost platform ceiling is held to it. The ceiling
+// is the honest number for this bound: the script host clips a nested call's
+// result frame at Limits.ToolResultBytes anyway, and its Ceiling() holds that
+// at 1 MiB, so a buffer above 1 MiB is never observable to a script — while
+// bounding the allocation here keeps the fixed-buffer property under a hard,
+// justified number no context can inflate. The reduction is not silent for
+// the caller that matters: the codemode tool arms the CLAMPED budget, which
+// the same ceiling already bounds.
+func bashOutputCap(ctx context.Context) int {
+	if budget, ok := scripthost.ScriptResultBudgetFrom(ctx); ok {
+		ceiling := scripthost.Ceiling().ToolResultBytes
+		if budget > ceiling {
+			budget = ceiling
+		}
+		return int(budget)
+	}
+	return maxOutputSize
 }
 
 func (b *bashOutput) Write(p []byte) (int, error) {
@@ -290,9 +325,9 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 	// number.
 	cmd.WaitDelay = procWaitDelay()
 
-	var buf bashOutput
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	buf := newBashOutput(bashOutputCap(callerCtx))
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 
 	err = cmd.Run()
 
