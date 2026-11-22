@@ -161,3 +161,36 @@ func TestClawSandboxAdmitsDenyOnlyPolicy(t *testing.T) {
 		t.Fatalf("deny-only policy still refused by the permission guard: %v", err)
 	}
 }
+
+// TestClawSandboxRefusesContainerToolsBesideAskCapablePolicy: the
+// channel's enabled scope is launcher-placed asks only - the launcher
+// consumes the approval AND executes the call, so it cannot certify a
+// container-executed one. A node pairing an ask-capable policy with
+// container-executed tools is refused explicitly, before the spawn,
+// never degraded to per-call denials the model silently works around.
+func TestClawSandboxRefusesContainerToolsBesideAskCapablePolicy(t *testing.T) {
+	t.Parallel()
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	task := delegate.Task{
+		NodeID:     "synth",
+		Model:      "anthropic/claude-opus-5",
+		Sandbox:    fakeSandboxRun{},
+		Permission: mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"bash(git push:*)"}, nil),
+		ToolDefs: []delegate.ToolDef{
+			{Name: "bash", Description: "shell"},
+			{Name: "mcp_srv_greet", Description: "launcher-placed"},
+		},
+	}
+	_, err := b.Execute(context.Background(), task)
+	if err == nil || !strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
+		t.Fatalf("expected the explicit container-tools refusal, got %v", err)
+	}
+	// The same node WITHOUT the ask rule stays admitted: the scope is the
+	// ask, not the container tools.
+	task.Permission = mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, nil, nil)
+	if _, err := b.Execute(context.Background(), task); err != nil {
+		if strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
+			t.Fatalf("a deny-only policy does not enter the channel scope: %v", err)
+		}
+	}
+}

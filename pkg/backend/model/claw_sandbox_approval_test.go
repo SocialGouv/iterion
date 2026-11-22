@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -90,7 +91,7 @@ func TestServePermissionAskDecisionTable(t *testing.T) {
 				})
 			}
 			var executed bool
-			got, err := b.servePermissionAsk(askCtx, approvalTask(t, tc.mode, tc.allowRule), approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, approvalAsk(toolName, tc.input))
+			got, err := b.servePermissionAsk(askCtx, approvalTask(t, tc.mode, tc.allowRule), approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, &atomic.Bool{}, approvalAsk(toolName, tc.input))
 			if err != nil {
 				t.Fatalf("handler error: %v", err)
 			}
@@ -123,11 +124,75 @@ func TestServePermissionAskAllowCarriesTheRealResult(t *testing.T) {
 	}
 	pol, _ := permission.NewPolicy(permission.ModeDeny, []string{"mcp_srv_greet"}, nil, nil)
 	task := delegate.Task{NodeID: "node-1", Model: "m", Permission: pol}
-	got, err := b.servePermissionAsk(ctx, task, td, []string{"mcp_srv_greet"}, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	got, err := b.servePermissionAsk(ctx, task, td, []string{"mcp_srv_greet"}, &atomic.Bool{}, approvalAsk("mcp_srv_greet", `{"x":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Decision != delegate.PermissionDecisionAllow || !strings.Contains(got.Error, "upstream 503") {
 		t.Fatalf("execution failure must stay an allow carrying the error: %+v", got)
 	}
+}
+
+// TestCrossingFailureAfterSpend: a crossing failure after the launcher
+// spent a claim is typed ambiguous - the approved call's outcome is
+// unknown and a retry must not replay it. Unspent or clean failures
+// stay ordinary.
+func TestCrossingFailureAfterSpend(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("relay died")
+	if got := crossingFailureAfterSpend(nil, &atomic.Bool{}); got != nil {
+		t.Fatalf("clean crossing stays clean: %v", got)
+	}
+	if got := crossingFailureAfterSpend(boom, nil); got != boom {
+		t.Fatalf("nil flag = ordinary failure: %v", got)
+	}
+	if got := crossingFailureAfterSpend(boom, &atomic.Bool{}); got != boom {
+		t.Fatalf("unspent crossing failure stays ordinary: %v", got)
+	}
+	var spent atomic.Bool
+	spent.Store(true)
+	got := crossingFailureAfterSpend(boom, &spent)
+	var amb *approvedDispatchInterrupted
+	if !errors.As(got, &amb) || !amb.AmbiguousEffect() {
+		t.Fatalf("a post-spend crossing failure must be ambiguous, got %T (%v)", got, got)
+	}
+	if !strings.Contains(got.Error(), "relay died") {
+		t.Fatalf("the cause must stay in the chain: %v", got)
+	}
+}
+
+// TestServePermissionAskMarksSpendOnTheCrossingFlag: the flag rides the
+// crossing out to executeViaSandboxRunner, so the wiring is part of the
+// contract - a won spend sets it, every other outcome leaves it down.
+func TestServePermissionAskMarksSpendOnTheCrossingFlag(t *testing.T) {
+	t.Parallel()
+	ctx := WithRunID(WithNodeID(context.Background(), "node-1"), "run-1")
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	var spent atomic.Bool
+	pol, _ := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	task := delegate.Task{NodeID: "node-1", Model: "m", Permission: pol}
+	claimCtx := WithExactClawApproval(ctx, "run-1", "node-1", "mcp_srv_greet", json.RawMessage(`{"x":1}`), func(context.Context) (bool, error) {
+		return true, nil
+	})
+	var executed bool
+	dec, err := b.servePermissionAsk(claimCtx, task, approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, &spent, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if dec.Decision != delegate.PermissionDecisionAllow || !executed || !spent.Load() {
+		t.Fatalf("won spend: decision=%s executed=%v spent=%v, want allow/true/true", dec.Decision, executed, spent.Load())
+	}
+	// An allow-rule execution consumes nothing: the flag stays down.
+	var spent2 atomic.Bool
+	polAllow, _ := permission.NewPolicy(permission.ModeDeny, []string{"mcp_srv_greet"}, nil, nil)
+	taskAllow := delegate.Task{NodeID: "node-1", Model: "m", Permission: polAllow}
+	var executed2 bool
+	dec2, err := b.servePermissionAsk(ctx, taskAllow, approvalHandlerTools(&executed2), []string{"mcp_srv_greet"}, &spent2, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if dec2.Decision != delegate.PermissionDecisionAllow || !executed2 || spent2.Load() {
+		t.Fatalf("allow-rule: decision=%s executed=%v spent=%v, want allow/true/false - executes without consuming", dec2.Decision, executed2, spent2.Load())
+	}
+	_ = executed
 }

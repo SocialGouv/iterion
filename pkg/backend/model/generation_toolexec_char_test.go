@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
@@ -767,7 +768,7 @@ func TestMultiplexerHandler_PinsTheNodesExecutableToolsOnTheForwardedCall(t *tes
 			}},
 		},
 	}
-	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 	if _, err := handler.OnToolCall(context.Background(), "tool_search", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("OnToolCall: %v", err)
 	}

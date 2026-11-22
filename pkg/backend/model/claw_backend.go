@@ -481,6 +481,26 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 				NodeID: task.NodeID, Backend: delegate.BackendClaw, Capability: "interaction: async in a sandboxed run"}
 		}
 		task.ToolDefs = withoutUnplaceableToolsThePolicyDenies(task)
+		// The channel's enabled scope is LAUNCHER-placed asks only: the
+		// launcher consumes the approval AND executes the call, so it
+		// cannot certify a container-executed one. A node pairing an
+		// ask-capable policy with container-executed tools is refused here,
+		// explicitly and before the spawn — not degraded to per-call
+		// denials the model silently works around.
+		if task.Permission.CanAsk() {
+			var container []string
+			for _, td := range task.ToolDefs {
+				if placement, _ := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
+					container = append(container, td.Name)
+				}
+			}
+			if len(container) > 0 {
+				sort.Strings(container)
+				return delegate.Result{}, fmt.Errorf(
+					"claw backend: node %q pairs an ask-capable policy with container-executed tools (%s) — the approval channel serves launcher-placed tools only (MCP, in-memory registries); scope the ask rules to launcher-placed tools, drop the container tools, or run unsandboxed (`sandbox: none` / `--sandbox none`)",
+					task.NodeID, strings.Join(container, ", "))
+			}
+		}
 		if err := refuseToolsWithNoSandboxPlacement(task); err != nil {
 			return delegate.Result{}, err
 		}
@@ -2324,7 +2344,12 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			iterlog.BlockPreviewRendered(diag, maxFieldSize))
 	}()
 
-	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	// approvalSpent records that this crossing's launcher consumed an
+	// approval claim: a crossing that fails afterwards has an unknown
+	// outcome for the approved call, and the failure is typed ambiguous
+	// below so no retry replays it.
+	approvalSpent := &atomic.Bool{}
+	handler, stranded := b.multiplexerHandler(ctx, task, seed, approvalSpent)
 	handler.OnCodemodeState = stateRelay
 	mirror := handler.OnSessionCapture
 	handler.OnSessionCapture = func(snapshot json.RawMessage) {
@@ -2483,8 +2508,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 				stderr: runnerStderr(),
 			}
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
-			redactedThrough(task.RedactSecrets, runErr), runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
+			redactedThrough(task.RedactSecrets, runErr), runnerStderr()), approvalSpent)
 	}
 	if errors.Is(runErr, io.EOF) && ioRes.Error == "" && waitErr == nil {
 		// Runner closed stdout without sending a result envelope and
@@ -2495,7 +2520,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 
 	if waitErr != nil && ioRes.Error == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
+		return delegate.Result{}, crossingFailureAfterSpend(fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr()), approvalSpent)
 	}
 	// What the container's call spent rides the result as the runner's own
 	// walk named it through the crossing's record (ADR-161 decision 8: the
@@ -2530,6 +2555,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
 	}
 	if ioRes.Error != "" {
+		wrappedErr := crossingFailureAfterSpend(fmt.Errorf("claw backend: runner: %s", runnerError), approvalSpent)
+		if _, ambiguous := wrappedErr.(*approvedDispatchInterrupted); ambiguous {
+			return res, wrappedErr
+		}
 		if ioRes.ProviderError != nil {
 			provider := *ioRes.ProviderError
 			provider.Message = redactedFarSide(task, provider.Message)
@@ -4122,7 +4151,7 @@ func canonicalMCPToolName(name string) string {
 // whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
 // stamp a pause result the crossing produced while stranded, so the fact
 // travels with the pause (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed, approvalSpent *atomic.Bool) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -4152,7 +4181,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
 		OnPermissionAsk: func(askCtx context.Context, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
-			return b.servePermissionAsk(askCtx, task, toolByName, toolNames, ask)
+			return b.servePermissionAsk(askCtx, task, toolByName, toolNames, approvalSpent, ask)
 		},
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
 			// A runner forwards the name the tool was advertised under — its

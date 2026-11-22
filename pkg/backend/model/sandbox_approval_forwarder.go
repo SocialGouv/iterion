@@ -98,10 +98,14 @@ func sandboxApprovalAskOutcome(ctx context.Context, fwd SandboxApprovalForwarder
 		// same pause the in-process gate raises. It flows back through the
 		// terminal result to the engine's checkpoint; the human answers on
 		// resume and the re-asked approval is served from the held claim.
-		// The reason (a busy or handler-less launcher) rides the question.
-		question := permission.AskPrompt(tu.Name, hookInput, rule)
-		if decision.Error != "" {
-			question = decision.Error + " — the run is suspended for your approval: " + question
+		// The pause prompt is LAUNCHER-COMPOSED — the decision carries the
+		// prompt this side regenerated from its own policy verdict, and
+		// display wording never binds the authorization (tool+input do).
+		// The local prompt is only the fallback for a launcher that sent
+		// no words at all.
+		question := decision.Error
+		if question == "" {
+			question = permission.AskPrompt(tu.Name, hookInput, rule)
 		}
 		return nil, &delegate.ErrAskUser{
 			Question:         question,

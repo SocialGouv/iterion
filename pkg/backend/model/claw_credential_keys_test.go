@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
@@ -127,7 +128,7 @@ func TestARelayedStepCarriesTheContainersOwnSpend(t *testing.T) {
 
 	host := &lockedEmitter{}
 	b := NewClawBackend(NewRegistry(), NewStoreEventHooks(context.Background(), host, "run-relay", iterlog.Nop(), nil, nil), RetryPolicy{})
-	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
 	for _, env := range sent {
 		var wire delegate.EventData
 		if err := json.Unmarshal(env.Data, &wire); err != nil {
@@ -319,7 +320,7 @@ func TestASubagentStampsItsOwnSpendInTheContainerAndInProcess(t *testing.T) {
 
 			host := &lockedEmitter{}
 			launcher := NewClawBackend(NewRegistry(), NewStoreEventHooks(context.Background(), host, "run-sub", iterlog.Nop(), nil, nil), RetryPolicy{})
-			handler, _ := launcher.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{})
+			handler, _ := launcher.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
 			mu.Lock()
 			defer mu.Unlock()
 			for _, env := range sent {

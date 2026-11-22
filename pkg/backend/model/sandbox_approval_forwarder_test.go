@@ -142,3 +142,24 @@ func TestExecuteToolsDirect_ApprovalChannelUnknownDecisionAborts(t *testing.T) {
 		t.Fatalf("unknown decision must abort, got %v", gErr)
 	}
 }
+
+// TestExecuteToolsDirect_ApprovalChannelDeferPromptIsLauncherComposed:
+// the pause prompt the human sees is the launcher's own regeneration,
+// never the runner's framing - display wording is launcher-authoritative.
+func TestExecuteToolsDirect_ApprovalChannelDeferPromptIsLauncherComposed(t *testing.T) {
+	t.Parallel()
+	pol := askPolicy()
+	var executed bool
+	fwd := func(_ context.Context, _ delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+		return delegate.PermissionDecisionData{Decision: delegate.PermissionDecisionDefer, Error: "LAUNCHER PROMPT: allow bash?"}, nil
+	}
+	ctx := WithSandboxApprovalForwarder(context.Background(), fwd)
+	_, gErr := executeToolsDirect(ctx, approvalBashCall("echo hi"), sandboxApprovalTools(&executed), nil, nil, nil, nil, pol)
+	var askErr *delegate.ErrAskUser
+	if !errors.As(gErr, &askErr) {
+		t.Fatalf("defer must raise the pause, got %v", gErr)
+	}
+	if askErr.Question != "LAUNCHER PROMPT: allow bash?" {
+		t.Fatalf("the pause prompt must be the launcher wording alone, got %q", askErr.Question)
+	}
+}

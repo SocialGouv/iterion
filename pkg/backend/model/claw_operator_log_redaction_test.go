@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -96,7 +97,7 @@ func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
 	input := json.RawMessage(`{"body":"deploy token: ` + secret + `"}`)
-	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 	if _, err := handler.OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
 		t.Fatal("a denied forwarded call was not refused — this witness no longer reaches the refusal it watches")
 	}
@@ -125,7 +126,7 @@ func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
 		NodeID: "plan_review", Iteration: 1,
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
-	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 	handler.OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
 	t.Logf("operator log: %q", logs.String())
 	if logs.Len() == 0 {
@@ -224,7 +225,7 @@ func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T)
 				NewStoreEventHooks(context.Background(), &captureEmitter{}, "run-relay-names", logger, g, nil),
 				RetryPolicy{}, WithClawLogger(logger))
 
-			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{})
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
 			handler.OnEvent(string(tc.event), tc.payload(tc.secret))
 
 			for _, want := range tc.reach {
@@ -258,7 +259,7 @@ func TestClawRelay_RedactsAnUnconsumedEventTypeForTheOperatorLog(t *testing.T) {
 		NodeID: "plan_review", Iteration: 1,
 		RedactSecrets: sinkRedaction(secret, placeholder),
 	}
-	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 	handler.OnEvent("vendor_metric_"+secret, nil)
 	t.Logf("operator log: %q", logs.String())
 	if logs.Len() == 0 {
@@ -303,7 +304,7 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drops: iterlog.LevelInfo,
 			keeps: iterlog.LevelDebug,
 			drive: func(t *testing.T, b *ClawBackend, task delegate.Task) {
-				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 				handler.OnEvent("vendor_metric_"+secret, nil)
 			},
 		},
@@ -312,7 +313,7 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drops: iterlog.LevelError,
 			keeps: iterlog.LevelWarn,
 			drive: func(t *testing.T, b *ClawBackend, task delegate.Task) {
-				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 				handler.OnEvent(string(store.EventLLMRequest), map[string]any{"timestamp": secret})
 			},
 		},
@@ -327,7 +328,7 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 					Execute: func(context.Context, json.RawMessage) (string, error) { return "", nil },
 				}}
 				input := json.RawMessage(`{"body":"token: ` + secret + `"}`)
-				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{})
+				handler, _ := b.multiplexerHandler(context.Background(), task, sessionSeed{}, &atomic.Bool{})
 				if _, err := handler.OnToolCall(context.Background(), "mcp_github_create_issue", input); err == nil {
 					t.Fatal("a denied forwarded call was not refused — this witness no longer reaches the refusal it watches")
 				}

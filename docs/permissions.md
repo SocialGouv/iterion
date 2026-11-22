@@ -552,11 +552,14 @@ case, a space after the colon) all name the same class.
   `bash`), and claw's `repl` is a SECOND shell no spelling bounds.
 - `ask: ["class:shell"]` gates the class the same way: every member call
   pauses for a human, in every mode (an explicit ask precedes the mode
-  default), future members included. The pause is the unsandboxed mechanism:
-  on a sandboxed claw node a policy that can produce an ask refuses the NODE
-  at dispatch (a sandbox has no seam to pause the run for a human), and an
-  unsandboxed headless run stalls at the call until a human answers the
-  approval — an asked tool executes nothing unattended in either shape.
+  default), future members included. The pause is the unsandboxed mechanism;
+  on a sandboxed claw node the approval channel serves it for launcher-placed
+  tools (MCP, in-memory registries) — the launcher consumes the one-time
+  approval and executes the call itself — while an ask that can reach a
+  container-executed tool refuses the NODE at dispatch (a sandbox container
+  cannot be certified host-side), and an unsandboxed headless run stalls at
+  the call until a human answers the approval — an asked tool executes
+  nothing unattended in any of the three shapes.
 - `allow: ["class:shell"]` grants the class including future members —
   `allow:` widens. Accepted, not refused: the row is the author's explicit
   choice, and a refusal would replace it (**C167** warns instead, and
@@ -806,7 +809,14 @@ decode the native event and spell the native verdict.
     `_approval_interaction_id` from the question alongside the decision;
     Studio sends it automatically. For headless resume, pass `--answers-file`
     with `{"ask_user_response":"allow","_approval_interaction_id":"<id from the pending question>"}`.
-    Sandboxed claw still refuses permission policies that can ask. When an
+    Sandboxed claw serves the same exact approval through the launcher's
+    approval channel for launcher-placed tools (MCP, in-memory registries):
+    the pause crosses the sandbox IPC, the launcher consumes the claim and
+    executes the call itself, and a crossing that fails after a consumption
+    is typed ambiguous like the in-process path. A sandboxed claw node whose
+    ask-capable policy can also reach a container-executed tool (bash, the
+    file tools) still refuses at dispatch — the launcher cannot certify an
+    execution inside the container. When an
     approved dispatch's outcome is unknown (a failure after the call ran),
     every resume is refused until `resume --force` acknowledges it: the node
     re-runs from its checkpoint, claw asks the permission again under a fresh

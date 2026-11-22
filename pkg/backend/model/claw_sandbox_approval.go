@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -34,7 +35,7 @@ func permissionDecisionDefer(reason string) delegate.PermissionDecisionData {
 	return delegate.PermissionDecisionData{Decision: delegate.PermissionDecisionDefer, Error: reason}
 }
 
-func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task, toolByName map[string]delegate.ToolDef, toolNames []string, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task, toolByName map[string]delegate.ToolDef, toolNames []string, spent *atomic.Bool, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
 	// Bind to the registered tool identity: the runner forwards the name
 	// the launcher advertised, so anything else is not one an honest
 	// runner sends (the same rule OnToolCall applies).
@@ -80,7 +81,27 @@ func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task
 	if !won {
 		return permissionDecisionDeny("approval is stale or already consumed; the tool was not dispatched"), nil
 	}
+	// From here the approved call's outcome is the crossing's to confirm:
+	// if the channel dies before the runner appends the result, the effect
+	// is unknown and a retry must not replay it. The flag rides the
+	// crossing out to executeViaSandboxRunner, which types any crossing
+	// failure as AmbiguousEffect (the in-process path's
+	// approvedDispatchInterrupted semantics).
+	spent.Store(true)
 	return b.executeApprovedForwardedCall(ctx, task, td, toolNames, ask)
+}
+
+// crossingFailureAfterSpend types the failure of a crossing whose launcher
+// already spent an approval claim: the approved call's outcome is unknown -
+// the decision may never have reached the runner, and a retry would replay
+// the call without authority. The in-process path wraps the same situation
+// as approvedDispatchInterrupted (the AMBIGUOUS_EFFECT class), so the
+// crossing does too.
+func crossingFailureAfterSpend(runErr error, spent *atomic.Bool) error {
+	if runErr == nil || spent == nil || !spent.Load() {
+		return runErr
+	}
+	return &approvedDispatchInterrupted{cause: runErr}
 }
 
 // executeApprovedForwardedCall runs the call on the launcher, through the

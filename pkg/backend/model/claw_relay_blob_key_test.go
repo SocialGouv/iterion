@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -45,7 +46,7 @@ func TestClawRelay_ARelayedToolBlobIsKeyedByWhatTheEventPointsAt(t *testing.T) {
 			logger := iterlog.Nop()
 			hooks := NewStoreEventHooks(context.Background(), st, runID, logger, g, nil)
 			b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{}, WithClawLogger(logger))
-			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{})
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
 
 			// Past toolInlineThreshold, so the payload takes the sidecar.
 			bulk := strings.Repeat("w", toolInlineThreshold+1)
@@ -142,7 +143,7 @@ func TestClawRelay_ARealToolUseIDIsTheBlobKey(t *testing.T) {
 	logger := iterlog.Nop()
 	hooks := NewStoreEventHooks(context.Background(), st, runID, logger, g, nil)
 	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{}, WithClawLogger(logger))
-	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
 
 	for _, id := range ids {
 		handler.OnEvent(string(store.EventToolCalled), map[string]any{
