@@ -32,7 +32,11 @@ import (
 // function"; the handshake refuses it as a different build instead.
 // 3: `call.parallel` and the batch frame (CM-9).
 // 4: scoped run state requests and replies (CM-11/12).
-const Proto = 4
+// 5: structured results on result frames (CM-7). A version-4 child decodes a
+// result carrying them fine — unknown JSON fields are ignored — but its
+// programs would read a tool's structured payload as undefined, a silent
+// wrong answer of exactly the kind the refusal exists to prevent.
+const Proto = 5
 
 // MaxParallelBatch bounds a batch independently of its execution width.
 const MaxParallelBatch = 4
@@ -84,6 +88,24 @@ type Frame struct {
 	// cut result and returns a confident total is worse than one that knows.
 	Truncated bool `json:"truncated,omitempty"`
 
+	// Structured is the tool's structured result (CM-7), compact JSON the
+	// tool produced alongside its text, handed to the program as a value. It
+	// is set on a FrameResult only: a failed call throws and carries no
+	// structured payload, and a refused call never had one. An absent payload
+	// means one of three things — the tool sent none, the tool failed, or the
+	// payload did not fit the bound — and the next two fields say which.
+	Structured json.RawMessage `json:"structured,omitempty"`
+	// StructuredTruncated says the parent dropped Structured at the result
+	// bound. Explicit only when something was actually dropped: a payload
+	// that fits leaves the field unset, so a program reading it false knows
+	// the absence of Structured means the tool sent none.
+	StructuredTruncated bool `json:"structured_truncated,omitempty"`
+	// StructuredBytes is the size of the structured payload the parent
+	// dropped, set only alongside StructuredTruncated. A program that needs
+	// the whole payload can say by how much it was shorted rather than
+	// guessing from an empty value.
+	StructuredBytes int64 `json:"structured_bytes,omitempty"`
+
 	StateCode string `json:"state_code,omitempty"`
 
 	// Remaining is the call budget left after this result, set on FrameResult
@@ -94,9 +116,19 @@ type Frame struct {
 
 // ToolOutcome is what serving one call produced: the tool_result text the
 // model would have seen, and whether the tool reported a failure.
+//
+// Structured carries the same result's structured payload, compact JSON, as
+// the tool reported it alongside its text — a server that has none leaves it
+// nil, and the parent clips what it delivered past the bound. The truncation
+// fields let a server report a payload IT already shortened; a server that
+// delivers whole payloads leaves them zero and the parent's clip fills them.
 type ToolOutcome struct {
 	Text    string
 	IsError bool
+
+	Structured          []byte
+	StructuredTruncated bool
+	StructuredBytes     int64
 }
 
 // ToolServer answers a script's tool call.
@@ -239,7 +271,17 @@ func dispatchBatch(ctx context.Context, srv ToolServer, calls []Frame, limits Li
 			return
 		}
 		text, cut := clipToolText(out.Text, limits.ToolResultBytes)
-		replies[i] = Frame{Type: FrameResult, ID: f.ID, Text: text, IsError: out.IsError, Truncated: cut, Remaining: remaining}
+		frame := Frame{Type: FrameResult, ID: f.ID, Text: text, IsError: out.IsError, Truncated: cut, Remaining: remaining}
+		// A failed call throws on the child side and its thrown value carries
+		// no structured fields, so a payload here would be wire bytes no
+		// program could ever read. Dropped rather than sent.
+		if !out.IsError {
+			structured, dropped, original := clipToolStructured(out, limits.ToolResultBytes)
+			frame.Structured = structured
+			frame.StructuredTruncated = dropped
+			frame.StructuredBytes = original
+		}
+		replies[i] = frame
 	}
 	width := int(max(1, min(limits.ConcurrentToolCalls, MaxParallelBatch)))
 	eligibility, _ := srv.(interface{ ConcurrentSafe(string) bool })
@@ -322,6 +364,26 @@ func clipToolText(s string, max int64) (string, bool) {
 // continuation byte.
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
 
+// clipToolStructured cuts a tool result's structured payload at the bound,
+// the sibling of [clipToolText]. The two differ in what a cut means: text is
+// prose the model would have read, so it is cut on a rune boundary and the
+// cut is honest to read; structured JSON is cut ONLY ALL-OR-NOTHING — half a
+// JSON document is not a value a program can parse, so past the bound the
+// payload goes entirely, flagged, with the size it had.
+//
+// The payload arrives pre-encoded by the server (a sink of what the tool
+// reported), so the control characters inside it are already escaped in the
+// payload itself. It still shares text's wire worst case: the frame encoder
+// re-escapes <, > and & wherever it meets them, inside a RawMessage too, so
+// one payload byte can reach the wire as six — and [resultFrameCap] spends
+// the same factor on it.
+func clipToolStructured(out ToolOutcome, max int64) (structured []byte, dropped bool, original int64) {
+	if int64(len(out.Structured)) > max {
+		return nil, true, int64(len(out.Structured))
+	}
+	return out.Structured, out.StructuredTruncated, out.StructuredBytes
+}
+
 // callFrameCap bounds one CALL frame — the child-to-parent direction, whose
 // payload is an input the script composed and whose only bound is the child's
 // own [MaxToolInputBytes].
@@ -360,6 +422,16 @@ func callFrameCap() int64 {
 // deployment. The envelope (type, id, flags, the remaining count) is small
 // and fixed; 1 KiB covers it.
 //
+// Since CM-7 the frame may also carry the tool's structured payload, up to
+// ToolResultBytes of it ([clipToolStructured]). That payload is pre-encoded
+// JSON, but pre-encoded is not verbatim on the wire: the frame encoder
+// re-escapes <, > and & inside a RawMessage exactly as it does in the text,
+// six bytes for one, so the payload's own worst case is the same factor. A
+// first draft spent 1 on the structured half — "pre-encoded travels
+// verbatim" — and a probe of json.Encoder refuted it before it shipped; the
+// cap spends 6 on each, which is what a frame holding a full bound of both
+// actually measures.
+//
 // The CALL direction has [callFrameCap] above, for the same reason and since
 // the same commit: an operator's `script_bytes` described neither frame. The
 // draft of this comment that said the call direction "keeps
@@ -367,6 +439,7 @@ func callFrameCap() int64 {
 // shipped — the commit that wrote it moved that site too.
 func resultFrameCap(l Limits) int64 {
 	const jsonEscapeWorstCase = 6
+	const structuredWorstCase = 6
 	const envelope = 1 << 10
 	// No zero fallback, on purpose: limits arrive CLAMPED — Host.Run and
 	// RunChild clamp before use — so a caller that skips the clamp gets a
@@ -374,5 +447,5 @@ func resultFrameCap(l Limits) int64 {
 	// did not choose. The ticket this closes called the previous
 	// zero-branch the inconsistent half of a defence: it silently
 	// substituted the default while clipToolText returned unbounded.
-	return l.ToolResultBytes*jsonEscapeWorstCase + envelope
+	return l.ToolResultBytes*(jsonEscapeWorstCase+structuredWorstCase) + envelope
 }

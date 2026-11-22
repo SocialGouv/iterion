@@ -56,6 +56,14 @@ type scriptToolServer struct {
 	ctx   context.Context
 	state CodemodeState
 
+	// budget is the script's per-result bound ([scripthost.Limits.ToolResultBytes],
+	// already clamped), armed on every nested call's context so a tool that
+	// caps its own output can re-cap to what the script may receive (CM-8).
+	// Zero means the arming caller had no budget to give — reachable only
+	// from tests that build a server by hand, since the codemode tool always
+	// clamps `want` at install.
+	budget int64
+
 	// withheld is the tool the script host itself is bound to, withheld so a
 	// script cannot nest another script host. Empty while no DSL attribute
 	// exists, which is CM-1b's deliberate state.
@@ -158,6 +166,18 @@ func (s *scriptToolServer) CallTool(worker context.Context, name string, input j
 	if err := worker.Err(); err != nil {
 		return scripthost.ToolOutcome{}, err
 	}
+	// The rich-result sink (CM-7) and the script's own result budget (CM-8)
+	// are armed on the PER-CALL context, not on the server's: two calls of
+	// one batch derive two contexts here, so parallel workers never share a
+	// sink and the budget arms exactly where a tool reads it. After dispatch
+	// returns, the sink holds the call's structured content — the Read
+	// auto-retry's overwrite semantics live in the sink — and the outcome
+	// carries it beside the text.
+	sink := tool.NewRichResultSink()
+	ctx = tool.WithRichResultSink(ctx, sink)
+	if s.budget > 0 {
+		ctx = scripthost.WithScriptResultBudget(ctx, s.budget)
+	}
 	block, abort := s.d.dispatch(ctx, tu)
 	if abort != nil {
 		if err := worker.Err(); err != nil && errors.Is(abort, ctx.Err()) {
@@ -175,7 +195,11 @@ func (s *scriptToolServer) CallTool(worker context.Context, name string, input j
 	if err := ctx.Err(); err != nil {
 		return scripthost.ToolOutcome{}, err
 	}
-	return scripthost.ToolOutcome{Text: toolResultText(block), IsError: block.IsError}, nil
+	out := scripthost.ToolOutcome{Text: toolResultText(block), IsError: block.IsError}
+	if raw, ok := sink.Result(); ok {
+		out.Structured = raw
+	}
+	return out, nil
 }
 
 // withhold reports the tools a script may not call, by CLASS and not by a list

@@ -143,10 +143,10 @@ func serveState(ctx context.Context, srv ToolServer, f Frame, remaining int64) (
 }
 
 func (b *toolBridge) installState(vm *goja.Runtime) error {
-	parse, ok := goja.AssertFunction(vm.Get("JSON").ToObject(vm).Get("parse"))
-	if !ok {
-		return errors.New("scripthost: JSON.parse is unavailable")
-	}
+	// The engine's JSON.parse was resolved by install, before any program
+	// ran; a program that replaces JSON.parse cannot disarm a state value's
+	// decoding either.
+	parse := b.parse
 	bind := func(op string) func(goja.FunctionCall) goja.Value {
 		return func(fc goja.FunctionCall) goja.Value {
 			key, ok := stateKey(fc.Argument(0))
