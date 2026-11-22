@@ -78,6 +78,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		policyCfg          *permission.PolicyConfig
 		sawGateway         bool
 		sawApprovalChannel bool
+		sawCodemodeState   bool
 		announcedTrust     *store.RunTrust
 	)
 	for {
@@ -121,6 +122,14 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			sawGateway = true
 			continue
 		}
+		if env.Type == delegate.EnvelopeCodemodeStateV1 {
+			if sawCodemodeState || env.ID != "" || len(env.Data) != 0 {
+				return emitFatal(dispatcher, stderr, errors.New("invalid codemode state v1 capability marker"))
+			}
+			sawCodemodeState = true
+			dispatcher.reader.OmitDecodePayload()
+			continue
+		}
 		if env.Type == delegate.EnvelopeWorkspaceTrust {
 			// The launcher says this workspace was written by someone the
 			// tenant is not. Recorded so the task can be checked against it
@@ -153,6 +162,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// failure would be an opaque unknown-provider. Name the skew instead.
 	if modelroute.Parse(ioTask.Model).Gateway() && !sawGateway {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("gateway task %q received without the gateway capability marker — the host binary predates gateway support; upgrade the host", ioTask.Model))
+	}
+
+	if sawCodemodeState != ioTask.CodemodeState || (sawCodemodeState && !ioTask.Codemode) {
+		return emitFatal(dispatcher, stderr, errors.New("codemode state v1 capability marker and task disagree — upgrade launcher and runner together"))
+	}
+	if sawCodemodeState {
+		ctx = model.WithCodemodeState(ctx, runnerCodemodeState{dispatcher})
+	} else {
+		ctx = model.WithCodemodeState(ctx, nil)
 	}
 
 	// start() must run AFTER the synchronous bootstrap loop above:

@@ -13,16 +13,21 @@ import (
 type ExactRecordKind string
 
 const (
-	ExactRun         ExactRecordKind = "run"
-	ExactCheckpoint  ExactRecordKind = "checkpoint"
-	ExactInteraction ExactRecordKind = "interaction"
-	ExactEvent       ExactRecordKind = "event"
-	ExactArtifact    ExactRecordKind = "artifact"
+	ExactRun                ExactRecordKind = "run"
+	ExactCheckpoint         ExactRecordKind = "checkpoint"
+	ExactInteraction        ExactRecordKind = "interaction"
+	ExactEvent              ExactRecordKind = "event"
+	ExactArtifact           ExactRecordKind = "artifact"
+	ExactResumePauseHandoff ExactRecordKind = "resume_pause_handoff"
 )
 
 var exactCheckpointPaths = []string{"Outputs", "LoopPreviousOutput", "LoopCurrentOutput", "Artifacts", "Vars", "InteractionQuestions", "FiredEvents", "Parallel/PendingInteractionQuestions", "Parallel/Branches/*/Outputs", "Parallel/Branches/*/Artifacts", "Parallel/Branches/*/LoopPreviousOutput", "Parallel/Branches/*/LoopCurrentOutput", "Parallel/Branches/*/ResumeAnswers"}
 var exactRecordPlans = sync.OnceValues(func() (map[ExactRecordKind]recordcodec.Codec, error) {
+	handoffPaths := []string{"InteractionQuestions"}
 	runPaths := []string{"Inputs"}
+	for _, p := range handoffPaths {
+		runPaths = append(runPaths, "ResumePauseHandoff/"+p)
+	}
 	for _, p := range exactCheckpointPaths {
 		runPaths = append(runPaths, "Checkpoint/"+p)
 	}
@@ -34,6 +39,7 @@ var exactRecordPlans = sync.OnceValues(func() (map[ExactRecordKind]recordcodec.C
 		{ExactRun, reflect.TypeFor[Run](), runPaths}, {ExactCheckpoint, reflect.TypeFor[Checkpoint](), exactCheckpointPaths},
 		{ExactInteraction, reflect.TypeFor[Interaction](), []string{"Questions", "Answers", "Turns/[]/Verdict"}},
 		{ExactEvent, reflect.TypeFor[Event](), []string{"Data"}}, {ExactArtifact, reflect.TypeFor[Artifact](), []string{"Data"}},
+		{ExactResumePauseHandoff, reflect.TypeFor[ResumePauseHandoff](), handoffPaths},
 	}
 	out := map[ExactRecordKind]recordcodec.Codec{}
 	for _, entry := range entries {

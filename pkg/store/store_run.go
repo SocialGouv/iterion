@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // ---------------------------------------------------------------------------
@@ -125,6 +127,12 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 		if rr.Status == RunStatusRunning && persisted.Status == RunStatusRunning {
 			rr.ToolApprovalClaim = persisted.ToolApprovalClaim
 		}
+		// The persisted handoff wins over ordinary saves. In particular, the
+		// cancelled claim at the start of a rewind invalidates the handoff.
+		rr.ResumePauseHandoff = nil
+		if rr.Status.CarriesResumePauseHandoff() {
+			rr.ResumePauseHandoff = persisted.ResumePauseHandoff
+		}
 		rr.PreEngineRefusal = preEngineRefusalForSave(&rr, persisted)
 		if rr.PreEngineRefusal != nil {
 			rr.Error = rr.PreEngineRefusal.Message
@@ -201,6 +209,7 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 	rr.SpentToolApprovals = nil
 	rr.UnresolvedToolApproval = ""
 	rr.ToolApprovalClaim = nil
+	rr.ResumePauseHandoff = nil
 	rr.PreEngineRefusal = nil
 	rr.OutcomeSeq = 0
 	rr.ContinuationState = ""
@@ -460,36 +469,78 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 // separate read-modify-write.
 func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (bool, error) {
 	if len(expectedFrom) == 0 {
-		// A CAS with no expected set is a bug at the caller (a derived
-		// slice gone empty) — refuse loudly instead of silently
-		// matching nothing (while the Mongo twin would write
-		// unconditionally).
 		return false, fmt.Errorf("store: update status if %s: empty expectedFrom", id)
+	}
+	return s.UpdateRunOutcome(ctx, id, status, runErr, RunOutcomeMeta{Code: code}, expectedFrom)
+}
+
+var _ CodemodeQuotaResumeClaimer = (*FilesystemRunStore)(nil)
+
+// ClaimResumeWithCodemodeQuota implements CodemodeQuotaResumeClaimer.
+func (s *FilesystemRunStore) ClaimResumeWithCodemodeQuota(ctx context.Context, id string, claim CodemodeQuotaResumeClaim, quota CodemodeScratchLimits) (*scripthost.Limits, error) {
+	if err := claim.Validate(quota); err != nil {
+		return nil, fmt.Errorf("store: claim resume with codemode quota %s: %w", id, err)
+	}
+	execution, fenced := ResumeExecutionClaimFromContext(ctx)
+	if fenced {
+		if err := execution.Validate(); err != nil {
+			return nil, fmt.Errorf("store: claim resume with codemode quota %s: %w", id, err)
+		}
 	}
 	r, unlock, err := s.lockExistingRunMetadata(ctx, id)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer unlock()
-	matched := false
-	for _, want := range expectedFrom {
-		if r.Status == want {
-			matched = true
-			break
+	if r.Status != claim.ExpectedStatus {
+		return nil, nil
+	}
+	if (fenced || claim.ExpectedStatus != RunStatusQueued) && r.CASVersion != claim.ExpectedVersion {
+		return nil, nil
+	}
+	if fenced && r.ExecutionEpoch != execution.ExpectedEpoch {
+		return nil, nil
+	}
+	if !MatchesExactQueuedAt(r.QueuedAt, claim.QueuedAt) {
+		return nil, nil
+	}
+	if quota == (CodemodeScratchLimits{}) {
+		if !MatchesExactQueuedAt(r.CodemodeQuotaClaimedAt, claim.QueuedAt) || r.CodemodeBoundsOverride == nil {
+			return nil, nil
+		}
+	} else {
+		if !claim.QueuedAt.IsZero() {
+			r.CodemodeQuotaClaimedAt = &claim.QueuedAt
+		}
+		if r.CodemodeBoundsOverride == nil {
+			r.CodemodeBoundsOverride = &scripthost.Limits{}
+		}
+		if quota.Entries != 0 {
+			r.CodemodeBoundsOverride.StoreEntries = quota.Entries
+		}
+		if quota.Bytes != 0 {
+			r.CodemodeBoundsOverride.StoreBytes = quota.Bytes
 		}
 	}
-	if !matched {
-		return false, nil
+	if claim.PauseHandoff != nil {
+		r.ResumePauseHandoff = claim.PauseHandoff
 	}
-	// A cancel cannot prove that an undecided command stopped. Keep its
-	// failure and checkpoint atomically, including when the caller read running.
-	if status == RunStatusCancelled && r.FailureCode == FailureAmbiguousEffect {
-		return false, nil
+	transitionRunStatus(r, RunStatusRunning, "", RunOutcomeMeta{})
+	var expectedEpoch *string
+	if fenced {
+		expectedEpoch = &execution.ExpectedEpoch
 	}
-	if err := s.applyStatusTransition(ctx, r, status, runErr, code); err != nil {
-		return false, err
+	if err := s.writeRunLockedWithNextEpoch(ctx, r, false, expectedEpoch, execution.NextEpoch); err != nil {
+		if errors.Is(err, ErrRunConflict) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return true, nil
+	return r.CodemodeBoundsOverride, nil
+}
+
+func newerQueuedAttempt(r *Run, publishedAt time.Time) bool {
+	return !publishedAt.IsZero() && r.QueuedAt != nil && r.QueuedAt.After(publishedAt)
 }
 
 // mergeClaimable reports whether a run in status cur (with claim time
@@ -609,7 +660,7 @@ func (s *FilesystemRunStore) updateRunOutcome(ctx context.Context, id string, st
 		return false, err
 	}
 	defer unlock()
-	if expected != nil && !expected.Matches(r) {
+	if (expected != nil && !expected.Matches(r)) || !MatchesExactQueuedAt(r.QueuedAt, meta.ExactQueuedAt) {
 		return false, nil
 	}
 	if len(expectedFrom) > 0 {
@@ -729,6 +780,9 @@ func (s *FilesystemRunStore) RevertQueuedFlip(ctx context.Context, id string, fl
 	}
 	prior := flip.Prior
 	r.Status = prior.Status
+	if !prior.Status.CarriesResumePauseHandoff() {
+		r.ResumePauseHandoff = nil
+	}
 	r.PreEngineRefusal = nil
 	r.QueuedAt = cloneTimePtr(prior.QueuedAt)
 	r.Error = prior.Error
@@ -781,7 +835,7 @@ func (s *FilesystemRunStore) transitionQueuedAttempt(ctx context.Context, id str
 		return false, err
 	}
 	defer unlock()
-	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
+	if r.Status != RunStatusQueued || !MatchesExactQueuedAt(r.QueuedAt, meta.ExactQueuedAt) || (meta.ExactQueuedAt.IsZero() && newerQueuedAttempt(r, publishedAt)) {
 		return false, nil
 	}
 	if err := s.applyStatusTransitionOutcome(ctx, r, to, runErr, meta); err != nil {
@@ -849,6 +903,9 @@ func transitionRunStatus(r *Run, status RunStatus, runErr string, meta RunOutcom
 	// writer goes through, keeping the rest of the retry bookkeeping.
 	if meta.Continuation == ContinuationFinal && r.RetryState != nil {
 		r.RetryState.RetryAfter = nil
+	}
+	if !status.CarriesResumePauseHandoff() {
+		r.ResumePauseHandoff = nil
 	}
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
@@ -995,6 +1052,7 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
 	r.ToolApprovalClaim = nil
+	r.ResumePauseHandoff = nil
 	r.PreEngineRefusal = nil
 	r.AwaitAnswersWaits = nil
 	// A fresh exact pause re-arms the approval cycle: its own claim/spend
@@ -1570,6 +1628,12 @@ func (s *FilesystemRunStore) writeRunWithExpectedEpoch(r *Run, acquire bool, exp
 
 // Caller holds s.mu and the stable run lock. This is the single CAS/epoch tail.
 func (s *FilesystemRunStore) writeRunLockedContext(ctx context.Context, r *Run, acquire bool, expectedEpoch *string) error {
+	return s.writeRunLockedWithNextEpoch(ctx, r, acquire, expectedEpoch, "")
+}
+
+// Only an authority acquisition may supply a next epoch. Ordinary writers
+// derive the epoch exclusively from the persisted document.
+func (s *FilesystemRunStore) writeRunLockedWithNextEpoch(ctx context.Context, r *Run, acquire bool, expectedEpoch *string, nextEpoch string) error {
 	if err := s.guardNotDeleted(r.ID); err != nil {
 		return err
 	}
@@ -1603,7 +1667,9 @@ func (s *FilesystemRunStore) writeRunLockedContext(ctx context.Context, r *Run, 
 	next.ExecutionEpoch = NewExecutionEpoch()
 	if current != nil {
 		next.ExecutionEpoch = current.ExecutionEpoch
-		if acquire || current.Status != next.Status || next.Status == RunStatusQueued && !sameExecutionTime(current.QueuedAt, next.QueuedAt) {
+		if nextEpoch != "" {
+			next.ExecutionEpoch = nextEpoch
+		} else if acquire || current.Status != next.Status || next.Status == RunStatusQueued && !sameExecutionTime(current.QueuedAt, next.QueuedAt) {
 			next.ExecutionEpoch = NewExecutionEpoch()
 		}
 	}

@@ -185,6 +185,9 @@ type RemoteRunsLaunchOptions struct {
 }
 
 func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts RemoteRunsLaunchOptions) error {
+	if field := ir.CodemodeBoundsNegativeField(opts.CodemodeBounds); field != "" {
+		return fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
+	}
 	if opts.FilePath == "" && opts.BotID == "" {
 		return fmt.Errorf("a workflow file or --bot <catalog id> is required")
 	}
@@ -262,6 +265,12 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		}
 		if b.ToolResultBytes > 0 {
 			body["tool_result_bytes"] = b.ToolResultBytes
+		}
+		if b.StoreEntries > 0 {
+			body["store_entries"] = b.StoreEntries
+		}
+		if b.StoreBytes > 0 {
+			body["store_bytes"] = b.StoreBytes
 		}
 		if len(body) > 0 {
 			req["codemode_bounds"] = body
@@ -911,8 +920,10 @@ type RemoteRunsResumeOptions struct {
 	Force       bool
 	// AcceptScratchLoss sends the consent to resume although the run's
 	// scratch does not travel; Force does not give it.
-	AcceptScratchLoss bool
-	Timeout           string
+	AcceptScratchLoss    bool
+	Timeout              string
+	CodemodeStoreEntries int64
+	CodemodeStoreBytes   int64
 	// Budget overrides: non-zero fields beat the run doc's persisted
 	// launch ask on THIS resume — the "raise the cap + resume"
 	// recovery the local CLI has (`iterion resume --max-*`), extended
@@ -954,6 +965,22 @@ func RemoteRunsResume(ctx context.Context, c *RemoteClient, p *Printer, id strin
 	if opts.Timeout != "" {
 		req["timeout"] = opts.Timeout
 	}
+	if field := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
+		StoreEntries: opts.CodemodeStoreEntries, StoreBytes: opts.CodemodeStoreBytes,
+	}); field != "" {
+		return fmt.Errorf("codemode_store.%s: quota must be non-negative", field)
+	}
+	storeQuota := map[string]int64{}
+	if opts.CodemodeStoreEntries > 0 {
+		storeQuota["store_entries"] = opts.CodemodeStoreEntries
+	}
+	if opts.CodemodeStoreBytes > 0 {
+		storeQuota["store_bytes"] = opts.CodemodeStoreBytes
+	}
+	if len(storeQuota) != 0 {
+		req["codemode_store"] = storeQuota
+	}
+
 	if budget := resumeBudgetBody(opts); budget != nil {
 		// E3 (#652 review round 1): validate client-side so a typo
 		// (--max-duration "4 hours") fails immediately with an

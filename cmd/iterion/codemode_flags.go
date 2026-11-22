@@ -26,6 +26,8 @@ type codemodeFlagSet struct {
 	toolCalls           int64
 	concurrentToolCalls int64
 	toolResultBytes     int64
+	storeEntries        int64
+	storeBytes          int64
 }
 
 func (c *codemodeFlagSet) register(f *pflag.FlagSet) {
@@ -38,6 +40,12 @@ func (c *codemodeFlagSet) register(f *pflag.FlagSet) {
 	f.Int64Var(&c.toolCalls, "codemode-tool-calls", 0, "Raise the codemode tool-call budget for this run (0 = inherit). This is the bound the model is told to ask the operator to raise when a script spends it.")
 	f.Int64Var(&c.concurrentToolCalls, "codemode-concurrent-tool-calls", 0, "Override the number of codemode tool calls in flight per program (0 = inherit; default 1, platform ceiling 4)")
 	f.Int64Var(&c.toolResultBytes, "codemode-tool-result-bytes", 0, "Raise the per-tool-result bound handed to codemode programs for this run, in bytes (0 = inherit)")
+	c.registerStore(f)
+}
+
+func (c *codemodeFlagSet) registerStore(f *pflag.FlagSet) {
+	f.Int64Var(&c.storeEntries, "codemode-store-entries", 0, "Override the codemode bank key quota for this run (0 = inherit; default 32, ceiling 64)")
+	f.Int64Var(&c.storeBytes, "codemode-store-bytes", 0, "Override the codemode bank UTF-8 key and JSON byte quota for this run (0 = inherit; default 131072, ceiling 524288)")
 }
 
 // negativeField names the first flag set below zero, or "". A negative bound
@@ -55,6 +63,8 @@ func (c *codemodeFlagSet) negativeField() string {
 		{"--codemode-script-bytes", c.scriptBytes},
 		{"--codemode-result-bytes", c.resultBytes},
 		{"--codemode-tool-result-bytes", c.toolResultBytes},
+		{"--codemode-store-entries", c.storeEntries},
+		{"--codemode-store-bytes", c.storeBytes},
 	} {
 		if f.v < 0 {
 			return f.name
@@ -74,7 +84,8 @@ func (c *codemodeFlagSet) negativeField() string {
 // declaration.
 func (c *codemodeFlagSet) bounds() *ir.CodemodeBounds {
 	if c.wall <= 0 && c.cpu <= 0 && c.memory <= 0 && c.scriptBytes <= 0 &&
-		c.resultBytes <= 0 && c.toolCalls <= 0 && c.concurrentToolCalls <= 0 && c.toolResultBytes <= 0 {
+		c.resultBytes <= 0 && c.toolCalls <= 0 && c.concurrentToolCalls <= 0 && c.toolResultBytes <= 0 &&
+		c.storeEntries <= 0 && c.storeBytes <= 0 {
 		return nil
 	}
 	return &ir.CodemodeBounds{
@@ -86,5 +97,7 @@ func (c *codemodeFlagSet) bounds() *ir.CodemodeBounds {
 		ToolCalls:           c.toolCalls,
 		ConcurrentToolCalls: c.concurrentToolCalls,
 		ToolResultBytes:     c.toolResultBytes,
+		StoreEntries:        c.storeEntries,
+		StoreBytes:          c.storeBytes,
 	}
 }

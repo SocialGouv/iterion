@@ -41,8 +41,10 @@ type PreEngineRefusalRequest struct {
 	Message     string
 	Hint        string
 	PublishedAt time.Time
-	Disposition PreEngineDisposition
-	FinalStatus RunStatus
+	// ExactQueuedAt replaces the historical publication-time fence on quota patches.
+	ExactQueuedAt time.Time
+	Disposition   PreEngineDisposition
+	FinalStatus   RunStatus
 	// LeaveQueued lets the existing refused-resume releaser restore the pause.
 	LeaveQueued bool
 }

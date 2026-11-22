@@ -20,6 +20,8 @@ const limits: CodemodeLimits = {
     script_bytes: 262144,
     result_bytes: 1048576,
     tool_result_bytes: 65536,
+    store_entries: 32,
+    store_bytes: 131072,
   },
   ceiling: {
     tool_calls: 4096,
@@ -30,6 +32,8 @@ const limits: CodemodeLimits = {
     script_bytes: 4194304,
     result_bytes: 8388608,
     tool_result_bytes: 1048576,
+    store_entries: 64,
+    store_bytes: 524288,
   },
   memory_floor: 67108864,
 };
@@ -62,6 +66,8 @@ test("placeholders come from the served defaults, never from a studio table", ()
   expect(screen.getByLabelText(/^tool_calls/i).getAttribute("placeholder")).toBe("64");
   expect(screen.getByLabelText(/^concurrent_tool_calls/i).getAttribute("placeholder")).toBe("inherits");
   expect(screen.getByText("Platform default: 1 (serial).")).toBeTruthy();
+  expect(screen.getByLabelText(/^store_entries/i).getAttribute("placeholder")).toBe("32");
+  expect(screen.getByLabelText(/^store_bytes/i).getAttribute("placeholder")).toBe("131072");
   expect(screen.getByLabelText(/^wall/i).getAttribute("placeholder")).toBe("30s");
   expect(screen.getByLabelText(/^memory/i).getAttribute("placeholder")).toBe(
     "268435456",

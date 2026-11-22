@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -73,6 +74,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("QueuedResumeRelease", func(t *testing.T) { testQueuedResumeRelease(t, factory(t)) })
 	t.Run("QueuedAttemptClaim", func(t *testing.T) { testQueuedAttemptClaim(t, factory(t)) })
+	t.Run("CodemodeQuotaResumeClaim", func(t *testing.T) { testCodemodeQuotaResumeClaim(t, factory(t)) })
+	t.Run("ResumePauseHandoff", func(t *testing.T) { testResumePauseHandoff(t, factory(t)) })
 	t.Run("QueuedFlipRevert", func(t *testing.T) { testQueuedFlipRevert(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("MergeExitExpectedBirth", func(t *testing.T) { testMergeExitExpectedBirth(t, factory(t)) })
@@ -801,6 +804,160 @@ func testQueuedAttemptClaim(t *testing.T, s store.RunStore) {
 	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
 	if err != nil || changed {
 		t.Fatalf("a second claim of the same attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+}
+
+func testCodemodeQuotaResumeClaim(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	claimer := store.AsCodemodeQuotaResumeClaimer(s)
+	if claimer == nil {
+		t.Fatal("backend does not implement CodemodeQuotaResumeClaimer")
+	}
+	const id = "run-codemode-quota-claim"
+	r, err := s.CreateRun(ctx, id, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := scripthost.Limits{StoreEntries: 3, StoreBytes: 60, ToolCalls: 17}
+	r.CodemodeBoundsOverride = &prior
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	const pointer = "pause-1"
+	if err := s.PauseRun(ctx, id, &store.Checkpoint{NodeID: "gate", InteractionID: pointer}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, id, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queue pause: changed=%v err=%v", ok, err)
+	}
+	before, err := s.LoadRun(ctx, id)
+	if err != nil || before.QueuedAt == nil {
+		t.Fatalf("read queued attempt: run=%+v err=%v", before, err)
+	}
+	claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: *before.QueuedAt}
+	quota := store.CodemodeScratchLimits{Bytes: 100}
+	for _, marker := range []time.Time{before.QueuedAt.Add(-time.Millisecond), before.QueuedAt.Add(time.Millisecond)} {
+		stale := claim
+		stale.QueuedAt = marker
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, stale, quota); err != nil || got != nil {
+			t.Fatalf("different marker %s: bounds=%+v err=%v", marker, got, err)
+		}
+	}
+	for _, bad := range []store.CodemodeScratchLimits{{}, {Bytes: -1}, {Entries: -1, Bytes: 100}} {
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, bad); err == nil || got != nil {
+			t.Fatalf("invalid quota %+v: bounds=%+v err=%v", bad, got, err)
+		}
+	}
+	for _, marker := range []time.Time{{}, before.QueuedAt.Add(time.Nanosecond)} {
+		invalid := claim
+		invalid.QueuedAt = marker
+		if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, invalid, quota); err == nil || got != nil {
+			t.Fatalf("invalid exact marker %s: bounds=%+v err=%v", marker, got, err)
+		}
+	}
+	staleMeta := store.RunOutcomeMeta{Code: store.FailureDLQParked, ExactQueuedAt: before.QueuedAt.Add(-time.Millisecond)}
+	published := before.QueuedAt.Add(time.Second)
+	if changed, err := s.UpdateRunOutcome(ctx, id, store.RunStatusFailedResumable, "stale DLQ", staleMeta, []store.RunStatus{store.RunStatusQueued}); err != nil || changed {
+		t.Fatalf("DLQ verdict for different marker: changed=%v err=%v", changed, err)
+	}
+	if rel := store.AsQueuedResumeReleaser(s); rel != nil {
+		if changed, err := rel.ReleaseQueuedRunIfAttempt(ctx, id, store.RunStatusPausedWaitingHuman, "stale refusal", published, staleMeta); err != nil || changed {
+			t.Fatalf("release for different marker: changed=%v err=%v", changed, err)
+		}
+	}
+	if recorder, ok := s.(store.PreEngineRefusalRecorder); ok {
+		if result, err := recorder.RecordPreEngineRefusal(ctx, id, store.PreEngineRefusalRequest{
+			Phase: "usage_cap", Code: store.FailureUsageLimitBlocked, Message: "stale refusal",
+			Disposition: store.PreEngineUsagePark, PublishedAt: published, ExactQueuedAt: staleMeta.ExactQueuedAt,
+		}); err != nil || result.Changed {
+			t.Fatalf("pre-engine refusal for different marker: %+v err=%v", result, err)
+		}
+	}
+	queued, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Status != store.RunStatusQueued || queued.Checkpoint == nil || queued.Checkpoint.InteractionID != pointer || queued.CASVersion != before.CASVersion ||
+		queued.CodemodeBoundsOverride == nil || *queued.CodemodeBoundsOverride != prior {
+		t.Fatalf("losing delivery changed queued run: status=%s checkpoint=%+v version=%d bounds=%+v", queued.Status, queued.Checkpoint, queued.CASVersion, queued.CodemodeBoundsOverride)
+	}
+	want := prior
+	want.StoreBytes = 100
+	got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, quota)
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("winning claim bounds=%+v, want %+v; err=%v", got, want, err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, claim, store.CodemodeScratchLimits{Entries: 99}); err != nil || got != nil {
+		t.Fatalf("duplicate delivery: bounds=%+v err=%v", got, err)
+	}
+	claimed, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Status != store.RunStatusRunning || claimed.Checkpoint == nil || claimed.Checkpoint.NodeID != "gate" || claimed.Checkpoint.InteractionID != "" ||
+		claimed.CASVersion != before.CASVersion+1 || claimed.CodemodeQuotaClaimedAt == nil || !claimed.CodemodeQuotaClaimedAt.Equal(claim.QueuedAt) || claimed.CodemodeBoundsOverride == nil || *claimed.CodemodeBoundsOverride != want {
+		t.Fatalf("claim was not one durable transition: status=%s checkpoint=%+v version=%d bounds=%+v", claimed.Status, claimed.Checkpoint, claimed.CASVersion, claimed.CodemodeBoundsOverride)
+	}
+	if err := s.UpdateRunStatus(ctx, id, store.RunStatusFailedResumable, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := store.CodemodeQuotaResumeClaim{ExpectedStatus: parked.Status, ExpectedVersion: parked.CASVersion}
+	if changed, err := s.UpdateRunStatusIf(ctx, id, store.RunStatusQueued, "", []store.RunStatus{observed.ExpectedStatus}); err != nil || !changed {
+		t.Fatalf("concurrently queue direct resume: changed=%v err=%v", changed, err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, quota); err != nil || got != nil {
+		t.Fatalf("direct claim crossed into queued: bounds=%+v err=%v", got, err)
+	}
+	if err := s.UpdateRunStatus(ctx, id, store.RunStatusFailedResumable, "ABA"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, quota); err != nil || got != nil {
+		t.Fatalf("direct claim crossed a same-status ABA: bounds=%+v err=%v", got, err)
+	}
+	wrongReplay := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusFailedResumable, QueuedAt: claim.QueuedAt}
+	afterABA, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongReplay.ExpectedVersion = afterABA.CASVersion
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, wrongReplay, store.CodemodeScratchLimits{}); err != nil || got != nil {
+		t.Fatalf("spent retry for previous exact marker: bounds=%+v err=%v", got, err)
+	}
+	if afterABA.QueuedAt == nil {
+		t.Fatal("ABA attempt has no marker")
+	}
+	wrongReplay.QueuedAt = *afterABA.QueuedAt
+	if got, err := claimer.ClaimResumeWithCodemodeQuota(ctx, id, wrongReplay, store.CodemodeScratchLimits{}); err != nil || got != nil {
+		t.Fatalf("retry for matching but unclaimed marker: bounds=%+v err=%v", got, err)
+	}
+	parked, err = s.LoadRun(ctx, id)
+	if err != nil || parked.CodemodeBoundsOverride == nil || *parked.CodemodeBoundsOverride != want || parked.Error != "ABA" {
+		t.Fatalf("stale claims changed parked run: run=%+v err=%v", parked, err)
+	}
+	observed.ExpectedVersion = parked.CASVersion
+	want.StoreEntries = 4
+	got, err = claimer.ClaimResumeWithCodemodeQuota(ctx, id, observed, store.CodemodeScratchLimits{Entries: 4})
+	if err != nil || got == nil || *got != want {
+		t.Fatalf("direct claim of observed row: bounds=%+v, want %+v; err=%v", got, want, err)
+	}
+	const withoutPrior = "run-codemode-quota-no-prior"
+	if _, err := s.CreateRun(ctx, withoutPrior, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(ctx, withoutPrior, store.RunStatusFailedResumable, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	withoutBounds, err := s.LoadRun(ctx, withoutPrior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = claimer.ClaimResumeWithCodemodeQuota(ctx, withoutPrior, store.CodemodeQuotaResumeClaim{ExpectedStatus: withoutBounds.Status, ExpectedVersion: withoutBounds.CASVersion}, quota)
+	if err != nil || got == nil || *got != (scripthost.Limits{StoreBytes: 100}) {
+		t.Fatalf("claim without prior bounds: bounds=%+v err=%v", got, err)
 	}
 }
 

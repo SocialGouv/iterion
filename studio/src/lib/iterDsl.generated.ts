@@ -254,6 +254,8 @@ export const iterDslPropertiesByKind = {
     "mode",
     "result_bytes",
     "script_bytes",
+    "store_bytes",
+    "store_entries",
     "tool_calls",
     "tool_result_bytes",
     "wall"

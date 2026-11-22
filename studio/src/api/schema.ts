@@ -7535,6 +7535,7 @@ export interface components {
             parallel?: components["schemas"]["ParallelCheckpoint"];
             recovery_code?: string;
             recovery_pause?: boolean;
+            resume_pause_cost_readings?: components["schemas"]["ResumePauseCostReading"][];
             round_robin_counters?: {
                 [key: string]: number;
             };
@@ -7555,6 +7556,8 @@ export interface components {
             memory?: number;
             result_bytes?: number;
             script_bytes?: number;
+            store_bytes?: number;
+            store_entries?: number;
             tool_calls?: number;
             tool_result_bytes?: number;
             wall?: string;
@@ -8340,6 +8343,11 @@ export interface components {
             backend: string;
             fingerprint?: string;
             session_id: string;
+        };
+        ResumePauseCostReading: {
+            backend: string;
+            session: string;
+            usd: number;
         };
         RoutingPolicy: {
             allowed_actions?: string[];
@@ -9298,6 +9306,13 @@ export interface components {
             sync_issues_enabled: boolean;
             web_url?: string;
         };
+        launchBudgetSpec: {
+            max_cost_usd?: number;
+            max_duration?: string;
+            max_iterations?: number;
+            max_parallel_branches?: number;
+            max_tokens?: number;
+        };
         legalDocumentView: {
             accessibility: components["schemas"]["Accessibility"];
             contact_email?: string;
@@ -9536,6 +9551,8 @@ export interface components {
             memory: number;
             result_bytes: number;
             script_bytes: number;
+            store_bytes: number;
+            store_entries: number;
             tool_calls: number;
             tool_result_bytes: number;
             wall: string;
@@ -9669,6 +9686,23 @@ export interface components {
             invitation?: string;
             name?: string;
             password: string;
+        };
+        resumeCodemodeStoreRequest: {
+            store_bytes?: number;
+            store_entries?: number;
+        };
+        resumeRunRequest: {
+            accept_scratch_loss?: boolean;
+            answers?: {
+                [key: string]: unknown;
+            };
+            attachments?: string[];
+            budget?: components["schemas"]["launchBudgetSpec"];
+            codemode_store?: components["schemas"]["resumeCodemodeStoreRequest"];
+            file_path?: string;
+            force?: boolean;
+            source?: string;
+            timeout?: string;
         };
         routingPolicyView: {
             origin: string;
@@ -16542,7 +16576,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["resumeRunRequest"];
+            };
+        };
         responses: {
             /** @description Response */
             default: {

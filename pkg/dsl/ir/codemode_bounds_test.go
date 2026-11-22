@@ -163,6 +163,16 @@ func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
 		// that comes back right cannot have come back right by accident.
 		node.Field(i).SetInt(7)
 		asked := node.Interface().(scripthost.Limits)
+		if name == "StoreEntries" || name == "StoreBytes" {
+			entries, bytes := ResolveCodemodeStoreLimits(nil, &asked)
+			if (name == "StoreEntries" && entries != 7) || (name == "StoreBytes" && bytes != 7) {
+				t.Errorf("%s: declared 7, bank resolved entries=%d bytes=%d", name, entries, bytes)
+			}
+			if got := ResolveCodemodeBounds(nil, nil, &asked); got != nil && (got.StoreEntries != 0 || got.StoreBytes != 0) {
+				t.Errorf("%s: run bank quotas leaked into the per-program resolver: %+v", name, got)
+			}
+			continue
+		}
 		got := ResolveCodemodeBounds(nil, &asked, nil)
 		if got == nil {
 			t.Fatalf("%s: resolution dropped a declared bound set entirely", name)

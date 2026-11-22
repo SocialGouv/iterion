@@ -547,6 +547,56 @@ func runtimeCodeOf(err error) runtime.ErrorCode {
 // launched by a surface that does not resolve policies gets.
 func runRetryPolicy(r *store.Run) retrypolicy.Policy { return retrypolicy.ForRun(r) }
 
+// unappliedQuotaUsageRefusal is a pre-claim usage refusal, not a retryable
+// provider refusal: the latter cannot carry this publication's quota intent.
+type unappliedQuotaUsageRefusal struct{ reason string }
+
+func (e *unappliedQuotaUsageRefusal) Error() string {
+	return fmt.Sprintf("codemode quota change was not applied: %s; submit a new resume with the requested quota when the usage limit allows it", e.reason)
+}
+
+// finishUnappliedQuotaUsageRefusal releases only the attempt that proposed the
+// quota. Ack only after the refusal is durable (or the attempt is superseded).
+func (r *Runner) finishUnappliedQuotaUsageRefusal(ctx context.Context, msg *queue.RunMessage, refusal *unappliedQuotaUsageRefusal, delivery jsDelivery, logger *iterlog.Logger) (status string, interim bool) {
+	marker := codemodeQuotaQueuedAt(msg)
+	published, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
+	if rel := store.AsQueuedResumeReleaser(r.cfg.Store); err == nil && !published.IsZero() && !marker.IsZero() && rel != nil {
+		to := msg.Resume.PriorStatus
+		if !to.CanOperatorResume() {
+			to = store.RunStatusFailedResumable
+		}
+		code := store.FailureResumeInvalid
+		if to == store.RunStatusCancelled {
+			code = store.FailureCancelled
+		}
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+		defer cancel()
+		idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+		changed, releaseErr := rel.ReleaseQueuedRunIfAttempt(idCtx, msg.RunID, to, refusal.Error(), published,
+			store.RunOutcomeMeta{Code: code, Continuation: store.ContinuationFinal, ExactQueuedAt: marker})
+		err = releaseErr
+		if err == nil && changed {
+			r.recordRetrySkipped(msg, code, refusal.Error(), &runtime.RuntimeError{Hint: "submit a new resume with the requested quota when the usage limit allows it"}, to)
+			ackTerminal(logger, delivery, "ack-unapplied-quota-usage-refusal", msg.RunID)
+			return "quota_not_applied", false
+		}
+	} else if err == nil {
+		err = errors.New("missing queued release capability or attempt identity")
+	}
+	// An exact CAS miss can mean another attempt won while admission was
+	// reading the meter. This delivery must never release or park that run.
+	if err == nil {
+		superseded := fmt.Errorf("%w: run %s: usage refusal lost the exact quota attempt", runtime.ErrResumeSuperseded, msg.RunID)
+		out := r.lastDeliveryDisposition(r.supersededAfterEngine(msg, superseded), delivery.NumDelivered())
+		logAt(logger, out.level, out.logFmt, out.logArgs...)
+		dispatchPrecondition(logger, delivery, out, msg.RunID)
+		return out.finalStatus, isNakAction(out.action)
+	}
+	logger.Warn("runner: run %s: could not release the unapplied quota attempt: %v", msg.RunID, err)
+	nakTerminal(logger, delivery, "nak-unapplied-quota-release-failed", msg.RunID)
+	return "quota_refusal_release_failed", delivery.NumDelivered() < r.maxDeliver()
+}
+
 // parkUsageLimitRetry arms a durable retry for a usage-window failure and
 // acks the delivery. Reports handled=false when this is not that case, or
 // when the intent could NOT be persisted — the caller then falls through to

@@ -57,6 +57,8 @@ describe("buildCodemodePayload", () => {
       scriptBytes: "524288",
       resultBytes: "2097152",
       toolResultBytes: "131072",
+      storeEntries: "48",
+      storeBytes: "262144",
     });
     expect(payload).toEqual({
       codemode: "on",
@@ -69,6 +71,8 @@ describe("buildCodemodePayload", () => {
         script_bytes: 524288,
         result_bytes: 2097152,
         tool_result_bytes: 131072,
+        store_entries: 48,
+        store_bytes: 262144,
       },
     });
   });
@@ -242,5 +246,24 @@ describe("unreadableFields", () => {
     expect(
       unreadableFields({ ...emptyCodemodeFieldValues, wall: "soon", cpu: "5m" }),
     ).toEqual([]);
+  });
+});
+
+describe("codemode store quota payload", () => {
+  test("sends non-zero quotas and warns above the platform ceiling", () => {
+    const fields = {
+      ...emptyCodemodeFieldValues,
+      storeEntries: "65",
+      storeBytes: "262144",
+    };
+    expect(buildCodemodePayload("", fields)).toEqual({
+      codemode_bounds: { store_entries: 65, store_bytes: 262144 },
+    });
+    expect(overCeiling(fields, {
+      default: { store_entries: 32, store_bytes: 131072 },
+      ceiling: { store_entries: 64, store_bytes: 524288 },
+      memory_floor: 67108864,
+    })).toEqual(["store_entries"]);
+    expect(buildCodemodePayload("", { ...fields, storeEntries: "0", storeBytes: "0" })).toEqual({});
   });
 });

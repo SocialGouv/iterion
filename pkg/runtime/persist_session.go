@@ -280,11 +280,28 @@ func (e *Engine) hydratePauseSession(ctx context.Context, rs *runState, nodeInpu
 	}
 }
 
+// commitPersistSlot persists a node's session slot and, when the checkpoint
+// is written here (!deferCheckpoint), reclaims the superseded blobs
+// immediately. With deferCheckpoint the caller owns both: nothing old is
+// deleted here, and a caller committing its own atomic successor checkpoint
+// calls preparePersistSlot directly and runs the returned cleanup once that
+// checkpoint is durable.
 func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.Node, output map[string]any, deferCheckpoint bool) error {
+	cleanup, err := e.preparePersistSlot(ctx, rs, node, output, deferCheckpoint)
+	if err == nil && cleanup != nil && !deferCheckpoint {
+		cleanup()
+	}
+	return err
+}
+
+// preparePersistSlot leaves the old blobs reachable until a caller using an
+// atomic continuation checkpoint has committed it. The returned cleanup must
+// run only after that checkpoint is durable.
+func (e *Engine) preparePersistSlot(ctx context.Context, rs *runState, node ir.Node, output map[string]any, deferCheckpoint bool) (func(), error) {
 	blob := takeSessionStateBlob(output)
 	llm, ok := node.(ir.LLMNode)
 	if !ok || llm.GetSession() != ir.SessionPersist {
-		return nil
+		return nil, nil
 	}
 	sid := stringMap(output[delegate.SessionIDKey])
 	backend := stringMap(output[delegate.BackendNameKey])
@@ -293,6 +310,16 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 	old := rs.nodeSessions[key]
 	pauseRef := rs.pauseSessionRef
 	rs.pauseSessionRef = ""
+	cleanup := func(keep string) func() {
+		return func() {
+			if old.StateRef != "" && old.StateRef != keep {
+				e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
+			}
+			if pauseRef != "" && pauseRef != keep && pauseRef != old.StateRef {
+				e.deleteSessionBlob(ctx, rs.runID, pauseRef)
+			}
+		}
+	}
 
 	if sid != "" && len(blob) == 0 {
 		if packer, ok := e.executor.(sessionPacker); ok {
@@ -312,20 +339,11 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 			e.emitPersistDegraded(rs, node.NodeID(), "no packed CLI session files (sandbox host_state, missing config dir, or packer error)")
 			if !deferCheckpoint {
 				if err := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
-		if deferCheckpoint {
-			return nil
-		}
-		if old.StateRef != "" {
-			e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
-		}
-		if pauseRef != "" {
-			e.deleteSessionBlob(ctx, rs.runID, pauseRef)
-		}
-		return nil
+		return cleanup(""), nil
 	}
 	ref := newSessionRef()
 	if err := e.putSessionBlob(ctx, rs.runID, ref, blob); err != nil {
@@ -334,19 +352,12 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 			e.logger.Warn("persist: put slot: %v", err)
 		}
 		e.emitPersistDegraded(rs, node.NodeID(), "backend session store put failed")
-		if deferCheckpoint {
-			return nil
+		if !deferCheckpoint {
+			if cpErr := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); cpErr != nil {
+				return nil, cpErr
+			}
 		}
-		if cpErr := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); cpErr != nil {
-			return cpErr
-		}
-		if old.StateRef != "" {
-			e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
-		}
-		if pauseRef != "" {
-			e.deleteSessionBlob(ctx, rs.runID, pauseRef)
-		}
-		return nil
+		return cleanup(""), nil
 	}
 	rs.nodeSessions[key] = store.NodeSessionSlot{
 		Backend:     backend,
@@ -354,23 +365,16 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		Fingerprint: fp,
 		StateRef:    ref,
 	}
-	if deferCheckpoint {
-		return nil
-	}
-	cp := buildCheckpoint(rs, node.NodeID())
-	if err := e.store.SaveCheckpoint(ctx, rs.runID, cp); err != nil {
-		if e.logger != nil {
-			e.logger.Error("persist: required checkpoint after slot failed: %v", err)
+	if !deferCheckpoint {
+		cp := buildCheckpoint(rs, node.NodeID())
+		if err := e.store.SaveCheckpoint(ctx, rs.runID, cp); err != nil {
+			if e.logger != nil {
+				e.logger.Error("persist: required checkpoint after slot failed: %v", err)
+			}
+			return nil, e.failRunErrWithCheckpoint(rs, node.NodeID(), fmt.Errorf("persist checkpoint: %w", err))
 		}
-		return e.failRunErrWithCheckpoint(rs, node.NodeID(), fmt.Errorf("persist checkpoint: %w", err))
 	}
-	if old.StateRef != "" && old.StateRef != ref {
-		e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
-	}
-	if pauseRef != "" && pauseRef != ref {
-		e.deleteSessionBlob(ctx, rs.runID, pauseRef)
-	}
-	return nil
+	return cleanup(ref), nil
 }
 
 func (e *Engine) emitPersistDegraded(rs *runState, nodeID, reason string) {

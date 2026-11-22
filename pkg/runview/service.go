@@ -660,6 +660,15 @@ type ResumeSpec struct {
 	Budget *ir.BudgetOverrides
 }
 
+// CodemodeResumeQuota extracts only a resume request's explicit scratch quota
+// dimensions. Call it before merging the request with persisted bounds.
+func CodemodeResumeQuota(bounds *ir.CodemodeBounds) store.CodemodeScratchLimits {
+	if bounds == nil {
+		return store.CodemodeScratchLimits{}
+	}
+	return store.CodemodeScratchLimits{Entries: max(0, bounds.StoreEntries), Bytes: max(0, bounds.StoreBytes)}
+}
+
 // RunBudgetOverrides converts an engine launch override into the persisted
 // raw replay source. It is intentionally distinct from store.RunBudget, which
 // is the effective/display snapshot after workflow and host ceilings resolve.

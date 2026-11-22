@@ -353,9 +353,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// knob failing open, the exact direction the rule exists to reject. A
 	// dropped bounds raise only lands tighter, but the off direction alone
 	// decides the bump. MinSchemaVersion still 27.
-	// v34 adds concurrent_tool_calls to both compiled and launch bounds.
-	if SchemaVersion != 34 {
-		t.Errorf("SchemaVersion = %d, want 34 (bump intentionally)", SchemaVersion)
+	// v35 adds store_entries and store_bytes to compiled workflow and launch bounds.
+	if SchemaVersion != 35 {
+		t.Errorf("SchemaVersion = %d, want 35 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)

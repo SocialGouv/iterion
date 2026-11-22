@@ -883,6 +883,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// declared `on` this backend could not serve before building the task —
 	// so the only question left here is whether the task says so.
 	if task.Codemode {
+		opts.codemodeState = codemodeStateFrom(ctx)
 		if err := installCodemode(&opts, task.CodemodeBounds, func(requested, applied scripthost.Limits) {
 			if b.logger != nil {
 				// Both directions travel this seam (#3290): the ceiling REDUCES
@@ -2016,7 +2017,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// cap the channel's writer refuses it either way; refused HERE the node
 	// fails with the size named and no runner was started, where the same
 	// refusal after the spawn has to kill a process that is already reading.
-	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task, resolution.facts.funds))
+	ioTask := b.runnerIOTask(task, resolution.facts.funds)
+	stateRelay := codemodeStateRelay(ctx, task.Codemode)
+	ioTask.CodemodeState = stateRelay != nil
+	taskEnv, err := delegate.NewTaskEnvelope(ioTask)
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
 	}
@@ -2321,6 +2325,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}()
 
 	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	handler.OnCodemodeState = stateRelay
 	mirror := handler.OnSessionCapture
 	handler.OnSessionCapture = func(snapshot json.RawMessage) {
 		turns.observe(snapshot)
@@ -2412,11 +2417,22 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		}
 	}
 
+	if ioTask.CodemodeState {
+		if err := mux.Send(delegate.Envelope{Type: delegate.EnvelopeCodemodeStateV1}); err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send codemode state capability: %w", err)
+		}
+	}
+
 	// Send the task envelope — built and sized before the spawn. The runner
 	// blocks on its EnvelopeReader.Read() until this arrives.
 	if err := mux.Send(taskEnv); err != nil {
 		_ = cmd.Process.Kill()
 		_ = wait()
+		if ioTask.CodemodeState {
+			return delegate.Result{}, fmt.Errorf("claw backend: send codemode state task envelope (runner must support codemode state v1): %w", err)
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: send task envelope: %w", err)
 	}
 
