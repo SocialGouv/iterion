@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -88,7 +87,7 @@ func TestClawRelay_PersistsNoRelayedPlanInClear(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, newCrossingApprovalState())
 			handler.OnEvent(string(store.EventToolStarted), map[string]any{
 				"tool":        "todo_write",
 				"tool_use_id": "tu_9",
@@ -157,7 +156,7 @@ func TestClawRelay_APlanWritesOwnVocabularyCrossesUntouched(t *testing.T) {
 	  {"id":"t-1","content":"wire the relay","status":"done","priority":"high","activeForm":"wiring the relay"},
 	  {"id":"t-2","content":"ship it","status":"in_progress","priority":"medium"}
 	]}`
-	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}, newCrossingApprovalState())
 	handler.OnEvent(string(store.EventToolStarted), map[string]any{
 		"tool": "todo_write", "tool_use_id": "tu_9", "iteration": 1,
 		"input": json.RawMessage(input), "input_size": len(input),

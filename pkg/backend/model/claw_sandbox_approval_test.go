@@ -91,7 +91,7 @@ func TestServePermissionAskDecisionTable(t *testing.T) {
 				})
 			}
 			var executed bool
-			got, err := b.servePermissionAsk(askCtx, approvalTask(t, tc.mode, tc.allowRule), approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, &atomic.Bool{}, approvalAsk(toolName, tc.input))
+			got, err := b.servePermissionAsk(askCtx, approvalTask(t, tc.mode, tc.allowRule), approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, newCrossingApprovalState(), approvalAsk(toolName, tc.input))
 			if err != nil {
 				t.Fatalf("handler error: %v", err)
 			}
@@ -124,7 +124,7 @@ func TestServePermissionAskAllowCarriesTheRealResult(t *testing.T) {
 	}
 	pol, _ := permission.NewPolicy(permission.ModeDeny, []string{"mcp_srv_greet"}, nil, nil)
 	task := delegate.Task{NodeID: "node-1", Model: "m", Permission: pol}
-	got, err := b.servePermissionAsk(ctx, task, td, []string{"mcp_srv_greet"}, &atomic.Bool{}, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	got, err := b.servePermissionAsk(ctx, task, td, []string{"mcp_srv_greet"}, newCrossingApprovalState(), approvalAsk("mcp_srv_greet", `{"x":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,31 +168,105 @@ func TestServePermissionAskMarksSpendOnTheCrossingFlag(t *testing.T) {
 	t.Parallel()
 	ctx := WithRunID(WithNodeID(context.Background(), "node-1"), "run-1")
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
-	var spent atomic.Bool
+	crossing := newCrossingApprovalState()
 	pol, _ := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
 	task := delegate.Task{NodeID: "node-1", Model: "m", Permission: pol}
 	claimCtx := WithExactClawApproval(ctx, "run-1", "node-1", "mcp_srv_greet", json.RawMessage(`{"x":1}`), func(context.Context) (bool, error) {
 		return true, nil
 	})
 	var executed bool
-	dec, err := b.servePermissionAsk(claimCtx, task, approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, &spent, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	dec, err := b.servePermissionAsk(claimCtx, task, approvalHandlerTools(&executed), []string{"mcp_srv_greet"}, crossing, approvalAsk("mcp_srv_greet", `{"x":1}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	if dec.Decision != delegate.PermissionDecisionAllow || !executed || !spent.Load() {
-		t.Fatalf("won spend: decision=%s executed=%v spent=%v, want allow/true/true", dec.Decision, executed, spent.Load())
+	if dec.Decision != delegate.PermissionDecisionAllow || !executed || !crossing.spent.Load() {
+		t.Fatalf("won spend: decision=%s executed=%v spent=%v, want allow/true/true", dec.Decision, executed, crossing.spent.Load())
 	}
 	// An allow-rule execution consumes nothing: the flag stays down.
-	var spent2 atomic.Bool
+	crossing2 := newCrossingApprovalState()
 	polAllow, _ := permission.NewPolicy(permission.ModeDeny, []string{"mcp_srv_greet"}, nil, nil)
 	taskAllow := delegate.Task{NodeID: "node-1", Model: "m", Permission: polAllow}
 	var executed2 bool
-	dec2, err := b.servePermissionAsk(ctx, taskAllow, approvalHandlerTools(&executed2), []string{"mcp_srv_greet"}, &spent2, approvalAsk("mcp_srv_greet", `{"x":1}`))
+	dec2, err := b.servePermissionAsk(ctx, taskAllow, approvalHandlerTools(&executed2), []string{"mcp_srv_greet"}, crossing2, approvalAsk("mcp_srv_greet", `{"x":1}`))
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	if dec2.Decision != delegate.PermissionDecisionAllow || !executed2 || spent2.Load() {
-		t.Fatalf("allow-rule: decision=%s executed=%v spent=%v, want allow/true/false - executes without consuming", dec2.Decision, executed2, spent2.Load())
+	if dec2.Decision != delegate.PermissionDecisionAllow || !executed2 || crossing2.spent.Load() {
+		t.Fatalf("allow-rule: decision=%s executed=%v spent=%v, want allow/true/false - executes without consuming", dec2.Decision, executed2, crossing2.spent.Load())
 	}
-	_ = executed
+}
+
+// TestResumeAnswerToolResultChannelLive: on the approval channel runner
+// side an allow-once answer carries the re-issue instruction - the model
+// must re-issue the call so the launcher can spend the held claim on it.
+// The legacy no-channel split stands: allow-always re-issues under the
+// grant, anything else is a denial.
+func TestResumeAnswerToolResultChannelLive(t *testing.T) {
+	t.Parallel()
+	text, isErr := resumeAnswerToolResult("allow", true)
+	if isErr || !strings.Contains(text, "Re-issue the exact same tool call") {
+		t.Fatalf("channel-live allow-once must instruct the re-issue, got isErr=%v %q", isErr, text)
+	}
+	text, isErr = resumeAnswerToolResult("allow", false)
+	if !isErr || !strings.Contains(text, "denied") {
+		t.Fatalf("no-channel allow-once stays the legacy denial, got isErr=%v %q", isErr, text)
+	}
+	text, isErr = resumeAnswerToolResult("allow always", false)
+	if isErr || !strings.Contains(text, "Re-issue") {
+		t.Fatalf("allow-always re-issues under the grant, got isErr=%v %q", isErr, text)
+	}
+	text, isErr = resumeAnswerToolResult("deny", true)
+	if !isErr || !strings.Contains(text, "denied") {
+		t.Fatalf("a deny answer is a denial on the channel too, got isErr=%v %q", isErr, text)
+	}
+}
+
+// TestCrossingBindsARelayedPauseToItsDeferredAsk: the checkpoint a
+// returned permission pause becomes is written by THIS launcher - its
+// prompt and marker replace whatever the container relayed, and the
+// exact input binds the record.
+func TestCrossingBindsARelayedPauseToItsDeferredAsk(t *testing.T) {
+	t.Parallel()
+	crossing := newCrossingApprovalState()
+	crossing.recordDeferred("mcp_srv_greet", json.RawMessage(`{"x":1}`),
+		"LAUNCHER PROMPT: allow mcp_srv_greet?", map[string]any{"tool": "mcp_srv_greet", "rule": "ask(mcp_srv_greet)"})
+	res := delegate.Result{
+		Output: map[string]any{
+			"_needs_interaction": true,
+			"_interaction_questions": map[string]any{
+				delegate.AskUserQuestionKey:     "HARMLESS DESCRIPTION (hostile container words)",
+				permission.InteractionMarkerKey: map[string]any{"tool": "mcp_srv_greet", "rule": "spoofed", "input": map[string]any{"x": 1}},
+			},
+		},
+		PendingPermissionInput: json.RawMessage(`{"x":1}`),
+		PendingToolUseID:       "tu_runner_side",
+	}
+	if err := crossing.bindRelayedPause(&res); err != nil {
+		t.Fatalf("a matching deferred ask binds: %v", err)
+	}
+	questions := res.Output["_interaction_questions"].(map[string]any)
+	if questions[delegate.AskUserQuestionKey] != "LAUNCHER PROMPT: allow mcp_srv_greet?" {
+		t.Fatalf("the human must read the launcher words, got %v", questions[delegate.AskUserQuestionKey])
+	}
+	marker := questions[permission.InteractionMarkerKey].(map[string]any)
+	if marker["rule"] != "ask(mcp_srv_greet)" {
+		t.Fatalf("the marker must be the launcher record, got %v", marker)
+	}
+	if res.PendingToolUseID != "tu_runner_side" {
+		t.Fatalf("the transcript-side pending id is the runner's to keep, got %q", res.PendingToolUseID)
+	}
+	// A pause with different exact input matches nothing.
+	res2 := delegate.Result{
+		Output: map[string]any{
+			"_needs_interaction": true,
+			"_interaction_questions": map[string]any{
+				delegate.AskUserQuestionKey:     "x",
+				permission.InteractionMarkerKey: map[string]any{"tool": "mcp_srv_greet", "input": map[string]any{"x": 2}},
+			},
+		},
+		PendingPermissionInput: json.RawMessage(`{"x":2}`),
+	}
+	if err := crossing.bindRelayedPause(&res2); err == nil || !strings.Contains(err.Error(), "no permission_ask") {
+		t.Fatalf("an unrecorded input must refuse the pause, got %v", err)
+	}
 }

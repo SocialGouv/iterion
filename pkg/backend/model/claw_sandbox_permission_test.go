@@ -97,12 +97,13 @@ func TestClawSandboxPermissionPauseBoundary(t *testing.T) {
 	}
 }
 
-// TestClawSandboxPermissionPauseCrossesUnderTheChannel: since the
-// approval channel (#3513), a permission-marked pause from a crossing
-// whose policy can Ask is the LEGITIMATE pause vehicle — it retains its
-// pause state (conversation, exact input, pending id) and flows to the
-// engine's checkpoint, where the exact-approval ledger picks it up.
-func TestClawSandboxPermissionPauseCrossesUnderTheChannel(t *testing.T) {
+// TestClawSandboxRefusesAPauseNothingDeferred: under the served channel a
+// permission pause must bind to an ask THIS launcher deferred — the
+// container's own question and marker never reach the human. A scripted
+// crossing returning one without any deferral is refused (the hostile or
+// stale container case); the bound path is witnessed at the binding level
+// (TestCrossingBindsARelayedPauseToItsDeferredAsk).
+func TestClawSandboxRefusesAPauseNothingDeferred(t *testing.T) {
 	t.Parallel()
 	questions := map[string]any{
 		delegate.AskUserQuestionKey:     "Allow Bash(git push:*)?",
@@ -125,17 +126,8 @@ func TestClawSandboxPermissionPauseCrossesUnderTheChannel(t *testing.T) {
 		Sandbox:    &scriptedSandbox{script: script, args: []string{"", reply}},
 		Permission: mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"Bash(git push:*)"}, nil),
 	})
-	if err != nil {
-		t.Fatalf("a served permission pause must not fail the node: %v", err)
-	}
-	if res.Output["_needs_interaction"] != true {
-		t.Fatalf("the pause must survive the crossing: %v", res.Output)
-	}
-	if string(res.PendingPermissionInput) != `{"command":"git push"}` {
-		t.Fatalf("the exact captured input must cross with the pause: %q", res.PendingPermissionInput)
-	}
-	if res.PendingToolUseID != "tu_pending" || res.Tokens != 7 {
-		t.Fatalf("pause state incomplete: id=%q tokens=%d", res.PendingToolUseID, res.Tokens)
+	if err == nil || !strings.Contains(err.Error(), "no permission_ask for") {
+		t.Fatalf("a pause nothing deferred must be refused, got err=%v res=%+v", err, res.Output)
 	}
 }
 
@@ -175,7 +167,7 @@ func TestClawSandboxRefusesContainerToolsBesideAskCapablePolicy(t *testing.T) {
 		NodeID:     "synth",
 		Model:      "anthropic/claude-opus-5",
 		Sandbox:    fakeSandboxRun{},
-		Permission: mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"bash(git push:*)"}, nil),
+		Permission: mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"bash"}, nil),
 		ToolDefs: []delegate.ToolDef{
 			{Name: "bash", Description: "shell"},
 			{Name: "mcp_srv_greet", Description: "launcher-placed"},
@@ -192,5 +184,35 @@ func TestClawSandboxRefusesContainerToolsBesideAskCapablePolicy(t *testing.T) {
 		if strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
 			t.Fatalf("a deny-only policy does not enter the channel scope: %v", err)
 		}
+	}
+}
+
+// TestClawSandboxRefusesOnlyContainerToolsThatCanAsk: the pre-spawn
+// refusal follows the policy, not the tool list - an ask rule scoped to
+// launcher-placed tools leaves the container tools on their mode default,
+// and that node IS served.
+func TestClawSandboxRefusesOnlyContainerToolsThatCanAsk(t *testing.T) {
+	t.Parallel()
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	// ask rule on the launcher tool only, mode deny: bash lands on deny.
+	task := delegate.Task{
+		NodeID:     "synth",
+		Model:      "anthropic/claude-opus-5",
+		Sandbox:    fakeSandboxRun{},
+		Permission: mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"mcp_srv_greet"}, nil),
+		ToolDefs: []delegate.ToolDef{
+			{Name: "bash", Description: "shell"},
+			{Name: "mcp_srv_greet", Description: "launcher-placed"},
+		},
+	}
+	if _, err := b.Execute(context.Background(), task); err != nil {
+		if strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
+			t.Fatalf("a container tool whose verdict is deny does not refuse the node: %v", err)
+		}
+	}
+	// Mode ask: every container tool can pause, the refusal returns.
+	task.Permission = mustPolicy(t, permission.ModeAsk, nil, nil, nil)
+	if _, err := b.Execute(context.Background(), task); err == nil || !strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
+		t.Fatalf("mode ask can pause on bash - the node must refuse, got %v", err)
 	}
 }

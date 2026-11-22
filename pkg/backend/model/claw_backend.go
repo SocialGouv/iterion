@@ -490,7 +490,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if task.Permission.CanAsk() {
 			var container []string
 			for _, td := range task.ToolDefs {
-				if placement, _ := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
+				placement, _ := tool.SandboxPlacementOf(td.Name)
+				if placement == tool.PlacementLauncher {
+					continue
+				}
+				// Only a container tool whose OWN verdict can be Ask keeps
+				// the node out of the served scope: an ask rule scoped to
+				// launcher-placed tools leaves the container tools on their
+				// mode default, and those never pause.
+				if dec, _ := task.Permission.Evaluate(td.Name, nil); dec == permission.Ask {
 					container = append(container, td.Name)
 				}
 			}
@@ -689,7 +697,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			resultText = "(no answer provided)"
 		}
 		isErr := false
-
 		// Permission-gate resume: when the pending tool_use is a real
 		// action the gate paused on (not the ask_user infra tool), the
 		// operator's answer is an authorization decision, not a question
@@ -697,15 +704,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		// executor (from the runtime's GrantInputKey); here we just replace
 		// the tool_result with the right instruction so the agent re-issues
 		// the now-authorized call (which then runs through the normal tool
-		// loop) or adapts on denial.
+		// loop) or adapts on denial. On the approval channel's runner side
+		// the allow-once instruction is the SAME re-issue text: the text is
+		// display only — the launcher re-authorizes the re-issued call by
+		// exact bytes (the held claim spends on a match, defers to a fresh
+		// pause on any difference) — so a container that holds no claim
+		// still tells the model the truth about the operator's answer.
 		if name, _, ok := findPendingToolUse(prior, task.ResumePendingToolUseID); ok &&
 			!permission.IsInfrastructureTool(name) && task.Permission.Enabled() {
-			if allow, always := permission.ParseExactApprovalAnswer(task.ResumeAnswer); allow && always {
-				resultText = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
-			} else {
-				resultText = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
-				isErr = true
-			}
+			resultText, isErr = resumeAnswerToolResult(task.ResumeAnswer, sandboxApprovalForwarderFrom(ctx) != nil)
 		}
 
 		if approval == nil {
@@ -2347,9 +2354,11 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// approvalSpent records that this crossing's launcher consumed an
 	// approval claim: a crossing that fails afterwards has an unknown
 	// outcome for the approved call, and the failure is typed ambiguous
-	// below so no retry replays it.
-	approvalSpent := &atomic.Bool{}
-	handler, stranded := b.multiplexerHandler(ctx, task, seed, approvalSpent)
+	// below so no retry replays it. The same state carries the deferred
+	// asks, which a returned pause must bind to before it checkpoints.
+	crossing := newCrossingApprovalState()
+	approvalSpent := &crossing.spent
+	handler, stranded := b.multiplexerHandler(ctx, task, seed, crossing)
 	handler.OnCodemodeState = stateRelay
 	mirror := handler.OnSessionCapture
 	handler.OnSessionCapture = func(snapshot json.RawMessage) {
@@ -2548,11 +2557,24 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// A permission-marked pause from the crossing is legitimate only under
 	// the approval channel (#3513): announced iff the policy can Ask — the
 	// same predicate the runner-side twin refuses on, so the two sides
-	// cannot disagree about whether a pause may exist. Without the
-	// channel, a runner raising one is a stale image or something hostile
-	// in the container: strip it and fail the node (the #3504 boundary).
-	if !task.Permission.CanAsk() && rejectSandboxedPermissionPause(&res) {
-		return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+	// cannot disagree about whether a pause may exist. Under the channel
+	// the pause must bind to an ask THIS launcher deferred: its question
+	// and marker are replaced with this side's own words, and one that
+	// matches no deferred ask is refused — a hostile or stale container
+	// process never chooses what the human reads. Without the channel, a
+	// runner raising one is stripped and fails the node (the #3504
+	// boundary).
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	_, pauseMarked := questions[permission.InteractionMarkerKey]
+	switch {
+	case res.Output["_needs_interaction"] == true && pauseMarked && task.Permission.CanAsk():
+		if err := crossing.bindRelayedPause(&res); err != nil {
+			return res, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
+		}
+	case res.Output["_needs_interaction"] == true && pauseMarked:
+		if rejectSandboxedPermissionPause(&res) {
+			return res, fmt.Errorf("claw backend: node %q: sandbox runner returned an unsupported permission pause", task.NodeID)
+		}
 	}
 	if ioRes.Error != "" {
 		wrappedErr := crossingFailureAfterSpend(fmt.Errorf("claw backend: runner: %s", runnerError), approvalSpent)
@@ -4151,7 +4173,7 @@ func canonicalMCPToolName(name string) string {
 // whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
 // stamp a pause result the crossing produced while stranded, so the fact
 // travels with the pause (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed, approvalSpent *atomic.Bool) (delegate.MultiplexerHandler, *atomic.Bool) {
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed, approvalSpent *crossingApprovalState) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -4377,4 +4399,28 @@ func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
 			}
 		}
 	}
+}
+
+// resumeAnswerToolResult shapes the operator's resume answer into the
+// tool_result the pending permission-gated call gets. With the approval
+// channel live (the runner side, which holds no claim), an allow-once
+// answer carries the same re-issue instruction an allow-always does: the
+// authorization is not in the text — the launcher re-authorizes the
+// re-issued call by exact bytes, spending the held claim on a match and
+// deferring to a fresh pause on any difference. Without the channel the
+// legacy split stands: allow-always re-issues under the applied grant,
+// every other answer is a denial the model adapts to.
+func resumeAnswerToolResult(answer string, channelLive bool) (string, bool) {
+	text := answer
+	if text == "" {
+		text = "(no answer provided)"
+	}
+	isErr := false
+	if allow, always := permission.ParseExactApprovalAnswer(text); allow && (always || channelLive) {
+		text = "✅ The operator approved this action. Re-issue the exact same tool call now to perform it."
+	} else {
+		text = "⛔ The operator denied this action. Do not retry it; take a different approach or explain why it is needed."
+		isErr = true
+	}
+	return text, isErr
 }

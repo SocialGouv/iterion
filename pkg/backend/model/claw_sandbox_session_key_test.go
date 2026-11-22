@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,7 +53,7 @@ func TestSandboxSessionMirrorAndSeedShareTheTasksSessionKey(t *testing.T) {
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: "the-first-nodes-turn"}},
 			}})
-			handler, _ := b.multiplexerHandler(ctx, first, sessionSeed{}, &atomic.Bool{})
+			handler, _ := b.multiplexerHandler(ctx, first, sessionSeed{}, newCrossingApprovalState())
 			handler.OnSessionCapture(snapshot)
 
 			if got := store.load(runID, taskSessionKey(first)); len(got) == 0 {

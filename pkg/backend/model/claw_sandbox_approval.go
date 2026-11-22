@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -35,7 +36,71 @@ func permissionDecisionDefer(reason string) delegate.PermissionDecisionData {
 	return delegate.PermissionDecisionData{Decision: delegate.PermissionDecisionDefer, Error: reason}
 }
 
-func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task, toolByName map[string]delegate.ToolDef, toolNames []string, spent *atomic.Bool, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
+// crossingApprovalState is a crossing's approval-channel bookkeeping,
+// launcher-side: whether a claim was spent (ambiguity typing on failure)
+// and the asks this launcher deferred. The deferred record is what a
+// returned pause binds to - the container's own question and marker never
+// reach the human.
+type crossingApprovalState struct {
+	spent atomic.Bool
+	mu    sync.Mutex
+	// deferred keys a permission_ask deferral by tool + canonical input.
+	deferred map[string]deferredAsk
+}
+
+// deferredAsk is what the launcher recorded for one deferral: its own
+// prompt and marker, regenerated from its own policy verdict.
+type deferredAsk struct {
+	prompt string
+	marker map[string]any
+}
+
+func newCrossingApprovalState() *crossingApprovalState {
+	return &crossingApprovalState{deferred: map[string]deferredAsk{}}
+}
+
+func deferredAskKey(tool string, input json.RawMessage) string {
+	return tool + "\x00" + string(input)
+}
+
+func (c *crossingApprovalState) recordDeferred(tool string, canonicalInput json.RawMessage, prompt string, marker map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deferred[deferredAskKey(tool, canonicalInput)] = deferredAsk{prompt: prompt, marker: marker}
+}
+
+func (c *crossingApprovalState) bindDeferred(tool string, canonicalInput json.RawMessage) (deferredAsk, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.deferred[deferredAskKey(tool, canonicalInput)]
+	return rec, ok
+}
+
+// bindRelayedPause binds a relayed permission pause to one of THIS
+// launcher's deferred asks: the checkpoint's question and marker are
+// replaced with the launcher's own words, and a pause that matches no
+// deferred ask is refused - a hostile or stale container process must
+// not choose what the human reads or what the resume authorizes against.
+func (c *crossingApprovalState) bindRelayedPause(res *delegate.Result) error {
+	questions, _ := res.Output["_interaction_questions"].(map[string]any)
+	tool, _, _, ok := permission.ParseMarker(questions[permission.InteractionMarkerKey])
+	if !ok {
+		return fmt.Errorf("the returned permission pause carries no readable marker")
+	}
+	input, err := permission.CanonicalApprovalInput(res.PendingPermissionInput)
+	if err != nil {
+		return fmt.Errorf("the returned permission pause carries no exact input: %w", err)
+	}
+	rec, ok := c.bindDeferred(tool, input)
+	if !ok {
+		return fmt.Errorf("no permission_ask for %s with these exact arguments was deferred by this launcher - the pause cannot be trusted", tool)
+	}
+	questions[delegate.AskUserQuestionKey] = rec.prompt
+	questions[permission.InteractionMarkerKey] = rec.marker
+	return nil
+}
+
+func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task, toolByName map[string]delegate.ToolDef, toolNames []string, crossing *crossingApprovalState, ask delegate.PermissionAskData) (delegate.PermissionDecisionData, error) {
 	// Bind to the registered tool identity: the runner forwards the name
 	// the launcher advertised, so anything else is not one an honest
 	// runner sends (the same rule OnToolCall applies).
@@ -72,6 +137,10 @@ func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task
 	}
 	a := exactClawApprovalFrom(ctx)
 	if a == nil || a.toolName != td.Name || !bytes.Equal(a.input, exact) {
+		// Deferred: record what THIS launcher would show and authorize
+		// against, so the returned pause binds here instead of the
+		// container's relayed words.
+		crossing.recordDeferred(td.Name, exact, permission.AskPrompt(td.Name, args, rule), permission.Marker(td.Name, args, rule))
 		return permissionDecisionDefer(permission.AskPrompt(td.Name, args, rule)), nil
 	}
 	won, err := a.spend(ctx)
@@ -87,7 +156,7 @@ func (b *ClawBackend) servePermissionAsk(ctx context.Context, task delegate.Task
 	// crossing out to executeViaSandboxRunner, which types any crossing
 	// failure as AmbiguousEffect (the in-process path's
 	// approvedDispatchInterrupted semantics).
-	spent.Store(true)
+	crossing.spent.Store(true)
 	return b.executeApprovedForwardedCall(ctx, task, td, toolNames, ask)
 }
 

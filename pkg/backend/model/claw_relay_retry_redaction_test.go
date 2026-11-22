@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -38,7 +37,7 @@ func TestClawRelay_RedactsARelayedRetryForTheOperatorLog(t *testing.T) {
 	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{},
 		WithClawLogger(logger))
 
-	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}, &atomic.Bool{})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}, newCrossingApprovalState())
 	handler.OnEvent(string(store.EventLLMRetry), map[string]any{
 		"attempt":  1,
 		"delay_ms": 250,
