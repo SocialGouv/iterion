@@ -1042,7 +1042,8 @@ and `SubbotNode.Source` points at a different file. After editing a child
 workflow, target the subbot node explicitly with `--node`.
 
 The checkpoint is granular to the **node**, never to the execution: at
-convergence the engine writes one entry per node id (last write wins), so N
+convergence the engine writes one entry per node id (the last successful
+branch in branch order wins — a `fan_out_each`'s highest item index), so N
 parallel executions of the same node collapse to one output. A rewind naming a
 node inside a fan-out body is therefore **promoted to the router** that
 orchestrates it, and the whole fan-out replays. Anchoring on the body node

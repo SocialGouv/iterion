@@ -264,12 +264,14 @@ credentials. `codex` is also available as an explicit CLI backend.
 
 Parallel branches — whether from `fan_out_all`, `fan_out_each`, or `llm` multi-mode — converge at a real downstream node (agent, judge, human, tool, or compute) with multiple incoming edges. That target node declares `await: wait_all` to require every branch, or `await: best_effort` to continue with successful branches while tolerating failures.
 
-**The collector fires exactly once, after every branch has settled** (finished, failed, or was cancelled) — under both modes. Neither mode fires on the first arrival, and no branch runs anything past the collector: the trunk executes the collector and everything downstream of it once, with every branch's outputs merged. The two modes differ only in what a failed branch means:
+**The collector fires exactly once, after every branch has settled** (finished, failed, or was cancelled) — under both modes. Neither mode fires on the first arrival, and no branch runs anything past the collector: the trunk executes the collector and everything downstream of it once, with the successful branches' outputs merged in branch order (below). The two modes differ only in what a failed branch means:
 
 - `wait_all` — any failed branch fails the run (`failed_resumable`, with the failing branch's error); the collector never runs.
 - `best_effort` — the collector runs with the successful branches' outputs. The failures are listed on the `join_ready` event (`failed_branches`) and exposed as `_failed_branches` on the collector's own output, so a `with` mapping or a downstream gate can fail closed on a missing branch.
 
 One `join_ready` event is emitted per convergence, on the collector, naming the strategy — a second `join_ready`, or a second execution of the collector, is an engine defect, never a mode.
+
+**What the collector reads of the branches is fixed by branch order, not by which branch finished last.** Branch order groups branch ids by stem (the id up to its last `_`) and, within a stem, compares a numeric suffix as a number — `branch_<router>_2` before `branch_<router>_10`, a `fan_out_each`'s item order; ids without one keep byte order. The merge keeps one value per node id: the output of the last successful branch, in that order, that ran the node. Every item of a `fan_out_each` runs the same template nodes, so `{{outputs.<node>}}` at the collector and downstream is the highest successful item's output — one item's, not the collection — and in the run's artifacts an artifact several branches publish keeps that same branch's value (a store reader of the latest artifact version still sees the branch that published last). `_failed_branches`, the failure a `wait_all` quotes, and, on a resume across a `.bot` edit where `best_effort` branches report different collectors, the collector kept (the first reporting branch's) follow the same order.
 
 **A branch that produced nothing still carries its `with` mappings.** When a
 branch fails — or when a `fan_out_each` fans over an empty collection, so no

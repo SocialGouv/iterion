@@ -574,7 +574,7 @@ compute collect:
     completed: "true"
 ```
 
-The collector fires exactly once, after every branch has settled — `wait_all` fails the run when any branch failed, `best_effort` runs with the survivors and lists the failures as `_failed_branches` (and on the `join_ready` event). Neither mode fires on the first arrival. Without `await:`, the collector is the first node with more than one distinct predecessor; a fan-out target that a `condition` router also reaches directly is still a branch head, not the collector, while a trunk edge bypassing the fan-out into a node below the heads (`plan -> collect else`) does elect that node.
+The collector fires exactly once, after every branch has settled — `wait_all` fails the run when any branch failed, `best_effort` runs with the survivors and lists the failures as `_failed_branches` (and on the `join_ready` event). Neither mode fires on the first arrival. The survivors' outputs are merged in branch order — a `fan_out_each`'s item index — so a template node every item runs holds, at the collector and downstream, the highest successful item's output whichever item finished last: one item's output, not the collection ([what the collector reads](routers.md#convergence-with-await)). Without `await:`, the collector is the first node with more than one distinct predecessor; a fan-out target that a `condition` router also reaches directly is still a branch head, not the collector, while a trunk edge bypassing the fan-out into a node below the heads (`plan -> collect else`) does elect that node.
 
 When a fan-out is invoked again, convergence replaces the `outputs.*` view
 of its branch region with the current successful results. Failed branches,
