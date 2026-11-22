@@ -165,9 +165,10 @@ func (d *proxyDispatcher) route(env delegate.Envelope) {
 	}
 	d.mu.Unlock()
 	if refusal != nil {
-		refusal <- delegate.Envelope{Type: delegate.EnvelopeResult, ID: id,
-			Data: json.RawMessage(fmt.Sprintf(`{"error":%q}`,
-				fmt.Sprintf("runner: launcher sent %q mid-stream while the permission ask %s was pending — protocol breach, the ask is refused", env.Type, id)))}
+		// Forward the real envelope: the round trip rejects any
+		// non-decision reply and reads the reason from its payload, so
+		// the failure carries what actually arrived.
+		refusal <- env
 	}
 }
 

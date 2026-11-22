@@ -494,11 +494,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 				if placement == tool.PlacementLauncher {
 					continue
 				}
-				// Only a container tool whose OWN verdict can be Ask keeps
-				// the node out of the served scope: an ask rule scoped to
-				// launcher-placed tools leaves the container tools on their
-				// mode default, and those never pause.
-				if dec, _ := task.Permission.Evaluate(td.Name, nil); dec == permission.Ask {
+				// Only a container tool this policy could ever ask about
+				// keeps the node out of the served scope: an ask rule
+				// scoped to launcher-placed tools leaves the container
+				// tools on their mode default, and those never pause.
+				// Argument scopes count — a scoped rule can fire on SOME
+				// invocation of the tool, and that invocation would
+				// degrade to a per-call denial.
+				if task.Permission.CanAskAbout(td.Name) {
 					container = append(container, td.Name)
 				}
 			}

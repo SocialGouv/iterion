@@ -599,8 +599,10 @@ const (
 	// raises the same pause the in-process gate raises, and the pause flows
 	// back through the terminal result to the engine's checkpoint; a human
 	// answers on resume, and the RE-asked approval is then served from the
-	// held claim. Also the busy answer: an approval the launcher cannot
-	// serve right now must defer to a human, never degrade to a denial.
+	// held claim. Only a launcher that could not record the deferral
+	// (busy, no handler, handler failure) answers with a terminal-shaped
+	// failure reply instead — the ask aborts, no unrecorded pause is
+	// raised.
 	PermissionDecisionDefer = "defer"
 )
 

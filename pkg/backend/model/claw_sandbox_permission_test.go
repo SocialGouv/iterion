@@ -215,4 +215,11 @@ func TestClawSandboxRefusesOnlyContainerToolsThatCanAsk(t *testing.T) {
 	if _, err := b.Execute(context.Background(), task); err == nil || !strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
 		t.Fatalf("mode ask can pause on bash - the node must refuse, got %v", err)
 	}
+	// A SCOPED ask rule naming the container tool also refuses: the rule
+	// can fire on some invocation of it, and that invocation would
+	// degrade to a per-call denial the launcher cannot serve.
+	task.Permission = mustPolicy(t, permission.ModeDeny, []string{"WebFetch(*)"}, []string{"bash(git push:*)"}, nil)
+	if _, err := b.Execute(context.Background(), task); err == nil || !strings.Contains(err.Error(), "approval channel serves launcher-placed tools only") {
+		t.Fatalf("a scoped ask rule on bash can fire on git push - the node must refuse, got %v", err)
+	}
 }

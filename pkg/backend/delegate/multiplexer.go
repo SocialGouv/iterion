@@ -355,9 +355,10 @@ func (m *Multiplexer) Run(ctx context.Context) (IOResult, error) {
 			case calls <- func() (Envelope, error) { return m.handlePermissionAsk(workCtx, env.ID, ask) }:
 			default:
 				// At capacity: the launcher cannot serve this approval now.
-				// Defer, never deny — a busy launcher must suspend the run
-				// for a human, not silently downgrade the gate to a refusal.
-				if err := queueReply(permissionAskDeferReply(env.ID, multiplexerBusy)); err != nil {
+				// Fail the ask — never a denial, and never a pause the
+				// launcher could not record: the runner aborts with the
+				// reason and the node fails for a retry to serve.
+				if err := queueReply(permissionAskFailureReply(env.ID, multiplexerBusy), nil); err != nil {
 					return IOResult{}, err
 				}
 			}
@@ -432,25 +433,27 @@ func (m *Multiplexer) handleAskUser(ctx context.Context, id string, data AskUser
 func (m *Multiplexer) handlePermissionAsk(ctx context.Context, id string, ask PermissionAskData) (Envelope, error) {
 	if m.handler.OnPermissionAsk == nil {
 		// No approval handler: this launcher cannot serve the channel at
-		// all (it should never have announced it). Defer for the same
-		// reason as the busy path — the gate must reach a human, not a
-		// silent denial.
-		return permissionAskDeferReply(id, "launcher: no approval handler registered")
+		// all (it should never have announced it). Fail the ask — the
+		// same direction as the busy path.
+		return permissionAskFailureReply(id, "launcher: no approval handler registered"), nil
 	}
 	decision, err := m.handler.OnPermissionAsk(ctx, ask)
 	if err != nil {
-		// The handler failed before a decision — the same fail-closed
-		// direction: suspend for a human rather than answer in its place.
-		return permissionAskDeferReply(id, err.Error())
+		// The handler failed before a decision: fail the ask. A pause
+		// must be recorded by the handler to be trusted, and an unrecorded
+		// one would only refuse at the launcher's binding.
+		return permissionAskFailureReply(id, err.Error()), nil
 	}
 	return NewPermissionDecisionEnvelope(id, decision)
 }
 
-// permissionAskDeferReply builds the defer decision an unservable ask
-// gets, with the reason in the deny slot (the runner surfaces it with the
-// pause it raises).
-func permissionAskDeferReply(id, reason string) (Envelope, error) {
-	return NewPermissionDecisionEnvelope(id, PermissionDecisionData{Decision: PermissionDecisionDefer, Error: reason})
+// permissionAskFailureReply builds the terminal-shaped failure reply an
+// unservable ask gets (busy, no handler, handler error): the runner's
+// round trip reads the reason from it and aborts the ask — the node
+// fails for a retry to serve, and no unrecorded pause is ever raised.
+func permissionAskFailureReply(id, reason string) Envelope {
+	buf, _ := json.Marshal(IOResult{Error: reason})
+	return Envelope{Type: EnvelopeResult, ID: id, Data: buf}
 }
 
 func askUserErrorReply(id, errMsg string) (Envelope, error) {

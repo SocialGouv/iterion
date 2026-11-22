@@ -133,9 +133,8 @@ func TestProxyDispatcher_RouteRefusesPendingApprovalOnUnknownTraffic(t *testing.
 		if env.Type == delegate.EnvelopePermissionDecision {
 			t.Fatal("a refusal injection must not look like a decision")
 		}
-		var res delegate.IOResult
-		if json.Unmarshal(env.Data, &res) != nil || !strings.Contains(res.Error, "protocol breach") {
-			t.Fatalf("refusal must name the breach: %s", env.Data)
+		if env.Type != delegate.EnvelopeEvent {
+			t.Fatalf("the injected refusal forwards the real envelope, got %v", env.Type)
 		}
 	default:
 		t.Fatal("the pending ask must have been refused")
