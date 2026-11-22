@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.27.0](https://github.com/SocialGouv/iterion/compare/v7.26.0...v7.27.0) (2026-11-22)
+
+### Features
+
+* **claw:** bind one-time approvals to exact tool calls ([#3510](https://github.com/SocialGouv/iterion/issues/3510)) ([318e616](https://github.com/SocialGouv/iterion/commit/318e61637dc89aa53aac02617792eac91d521872)), references [#3504](https://github.com/SocialGouv/iterion/issues/3504)
+
+    <details><summary>why</summary>
+
+    "Allow once" on an in-process claw pause created an argument-scoped permission rule reusable for the whole resumed invocation. It is now a single authorization for one captured tool call.
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** a fan-out's collector reads branch order, not completion order ([#2940](https://github.com/SocialGouv/iterion/issues/2940)) ([#3495](https://github.com/SocialGouv/iterion/issues/3495)) ([d2bdf92](https://github.com/SocialGouv/iterion/commit/d2bdf926067e1d609743770f2c34206dd2cd92ca))
+
+    <details><summary>why</summary>
+
+    The convergence merge iterated the arrival-ordered results. In a fan_out_each every item runs the same template nodes, so {{outputs.<node>}} at the collector held whichever item finished last, and changed from run to run. byBranchID also sorted branch ids byte-wise, which put branch_r_10 before branch_r_2.
+
+    </details>
+
 ## [7.26.0](https://github.com/SocialGouv/iterion/compare/v7.25.0...v7.26.0) (2026-11-21)
 
 ### Features
