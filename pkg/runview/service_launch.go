@@ -334,6 +334,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if !ir.ValidCodemode(spec.Codemode) {
 		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
 	}
+	if field := ir.CodemodeBoundsNegativeField(spec.CodemodeBounds); field != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
+	}
 	// A keyed submission's id was derived and its run judged by
 	// answerSubmission — no run, or a queued cloud run this launch
 	// completes — so only an id a caller chose is looked up here.
@@ -664,15 +667,6 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 // MODE: what the caller expressed, else what the doc carries.
 func firstNonEmpty(restated, replayed string) string {
 	if restated != "" {
-		return restated
-	}
-	return replayed
-}
-
-// firstNonNullBounds is firstNonEmpty for the bounds raise: the re-stating
-// pointer wins, the doc's persisted pointer fills the silence.
-func firstNonNullBounds(restated, replayed *ir.CodemodeBounds) *ir.CodemodeBounds {
-	if restated != nil {
 		return restated
 	}
 	return replayed
@@ -1134,6 +1128,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if !ir.ValidCodemode(spec.Codemode) {
 		return nil, fmt.Errorf("codemode: %q is not a codemode value (on|off, empty inherits the DSL)", spec.Codemode)
 	}
+	if field := ir.CodemodeBoundsNegativeField(spec.CodemodeBounds); field != "" {
+		return nil, fmt.Errorf("codemode_bounds.%s: bound must be non-negative", field)
+	}
 	// E3 (part of #652 review round 1): validate the resume budget
 	// ask synchronously — a malformed max_duration ("4 hours") would
 	// otherwise ride RunMessage.Budget through the cloud queue, fail
@@ -1243,7 +1240,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// values (the re-state coalesced over the doc's replay, exactly what
 		// the executor will carry): bounds beside an off warn inert,
 		// above-ceiling bounds warn the ceiling, silence otherwise.
-		for _, w := range codemodeLaunchWarnings(wf, firstNonEmpty(spec.Codemode, r.CodemodeOverride), firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)) {
+		for _, w := range codemodeLaunchWarnings(wf, firstNonEmpty(spec.Codemode, r.CodemodeOverride), ir.ReplayCodemodeBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)) {
 			s.logger.Warn("runview: resume %s: %s", spec.RunID, w)
 		}
 	}
@@ -1380,14 +1377,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if detachedEnabled() {
 		spec.Budget = rawBudget
-		// The permission gate is replayed from the run doc, exactly as
-		// resumeExecutorSpec does for the in-process path. ResumeSpec
-		// carries no Permission of its own and `iterion resume` never
-		// reads the persisted override, so without this the subprocess
-		// re-resolves the gate from the workflow — usually `off` — and an
-		// operator's launch-time "deny" quietly stops applying at the
-		// first resume.
-		return s.resumeDetached(parent, spec, r.PermissionOverride, r)
+		return s.resumeDetached(parent, spec, r.PermissionOverride)
 	}
 
 	// The steps below are the first to touch the run's directory: the log
@@ -1431,7 +1421,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		executorSpec.Codemode = spec.Codemode
 	}
 	if spec.CodemodeBounds != nil {
-		executorSpec.CodemodeBounds = spec.CodemodeBounds
+		executorSpec.CodemodeBounds = ir.ReplayCodemodeBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride)
 	}
 	executorSpec.Connectors, executorSpec.ConnectorClient = connectors, connectorClient
 	executor, err := BuildExecutor(executorSpec)
@@ -1489,17 +1479,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			expectOrigin:            spec.ExpectOrigin,
 			compiled:                cs,
 			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
-			// The codemode launch choice replays from the run doc, and a
-			// ResumeSpec that re-states wins — COALESCED HERE, not at the
-			// executor merge below, for a reason tour 2 proved by
-			// execution: the value this struct carries is what the engine
-			// stamps back onto the doc. Carrying the doc's value alone made
-			// a re-state one-shot — live for the resume that asked, gone
-			// from the doc, and the NEXT silent resume replayed the launch's
-			// original decision, re-arming a capability the operator had
-			// killed at that first resume.
-			codemode:       firstNonEmpty(spec.Codemode, r.CodemodeOverride),
-			codemodeBounds: firstNonNullBounds(spec.CodemodeBounds, r.CodemodeBoundsOverride),
+			// Execution bounds replay the doc, but a quota patch only comes
+			// from the resume request. Replayed dimensions are not writes.
+			codemode:            executorSpec.Codemode,
+			codemodeBounds:      executorSpec.CodemodeBounds,
+			resumeCodemodeQuota: CodemodeResumeQuota(spec.CodemodeBounds),
 			// The launch's sandbox choices, replayed off the record so
 			// the studio's in-process resume respects `--sandbox none`
 			// the same way the CLI resume now does (#1435).
@@ -2329,8 +2313,9 @@ type launchExtras struct {
 	// resume — the run doc stamp (engine_run.go) is what makes the replay
 	// possible for the surfaces that cannot re-state an override (the
 	// studio's answers, the retry sweeper).
-	codemode       string
-	codemodeBounds *scripthost.Limits
+	codemode            string
+	codemodeBounds      *scripthost.Limits
+	resumeCodemodeQuota store.CodemodeScratchLimits
 	// sandboxOverride, sandboxDefaultImage, sandboxHostStateOverride are
 	// the launch-time --sandbox / --sandbox-default-image /
 	// --sandbox-host-state choices, persisted on the run at launch
@@ -2415,6 +2400,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.codemode != "" || ex.codemodeBounds != nil {
 		opts = append(opts, runtime.WithCodemodeOverride(ex.codemode, ex.codemodeBounds))
+	}
+	if ex.resumeCodemodeQuota != (store.CodemodeScratchLimits{}) {
+		opts = append(opts, runtime.WithResumeCodemodeQuota(ex.resumeCodemodeQuota))
 	}
 	if ex.budgetOverrides != nil {
 		opts = append(opts, runtime.WithBudgetOverrides(ex.budgetOverrides))

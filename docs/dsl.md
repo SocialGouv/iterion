@@ -449,8 +449,18 @@ inventing one is its own lot. **A bound of `0` means inherit**: when no
 rung chooses `tool_calls`, the default is sixty-four calls. Similarly,
 `concurrent_tool_calls` defaults to serial execution (`1`); it limits the calls
 in flight, not the total number a program may make. The launch flag
-`--codemode-concurrent-tool-calls` overrides it for one run. A node that must
-run no program declares `codemode: off`. `memory:` is **room, not a total**: the
+`--codemode-concurrent-tool-calls` overrides it for one run.
+
+Use `store_entries` and `store_bytes` in the **workflow** `codemode:` block,
+not on an agent or judge. They bound the bank shared by all codemode programs
+in the run: 32 keys and 131072 bytes of UTF-8 keys plus stored JSON by default,
+capped at 64 keys and 524288 bytes. A run override wins for each field it
+sets (`--codemode-store-entries`, `--codemode-store-bytes`, or
+`codemode_bounds` in the launch API); zero inherits. The same flags can
+restate a quota on resume without clearing the bank. In the remote resume API,
+send `codemode_store: {"store_entries": 48}` to restate just the key quota.
+
+A node that must run no program declares `codemode: off`. `memory:` is **room, not a total**: the
 kernel's `RLIMIT_DATA` is the data segment the script host already holds
 (~86 MiB for the shipped binary, before the program runs) plus this number, so
 it does not shrink as the binary grows (#3383). And there is a **floor** on

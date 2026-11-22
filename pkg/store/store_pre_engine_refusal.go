@@ -35,7 +35,7 @@ func (s *FilesystemRunStore) RecordPreEngineRefusal(ctx context.Context, id stri
 	if tenant, ok := TenantFromContext(ctx); ok && run.TenantID != "" && tenant != run.TenantID {
 		return PreEngineRefusalResult{}, fmt.Errorf("store: pre-engine refusal: %w", ErrRunNotFound)
 	}
-	if !slices.Contains(PreEngineRefusalFromStatuses(q), run.Status) || (run.QueuedAt != nil && (q.PublishedAt.IsZero() || run.QueuedAt.After(q.PublishedAt))) {
+	if !slices.Contains(PreEngineRefusalFromStatuses(q), run.Status) || !MatchesExactQueuedAt(run.QueuedAt, q.ExactQueuedAt) || (q.ExactQueuedAt.IsZero() && run.QueuedAt != nil && (q.PublishedAt.IsZero() || run.QueuedAt.After(q.PublishedAt))) {
 		return PreEngineRefusalResult{}, nil
 	}
 	pending := q.Disposition == PreEngineRetryPending && run.Status.IsQueued()

@@ -126,7 +126,7 @@ workflow w:
 // lose the bounds — it turns codemode OFF for every node that inherited
 // it. The agent arm above asserted three bounds; a per-field table is
 // what makes a dropped line nameable.
-func TestTheWorkflowRungsBlockRoundTripsWithEverySeven(t *testing.T) {
+func TestTheWorkflowRungsBlockRoundTripsWithEveryBound(t *testing.T) {
 	t.Parallel()
 	src := `agent a:
   model: "m"
@@ -150,6 +150,8 @@ workflow w:
     script_bytes: 1048576
     result_bytes: 4194304
     tool_result_bytes: 262144
+    store_entries: 48
+    store_bytes: 262144
   a -> j
   j -> done
 `
@@ -157,6 +159,7 @@ workflow w:
 	for _, want := range []string{
 		"tool_calls: 512", "concurrent_tool_calls: 3", "wall: \"7m\"", "cpu: \"90s\"", "memory: 1073741824",
 		"script_bytes: 1048576", "result_bytes: 4194304", "tool_result_bytes: 262144",
+		"store_entries: 48", "store_bytes: 262144",
 		// and the judge's own block, the host the agent arm does not cover
 		"tool_calls: 99",
 	} {

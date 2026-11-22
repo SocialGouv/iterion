@@ -52,6 +52,8 @@ const rows: RowSpec[] = [
   { key: "scriptBytes", id: "launch-codemode-script-bytes", label: "script_bytes", sub: "program size", type: "number", step: "1024" },
   { key: "resultBytes", id: "launch-codemode-result-bytes", label: "result_bytes", sub: "returned value", type: "number", step: "1024" },
   { key: "toolResultBytes", id: "launch-codemode-tool-result-bytes", label: "tool_result_bytes", sub: "one tool result", type: "number", step: "1024" },
+  { key: "storeEntries", id: "launch-codemode-store-entries", label: "store_entries", sub: "keys in the run bank", type: "number", step: "1" },
+  { key: "storeBytes", id: "launch-codemode-store-bytes", label: "store_bytes", sub: "key and JSON bytes in the run bank", type: "number", step: "1" },
 ];
 
 function placeholderOf(
@@ -79,6 +81,10 @@ function placeholderOf(
       return def.tool_result_bytes !== undefined
         ? String(def.tool_result_bytes)
         : "inherits";
+    case "storeEntries":
+      return def.store_entries !== undefined ? String(def.store_entries) : "inherits";
+    case "storeBytes":
+      return def.store_bytes !== undefined ? String(def.store_bytes) : "inherits";
   }
 }
 

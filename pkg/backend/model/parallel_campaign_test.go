@@ -69,6 +69,7 @@ var serialFamily = map[string]string{
 	"output_correction_control_test.go":     "Setenv",
 	"structured_extraction_test.go":         "SetCredentialsLookup, Setenv",
 	"usage_projection_v2_test.go":           "Setenv",
+	"codemode_state_test.go":                "Setenv",
 
 	"gateway_feed_test.go":              "Setenv",
 	"feed_effort_test.go":               "Setenv",

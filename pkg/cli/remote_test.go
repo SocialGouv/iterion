@@ -254,7 +254,7 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 		FilePath:       botPath,
 		Vars:           map[string]string{"k": "v"},
 		Backend:        "claw",
-		CodemodeBounds: &ir.CodemodeBounds{ConcurrentToolCalls: 3},
+		CodemodeBounds: &ir.CodemodeBounds{ConcurrentToolCalls: 3, StoreEntries: 48, StoreBytes: 262144},
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -266,8 +266,8 @@ func TestRemoteRunsLaunch_SendsSourceAndVars(t *testing.T) {
 		t.Errorf("backend = %v", got["backend"])
 	}
 	bounds, _ := got["codemode_bounds"].(map[string]any)
-	if len(bounds) != 1 || bounds["concurrent_tool_calls"] != float64(3) {
-		t.Errorf("codemode_bounds = %v, want only concurrent_tool_calls: 3", got["codemode_bounds"])
+	if len(bounds) != 3 || bounds["concurrent_tool_calls"] != float64(3) || bounds["store_entries"] != float64(48) || bounds["store_bytes"] != float64(262144) {
+		t.Errorf("codemode_bounds = %v, want concurrent_tool_calls: 3, store_entries: 48, store_bytes: 262144", got["codemode_bounds"])
 	}
 	vars, _ := got["vars"].(map[string]any)
 	if vars["k"] != "v" {
@@ -739,5 +739,26 @@ func TestRemotePoolPolicy_RefusesSilentDisabledCreate(t *testing.T) {
 	}
 	if puts != 1 {
 		t.Fatalf("PUT count = %d, want 1", puts)
+	}
+}
+
+func TestRemoteRunsResumeSendsOnlyRestatedCodemodeStoreQuota(t *testing.T) {
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/runs/r1/resume" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		q := body["codemode_store"]
+		if len(body) != 1 || len(q) != 1 || q["store_bytes"] != 262144 {
+			t.Errorf("body = %+v, want only the restated byte quota", body)
+		}
+		fmt.Fprint(w, `{"run_id":"r1","status":"running"}`)
+	}))
+	p, _ := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteRunsResume(context.Background(), c, p, "r1", cli.RemoteRunsResumeOptions{CodemodeStoreBytes: 262144}); err != nil {
+		t.Fatal(err)
 	}
 }

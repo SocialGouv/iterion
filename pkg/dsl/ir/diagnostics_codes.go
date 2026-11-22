@@ -544,4 +544,6 @@ const (
 	// with nothing to call to achieve a goal "with its tools". A warning: the
 	// node runs, and the postcondition still judges it.
 	DiagRecoveryAgentNoTools DiagCode = "C352" // policy: recover reaches rung 4 on a workflow the source routes to claw, with no recovery.agent_tools: and no workflow codemode — the recovery agent is served no tool (warning)
+
+	DiagInvalidCodemodeStoreQuota DiagCode = "C353" // codemode store quota is negative or declared at node scope (error)
 )

@@ -430,6 +430,18 @@ func (s RunStatus) CarriesPausePointer() bool {
 	return s.IsPaused() || s == RunStatusQueued
 }
 
+// CarriesResumePauseHandoff reports whether a transition into s can retain
+// the durable continuation of a consumed pause.
+func (s RunStatus) CarriesResumePauseHandoff() bool {
+	return s == RunStatusRunning || s.CanReclaimResumePauseHandoff()
+}
+
+// CanReclaimResumePauseHandoff reports whether a run with an unfinished
+// pause handoff can claim it for a new execution attempt.
+func (s RunStatus) CanReclaimResumePauseHandoff() bool {
+	return s == RunStatusQueued || s == RunStatusFailedResumable
+}
+
 // ---------------------------------------------------------------------------
 // Policy predicates — one named question each
 // ---------------------------------------------------------------------------

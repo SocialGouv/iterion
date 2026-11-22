@@ -31,3 +31,19 @@ func TestHandleResumeRun_RejectsMalformedBudgetBeforeStoreAccess(t *testing.T) {
 		t.Fatalf("400 body must name the offending field, got %s", w.Body.String())
 	}
 }
+
+func TestHandleResumeRunRejectsNegativeCodemodeStoreQuota(t *testing.T) {
+	for _, field := range []string{"store_entries", "store_bytes"} {
+		t.Run(field, func(t *testing.T) {
+			s := newOrgTestServer(t)
+			seedTeam(t, s, "t1", "acme")
+			ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", Role: identity.RoleMember})
+			r := orgReq(ctx, "POST", "/api/runs/run-123/resume", `{"codemode_store":{"`+field+`":-1}}`, "run-123")
+			w := httptest.NewRecorder()
+			s.handleResumeRun(w, r)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "codemode_store."+field) {
+				t.Fatalf("negative quota: code=%d body=%s, want 400 naming %s", w.Code, w.Body.String(), field)
+			}
+		})
+	}
+}

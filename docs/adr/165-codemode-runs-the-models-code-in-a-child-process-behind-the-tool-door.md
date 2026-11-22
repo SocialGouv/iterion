@@ -677,3 +677,12 @@ The launcher keeps reading events and session captures while tools run, with
 bounded admission and reply queues. Placement and policy remain its decisions;
 the runner does not attest concurrency eligibility. This does not certify
 codemode's sandbox crossing (CM-6). See [the batch contract](../agents/backends/codemode-concurrency.md).
+
+## Amendment — 2026-11-21: durable run state (CM-11/CM-12)
+
+`call.store` and `call.load` address one bounded JSON bank per run, not the
+workspace, a backend session, or a checkpoint. Acknowledged writes survive
+same-run resume and rewind; a new run starts empty. Both operations spend the
+script's existing call budget. The launcher binds the run and tenant and
+applies quotas atomically with writes. Filesystem and Mongo both remove the
+bank on run deletion. See [the state contract](../agents/backends/codemode-state.md).

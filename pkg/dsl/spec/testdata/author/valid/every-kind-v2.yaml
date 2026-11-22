@@ -407,7 +407,9 @@ workflow:
   compress: on
   auto_memory: on
   ambient_context: all
-  codemode: "on"
+  codemode:
+    store_entries: 48
+    store_bytes: 262144
   loop_budget_guard: on
   repo_devbox: off
   workspace_checkpoint: on

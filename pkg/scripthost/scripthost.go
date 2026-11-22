@@ -156,6 +156,9 @@ type Limits struct {
 
 	// ConcurrentToolCalls caps the number of tools executing in a script batch.
 	ConcurrentToolCalls int64 `json:"concurrent_tool_calls,omitempty"`
+	// StoreEntries and StoreBytes bound the durable run bank.
+	StoreEntries int64 `json:"store_entries,omitempty"`
+	StoreBytes   int64 `json:"store_bytes,omitempty"`
 
 	// ToolResultBytes caps ONE tool result handed back to a script, cut on a
 	// rune boundary and flagged as cut.
@@ -183,6 +186,8 @@ func DefaultLimits() Limits {
 		// thing an operator notices.
 		ToolCalls:           64,
 		ConcurrentToolCalls: 1,
+		StoreEntries:        DefaultStoreEntries,
+		StoreBytes:          DefaultStoreBytes,
 		ToolResultBytes:     64 << 10,
 	}
 }
@@ -221,6 +226,8 @@ func Ceiling() Limits {
 		ResultBytes:         8 << 20,
 		ToolCalls:           4096,
 		ConcurrentToolCalls: MaxParallelBatch,
+		StoreEntries:        MaxStoreEntries,
+		StoreBytes:          MaxStoreBytes,
 		ToolResultBytes:     1 << 20,
 	}
 }
@@ -283,6 +290,8 @@ func (l Limits) Clamp() (Limits, bool) {
 
 		ToolCalls:           clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
 		ConcurrentToolCalls: clampInt(l.ConcurrentToolCalls, def.ConcurrentToolCalls, ceil.ConcurrentToolCalls),
+		StoreEntries:        clampInt(l.StoreEntries, def.StoreEntries, ceil.StoreEntries),
+		StoreBytes:          clampInt(l.StoreBytes, def.StoreBytes, ceil.StoreBytes),
 		ToolResultBytes:     clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
 	}, clamped
 }

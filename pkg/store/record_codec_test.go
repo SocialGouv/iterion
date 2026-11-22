@@ -80,7 +80,7 @@ func prefixPaths(prefix string, paths []string) []string {
 	return a
 }
 
-var runPlan = NewPlan(store.Run{}, append([]string{"Inputs"}, prefixPaths("Checkpoint/", cpPaths)...)...)
+var runPlan = NewPlan(store.Run{}, append([]string{"Inputs", "ResumePauseHandoff/InteractionQuestions"}, prefixPaths("Checkpoint/", cpPaths)...)...)
 var cpPlan = NewPlan(store.Checkpoint{}, cpPaths...)
 var interactionPlan = NewPlan(store.Interaction{}, "Questions", "Answers", "Turns/[]/Verdict")
 var eventPlan = NewPlan(store.Event{}, "Data")
@@ -97,10 +97,10 @@ func outputs() map[string]map[string]any {
 var instant = time.Date(2026, 11, 3, 17, 29, 1, 123000000, time.UTC)
 
 func fixtureRun() *store.Run {
-	return &store.Run{ID: "run", FormatVersion: 1, CreatedAt: instant, Inputs: payload(), PublicContract: json.RawMessage(`{"z":9007199254740993.0,"a":2}`), Checkpoint: &store.Checkpoint{NodeID: "gate", Outputs: outputs(), LoopPreviousOutput: outputs(), LoopCurrentOutput: outputs(), Artifacts: outputs(), Vars: payload(), InteractionQuestions: payload(), FiredEvents: outputs(), BackendConversation: json.RawMessage(`[{"x":9007199254740993.0}]`), Parallel: &store.ParallelCheckpoint{RouterNodeID: "router", PendingInteractionQuestions: payload(), Branches: map[string]*store.BranchCheckpoint{"b.$literal": {BranchID: "b", Outputs: outputs(), Artifacts: outputs(), LoopPreviousOutput: outputs(), LoopCurrentOutput: outputs(), ResumeAnswers: payload()}, "nil": nil}}}}
+	return &store.Run{ID: "run", FormatVersion: 1, CreatedAt: instant, Inputs: payload(), PublicContract: json.RawMessage(`{"z":9007199254740993.0,"a":2}`), ResumePauseHandoff: &store.ResumePauseHandoff{ID: "handoff", InteractionQuestions: payload()}, Checkpoint: &store.Checkpoint{NodeID: "gate", Outputs: outputs(), LoopPreviousOutput: outputs(), LoopCurrentOutput: outputs(), Artifacts: outputs(), Vars: payload(), InteractionQuestions: payload(), FiredEvents: outputs(), BackendConversation: json.RawMessage(`[{"x":9007199254740993.0}]`), Parallel: &store.ParallelCheckpoint{RouterNodeID: "router", PendingInteractionQuestions: payload(), Branches: map[string]*store.BranchCheckpoint{"b.$literal": {BranchID: "b", Outputs: outputs(), Artifacts: outputs(), LoopPreviousOutput: outputs(), LoopCurrentOutput: outputs(), ResumeAnswers: payload()}, "nil": nil}}}}
 }
-func TestExactRecordAll22Payloads(t *testing.T) {
-	if len(runPlan.Slots)+len(interactionPlan.Slots)+len(eventPlan.Slots)+len(artifactPlan.Slots)+len(queuePlan.Slots) != 22 {
+func TestExactRecordAll23Payloads(t *testing.T) {
+	if len(runPlan.Slots)+len(interactionPlan.Slots)+len(eventPlan.Slots)+len(artifactPlan.Slots)+len(queuePlan.Slots) != 23 {
 		t.Fatal("slot count")
 	}
 	cases := []struct {
@@ -401,8 +401,8 @@ func TestExactRecordExplicitRegistryExhaustive(t *testing.T) {
 		}
 		total += len(explicit)
 	}
-	if total != 22 {
+	if total != 23 {
 		t.Fatal(total)
 	}
-	t.Log("22 explicit paths equal mechanical inventory of actual store+queue types")
+	t.Log("23 explicit paths equal mechanical inventory of actual store+queue types")
 }

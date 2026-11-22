@@ -26,6 +26,9 @@ func (s *Store) RecordPreEngineRefusal(ctx context.Context, id string, q store.P
 		attempts = append(attempts, bson.M{"queued_at": bson.M{"$lte": q.PublishedAt}})
 	}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$in": store.PreEngineRefusalFromStatuses(q)}, "$or": attempts}))
+	if !applyExactQueuedAt(filter, q.ExactQueuedAt) {
+		return store.PreEngineRefusalResult{}, nil
+	}
 	now := time.Now().UTC()
 	set := statusTransitionSet(q.TargetStatus(), q.Message, q.Outcome(), now)
 	if q.Disposition != store.PreEngineFinalVerdict {

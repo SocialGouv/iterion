@@ -202,20 +202,23 @@ func TestHeartbeatStoreDoesNotEndorseBoundObservation(t *testing.T) {
 // no packed CLI session, mounts no run-files directory.
 func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 	probes := map[string]func(store.RunStore) bool{
-		"AsRunOutcomeCASStore":     func(s store.RunStore) bool { return store.AsRunOutcomeCASStore(s) != nil },
-		"AsContextIdentityStore":   func(s store.RunStore) bool { return store.AsContextIdentityStore(s) != nil },
-		"AsRunExecutionStore":      func(s store.RunStore) bool { return store.AsRunExecutionStore(s) != nil },
-		"AsObservedExecutionStore": func(s store.RunStore) bool { return store.AsObservedExecutionStore(s) != nil },
-		"AsAttemptStore":           func(s store.RunStore) bool { return store.AsAttemptStore(s) != nil },
-		"AsBackendSessionStore":    func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
-		"AsOutputCorrectionStore":  func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
-		"AsParentedRunCreator":     func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
-		"AsQueuedAttemptClaimer":   func(s store.RunStore) bool { return store.AsQueuedAttemptClaimer(s) != nil },
-		"AsRunFilesGrantStore":     func(s store.RunStore) bool { return store.AsRunFilesGrantStore(s) != nil },
-		"AsRunFilesStore":          func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
-		"AsScratchBankStore":       func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
-		"AsSpendStore":             func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
-		"AsToolApprovalSpender":    func(s store.RunStore) bool { return store.AsToolApprovalSpender(s) != nil },
+		"AsAttemptStore":               func(s store.RunStore) bool { return store.AsAttemptStore(s) != nil },
+		"AsBackendSessionStore":        func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
+		"AsCodemodeQuotaResumeClaimer": func(s store.RunStore) bool { return store.AsCodemodeQuotaResumeClaimer(s) != nil },
+		"AsCodemodeScratchStore":       func(s store.RunStore) bool { return store.AsCodemodeScratchStore(s) != nil },
+		"AsContextIdentityStore":       func(s store.RunStore) bool { return store.AsContextIdentityStore(s) != nil },
+		"AsObservedExecutionStore":     func(s store.RunStore) bool { return store.AsObservedExecutionStore(s) != nil },
+		"AsOutputCorrectionStore":      func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
+		"AsParentedRunCreator":         func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
+		"AsQueuedAttemptClaimer":       func(s store.RunStore) bool { return store.AsQueuedAttemptClaimer(s) != nil },
+		"AsResumePauseHandoffStore":    func(s store.RunStore) bool { return store.AsResumePauseHandoffStore(s) != nil },
+		"AsRunExecutionStore":          func(s store.RunStore) bool { return store.AsRunExecutionStore(s) != nil },
+		"AsRunFilesGrantStore":         func(s store.RunStore) bool { return store.AsRunFilesGrantStore(s) != nil },
+		"AsRunFilesStore":              func(s store.RunStore) bool { return store.AsRunFilesStore(s) != nil },
+		"AsRunOutcomeCASStore":         func(s store.RunStore) bool { return store.AsRunOutcomeCASStore(s) != nil },
+		"AsScratchBankStore":           func(s store.RunStore) bool { return store.AsScratchBankStore(s) != nil },
+		"AsSpendStore":                 func(s store.RunStore) bool { return store.AsSpendStore(s) != nil },
+		"AsToolApprovalSpender":        func(s store.RunStore) bool { return store.AsToolApprovalSpender(s) != nil },
 	}
 	files, err := filepath.Glob(filepath.Join("..", "runtime", "*.go"))
 	if err != nil {

@@ -2014,6 +2014,12 @@ func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
 	if cb.ToolResultBytes != 0 {
 		fmt.Fprintf(b, "%stool_result_bytes: %d\n", inner, cb.ToolResultBytes)
 	}
+	if cb.StoreEntries != 0 {
+		fmt.Fprintf(b, "%sstore_entries: %d\n", inner, cb.StoreEntries)
+	}
+	if cb.StoreBytes != 0 {
+		fmt.Fprintf(b, "%sstore_bytes: %d\n", inner, cb.StoreBytes)
+	}
 }
 
 func writeSandboxBlock(b *buf, sb *ast.SandboxBlock, indent string) {

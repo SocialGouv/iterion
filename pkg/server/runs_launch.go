@@ -390,6 +390,14 @@ type resumeRunRequest struct {
 	// the cap. Zero fields inherit. Wired through
 	// runview.ResumeSpec.Budget → cloudpublisher.SubmitResume. #652 part 2.
 	Budget *launchBudgetSpec `json:"budget,omitempty"`
+	// CodemodeStore restates only the run bank quotas: zero inherits each
+	// previous override, and restating never clears the bank.
+	CodemodeStore *resumeCodemodeStoreRequest `json:"codemode_store,omitempty"`
+}
+
+type resumeCodemodeStoreRequest struct {
+	StoreEntries int64 `json:"store_entries,omitempty"`
+	StoreBytes   int64 `json:"store_bytes,omitempty"`
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -1253,6 +1261,16 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	if req.CodemodeStore != nil {
+		if field := ir.CodemodeBoundsNegativeField(&ir.CodemodeBounds{
+			StoreEntries: req.CodemodeStore.StoreEntries, StoreBytes: req.CodemodeStore.StoreBytes,
+		}); field != "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "codemode_store.%s: quota must be non-negative", field)
+			span.SetStatus(codes.Error, "invalid codemode store quota")
+			return
+		}
+	}
+
 	// The budget ask is validated at admission, before any store access:
 	// a malformed max_duration ("4 hours") would otherwise ride
 	// RunMessage.Budget onto the queue, fail the runner's
@@ -1336,6 +1354,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx = store.WithTenant(ctx, tenantID)
 
+	var codemodeBounds *ir.CodemodeBounds
+	if quota := req.CodemodeStore; quota != nil && (quota.StoreEntries > 0 || quota.StoreBytes > 0) {
+		codemodeBounds = &ir.CodemodeBounds{StoreEntries: quota.StoreEntries, StoreBytes: quota.StoreBytes}
+	}
+
 	// Promote any operator upload attached to this answer BEFORE handing
 	// the answers to the engine: a `file` field must already be a
 	// resolvable attachment by the time the resumed workflow renders a
@@ -1357,6 +1380,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			Answers:           answers,
 			Force:             req.Force,
 			AcceptScratchLoss: req.AcceptScratchLoss,
+			CodemodeBounds:    codemodeBounds,
 			Admitted:          gateAdmitted(subj, adm),
 		}
 		if resumeLB != nil {
@@ -1402,6 +1426,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Answers:           answers,
 		Force:             req.Force,
 		AcceptScratchLoss: req.AcceptScratchLoss,
+		CodemodeBounds:    codemodeBounds,
 		Timeout:           timeout,
 		Budget:            budget,
 		// What the gate above judged on the run it read: the run service

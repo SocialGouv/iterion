@@ -20,7 +20,7 @@ func TestLaunchCodemodeBoundsParseOrNameTheField(t *testing.T) {
 		t.Errorf("an absent bounds object converted to %+v / %v, want nil / nil", got, err)
 	}
 
-	got, err = (&runview.CodemodeBoundsRequest{ToolCalls: 256, ConcurrentToolCalls: 3, Wall: "90s", CPU: "2m"}).ToBounds()
+	got, err = (&runview.CodemodeBoundsRequest{ToolCalls: 256, ConcurrentToolCalls: 3, Wall: "90s", CPU: "2m", StoreEntries: 50, StoreBytes: 262144}).ToBounds()
 	if err != nil {
 		t.Fatalf("well-formed bounds refused: %v", err)
 	}
@@ -29,6 +29,9 @@ func TestLaunchCodemodeBoundsParseOrNameTheField(t *testing.T) {
 	}
 	if got.Memory != 0 || got.ScriptBytes != 0 {
 		t.Errorf("bounds = %+v, want the unset fields to stay zero", got)
+	}
+	if got.StoreEntries != 50 || got.StoreBytes != 262144 {
+		t.Errorf("bounds = %+v, want store_entries 50 and store_bytes 262144", got)
 	}
 
 	for name, bad := range map[string]runview.CodemodeBoundsRequest{
@@ -51,6 +54,8 @@ func TestLaunchCodemodeBoundsParseOrNameTheField(t *testing.T) {
 		"wall":                  {Wall: "-5s"},
 		"cpu":                   {CPU: "-2m"},
 		"tool_result_bytes":     {ToolResultBytes: -8},
+		"store_entries":         {StoreEntries: -1},
+		"store_bytes":           {StoreBytes: -1},
 	} {
 		_, err := bad.ToBounds()
 		if err == nil {

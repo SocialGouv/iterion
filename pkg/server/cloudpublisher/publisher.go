@@ -56,7 +56,6 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
-	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -430,16 +429,13 @@ func codemodeOrReplayed(restated string, prior *store.Run) string {
 	return prior.CodemodeOverride
 }
 
-// codemodeBoundsOrReplayed is codemodeOrReplayed for the bounds raise: the
-// re-stating pointer wins, the doc's persisted pointer fills the silence.
-func codemodeBoundsOrReplayed(restated *scripthost.Limits, prior *store.Run) *scripthost.Limits {
-	if restated != nil {
+// codemodeBoundsOrReplayed replays the prior launch's codemode bounds when
+// unstated. An explicit quota-only restatement changes just the named quotas.
+func codemodeBoundsOrReplayed(restated *ir.CodemodeBounds, prior *store.Run) *ir.CodemodeBounds {
+	if prior == nil {
 		return restated
 	}
-	if prior == nil {
-		return nil
-	}
-	return prior.CodemodeBoundsOverride
+	return ir.ReplayCodemodeBounds(restated, prior.CodemodeBoundsOverride)
 }
 
 func (p *Publisher) resumePoolRefusal(ctx context.Context, prior *store.Run) error {
@@ -4814,6 +4810,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
 	}
 
+	if bounds := spec.CodemodeBounds; bounds != nil && (bounds.StoreEntries < 0 || bounds.StoreBytes < 0) {
+		return fmt.Errorf("cloudpublisher: invalid codemode resume quota (entries=%d, bytes=%d)", bounds.StoreEntries, bounds.StoreBytes)
+	}
+	quota := runview.CodemodeResumeQuota(spec.CodemodeBounds)
+
 	// Claim this resume BEFORE resolving credentials. The status CAS is the
 	// serialization point for double-clicks/client retries: only one request
 	// may create the next queue attempt, so only that request may acquire a
@@ -4840,6 +4841,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, bindErr)
 	}
 	flipper := store.AsQueuedFlipper(p.store)
+	if flipper == nil && quota != (store.CodemodeScratchLimits{}) {
+		return fmt.Errorf("cloudpublisher: resume of %s with codemode quota requires an exact queued flip", spec.RunID)
+	}
 	var flip store.QueuedFlip
 	var claimed bool
 	var claimErr error
@@ -5139,6 +5143,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// figure, so the studio never advertises a cap the run does not have.
 	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
 	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID, creds.grants...)
+	var quotaPatch *queue.CodemodeQuotaPatch
+	if quota != (store.CodemodeScratchLimits{}) {
+		claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: flip.At}
+		if err := claim.Validate(quota); err != nil {
+			return fmt.Errorf("cloudpublisher: resume of %s: %w", spec.RunID, err)
+		}
+		quotaPatch = &queue.CodemodeQuotaPatch{Entries: quota.Entries, Bytes: quota.Bytes, QueuedAt: flip.At}
+	}
 	msg := &queue.RunMessage{
 		V:                queue.SchemaVersion,
 		Contributions:    contributions,
@@ -5155,6 +5167,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			ReceiptID:         spec.ReceiptID,
 			PriorStatus:       priorStatus,
 			AcceptScratchLoss: spec.AcceptScratchLoss,
+			CodemodeQuota:     quotaPatch,
 		},
 		SecretsRef: creds.secretsRef,
 		BundleDEK:  creds.dek,

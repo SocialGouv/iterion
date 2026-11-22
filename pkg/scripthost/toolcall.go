@@ -31,7 +31,8 @@ import (
 // (CM-3). A version-1 child would run a program that uses them into "not a
 // function"; the handshake refuses it as a different build instead.
 // 3: `call.parallel` and the batch frame (CM-9).
-const Proto = 3
+// 4: scoped run state requests and replies (CM-11/12).
+const Proto = 4
 
 // MaxParallelBatch bounds a batch independently of its execution width.
 const MaxParallelBatch = 4
@@ -82,6 +83,8 @@ type Frame struct {
 	// the cut rather than a clean string, because a script that aggregates a
 	// cut result and returns a confident total is worse than one that knows.
 	Truncated bool `json:"truncated,omitempty"`
+
+	StateCode string `json:"state_code,omitempty"`
 
 	// Remaining is the call budget left after this result, set on FrameResult
 	// and FrameBudget. The child uses it to refuse locally; the parent's own
@@ -139,6 +142,31 @@ func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv
 		if err := json.Unmarshal(line, &f); err != nil {
 			return served, fmt.Errorf("scripthost: decoding a tool-channel frame: %w", err)
 		}
+		if f.Type == frameStateStore || f.Type == frameStateLoad {
+			wantID++
+			if f.ID != wantID || len(f.Calls) != 0 || len(line) > stateFrameCap {
+				return served, fmt.Errorf("scripthost: invalid state frame sequence")
+			}
+			reply := budgetFrame(f.ID, limits.ToolCalls)
+			if served < limits.ToolCalls {
+				served++
+				reply, err = serveState(ctx, srv, f, limits.ToolCalls-served)
+				if ctx.Err() != nil {
+					return served, nil
+				}
+				if err != nil {
+					return served, err
+				}
+			}
+			if err := writeStateFrame(replies, reply); err != nil {
+				if ctx.Err() != nil {
+					return served, nil
+				}
+				return served, fmt.Errorf("scripthost: answering state request: %w", err)
+			}
+			continue
+		}
+
 		if f.Type != FrameCall && f.Type != FrameBatch {
 			return served, fmt.Errorf("scripthost: tool channel only carries %q or %q from the child, got %q", FrameCall, FrameBatch, f.Type)
 		}

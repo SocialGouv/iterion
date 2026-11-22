@@ -1206,6 +1206,8 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 	p.int64("script_bytes", cb.ScriptBytes)
 	p.int64("result_bytes", cb.ResultBytes)
 	p.int64("tool_result_bytes", cb.ToolResultBytes)
+	p.int64("store_entries", cb.StoreEntries)
+	p.int64("store_bytes", cb.StoreBytes)
 	return p.node()
 }
 

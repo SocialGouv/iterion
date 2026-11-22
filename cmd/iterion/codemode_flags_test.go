@@ -74,3 +74,25 @@ func TestCodemodeConcurrencyFlagAlone(t *testing.T) {
 		t.Errorf("negativeField = %q, want concurrency flag", got)
 	}
 }
+
+func TestCodemodeStoreFlags(t *testing.T) {
+	t.Parallel()
+	for _, flag := range []string{"codemode-store-entries", "codemode-store-bytes"} {
+		var c codemodeFlagSet
+		flags := pflag.NewFlagSet("codemode", pflag.ContinueOnError)
+		c.register(flags)
+		if err := flags.Parse([]string{"--" + flag + "=48"}); err != nil {
+			t.Fatal(err)
+		}
+		got := c.bounds()
+		if got == nil || (flag == "codemode-store-entries" && got.StoreEntries != 48) || (flag == "codemode-store-bytes" && got.StoreBytes != 48) {
+			t.Errorf("%s bounds = %+v, want the quota carried on its own", flag, got)
+		}
+		if err := flags.Set(flag, "-1"); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.negativeField(); got != "--"+flag {
+			t.Errorf("negativeField() = %q, want --%s", got, flag)
+		}
+	}
+}

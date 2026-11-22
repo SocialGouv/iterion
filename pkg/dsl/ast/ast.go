@@ -1218,6 +1218,8 @@ type CodemodeBlock struct {
 	ScriptBytes         int64  // script_bytes: bytes of program source
 	ResultBytes         int64  // result_bytes: bytes the program may return
 	ToolResultBytes     int64  // tool_result_bytes: bytes of ONE tool result
+	StoreEntries        int64  // store_entries: keys in the run bank
+	StoreBytes          int64  // store_bytes: total UTF-8 key and JSON value bytes in the run bank
 	Span                Span
 }
 
@@ -1239,7 +1241,7 @@ func (c *CodemodeBlock) Bounded() bool {
 		return false
 	}
 	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
-		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
 }
 
 // SandboxBuildBlock is the AST representation of a `build:` sub-block

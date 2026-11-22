@@ -214,10 +214,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// launch persisted it, the resume replays it, a re-state wins. (Both
 	// AFTER the load check — revi Rf4566c: the first draft dereferenced r
 	// before this check and panicked on an unloadable run.)
+	quotaPatch := runview.CodemodeResumeQuota(opts.CodemodeBounds)
 	opts.Codemode = pickString(opts.Codemode, r.CodemodeOverride)
-	if opts.CodemodeBounds == nil {
-		opts.CodemodeBounds = r.CodemodeBoundsOverride
-	}
+	opts.CodemodeBounds = ir.ReplayCodemodeBounds(opts.CodemodeBounds, r.CodemodeBoundsOverride)
 	opts.Permission = pickString(opts.Permission, r.PermissionOverride)
 
 	// Tee log output to run.log so the studio's Logs panel sees
@@ -357,6 +356,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	if opts.Codemode != "" || opts.CodemodeBounds != nil {
 		resumeOpts = append(resumeOpts, runtime.WithCodemodeOverride(opts.Codemode, opts.CodemodeBounds))
+	}
+	if quotaPatch != (store.CodemodeScratchLimits{}) {
+		resumeOpts = append(resumeOpts, runtime.WithResumeCodemodeQuota(quotaPatch))
 	}
 	if raw := runview.RunBudgetOverrides(&opts.Budget); raw != nil {
 		resumeOpts = append(resumeOpts, runtime.WithBudgetOverrides(raw))

@@ -1427,6 +1427,10 @@ type Run struct {
 	// the launch did not choose.
 	CodemodeOverride       string             `json:"codemode_override,omitempty" bson:"codemode_override,omitempty"`
 	CodemodeBoundsOverride *scripthost.Limits `json:"codemode_bounds_override,omitempty" bson:"codemode_bounds_override,omitempty"`
+	// CodemodeQuotaClaimedAt is the publication whose queued quota claim won.
+	// A parked delivery with the same QueuedAt may not have claimed at all.
+	CodemodeQuotaClaimedAt *time.Time          `json:"codemode_quota_claimed_at,omitempty" bson:"codemode_quota_claimed_at,omitempty"`
+	ResumePauseHandoff     *ResumePauseHandoff `json:"resume_pause_handoff,omitempty" bson:"resume_pause_handoff,omitempty"`
 	// SandboxOverride is the operator's launch-time --sandbox choice
 	// ("none", "auto", explicit driver name). Persisted verbatim so
 	// resume/rewind replay the isolation decision the launch took: a run
@@ -2284,8 +2288,11 @@ const (
 // persist code only (continuation stays unknown until the runner
 // promotes it at the actual NAK / retry-arm / park).
 type RunOutcomeMeta struct {
-	Code         FailureCode
-	Continuation ContinuationState
+	// ExactQueuedAt optionally fences the transition to a publication's
+	// marker (also on statuses past queued). It is not outcome data.
+	ExactQueuedAt time.Time
+	Code          FailureCode
+	Continuation  ContinuationState
 	// EndReason is the typed WHY the run ended. It follows the FailureCode
 	// discipline exactly — persisted only on the statuses that carry an
 	// outcome (RunStatus.CarriesFailureCode), cleared by every transition
@@ -2580,8 +2587,9 @@ type Checkpoint struct {
 	// failure) could spend an unbounded multiple of its declared budget, and
 	// the max_iterations runaway-loop guard would reset on every resume.
 	// Zero/omitted on legacy checkpoints (a fresh budget — the prior behaviour).
-	BudgetTokensUsed int     `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
-	BudgetCostUSD    float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
+	ResumePauseCostReadings []ResumePauseCostReading `json:"resume_pause_cost_readings,omitempty" bson:"resume_pause_cost_readings,omitempty"`
+	BudgetTokensUsed        int                      `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
+	BudgetCostUSD           float64                  `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
 	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
 	// axis could not price. Absent from checkpoints written before they
 	// existed, which restores as zero — the prior behaviour.

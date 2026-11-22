@@ -170,6 +170,10 @@ func (s *Store) readRunFormatObservation(ctx context.Context, id string, capture
 // the header comparison too, so a successor answers ErrRunDataIdentityChanged
 // whatever tenant shape it carries — the answer LoadRun gives.
 func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, capture, retained bool) (*store.Run, bson.Raw, error) {
+	return readRunMetadataProjection(ctx, s.runs, id, capture, retained, runFormatMetadataProjection())
+}
+
+func readRunMetadataProjection(ctx context.Context, runs *mongo.Collection, id string, capture, retained bool, projection bson.M) (*store.Run, bson.Raw, error) {
 	if ctx == nil {
 		return nil, nil, store.ErrInvalidValueFormat
 	}
@@ -178,7 +182,6 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 	}
 	observed := observesTenant(ctx)
 	retained = retained || observed
-	projection := runFormatMetadataProjection()
 	if retained {
 		// The canonical tenant replaces the decoded one, so the plain field is
 		// not projected: a tenant_id of another BSON type is judged by the
@@ -187,7 +190,7 @@ func (s *Store) readRunFormatObservationPolicy(ctx context.Context, id string, c
 		delete(projection, "tenant_id")
 		projection["retained_tenant_headers"] = tenantHeaderEntries()
 	}
-	cursor, err := s.runs.Aggregate(ctx, mongo.Pipeline{
+	cursor, err := runs.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: withTenantFilter(ctx, bson.M{"_id": id})}},
 		{{Key: "$project", Value: projection}},
 	})

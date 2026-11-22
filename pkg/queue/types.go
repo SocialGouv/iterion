@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -292,7 +293,13 @@ import (
 // silently replace the configured concurrency with serial execution. Roll
 // runners first; v27–v33 messages remain readable and inherit the default
 // when the field is absent.
-const SchemaVersion = 34
+// v=35: compiled workflow and launch bounds can carry store_entries and
+// store_bytes and the explicit resume quota patch (CM-11/12). Old runners
+// cannot enforce the run bank's quotas.
+// Roll runners first; v27–v34 messages without these fields remain readable.
+const SchemaVersion = 35
+
+const codemodeStoreSchemaVersion = 35
 
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its
@@ -759,6 +766,15 @@ type BackendConfig struct {
 	DelegateModel string  `json:"delegate_model,omitempty"`
 }
 
+// CodemodeQuotaPatch carries only the explicitly restated run-bank quota
+// dimensions. Zero leaves that dimension unchanged at the resume claim.
+type CodemodeQuotaPatch struct {
+	// QueuedAt identifies the exact store flip; PublishedAt serves a separate lease contract.
+	QueuedAt time.Time `json:"queued_at"`
+	Entries  int64     `json:"store_entries,omitempty"`
+	Bytes    int64     `json:"store_bytes,omitempty"`
+}
+
 // ResumeSpec is non-nil for resume publishes; the runner threads its
 // fields into `runtime.Engine.Resume`.
 type ResumeSpec struct {
@@ -767,6 +783,12 @@ type ResumeSpec struct {
 	Force          bool            `json:"force"`
 	ExpectedStatus store.RunStatus `json:"expected_status,omitempty"`
 	ReceiptID      string          `json:"receipt_id,omitempty"`
+	// CodemodeQuota is spent when this publication is claimed, not on retries.
+	// RunMessage.CodemodeBounds is an execution snapshot, not a quota write.
+	CodemodeQuota *CodemodeQuotaPatch `json:"codemode_quota,omitempty"`
+	// CodemodeQuotaSpent is runner-local. A redelivery keeps its attempt
+	// identity but no longer proposes a quota change.
+	CodemodeQuotaSpent bool `json:"-"`
 	// PriorStatus is the status the publisher's claim moved the run from
 	// to queued. When the engine refuses the resume before claiming it —
 	// nothing ran, and the refusal is acked, never redelivered — the runner
@@ -877,8 +899,26 @@ func (m *RunMessage) Validate() error {
 	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
 		stale = append(stale, staleRule{ContentBoundaryProducerSchemaVersion, fmt.Sprintf("a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)})
 	}
+	hasStoreBounds := m.CodemodeBounds != nil && (m.CodemodeBounds.StoreEntries != 0 || m.CodemodeBounds.StoreBytes != 0)
+	var quota *CodemodeQuotaPatch
+	if m.Resume != nil {
+		quota = m.Resume.CodemodeQuota
+	}
+	if m.V < codemodeStoreSchemaVersion && (hasStoreBounds || quota != nil) {
+		stale = append(stale, staleRule{codemodeStoreSchemaVersion, fmt.Sprintf("a v%d message carries codemode store quotas but predates their producer (v%d)", m.V, codemodeStoreSchemaVersion)})
+	}
 	if len(stale) > 0 {
 		return staleProducer(m.V, stale)
+	}
+	if quota != nil {
+		claim := store.CodemodeQuotaResumeClaim{ExpectedStatus: store.RunStatusQueued, QueuedAt: quota.QueuedAt}
+		if err := claim.Validate(store.CodemodeScratchLimits{Entries: quota.Entries, Bytes: quota.Bytes}); err != nil {
+			return fmt.Errorf("queue: %w", err)
+		}
+		published, err := time.Parse(time.RFC3339Nano, m.PublishedAtRFC)
+		if err != nil || published.IsZero() {
+			return fmt.Errorf("queue: codemode resume quota requires a valid publication time")
+		}
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),
@@ -947,6 +987,12 @@ type Envelope struct {
 	// run claims, park it on the right DLQ, and flip the right attempt.
 	RunnerPool     string `json:"runner_pool,omitempty"`
 	PublishedAtRFC string `json:"published_at"`
+	// Resume carries only the attempt identity needed by a rejecting consumer.
+	Resume *struct {
+		CodemodeQuota *struct {
+			QueuedAt time.Time `json:"queued_at"`
+		} `json:"codemode_quota,omitempty"`
+	} `json:"resume,omitempty"`
 }
 
 // ValidPoolName reports whether s is a well-formed runner-pool name:

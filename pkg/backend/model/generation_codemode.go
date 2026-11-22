@@ -26,7 +26,7 @@ import (
 // the host does not keep.
 const codemodeDescription = `Run a JavaScript program that calls this node's other tools, so a loop, a filter or a large intermediate result stays out of the conversation. Return only what you need: the program's LAST EXPRESSION is what you get back, JSON-encoded.
 
-call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tools a program can call are listed below. Left out are the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. call.describe(name) returns a tool's TypeScript declaration, and call.search(query) returns the tools that best match what you need, each {name, summary, declaration}; neither is a tool call. A program cannot open a file, a socket or a process, and holds no credential: tools are its whole world. call() is SYNCHRONOUS: it returns the result, not a promise. Do not write await, and do not declare anything async — there is no event loop to settle a promise, and await is a syntax error that costs you the whole program. There is no console, no require, no process, no timers, and no network.
+call(name, input) runs one of this node's tools and returns {text, isError, truncated, remaining}; it THROWS on a failed call, with the same fields, so try/catch recovers. The tools a program can call are listed below. Left out are the ones a program may not reach: anything that pauses the run or answers for the node (asking the operator, sending a message, filling the output schema), the iterion control surface, sub-agents, and codemode itself. Call those directly instead. call.describe(name) returns a tool's TypeScript declaration, and call.search(query) returns the tools that best match what you need, each {name, summary, declaration}; neither is a tool call. A program cannot open a file, a socket or a process, and holds no credential. call() is SYNCHRONOUS: it returns the result, not a promise. Do not write await, and do not declare anything async — there is no event loop to settle a promise, and await is a syntax error that costs you the whole program. There is no console, no require, no process, no timers, and no network.
 
 call.parallel([{name, input}, …]) accepts up to four independent calls and returns entries in input order. Each entry has {status, text, isError, truncated, remaining}; status is "ok", "error", or "budget". Tool failures and budget refusals are entries, not exceptions. Every entry reports the same remaining budget after admitting the batch. Like call(), call.parallel() is synchronous. Only audited native glob and workspace_grep can overlap, where policy, hooks and limits allow it; other calls run exclusively. Cancellation does not undo effects that have already started.
 
@@ -90,8 +90,11 @@ func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, want *scri
 	if err != nil {
 		return err
 	}
+	if opts.codemodeState != nil {
+		description += "\n\ncall.store(key, value) writes a JSON value to this run’s shared state; call.load(key) reads it. A missing key returns undefined, not null. Both are synchronous, count against the script call budget, and cannot dispatch tools. The bank is bounded; handle invalid input and quota errors without retrying the same write."
+	}
 	host.Catalog = catalog
-	opts.Tools = append(opts.Tools, codemodeTool(host, limits, description))
+	opts.Tools = append(opts.Tools, codemodeToolWithState(host, limits, description, opts.codemodeState))
 	return nil
 }
 
@@ -137,7 +140,7 @@ func codemodeToolDescription(catalog []toolindex.Tool) (string, error) {
 // where a declared value is above the ceiling — OnClamp stays the seam that
 // refuses to replace an operator's explicit choice in silence, and is now
 // reachable by an author rather than only by a future lot.
-func codemodeTool(host scripthost.Host, want scripthost.Limits, description string) GenerationTool {
+func codemodeToolWithState(host scripthost.Host, want scripthost.Limits, description string, state CodemodeState) GenerationTool {
 	return GenerationTool{
 		Name:        ScriptHostToolName,
 		Description: description,
@@ -172,6 +175,7 @@ func codemodeTool(host scripthost.Host, want scripthost.Limits, description stri
 			// this line. A crossing there would answer one node's program
 			// through another node's door.
 			h := host
+			srv.state = state
 			h.Tools = srv
 
 			resp, err := h.Run(ctx, args.Source, want)

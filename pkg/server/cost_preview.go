@@ -112,6 +112,8 @@ type previewCodemodeBounds struct {
 	ScriptBytes         int64  `json:"script_bytes"`
 	ResultBytes         int64  `json:"result_bytes"`
 	ToolResultBytes     int64  `json:"tool_result_bytes"`
+	StoreEntries        int64  `json:"store_entries"`
+	StoreBytes          int64  `json:"store_bytes"`
 }
 
 // previewCodemodeBoundsOf projects a scripthost Limits onto the wire shape.
@@ -125,6 +127,8 @@ func previewCodemodeBoundsOf(l scripthost.Limits) previewCodemodeBounds {
 		ScriptBytes:         l.ScriptBytes,
 		ResultBytes:         l.ResultBytes,
 		ToolResultBytes:     l.ToolResultBytes,
+		StoreEntries:        l.StoreEntries,
+		StoreBytes:          l.StoreBytes,
 	}
 }
 

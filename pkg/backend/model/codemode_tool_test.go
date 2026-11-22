@@ -891,3 +891,7 @@ func (emit codemodeEventEmitter) AppendEvent(_ context.Context, _ string, event 
 	emit(event)
 	return &event, nil
 }
+
+func codemodeTool(host scripthost.Host, want scripthost.Limits, description string) GenerationTool {
+	return codemodeToolWithState(host, want, description, nil)
+}

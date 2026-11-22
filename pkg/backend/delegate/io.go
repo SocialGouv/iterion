@@ -167,9 +167,12 @@ type IOTask struct {
 	AmbientContextSource   string                 `json:"ambient_context_source,omitempty"`
 	Codemode               bool                   `json:"codemode,omitempty"`
 	CodemodeBounds         *scripthost.Limits     `json:"codemode_bounds,omitempty"`
-	CompressMode           string                 `json:"compress_mode,omitempty"`
-	Rewriters              []plugin.RewriterSpec  `json:"rewriters,omitempty"`
-	SettingsHooks          json.RawMessage        `json:"settings_hooks,omitempty"`
+	// CodemodeState requires the matching pre-task capability marker. No
+	// bank identity or storage quota crosses this transport.
+	CodemodeState bool                  `json:"codemode_state,omitempty"`
+	CompressMode  string                `json:"compress_mode,omitempty"`
+	Rewriters     []plugin.RewriterSpec `json:"rewriters,omitempty"`
+	SettingsHooks json.RawMessage       `json:"settings_hooks,omitempty"`
 	// Retry is the launcher's claw retry budget, which is the backend's
 	// rather than the task's: no Task field carries it. The runner retries
 	// with it instead of reading its own env, so a variable a repository's

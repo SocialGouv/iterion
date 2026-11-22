@@ -109,7 +109,7 @@ func (s *Store) beginValueDeletion(ctx context.Context, id string) (valueDeletio
 		}
 		target.At = time.Now().UTC().Truncate(time.Millisecond)
 		pending = true
-		update := bson.M{"$set": bson.M{"deleted_at": target.At, "status": "deleted", "updated_at": target.At, valueCleanupPendingField: true}, "$unset": bson.M{"checkpoint": "", "inputs": "", "inputs_pr_url": "", "launch_env": "", "model_overrides": "", "launch_model_overrides": "", "budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "", "watched_issue_ids": "", "pre_engine_refusal": ""}}
+		update := bson.M{"$set": bson.M{"deleted_at": target.At, "status": "deleted", "updated_at": target.At, valueCleanupPendingField: true}, "$unset": bson.M{"checkpoint": "", "inputs": "", "inputs_pr_url": "", "launch_env": "", "model_overrides": "", "launch_model_overrides": "", "budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "", "watched_issue_ids": "", "pre_engine_refusal": "", codemodeScratchField: "", resumePauseHandoffField: ""}}
 		filter := notDeleted(withTenantFilter(sc, bson.M{"_id": id, "$and": bson.A{valueFormatPredicate(f), correctionVersionFilter(r.CASVersion)}}))
 		resultUpdate, err := s.runs.UpdateOne(sc, filter, versionRunUpdate(update))
 		if err != nil {

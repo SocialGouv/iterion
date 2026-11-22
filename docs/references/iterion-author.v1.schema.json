@@ -230,6 +230,18 @@
           "minimum": 0,
           "type": "integer"
         },
+        "store_bytes": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Workflow scope only: total UTF-8 key and stored JSON bytes in the run's codemode bank (default 131072, ceiling 524288; 0 means inherit)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_entries": {
+          "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
+          "description": "Workflow scope only: keys in the run's codemode bank (default 32, ceiling 64; 0 means inherit)",
+          "minimum": 0,
+          "type": "integer"
+        },
         "tool_calls": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
           "description": "How many of the node's tools ONE program may call (default 64, ceiling 4096; 0 means the DEFAULT, not a ban — declare `codemode: off` for a node that must run no program). Not only a cost bound: every nested call fires the node's PreToolUse hooks and may run its tool policy, so the number is met as latency and spend long before it is a refusal",

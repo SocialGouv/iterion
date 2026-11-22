@@ -62,6 +62,17 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		SessionLedger:          snapshotSessionLedger(rs.sessionLedger),
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}
+	if original := rs.delegateHandoffCheckpoint; original != nil && original.NodeID == nodeID {
+		cp.ResumePauseCostReadings = snapshotResumePauseCostReadings(rs, nodeID)
+		cp.BackendName = original.BackendName
+		cp.BackendSessionID = original.BackendSessionID
+		cp.BackendSessionFingerprint = original.BackendSessionFingerprint
+		cp.BackendConversation = original.BackendConversation
+		cp.BackendPendingToolUseID = original.BackendPendingToolUseID
+		cp.BackendCommandNarrowing = original.BackendCommandNarrowing
+		cp.BackendSessionStranded = original.BackendSessionStranded
+		cp.BackendSessionStateRef = original.BackendSessionStateRef
+	}
 	if rs.correctionAccounts != nil {
 		accounts := rs.correctionAccounts.snapshot(cp)
 		cp.CorrectionAccounting = &accounts
@@ -433,4 +444,18 @@ func restoreNodeAttempts(src map[string]map[string]int) map[string]map[ErrorCode
 		out[nodeID] = inner
 	}
 	return out
+}
+
+func snapshotResumePauseCostReadings(rs *runState, nodeID string) []store.ResumePauseCostReading {
+	var readings []store.ResumePauseCostReading
+	for key, usd := range rs.retrySessionCosts[nodeID] {
+		readings = append(readings, store.ResumePauseCostReading{Backend: key.backend, Session: key.session, USD: usd})
+	}
+	sort.Slice(readings, func(i, j int) bool {
+		if readings[i].Backend != readings[j].Backend {
+			return readings[i].Backend < readings[j].Backend
+		}
+		return readings[i].Session < readings[j].Session
+	})
+	return readings
 }

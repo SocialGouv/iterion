@@ -225,7 +225,7 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 	greedy := Limits{
 		Wall: time.Hour, CPU: time.Hour,
 		Memory: 1 << 40, ScriptBytes: 1 << 30, ResultBytes: 1 << 30,
-		ToolCalls: 1 << 20, ConcurrentToolCalls: 99, ToolResultBytes: 1 << 30,
+		ToolCalls: 1 << 20, ConcurrentToolCalls: 99, StoreEntries: 100, StoreBytes: 1 << 20, ToolResultBytes: 1 << 30,
 	}
 	got, clamped = greedy.Clamp()
 	if !clamped {
@@ -241,7 +241,7 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 	// ceiling, honoured like any other value.
 	modest := Limits{
 		Wall: time.Second, CPU: 2 * time.Second, Memory: MemoryFloor().Memory, ScriptBytes: 10, ResultBytes: 20,
-		ToolCalls: 7, ConcurrentToolCalls: 2, ToolResultBytes: 512,
+		ToolCalls: 7, ConcurrentToolCalls: 2, StoreEntries: 7, StoreBytes: 512, ToolResultBytes: 512,
 	}
 	got, clamped = modest.Clamp()
 	if clamped {
@@ -257,7 +257,7 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 	// direction it moves.
 	underFloor := Limits{
 		Wall: time.Second, CPU: 2 * time.Second, Memory: 8 << 20, ScriptBytes: 10, ResultBytes: 20,
-		ToolCalls: 7, ConcurrentToolCalls: 2, ToolResultBytes: 512,
+		ToolCalls: 7, ConcurrentToolCalls: 2, StoreEntries: 7, StoreBytes: 512, ToolResultBytes: 512,
 	}
 	got, clamped = underFloor.Clamp()
 	if !clamped {

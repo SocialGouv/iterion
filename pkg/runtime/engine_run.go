@@ -395,7 +395,7 @@ func (e *Engine) runPreparedEntry(ctx context.Context, runID string, inputs map[
 	if err := e.prepareCorrectionAccounting(ctx, run); err != nil {
 		return err
 	}
-	rs, initErr := e.runInitState(ctx, runID, inputs)
+	rs, initErr := e.runInitState(ctx, run, inputs)
 	if initErr != nil {
 		return initErr
 	}
@@ -1270,10 +1270,12 @@ func (e *Engine) applyPresetFocus() {
 // `e.repoRoot = repoRoot` and startSandbox, which is what lets
 // pushExecutorVars resolve the scratch read root the way the nodes
 // about to execute will resolve ${PROJECT_SCRATCH_DIR}.
-func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) (*runState, error) {
+func (e *Engine) runInitState(ctx context.Context, run *store.Run, inputs map[string]any) (*runState, error) {
+	runID := run.ID
 	// Resolve the family root before expanding its scratch variables.
 	e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
 	rs := e.newRunState(runID, inputs)
+	rs.codemodeState = e.bindCodemodeState(ctx, run)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
