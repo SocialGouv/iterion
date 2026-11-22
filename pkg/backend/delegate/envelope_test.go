@@ -34,6 +34,18 @@ func TestEnvelopeRoundTripAllTypes(t *testing.T) {
 			Questions: []AskUserQuestion{{Question: "ok?", Options: []AskUserQuestionOption{{Label: "yes"}, {Label: "no"}}}},
 		}))},
 		{"ask_user_answer", build(NewAskUserAnswerEnvelope("ask-1", map[string]string{"ok?": "yes"}))},
+		{"approval_channel", build(NewApprovalChannelEnvelope())},
+		{"permission_ask", build(NewPermissionAskEnvelope("ask-2", PermissionAskData{
+			ToolName:  "mcp_server_tool",
+			Placement: PermissionPlacementLauncher,
+			Input:     json.RawMessage(`{"path":"/tmp/x"}`),
+			Question:  "Allow mcp_server_tool?",
+			Marker:    map[string]any{"tool": "mcp_server_tool", "rule": "ask(mcp_server_tool)"},
+		}))},
+		{"permission_decision", build(NewPermissionDecisionEnvelope("ask-2", PermissionDecisionData{
+			Decision: PermissionDecisionAllow,
+			Output:   "done",
+		}))},
 		{"session_capture", NewSessionCaptureEnvelope(json.RawMessage(`{"messages":[{"role":"user"}]}`))},
 		{"session_replay", NewSessionReplayEnvelope(json.RawMessage(`{"messages":[{"role":"assistant"}]}`))},
 		{"event", build(NewEventEnvelope("tool_called", map[string]any{"name": "Bash"}))},

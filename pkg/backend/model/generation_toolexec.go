@@ -511,6 +511,15 @@ func permissionGateOutcome(ctx context.Context, policy *permission.Policy, tu to
 		if asksDenied(ctx) {
 			return refusalOutcome(permission.UndelegatableAskMessage(tu.Name, hookInput, rule), tu, onToolCall), nil
 		}
+		// The approval channel (announced pre-task by the launcher): the
+		// Ask forwards across the IPC instead of pausing in-process — the
+		// runner blocks on the correlated decision, which carries the real
+		// tool result on allow. A runner without the announcement never
+		// reaches this branch: the bootstrap twin refused the ask-capable
+		// policy before any model call.
+		if fwd := sandboxApprovalForwarderFrom(ctx); fwd != nil {
+			return sandboxApprovalAskOutcome(ctx, fwd, tu, hookInput, rule, onToolCall)
+		}
 		// Suspend the run for operator approval. The captured
 		// question guides the model after the operator answers
 		// (and grants), so on resume the re-issued call passes the

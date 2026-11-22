@@ -263,6 +263,11 @@ type IOResult struct {
 	SessionFingerprint  string          `json:"session_fingerprint,omitempty"`
 	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
 	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
+	// PendingPermissionInput is the exact captured arguments of a
+	// permission-gate pause (#3513): the approval binds to these bytes, so
+	// the pause cannot checkpoint without them crossing. The in-process
+	// Result field is json:"-" — only this wire form carries it.
+	PendingPermissionInput json.RawMessage `json:"pending_permission_input,omitempty"`
 	// PendingCommandNarrowing rides the pause the container raised (#1717):
 	// the bound the in-container generation held crosses back with the
 	// conversation, or the resumed crossing restarts unbounded.
@@ -477,6 +482,8 @@ func ToIOResult(r Result) IOResult {
 		PendingConversation:     r.PendingConversation,
 		PendingToolUseID:        r.PendingToolUseID,
 		PendingCommandNarrowing: r.PendingCommandNarrowing,
+
+		PendingPermissionInput: r.PendingPermissionInput,
 	}
 }
 
@@ -520,6 +527,8 @@ func FromIOResult(r IOResult) Result {
 		PendingConversation:     r.PendingConversation,
 		PendingToolUseID:        r.PendingToolUseID,
 		PendingCommandNarrowing: r.PendingCommandNarrowing,
+
+		PendingPermissionInput: r.PendingPermissionInput,
 	}
 }
 
