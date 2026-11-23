@@ -316,9 +316,12 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 	// knows the event's later redeliveries by it (laneEvent.claimedBy).
 	meta := webhookEventMeta{Kind: d.EventKind, Action: d.EventAction, ProjectPath: d.ProjectPath,
 		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA, DeliveryID: d.ForgeDeliveryID}
+	// The spine attribution comes from the parked target, with everything
+	// else the launch is rebuilt from: the claim below rewrites the row whole.
 	out, launch := s.prepareWebhookTarget(ctx, syntheticRequestForBase(d.PublicBase), cfg, meta, forgeLaunchTarget{
 		durableRetry: true, retryAttempt: &d.Attempts, BotID: d.BotID, IdemKey: d.IdempotencyKey, Vars: cloneWebhookVars(t.Vars), RepoURL: t.RepoURL,
 		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA, ForkAuthor: t.ForkAuthor,
+		subscriptionID: t.SubscriptionID, routedBy: t.RoutedBy,
 	}, d.PayloadHash, d.SourceIP)
 	if launch == nil {
 		return out, nil

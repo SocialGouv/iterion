@@ -22,6 +22,15 @@ type ConfigStore interface {
 	Create(ctx context.Context, c Config) error
 	Get(ctx context.Context, id string) (Config, error)
 	// Update compares Version and increments it atomically. Legacy rows start at zero.
+	//
+	// It replaces the document with c, except for what the store keeps
+	// against a snapshot: LastUsedAt always, and the routing fields whenever c
+	// says nothing about them — a zero ForgeRouting keeps the stored one, a
+	// nil SpineSince keeps the stored instant. A writer that builds its
+	// Config from a literal therefore cannot revert a flip. A non-zero
+	// ForgeRouting replaces the stored one WHOLE (a writer changing one lane
+	// starts from the stored value), and neither field can be cleared here:
+	// a lane goes back to legacy by writing RoutingLegacy.
 	Update(ctx context.Context, c Config) error
 	// DisableProvision disables one immutable endpoint without replacing policy.
 	// It also works on a frozen migration source; authority must match.
@@ -101,7 +110,8 @@ type DeliveryStore interface {
 	// that actually launched a run (RunID set). This is a CEILING query —
 	// the gate-autofix per-PR bound reads it — so it must be exact over the
 	// whole audit, never a recent-window scan a busy webhook can push the
-	// rows out of.
+	// rows out of. A StatusCarded audit row is never counted, whatever it
+	// carries: its card's run is the board's launch, not this delivery's.
 	CountLaunched(ctx context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error)
 	// ListLaunchedBySubject returns every delivery that launched a run FOR
 	// one subject in one project — matching the subject itself OR its

@@ -660,15 +660,11 @@ func (s *Server) selectIssueLabeledBot(
 	meta webhookEventMeta,
 	payloadHash, srcIP string,
 ) (string, bool) {
-	botID := cfg.DefaultBotID
-	if implementer := s.roleBots().Implementer; botID == "" && cfg.AllowsBot(implementer) {
-		botID = implementer
-	}
-	if botID == "" {
-		if botID = cfg.SelectBot(); botID == "" {
-			botID = s.roleBots().Reviewer
-		}
-	}
+	roles := s.roleBots()
+	// The election is webhooks.LegacyIssueWinner, the definition the forge
+	// subscription planner shares; checkBotPermitted judges the scope itself
+	// and owns the refusal's delivery row and 403.
+	botID, _ := webhooks.LegacyIssueWinner(cfg, roles.Implementer, roles.Reviewer)
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
 }
 
@@ -871,6 +867,15 @@ type forgeLaunchTarget struct {
 	// duplicate of existing, the row that answers it. Never persisted, like
 	// onLaunched; an admission refusal decides no claim and fires none.
 	onClaimDecided func(claimed bool, existing *webhooks.Delivery)
+	// subscriptionID and routedBy are the target's spine attribution
+	// (ADR-172): the forge-bound subscription that claimed the event for
+	// BotID, and the router that decided it (webhooks.RoutingSpine). Both are
+	// empty on a target legacy routed. The tail stamps them on the delivery
+	// row and parks them on its retry target, so every rewrite of the row —
+	// the sweeper's, a manual retry's, a forge redelivery's — writes them
+	// again.
+	subscriptionID string
+	routedBy       string
 	BotID          string
 	IdemKey        string
 	Vars           map[string]string
@@ -1366,11 +1371,16 @@ func (s *Server) prepareWebhookTarget(
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
+	// The spine attribution is the target's, on a first claim and on the
+	// take-over of a failed row alike: both write the row whole, so it is
+	// stamped here from the target, never carried from the stored row.
+	delivery.SubscriptionID, delivery.RoutedBy = t.subscriptionID, t.routedBy
 	if t.durableRetry {
 		delivery.RetryTarget = &webhooks.DeferredTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: cloneWebhookVars(t.Vars),
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
-			ForkAuthor: t.ForkAuthor,
+			ForkAuthor:     t.ForkAuthor,
+			SubscriptionID: t.subscriptionID, RoutedBy: t.routedBy,
 		}
 		delivery.PublicBase = s.publicBaseURL(r)
 	}

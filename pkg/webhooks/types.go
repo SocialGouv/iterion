@@ -67,6 +67,68 @@ type Rate struct {
 	Burst float64 `bson:"burst" json:"burst"` // bucket capacity
 }
 
+// Forge routing modes: which router decides the bots a forge delivery of one
+// lane starts (ADR-172 §8). The empty mode means "not set" — the reader
+// applies the server default, which is legacy.
+const (
+	// RoutingLegacy is the single-winner election and the per-bot rule table.
+	RoutingLegacy = "legacy"
+	// RoutingShadow launches through legacy and audits what the spine would
+	// have routed.
+	RoutingShadow = "shadow"
+	// RoutingSpine routes by the subscriptions the integration projects.
+	RoutingSpine = "spine"
+)
+
+// Forge routing lanes, the argument of ForgeRouting.For.
+const (
+	LaneIssues       = "issues"
+	LanePullRequests = "pull_requests"
+	LaneComments     = "comments"
+)
+
+// ForgeRouting is the per-lane routing switch of one forge integration,
+// projected onto its webhook Config. Each lane holds a Routing* mode, or ""
+// when nothing was ever chosen for it.
+//
+// A value struct, never a pointer: every reader of an unflipped config —
+// almost all of them — holds the zero value and reads it safely. IsZero is
+// what keeps that zero value off the wire: the BSON codec omits an
+// `omitempty` struct only when its type says it is zero (bson.Zeroer), and
+// encoding/json does the same under `omitzero`. A holder of this type
+// therefore tags its field `bson:"forge_routing,omitempty"
+// json:"forge_routing,omitzero"`.
+//
+// The zero value is never a write: a config store keeps the stored routing
+// when the written struct holds none (see ConfigStore.Update), so a rollback
+// writes RoutingLegacy explicitly.
+type ForgeRouting struct {
+	Issues       string `bson:"issues,omitempty" json:"issues,omitempty"`
+	PullRequests string `bson:"pull_requests,omitempty" json:"pull_requests,omitempty"`
+	Comments     string `bson:"comments,omitempty" json:"comments,omitempty"`
+}
+
+// For returns the mode stored for lane (a Lane* name): "" when the lane holds
+// none, and "" for a name that is not a lane — an unknown lane routes nothing
+// on its own, the caller's default decides.
+func (r ForgeRouting) For(lane string) string {
+	switch lane {
+	case LaneIssues:
+		return r.Issues
+	case LanePullRequests:
+		return r.PullRequests
+	case LaneComments:
+		return r.Comments
+	}
+	return ""
+}
+
+// IsZero reports whether no lane holds a mode. The BSON codec and
+// encoding/json both call it to omit the field (see the type's comment), and
+// the config stores read it to tell "says nothing about routing" from a
+// routing to store.
+func (r ForgeRouting) IsZero() bool { return r == ForgeRouting{} }
+
 // Config is a per-org inbound webhook. The token plaintext is returned
 // exactly once at create/rotate; only TokenHash/TokenLast4/Fingerprint
 // persist.
@@ -470,6 +532,20 @@ type Config struct {
 	// consented to only after a rotation re-seals the secret from it.
 	SecretOrigin string `bson:"secret_origin,omitempty" json:"secret_origin,omitempty"`
 
+	// ForgeRouting is the per-lane routing switch (ADR-172 §8), projected from
+	// the forge integration that owns this config; SpineSince is the instant a
+	// lane of it first routed spine, which legacy keeps reading the spine's
+	// claims from after a rollback. Provisioner-owned: the forge orchestrator
+	// writes both, the webhook CRUD has no field for either.
+	//
+	// Both survive every writer that says nothing about them: ConfigStore.Update
+	// keeps the stored value when the written struct holds the zero routing or
+	// a nil SpineSince, so a writer built from a literal — or one holding a
+	// snapshot older than a flip — cannot revert a flip. Read the mode through
+	// ForgeRouting.For.
+	ForgeRouting ForgeRouting `bson:"forge_routing,omitempty" json:"forge_routing,omitzero"`
+	SpineSince   *time.Time   `bson:"spine_since,omitempty" json:"spine_since,omitempty"`
+
 	CreatedBy  string     `bson:"created_by" json:"created_by"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`
 	UpdatedAt  time.Time  `bson:"updated_at" json:"updated_at"`
@@ -596,6 +672,33 @@ func (c *Config) SelectBot() string {
 	return ""
 }
 
+// LegacyIssueWinner is the legacy election of the issue-labeled lane: the ONE
+// bot a freshly-labeled issue starts on a config that does not route the lane
+// by subscriptions. An issue carries no diff to review — it must be turned
+// into one — so the reviewer default of the pull-request lanes is wrong here.
+// Precedence: the operator-pinned DefaultBotID; else implementer when the
+// webhook permits it; else SelectBot; else reviewer, so a reviewer-only
+// webhook keeps launching its reviewer.
+//
+// permitted reports whether the webhook's bot scope allows the winner. The
+// election does not fall through to another bot when it does not: the caller
+// refuses the delivery, naming botID.
+//
+// implementer and reviewer are the deployment's role bots; the caller
+// resolves them, this package holds no role table.
+func LegacyIssueWinner(cfg Config, implementer, reviewer string) (botID string, permitted bool) {
+	botID = cfg.DefaultBotID
+	if botID == "" && cfg.AllowsBot(implementer) {
+		botID = implementer
+	}
+	if botID == "" {
+		if botID = cfg.SelectBot(); botID == "" {
+			botID = reviewer
+		}
+	}
+	return botID, cfg.AllowsBot(botID)
+}
+
 // CommandRoute records how a webhook routes one /slash-command to a bot and
 // its execution mode. Mirrors the bot's manifest command invocation
 // (bundle.InvocationCommand + the invocation's mode/args_var/context_vars),
@@ -693,8 +796,19 @@ type Delivery struct {
 	// are recognised by it or by PayloadHash.
 	ForgeDeliveryID string `bson:"forge_delivery_id,omitempty" json:"forge_delivery_id,omitempty"`
 
-	Status     string    `bson:"status" json:"status"`
-	BotID      string    `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
+	Status string `bson:"status" json:"status"`
+	BotID  string `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
+	// SubscriptionID and RoutedBy are the spine attribution of this row
+	// (ADR-172): the forge-bound subscription that claimed the event for
+	// BotID, and the router that decided it — RoutingSpine, the only value
+	// written. Both are empty on a row legacy routed, which keeps its bytes.
+	// A retry rewrites the whole row, so the attribution travels with the
+	// launch target (DeferredTarget) and is stamped again from it.
+	SubscriptionID string `bson:"subscription_id,omitempty" json:"subscription_id,omitempty"`
+	RoutedBy       string `bson:"routed_by,omitempty" json:"routed_by,omitempty"`
+	// CardID names the board card a StatusCarded row stands next to. Empty on
+	// every other row.
+	CardID     string    `bson:"card_id,omitempty" json:"card_id,omitempty"`
 	RunID      string    `bson:"run_id,omitempty" json:"run_id,omitempty"`
 	Error      string    `bson:"error,omitempty" json:"error,omitempty"`
 	SourceIP   string    `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
@@ -760,6 +874,14 @@ const (
 	StatusLaunchError     = "launch_error"
 	StatusLaunchExhausted = "launch_exhausted"
 	StatusLaunchUncertain = "launch_uncertain"
+	// StatusCarded is the audit row of a target the spine routed to a board
+	// card instead of launching it (ADR-172 §7): it records the bot, the
+	// subscription and the card (Delivery.CardID), so the audit sees every
+	// spine target. AUDIT-ONLY — the card is the claim and the board launches
+	// its run, so this row is neither: no store query that hands out work or
+	// counts launches selects it (ListRetryDue, ClaimFailedRetry,
+	// CountLaunched), whatever else the row carries.
+	StatusCarded = "carded"
 	// StatusDeferred is an HTTP-response-only status (never a stored
 	// Delivery row): the delivery is parked for a quiet window and will
 	// launch — as its own delivery, under its own idempotency key — when
@@ -818,6 +940,12 @@ type DeferredTarget struct {
 	// row but a fork gesture's; a row written before the field decodes to
 	// nil, i.e. to what it was.
 	ForkAuthor *ForkAuthorRef `bson:"fork_author,omitempty" json:"fork_author,omitempty"`
+	// SubscriptionID and RoutedBy are the target's spine attribution, parked
+	// with the rest of it: a replay rebuilds the launch from this struct and
+	// rewrites the delivery row whole, so an attribution kept only on the row
+	// would not survive its first retry. Empty on a target legacy routed.
+	SubscriptionID string `bson:"subscription_id,omitempty" json:"subscription_id,omitempty"`
+	RoutedBy       string `bson:"routed_by,omitempty" json:"routed_by,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a

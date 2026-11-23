@@ -101,8 +101,15 @@ func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
 		return err
 	}
 	delete(doc, "last_used_at")
-	// A request snapshot cannot erase a delivery's independently stamped usage.
-	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{bson.M{"last_used_at": "$last_used_at"}, bson.M{"$literal": doc}}}}}}
+	// The first operand is what the stored document keeps against a request
+	// snapshot. last_used_at always: a snapshot cannot erase a delivery's
+	// independently stamped usage. forge_routing and spine_since whenever the
+	// snapshot says nothing about them — their zero values encode no key
+	// (Config's omitempty tags, ForgeRouting.IsZero), so the literal does not
+	// override the stored ones; a snapshot that carries a routing or an
+	// instant does, and replaces the stored value whole.
+	keep := bson.M{"last_used_at": "$last_used_at", "forge_routing": "$forge_routing", "spine_since": "$spine_since"}
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{keep, bson.M{"$literal": doc}}}}}}
 	r, err := s.kit.Coll().UpdateOne(ctx, filter, pipeline)
 	if mongo.IsDuplicateKeyError(err) {
 		return ErrDuplicate
@@ -334,6 +341,7 @@ func (s *MongoDeliveryStore) CountLaunched(ctx context.Context, tenantID, webhoo
 		"project_path": projectPath,
 		"subject_id":   subjectID,
 		"run_id":       bson.M{"$nin": bson.A{nil, ""}},
+		"status":       bson.M{"$ne": StatusCarded},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("webhooks: count launched deliveries: %w", err)
