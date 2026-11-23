@@ -852,8 +852,9 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// to a fixed point and folds the suffix's case; the slug's own case is
 		// folded where the quota and the usage listing READ it, not here — a
 		// forge resolves case-variant slugs to one repository (see
-		// CanonicalRepoSlug).
-		repoProjectPath = forge.CanonicalRepoSlug(strings.TrimPrefix(req.RepoURL, base+"/"))
+		// CanonicalRepoSlug). ProjectPathOnBase is the derivation the board
+		// and scheduled lanes share, so one repository is one key everywhere.
+		repoProjectPath = forge.ProjectPathOnBase(base, req.RepoURL)
 		// The repository half of the admission, taken at the FIRST line where
 		// this surface knows which repository it targets. `repoProjectPath` is
 		// the identity the run is stamped with below (spec.ProjectPath), which

@@ -172,7 +172,7 @@ the staging step alone and prints the upload id.
 | `labels` / `board` | `list · rename · merge · delete` / `get · set · bind · show · unbind` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
-| `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
+| `schedules` | `list · create · update · delete` (team-scoped, cloud recurring bots; `update <id> --data` is the PATCH — a field left out is kept; `key_overrides` pins a BYOK key per provider, see [scheduling.md](scheduling.md#notes--limits)) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
 | `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
 | `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` (from the studio, or from a CLI holding a session credential: the invitation is a team token, which a stored personal access token does not mint) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
