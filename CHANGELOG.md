@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.32.0](https://github.com/SocialGouv/iterion/compare/v7.31.0...v7.32.0) (2026-11-23)
+
+### Features
+
+* **feed-watch:** drop the codex fallback, the resolved route is the only one ([#3523](https://github.com/SocialGouv/iterion/issues/3523)) ([b5d32bb](https://github.com/SocialGouv/iterion/commit/b5d32bb082576eb41cbcd3fcd8435aa39e5c54cb))
+
+    <details><summary>why</summary>
+
+    Vigie's synthesize node no longer declares the gpt_forfait fallback (claw + codex OAuth forfait on usage_window). On iterion.cloud the digest schedules pin synthesize onto the team's PLIAGE gateway key (claw + openai_compatible/scaleway/deepseek-v4.1-flash, effort high), and that route is now the only one a digest spends. A digest it cannot serve fails loudly. Nothing is lost, because commit_state clears the queue only after publication, so the next digest of the category carries every unsent…
+
+    </details>
+
+### Bug Fixes
+
+* **schedules:** name the repository and carry key pins on scheduled launches ([#3522](https://github.com/SocialGouv/iterion/issues/3522)) ([20cf54b](https://github.com/SocialGouv/iterion/commit/20cf54bd6a5ecd19cccc8994d3bac349bd2ee882)), references [#3241](https://github.com/SocialGouv/iterion/issues/3241)
+
+    <details><summary>why</summary>
+
+    A cloud schedule launched with no ProjectPath and no key pins. A key restricted to the repository a schedule clones never funded it (the walk stamped an empty launch repository). Two keys serving the same bot and repository could not be split between schedules either: the oldest one paid for every tick. Production case: Vigie's two PLIAGE gateway keys (studio-tech, studio-design) on SocialGouv/iterion-veille.
+
+    </details>
+
 ## [7.31.0](https://github.com/SocialGouv/iterion/compare/v7.30.0...v7.31.0) (2026-11-22)
 
 ### Features
