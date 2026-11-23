@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/scripthost"
@@ -230,7 +231,8 @@ func codemodeToolWithState(host scripthost.Host, want scripthost.Limits, descrip
 	// the CLAMPED limits: `want` is what the author declared and Clamp is
 	// what runs, so a declared 4 MiB held to the 1 MiB ceiling must not arm
 	// 4 MiB on a call context. Clamped once here rather than per call —
-	// Clamp is deterministic and `want` does not move after install.
+	// Clamp is deterministic and `want` does not move after install. The
+	// same pair is what each program's report states (CodemodeReport).
 	effective, _ := want.Clamp()
 	return GenerationTool{
 		Name:        ScriptHostToolName,
@@ -270,7 +272,22 @@ func codemodeToolWithState(host scripthost.Host, want scripthost.Limits, descrip
 			srv.budget = effective.ToolResultBytes
 			h.Tools = srv
 
+			// The node's deadline bounds the program before the wall bound
+			// does when it is nearer: Host.Run's context inherits it.
+			var effectiveWall time.Duration
+			if deadline, ok := ctx.Deadline(); ok {
+				if left := time.Until(deadline); left > 0 && left < effective.Wall {
+					effectiveWall = left
+				}
+			}
 			resp, err := h.Run(ctx, args.Source, want)
+			// The program's report rides its call's completion event once
+			// the host was handed the program, whichever way it ended from
+			// there: Run fills the channel's count on an error return too.
+			// The two returns above it — an input that does not decode, a
+			// context with no door — come before any program ran, and carry
+			// no report.
+			reportCodemode(ctx, newCodemodeReport(want, effective, args.Source, resp, effectiveWall))
 			if err != nil {
 				// THREE classes, not two, and scripthost separates all three
 				// on purpose — its own Run doc enumerates them: the caller's

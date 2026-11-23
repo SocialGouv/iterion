@@ -390,7 +390,7 @@ func (m *Multiplexer) handleToolCall(ctx context.Context, id string, call ToolCa
 	if m.handler.OnToolCall == nil {
 		callErr = errors.New("launcher: no tool dispatcher registered (host doesn't know how to execute this tool)")
 	} else {
-		output, callErr = m.handler.OnToolCall(ctx, call.Name, call.Input)
+		output, callErr = m.handler.OnToolCall(withForwardedToolUse(ctx, call), call.Name, call.Input)
 	}
 	data := ToolResultData{Output: output}
 	if callErr != nil {
@@ -464,3 +464,23 @@ func askUserErrorReply(id, errMsg string) (Envelope, error) {
 // a launcher-side ask_user dispatch error back to the runner. Both
 // sides reference this constant to avoid drift.
 const AskUserErrorKey = "__error__"
+
+// forwardedToolUseKey carries, on the context OnToolCall receives, the run
+// event identity the runner sent with the call (ToolCallData.ToolUseID and
+// ParentToolUseID).
+type forwardedToolUseKey struct{}
+
+type forwardedToolUse struct{ id, parent string }
+
+func withForwardedToolUse(ctx context.Context, call ToolCallData) context.Context {
+	return context.WithValue(ctx, forwardedToolUseKey{}, forwardedToolUse{id: call.ToolUseID, parent: call.ParentToolUseID})
+}
+
+// ForwardedToolUseFrom reports the tool_use id and parent id of the forwarded
+// call an OnToolCall handler is serving — both empty when the runner sent
+// none, an older runner's call. The handler stamps them on any event it emits
+// about the call, so that event and the runner's own name one call.
+func ForwardedToolUseFrom(ctx context.Context) (toolUseID, parentToolUseID string) {
+	f, _ := ctx.Value(forwardedToolUseKey{}).(forwardedToolUse)
+	return f.id, f.parent
+}

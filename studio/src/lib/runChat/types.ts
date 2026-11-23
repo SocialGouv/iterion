@@ -21,7 +21,9 @@ export type BannerStatus = "running" | "done" | "failed";
 // agent step doesn't look frozen during the 30–60s the agent actually
 // needs.
 export interface BannerProgress {
-  // Number of `tool_started` events seen on this node's active iter.
+  // Number of `tool_started` events seen on this node's active iter for
+  // calls the model made: a codemode program's nested calls (they carry
+  // `parent_tool_use_id`) run within the program, already counted.
   toolCount: number;
   // Name of the most recent tool the node invoked (e.g. "bash",
   // "read_file"). Used as a "doing X" hint.

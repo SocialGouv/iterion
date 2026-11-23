@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 const (
@@ -90,11 +91,18 @@ func isStreamIdleError(err error) bool {
 // Stream aggregation
 // ---------------------------------------------------------------------------
 
-// toolUseBlock is a collected tool_use block from a streamed response.
+// toolUseBlock is a collected tool_use block from a streamed response, or a
+// call a codemode program made through the node's door.
 type toolUseBlock struct {
 	ID          string
 	Name        string
 	PartialJSON string // concatenated input_json_delta fragments
+
+	// Parent is the tool_use id of the call whose Execute made this one; empty
+	// on a block the model streamed. Batch is the call's `call.parallel` slot.
+	// Both reach the run's events through [toolCallInfo].
+	Parent string
+	Batch  *scripthost.BatchSlot
 }
 
 // aggregatedResponse is the result of consuming a StreamEvent channel.

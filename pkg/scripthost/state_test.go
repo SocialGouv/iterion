@@ -49,9 +49,9 @@ func TestStateAndToolCallsShareOneParentBudget(t *testing.T) {
 	var out bytes.Buffer
 	limits := DefaultLimits()
 	limits.ToolCalls = 2
-	served, err := serveToolCalls(t.Context(), input, &out, srv, limits)
-	if err != nil || served != 2 {
-		t.Fatalf("served %d, err %v", served, err)
+	stats, err := serveToolCalls(t.Context(), input, &out, srv, limits)
+	if err != nil || stats.Served != 2 {
+		t.Fatalf("served %d, err %v", stats.Served, err)
 	}
 	dec := json.NewDecoder(&out)
 	for i, typ := range []string{frameStateResult, FrameResult, FrameBudget} {

@@ -13,7 +13,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
+
+// programCall is the context the script host's pump hands a server for the
+// program's call with frame ID id: a server called outside a program has no
+// frame, and refuses.
+func programCall(id int64) context.Context {
+	return scripthost.WithCallFrame(context.Background(), scripthost.CallFrame{ID: id})
+}
 
 // The claim of CM-1b is that a call a SCRIPT makes is the same call the model
 // would have made. These tests drive the two paths against one dispatcher and
@@ -58,7 +66,7 @@ func TestAScriptsCallMeetsTheSameGateVerdictAsTheModels(t *testing.T) {
 				t.Fatalf("building the server from the node's own ctx: %v", err)
 			}
 			_ = nd // the server holds it, taken from the ctx
-			out, abort := srv.CallTool(context.Background(),
+			out, abort := srv.CallTool(programCall(1),
 				"Bash", json.RawMessage(`{"command":`+quote(tc.command)+`}`))
 			if abort != nil {
 				t.Fatalf("nested: unexpected abort: %v", abort)
@@ -110,7 +118,7 @@ func TestAServerCannotBeBuiltWithoutTheNodesOwnDoor(t *testing.T) {
 	_, ctxB := newToolDispatcher(context.Background(), bashTool(&ran), nil, nil, nil, nil, allowAllPolicy(t))
 	srv.ctx = ctxB // what a cached server across model steps would amount to
 
-	out, abort := srv.CallTool(context.Background(), "Bash", json.RawMessage(`{"command":"go test ./..."}`))
+	out, abort := srv.CallTool(programCall(1), "Bash", json.RawMessage(`{"command":"go test ./..."}`))
 	if abort != nil {
 		t.Fatalf("unexpected abort: %v", abort)
 	}
@@ -147,7 +155,7 @@ func TestTheWithheldClassCannotBeWalkedAroundBySpelling(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			out, abort := srv.CallTool(context.Background(), name, nil)
+			out, abort := srv.CallTool(programCall(1), name, nil)
 			if abort != nil {
 				t.Fatalf("a withheld tool aborted the script instead of refusing: %v", abort)
 			}
@@ -250,7 +258,7 @@ func TestDiscoveryAnswersWithTheSetTheScriptWillBeServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, abort := srv.CallTool(context.Background(), "Bash", json.RawMessage(`{"command":"go test ./..."}`)); abort != nil {
+	if out, abort := srv.CallTool(programCall(1), "Bash", json.RawMessage(`{"command":"go test ./..."}`)); abort != nil {
 		t.Fatalf("nested: %v", abort)
 	} else if out.IsError {
 		t.Fatalf("nested: %+v", out)
@@ -298,7 +306,7 @@ func TestScriptCallCarriesTrustedValuesAndWorkerCancellation(t *testing.T) {
 	defer cancel(nil)
 	returned := make(chan error, 1)
 	go func() {
-		_, err := srv.CallTool(worker, "wait", nil)
+		_, err := srv.CallTool(scripthost.WithCallFrame(worker, scripthost.CallFrame{ID: 1}), "wait", nil)
 		returned <- err
 	}()
 	select {
@@ -361,7 +369,7 @@ func TestScriptEligibilityUsesActualDefinitionAndHooks(t *testing.T) {
 		if got := srv.ConcurrentSafe("glob"); got != tc.wantSafe {
 			t.Errorf("ConcurrentSafe(glob) = %t, want %t", got, tc.wantSafe)
 		}
-		out, err := srv.CallTool(context.Background(), "glob", nil)
+		out, err := srv.CallTool(programCall(1), "glob", nil)
 		if err != nil || out.IsError != tc.wantRefusal || ran != tc.wantRan || hooked != tc.wantHooked {
 			t.Fatalf("call = %+v, %v (tool=%d hooks=%d), want refusal=%t tool=%d hooks=%d", out, err, ran, hooked, tc.wantRefusal, tc.wantRan, tc.wantHooked)
 		}

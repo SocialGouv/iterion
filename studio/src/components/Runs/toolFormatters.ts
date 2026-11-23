@@ -219,6 +219,22 @@ const PARSERS: Record<string, Parser> = {
     out.push({ label: "todos", value: parts.join(", "), mono: true });
     return out;
   },
+  // A codemode call's input is a program: its size and its first line of
+  // code, the whole source being the card's program block.
+  codemode: (i) => {
+    const out: ToolField[] = [];
+    const source = asString(i["source"]);
+    if (source === undefined) return out;
+    const lines = source.split("\n");
+    out.push({
+      label: "program",
+      value: `${lines.length} line${lines.length === 1 ? "" : "s"}, ${source.length} chars`,
+      mono: true,
+    });
+    const first = lines.map((l) => l.trim()).find((l) => l !== "");
+    if (first) out.push({ label: "first line", value: first, mono: true });
+    return out;
+  },
 };
 
 // extractTodosFromInput pulls the well-formed TodoItem[] out of a raw

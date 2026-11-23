@@ -4011,12 +4011,27 @@ func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[st
 // already handle it: back over the IPC as the refused call's result, to the
 // side that wrote the argument, and to the OnToolCall hook, whose own sink
 // redacts its text.
-func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
+//
+// The event names the call the way the runner's own does — the tool_use id
+// and parent the runner sent with it (delegate.ForwardedToolUseFrom) — so a
+// refused nested call of a codemode program lands under its program rather
+// than as a stray top-level call. An older runner sends neither, and the
+// event stays id-less. Those two are the runner's CLAIM, from the side this
+// event exists to distrust, so the event is marked as the launcher's own
+// (EmittedBy): readers keep it apart from the runner's events, never merged
+// into or overwritten by one, and nothing keyed on the claimed id — the
+// remembered input, a payload blob — is read or written for it.
+func (b *ClawBackend) refuseForwardedCall(ctx context.Context, task delegate.Task, name string, input json.RawMessage, err error) error {
 	if b.logger != nil {
 		b.logger.Warn("[%s/claw] %s", task.NodeID, err)
 	}
 	if b.hooks.OnToolCall != nil {
-		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
+		id, parent := delegate.ForwardedToolUseFrom(ctx)
+		info := toolCallInfo(toolUseBlock{ID: id, Name: name, PartialJSON: string(input), Parent: parent})
+		info.Error = err
+		event := toLLMToolCallInfo(info)
+		event.EmittedBy = ToolEventEmittedByLauncher
+		b.hooks.OnToolCall(task.NodeID, event)
 	}
 	return err
 }
@@ -4214,7 +4229,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// honest runner sends, and is refused rather than mapped.
 			td, ok := toolByName[name]
 			if !ok {
-				return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
+				return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: tool %q was not advertised to this node", name))
 			}
 			// The sandbox boundary is held on THIS side. The runner is the
 			// contained process — possibly an older binary baked into the
@@ -4223,7 +4238,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// never a verdict: only a tool whose home is the launcher's own
 			// state executes here.
 			if placement, reason := tool.SandboxPlacementOf(td.Name); placement != tool.PlacementLauncher {
-				return "", b.refuseForwardedCall(task, name, fmt.Errorf(
+				return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf(
 					"launcher: refusing to execute tool %q on the host for a sandboxed node: its placement is %s (%s) — "+
 						"a current runner never forwards it: either the sandbox image carries an older iterion, or something else in the container wrote this call",
 					name, placement, reason))
@@ -4236,11 +4251,11 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 				var args map[string]any
 				if len(input) > 0 {
 					if err := json.Unmarshal(input, &args); err != nil {
-						return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
+						return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: tool %q: decode input for the permission gate: %w", name, err))
 					}
 				}
 				if dec, rule, spelling := evaluateForwardedCall(task.Permission, forwardedToolSpellings(td), args); dec != permission.Allow {
-					return "", b.refuseForwardedCall(task, name, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
+					return "", b.refuseForwardedCall(toolCtx, task, name, input, fmt.Errorf("launcher: %s", permission.DenyMessage(spelling, args, rule)))
 				}
 			}
 			if td.Execute == nil {

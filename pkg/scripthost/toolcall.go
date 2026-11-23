@@ -36,7 +36,14 @@ import (
 // result carrying them fine — unknown JSON fields are ignored — but its
 // programs would read a tool's structured payload as undefined, a silent
 // wrong answer of exactly the kind the refusal exists to prevent.
-const Proto = 5
+// 6: the child's confinement as a FIRST stdout document, written once it is
+// confined and before the script runs, so a child killed mid-script — a
+// deployment's stricter CPU bound, a cgroup kill — has still said what it
+// enforced (#3451). Not a tool-channel frame: the child writes it to a
+// parent whose Request carries Proto ≥ 6, whatever the channel, because a
+// version-5 parent decodes stdout's FIRST document as the verdict and would
+// read a confinement-only document as a host that died.
+const Proto = 6
 
 // MaxParallelBatch bounds a batch independently of its execution width.
 const MaxParallelBatch = 4
@@ -158,92 +165,106 @@ var errScriptAborted = errors.New("scripthost: the tool server aborted the scrip
 
 // serveToolCalls validates and reserves a whole batch before executing it.
 // The parent owns admission and reply writes, even when workers overlap.
-func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv ToolServer, limits Limits) (int64, error) {
+//
+// The stats it returns are the parent's own count, which is what binds: the
+// child counts too, but a child is what is being bounded.
+func serveToolCalls(ctx context.Context, calls io.Reader, replies io.Writer, srv ToolServer, limits Limits) (CallStats, error) {
 	br := bufio.NewReaderSize(calls, 64<<10)
 	enc := json.NewEncoder(replies)
-	var served, wantID int64
+	var stats CallStats
+	var wantID int64
 	for ctx.Err() == nil {
 		line, err := readFrameLine(br, callFrameCap())
 		if ctx.Err() != nil || errors.Is(err, io.EOF) {
-			return served, nil
+			return stats, nil
 		}
 		if err != nil {
-			return served, fmt.Errorf("scripthost: reading the tool channel: %w", err)
+			return stats, fmt.Errorf("scripthost: reading the tool channel: %w", err)
 		}
 		var f Frame
 		if err := json.Unmarshal(line, &f); err != nil {
-			return served, fmt.Errorf("scripthost: decoding a tool-channel frame: %w", err)
+			return stats, fmt.Errorf("scripthost: decoding a tool-channel frame: %w", err)
 		}
 		if f.Type == frameStateStore || f.Type == frameStateLoad {
 			wantID++
 			if f.ID != wantID || len(f.Calls) != 0 || len(line) > stateFrameCap {
-				return served, fmt.Errorf("scripthost: invalid state frame sequence")
+				return stats, fmt.Errorf("scripthost: invalid state frame sequence")
 			}
 			reply := budgetFrame(f.ID, limits.ToolCalls)
-			if served < limits.ToolCalls {
-				served++
-				reply, err = serveState(ctx, srv, f, limits.ToolCalls-served)
+			if stats.Served < limits.ToolCalls {
+				stats.Served++
+				stats.StateCalls++
+				reply, err = serveState(ctx, srv, f, limits.ToolCalls-stats.Served)
 				if ctx.Err() != nil {
-					return served, nil
+					return stats, nil
 				}
 				if err != nil {
-					return served, err
+					return stats, err
 				}
+			} else {
+				stats.BudgetRefused++
 			}
 			if err := writeStateFrame(replies, reply); err != nil {
 				if ctx.Err() != nil {
-					return served, nil
+					return stats, nil
 				}
-				return served, fmt.Errorf("scripthost: answering state request: %w", err)
+				return stats, fmt.Errorf("scripthost: answering state request: %w", err)
 			}
 			continue
 		}
 
 		if f.Type != FrameCall && f.Type != FrameBatch {
-			return served, fmt.Errorf("scripthost: tool channel only carries %q or %q from the child, got %q", FrameCall, FrameBatch, f.Type)
+			return stats, fmt.Errorf("scripthost: tool channel only carries %q or %q from the child, got %q", FrameCall, FrameBatch, f.Type)
 		}
 		batch := []Frame{f}
 		if f.Type == FrameBatch {
 			batch = f.Calls
 			if len(batch) == 0 || len(batch) > MaxParallelBatch {
-				return served, fmt.Errorf("scripthost: invalid tool batch size %d", len(batch))
+				return stats, fmt.Errorf("scripthost: invalid tool batch size %d", len(batch))
 			}
 		}
 		for _, item := range batch {
 			if item.Type != FrameCall || len(item.Calls) != 0 {
-				return served, fmt.Errorf("scripthost: unexpected tool-channel frame %q", item.Type)
+				return stats, fmt.Errorf("scripthost: unexpected tool-channel frame %q", item.Type)
 			}
 			wantID++
 			if item.ID != wantID {
-				return served, fmt.Errorf("scripthost: tool call id %d arrived where %d was expected: the channel is out of step", item.ID, wantID)
+				return stats, fmt.Errorf("scripthost: tool call id %d arrived where %d was expected: the channel is out of step", item.ID, wantID)
 			}
 			if len(item.Input) > MaxToolInputBytes {
-				return served, fmt.Errorf("scripthost: input for call %d exceeds %d bytes", item.ID, MaxToolInputBytes)
+				return stats, fmt.Errorf("scripthost: input for call %d exceeds %d bytes", item.ID, MaxToolInputBytes)
 			}
 		}
-		admitted := min(int64(len(batch)), max(0, limits.ToolCalls-served))
-		served += admitted
-		remaining := limits.ToolCalls - served
-		outcomes, err := dispatchBatch(ctx, srv, batch[:admitted], limits, remaining)
+		group := callGroup{batch: f.Type == FrameBatch, first: batch[0].ID, size: len(batch)}
+		admitted := min(int64(len(batch)), max(0, limits.ToolCalls-stats.Served))
+		stats.Served += admitted
+		remaining := limits.ToolCalls - stats.Served
+		outcomes, err := dispatchBatch(ctx, srv, batch[:admitted], group, limits, remaining)
 		if err != nil {
-			return served, err
+			return stats, err
 		}
 		if ctx.Err() != nil {
-			return served, nil
+			return stats, nil
 		}
-		for _, item := range batch[admitted:] {
-			outcomes = append(outcomes, budgetFrame(item.ID, limits.ToolCalls))
+		observer, _ := srv.(BudgetRefusalObserver)
+		for i, item := range batch[admitted:] {
+			reply := budgetFrame(item.ID, limits.ToolCalls)
+			stats.BudgetRefused++
+			if observer != nil {
+				observer.RefusedOnBudget(group.frame(int(admitted)+i, item.ID), item.Name, item.Input, reply.Text)
+			}
+			outcomes = append(outcomes, reply)
 		}
 		for _, reply := range outcomes {
 			if err := enc.Encode(reply); err != nil {
 				if ctx.Err() != nil {
-					return served, nil
+					return stats, nil
 				}
-				return served, fmt.Errorf("scripthost: answering tool call %d: %w", reply.ID, err)
+				return stats, fmt.Errorf("scripthost: answering tool call %d: %w", reply.ID, err)
 			}
 		}
 	}
-	return served, nil
+	return stats, nil
 }
 
 func budgetFrame(id, limit int64) Frame {
@@ -252,7 +273,10 @@ func budgetFrame(id, limit int64) Frame {
 
 // dispatchBatch executes exclusive tools between waves of explicitly safe
 // tools. Each wave joins before the next starts; workers own distinct slots.
-func dispatchBatch(ctx context.Context, srv ToolServer, calls []Frame, limits Limits, remaining int64) ([]Frame, error) {
+// Each call's server receives its [CallFrame] on its own worker context, so
+// the program order a reader needs travels with the call rather than being
+// rebuilt from the order workers finish in.
+func dispatchBatch(ctx context.Context, srv ToolServer, calls []Frame, group callGroup, limits Limits, remaining int64) ([]Frame, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	replies := make([]Frame, len(calls))
@@ -262,7 +286,7 @@ func dispatchBatch(ctx context.Context, srv ToolServer, calls []Frame, limits Li
 			return
 		}
 		f := calls[i]
-		out, err := srv.CallTool(ctx, f.Name, f.Input)
+		out, err := srv.CallTool(WithCallFrame(ctx, group.frame(i, f.ID)), f.Name, f.Input)
 		if err != nil {
 			if ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
 				errs[i] = err

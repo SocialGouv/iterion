@@ -350,7 +350,8 @@ func TestAnInputTheChildAdmitsReachesTheParent(t *testing.T) {
 	pad := strings.Repeat("x", 262100)
 	frame := `{"type":"call","id":1,"name":"ping","input":{"pad":"` + pad + `"}}`
 	var out strings.Builder
-	n, err := serveToolCalls(context.Background(), strings.NewReader(frame+"\n"), &out, srv, limits)
+	stats, err := serveToolCalls(context.Background(), strings.NewReader(frame+"\n"), &out, srv, limits)
+	n := stats.Served
 	if err != nil {
 		t.Fatalf("an input of %d bytes — inside the child's own MaxToolInputBytes of %d — was refused by the parent: %v", len(pad), MaxToolInputBytes, err)
 	}

@@ -403,10 +403,12 @@ type Request struct {
 	// child's environment is empty by construction.
 	ToolChannel bool `json:"tool_channel,omitempty"`
 
-	// Proto is the tool-channel protocol version, meaningful only with
-	// ToolChannel. A child that does not know the number refuses rather than
-	// running a script whose capability it cannot serve: see [Proto] for the
-	// half of the handshake this cannot cover.
+	// Proto is the protocol version, refused by the child on a mismatch only
+	// with ToolChannel: a child that does not know the number refuses rather
+	// than running a script whose capability it cannot serve. See [Proto]
+	// for the half of the handshake this cannot cover. Without the channel
+	// it still tells the child what the parent reads on stdout: from 6, an
+	// early confinement document before the verdict.
 	Proto int `json:"proto,omitempty"`
 
 	// Catalog is what `call.describe` and `call.search` answer from (CM-3),
@@ -436,6 +438,14 @@ type Response struct {
 	// bounds covered the process or one thread reads it here; it is absent
 	// only when no child ran.
 	Confinement *Applied `json:"confinement,omitempty"`
+
+	// Calls is the PARENT's account of the program's tool channel, filled by
+	// [Host.Run] after the child is gone and never decoded from the child's
+	// document: the child is what the call budget bounds, so a count it wrote
+	// would be a count it chose. `json:"-"` is what keeps the field off the
+	// wire, which is also why it moves no [Proto] — the document a child
+	// writes is unchanged.
+	Calls CallStats `json:"-"`
 }
 
 // Refuse builds a refusal response.

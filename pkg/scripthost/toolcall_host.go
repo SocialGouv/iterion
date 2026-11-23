@@ -64,8 +64,8 @@ func (c *toolChannel) close() {
 // concurrent stream, and "did the channel fail, and how far had it got" is
 // exactly that kind of fact.
 type serveVerdict struct {
-	served int64
-	err    error
+	stats CallStats
+	err   error
 }
 
 // pump runs the parent's half of the tool channel on its own goroutine and
@@ -86,8 +86,8 @@ func pump(ctx context.Context, c *toolChannel, srv ToolServer, limits Limits, st
 	)
 	go func() {
 		defer close(done)
-		served, err := serveToolCalls(ctx, c.calls, c.replies, srv, limits)
-		out = serveVerdict{served: served, err: err}
+		stats, err := serveToolCalls(ctx, c.calls, c.replies, srv, limits)
+		out = serveVerdict{stats: stats, err: err}
 		if err != nil {
 			stopChild()
 		}
