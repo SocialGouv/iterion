@@ -48,7 +48,7 @@ point at an untrusted tree; the bot points it at the engine's own package.
 The dependency closure is pinned at install time by the lockfile, not at
 load time.
 
-## Contract facts the tests pin (ultra11y 6.0.0)
+## Contract facts the tests pin (ultra11y 7.2.0)
 
 - `verify --apply` folds **partially by default**: exit 0 as soon as one
   verdict lands, refusals named in `issues` / `rejectedCriteria`, exit 1
@@ -106,7 +106,19 @@ agents' conformities to their clearing claims (above), and the bot's
 dispatch and refuter prompts followed it. The 6.0.0 migration moved two:
 coverage gaps left the fold's refusals for `notInWorklist`
 (SocialGouv/ultra11y#136), and `report --json` carries the RGAA rate
-instead of the core one (#116, #125).
+instead of the core one (#116, #125). The 7.0.0–7.2.0 migration moved
+none: 7.0.0 removed commands and flags the bot never called (`mcp`, `dev`,
+`judge`, `affected`, `import`, `audit --lite`, `--format sarif|github`,
+`init --ci`, `--baseline`, `render --e2e`, `pages --diff`, `scan --runtime
+docker`; the bot runs `scan --runtime local`), and 7.1.0 adds Jest/Vitest
+`__snapshots__/*.snap` files to what `audit` reads (`scope.unitSnapshots`).
+7.2.0 pins axe-core by source: `scan` injects ultra11y's own exact
+`axe-core` 4.13.0 (nested under `node_modules/ultra11y/` in the lockfile,
+beside the 4.14.0 `@axe-core/playwright` brings) and records it as
+`axe: {version, origin: "ultra11y"}` (the merged audit: `scope.axe`).
+Its route inventory (`pages discover
+--write` → `.ultra11y/routes.json`, `scan --all-routes`, annex section F,
+`scope.routes`) is not called by the bot yet.
 The workflow retains its count/rate comparison, relevance gate, literal
 citation restoration and once-only mutation records. They provide independent
 checks and preserve replay behavior; historical defect tests are not treated

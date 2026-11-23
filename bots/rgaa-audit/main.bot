@@ -66,9 +66,9 @@ vars:
   ## (scripts/ultra11y.mjs in the npm tarball). bots/rgaa-audit/ultra11y.pin
   ## is the authored copy; bots/rgaa_audit_engine_pin_test.go holds these
   ## three defaults equal to it. Bump deliberately, through the pin file.
-  engine_version: string = "6.0.0"
-  engine_sha256: string = "08e30f90bc775e3bbe0c1134433336b8012ce5f433a242063e4546b3bcd1f9f2"
-  engine_size: int = 3533473
+  engine_version: string = "7.2.0"
+  engine_sha256: string = "0766f8e4fafc68f61b6c8bf27910c2d20ffd0eb140aedb66038425f379e78fb2"
+  engine_size: int = 3268546
   ## The standard the engine audits against. Only the French RGAA 4.1.2 pack
   ## today: the WCAG core report carries no « Décidés » line and a different
   ## rate semantics, so the cross-checks below would read it as degraded on

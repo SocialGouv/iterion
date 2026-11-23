@@ -5,7 +5,7 @@
 # size and sha256 = scripts/ultra11y.mjs inside the npm tarball of that version
 # (identical to the file at the upstream git tag); integrity = the tarball's.
 # Values are exact: no surrounding whitespace, no CRLF.
-version=6.0.0
-sha256=08e30f90bc775e3bbe0c1134433336b8012ce5f433a242063e4546b3bcd1f9f2
-size=3533473
-integrity=sha512-g1n+aaijUGO9gyhVqJtlWlISr3usjmcsKPFx6lK186mP6wSqwrWPqkmXKjHarTzA9NQVYNzYME0JkVUdFzriSg==
+version=7.2.0
+sha256=0766f8e4fafc68f61b6c8bf27910c2d20ffd0eb140aedb66038425f379e78fb2
+size=3268546
+integrity=sha512-UefgQAPqEzAjrv6vXqKWJlUZ9IbWalkqsbsN3pIr1CQNjG/E4ZJ5f+wivI/re28maA9arLBUfeaNdR19Rjn/7g==

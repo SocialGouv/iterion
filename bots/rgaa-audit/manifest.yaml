@@ -2,14 +2,21 @@ name: rgaa-audit
 display_name: Acci
 icon: ♿
 version: 3.2.1
-## 3.2.1 — ultra11y 6.0.0 (from 5.49.0). The fold names a coverage gap — an
+## 3.2.1 — ultra11y 7.2.0 (from 5.49.0). The fold names a coverage gap — an
 ## open criterion the adjudication never mentions — apart from its
 ## refusals, in notInWorklist (SocialGouv/ultra11y#136): fold_probe re-asks
 ## those ids like a refusal, and the annex's « refusés » now lists only what
 ## the engine's gate refused. report --json carries the RGAA rate; the bot
 ## keeps computing it from criteria[]. ultra11y's own GitHub Action and
-## GitLab template are gone: CI audits run this bot (README, « Run Acci in
-## your CI »).
+## GitLab template are gone (6.0.0): CI audits run this bot (README, « Run
+## Acci in your CI »). 7.x removed commands and flags the bot never called
+## (mcp, dev, judge, affected, import, audit --lite, --format sarif|github,
+## scan --runtime docker); audit now also reads Jest/Vitest
+## __snapshots__/*.snap files in scope as component renders (7.1.0), and
+## scan injects ultra11y's own exact axe-core 4.13.0, recorded as
+## scope.axe (7.2.0). The route inventory (pages discover --write,
+## scan --all-routes, annex section F) is available; the bot does not
+## call it yet.
 ## 3.2.0 — the board publication is deterministic (#2388): the transcription
 ## judge is gone, and with it the self-report publish_verify held it to. The
 ## plan is filed by native board actions on tool nodes (ADR-151:
