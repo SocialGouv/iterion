@@ -72,6 +72,13 @@ type ProvisionApproval struct {
 	AutoFix           *bool             `bson:"auto_fix,omitempty" json:"auto_fix,omitempty"`
 	HoldLabels        []string          `bson:"hold_labels" json:"hold_labels"`
 	LabelAllowlist    []string          `bson:"label_allowlist" json:"label_allowlist"`
+	// BotTriggers replays the request's per-bot triggers
+	// (ProvisionRequest.BotTriggers): an entry replaces that bot's stored
+	// value on approval, and a nil or empty map — no entry — leaves every
+	// bot alone, so the map needs no Set flag and may drop out of the wire
+	// when empty. What an entry spoke is kept by BotTrigger's own tags: a
+	// spoken-empty labels list (any label) never collapses to the silent nil.
+	BotTriggers map[string]BotTrigger `bson:"bot_triggers,omitempty" json:"bot_triggers,omitempty"`
 	// The three Set flags carry the SPOKEN fact the fields' json omitempty
 	// cannot: the request body NAMED launch_vars / hold_labels /
 	// label_allowlist, whatever it held. A spoken-empty gesture — the map
