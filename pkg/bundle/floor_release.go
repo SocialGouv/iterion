@@ -40,6 +40,11 @@ var releaseNotesMarkers = map[string]string{
 	// sides — exports.skills …`, so the notes of the release the cut gives
 	// this pin carry the word both keys are spelled with.
 	"bundle.SkillSharingSince": "skills",
+	// The lot that ships the label keys (ADR-172) lands under a subject
+	// that names the label lane — `feat(bundle): forge.labels, …` for the
+	// keys, `… route labelled issues …` for the lane — so the notes of the
+	// release the cut gives this pin carry the stem both spell.
+	"bundle.ForgeLabelsSince": "label",
 }
 
 // ReleaseNotesMarker is the word the release notes of a floor's pinned

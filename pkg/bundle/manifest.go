@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -758,6 +759,14 @@ type ForgeRequirements struct {
 	// auto-created webhook to subscribe to (see KnownForgeEvents).
 	Events []string `yaml:"events,omitempty"`
 
+	// Labels are the issue labels that start a bot claiming issue_labeled
+	// through Events alone, with no kind=forge invocation of its own
+	// (ForgeIssueInvocations): an any-of set in the webhook label grammar —
+	// "*" for any label, a literal, or a leading "*" for a suffix
+	// ("*-chaos"); matching is case-insensitive. Empty declares no label of
+	// its own.
+	Labels []string `yaml:"labels,omitempty"`
+
 	// TokenScopes is a normalized permission map (key -> "read" |
 	// "write" | "admin"); keys ∈ {pull_requests, repository, issues,
 	// webhooks, statuses, approvals, merge, reviewers, actions}. The
@@ -949,11 +958,20 @@ func ResolveMode(kind InvocationKind, mode ExecutionMode, site string) (Executio
 // InvocationKey is the identity of invocations[index] within its bot's
 // manifest, intrinsic to what the invocation says: the package trigger id
 // for a connector invocation, the normalized cron for a schedule, the
-// canonical interval for a keepalive, a digest of the board block. ""
-// derives no subscription (the builders refuse it).
+// canonical interval for a keepalive, a digest of the board block, and for
+// a forge invocation its event, its sorted actions and a digest of the
+// labels that start it. "" derives no subscription (the builders refuse
+// it).
 func InvocationKey(invs []Invocation, index int) string {
 	inv := invs[index]
 	switch inv.Kind {
+	case InvocationKindForge:
+		if inv.Forge != nil {
+			labels, _ := inv.ForgeTriggerLabels()
+			return "forge:" + inv.Forge.Event +
+				"|a:" + strings.Join(sortedCopy(inv.Forge.Actions), ",") +
+				"|l:" + forgeLabelsDigest(labels)
+		}
 	case InvocationKindConnector:
 		if inv.Connector != nil {
 			return inv.Connector.Trigger
@@ -1026,6 +1044,69 @@ type InvocationForge struct {
 	// "opened","reopened" for a PR). Empty applies the handler's default
 	// reviewable-action filter.
 	Actions []string `yaml:"actions,omitempty" json:"actions,omitempty"`
+	// Labels are the issue labels that start the bot: an any-of set in the
+	// webhook label grammar — "*" for any label, a literal, or a leading "*"
+	// for a suffix ("*-chaos"); matching is case-insensitive. Honoured on
+	// event issue_labeled only, the one forge event that carries a label:
+	// any other event refuses it at parse time (ForgeLabelsError).
+	Labels []string `yaml:"labels,omitempty" json:"labels,omitempty"`
+}
+
+// ForgeTriggerLabels returns the labels that start this invocation's bot on
+// a labelled issue — its forge.labels, copied so a caller can reorder them
+// without touching the manifest. aliased reports that the labels come from a
+// key other than forge.labels: no other key is read, so it is always false,
+// and callers take both values so that reading an alias changes none of them.
+// A non-forge invocation has none.
+func (i Invocation) ForgeTriggerLabels() (labels []string, aliased bool) {
+	if i.Kind != InvocationKindForge || i.Forge == nil || len(i.Forge.Labels) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), i.Forge.Labels...), false
+}
+
+// ErrForgeLabels is the class of a `labels:` declaration the manifest
+// decoder refuses: on a forge event that carries no label, or with a
+// pattern that can match nothing.
+var ErrForgeLabels = errors.New("forge labels refused")
+
+// ForgeLabelsError names the refused `labels:` declaration: where it sits in
+// the manifest, the event it is declared on when the event is the reason,
+// and why it is refused.
+type ForgeLabelsError struct {
+	// Path is the manifest path of the declaration, "invocations[2].forge.labels"
+	// or "forge.labels".
+	Path string
+	// Event is the invocation's event when labels sit on an event that
+	// carries none; "" for a refused pattern.
+	Event string
+	// Reason says what is refused.
+	Reason string
+}
+
+func (e *ForgeLabelsError) Error() string {
+	if e.Event != "" {
+		return fmt.Sprintf("%s: declared on event %q — %s", e.Path, e.Event, e.Reason)
+	}
+	return fmt.Sprintf("%s: %s", e.Path, e.Reason)
+}
+
+func (e *ForgeLabelsError) Is(target error) bool { return target == ErrForgeLabels }
+
+// validateForgeLabels refuses a label pattern that is empty or blank: the
+// webhook label matcher (webhooks.MatchLabel) trims a pattern before reading
+// it and matches no label with an empty one, so the entry would sit in the
+// manifest and claim nothing. path names the list in the manifest.
+func validateForgeLabels(path string, labels []string) error {
+	for i, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			return &ForgeLabelsError{
+				Path:   fmt.Sprintf("%s[%d]", path, i),
+				Reason: `an empty pattern matches no label (want "*", a label, or a leading "*" for a suffix)`,
+			}
+		}
+	}
+	return nil
 }
 
 // InvocationCommand is the payload of a kind=command invocation.
@@ -1155,8 +1236,9 @@ var (
 // validateInvocations rejects malformed invocations at parse time so a typo
 // fails fast (same bar as forge.events). It checks the kind/mode enums, the
 // per-kind required payload + payload mutual-exclusivity, the command-name
-// shape, and intra-bot command-name uniqueness. Cross-bot command collisions
-// are a provisioning-time concern (pkg/forge), not a manifest one.
+// shape, intra-bot command-name uniqueness, and that forge.labels sits on
+// the one event that carries a label. Cross-bot command collisions are a
+// provisioning-time concern (pkg/forge), not a manifest one.
 func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
 	seenKey := map[string]bool{}
@@ -1180,6 +1262,20 @@ func validateInvocations(invs []Invocation) error {
 			}
 			if inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
 				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule:/keepalive: block", idx)
+			}
+			// A label starts a bot on a labelled issue and nowhere else: on
+			// any other event the list would be read by nothing, so it is
+			// refused where it is written instead of being ignored.
+			labelsPath := fmt.Sprintf("invocations[%d].forge.labels", idx)
+			if len(inv.Forge.Labels) > 0 && inv.Forge.Event != ForgeEventIssueLabeled {
+				return &ForgeLabelsError{
+					Path:   labelsPath,
+					Event:  inv.Forge.Event,
+					Reason: fmt.Sprintf("labels start a bot on event %q only", ForgeEventIssueLabeled),
+				}
+			}
+			if err := validateForgeLabels(labelsPath, inv.Forge.Labels); err != nil {
+				return err
 			}
 		case InvocationKindCommand:
 			if inv.Command == nil {
@@ -1263,7 +1359,14 @@ func validateInvocations(invs []Invocation) error {
 			}
 		}
 		// Two invocations of one kind sharing an identity derive the same
-		// subscription: one row cannot answer for both.
+		// subscription: one row cannot answer for both. A kind=forge pair is
+		// the exception: a stored manifest may declare one, and refusing it
+		// here would stop a bot that loads from loading, so the pair is
+		// warned (ForgeDuplicateKeyWarnings) and derives once
+		// (ForgeIssueInvocations) instead of failing the whole manifest.
+		if inv.Kind == InvocationKindForge {
+			continue
+		}
 		if key := InvocationKey(invs, idx); key != "" {
 			if seenKey[string(inv.Kind)+"\x00"+key] {
 				return fmt.Errorf("invocations[%d]: a second %s invocation derives the same subscription (%s %q) — two of one kind must differ", idx, inv.Kind, keyField(inv.Kind), key)
@@ -1293,6 +1396,40 @@ func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)
 	return out
+}
+
+// canonicalForgeLabels is a label set as the webhook label matcher reads
+// it: each pattern trimmed and lower-cased (the match is case-insensitive
+// and trims), the set sorted and without repeats (the match is any-of). Two
+// lists that claim the same labels have one canonical form.
+func canonicalForgeLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	seen := map[string]bool{}
+	for _, label := range labels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// forgeLabelsDigest is the 16-hex digest of a label set's canonical form.
+// Each label is hashed behind its length, so no label text — a comma, a
+// separator — makes two different sets read alike; an empty set has a
+// digest of its own, so every forge key carries the same three parts.
+func forgeLabelsDigest(labels []string) string {
+	h := sha256.New()
+	var n [8]byte
+	for _, label := range canonicalForgeLabels(labels) {
+		binary.BigEndian.PutUint64(n[:], uint64(len(label)))
+		h.Write(n[:])
+		h.Write([]byte(label))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // keyField names what an invocation key is made of, for the duplicate
@@ -1745,6 +1882,9 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 		if !KnownForgeEvents[ev] {
 			return fmt.Errorf("forge: unknown event %q (known: %s, %s)", ev, ForgeEventPullRequest, ForgeEventPullRequestComment)
 		}
+	}
+	if err := validateForgeLabels("forge.labels", f.Labels); err != nil {
+		return err
 	}
 	for key, level := range f.TokenScopes {
 		if !knownForgeScopeKeys[key] {

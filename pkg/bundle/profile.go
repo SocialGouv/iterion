@@ -626,6 +626,25 @@ var syntaxFloors = []syntaxFloor{
 			return CatalogTaxonomySince, "top-level `category`/`tags`", s.Keys.Declares(keyCategory, keyTags)
 		},
 	},
+	// The two label keys share one pin and keep an entry each: a refusal
+	// names the key the manifest spells, and a manifest that declares both
+	// is told both.
+	{
+		pins:          map[string]string{"bundle.ForgeLabelsSince": ForgeLabelsSince},
+		onManifestKey: true,
+		consequence:   "a build older than the release that reads it decodes the manifest strictly, knows no such field under an invocation's `forge` block and refuses the whole document",
+		need: func(s FloorSubject) (string, string, bool) {
+			return ForgeLabelsSince, "`invocations[].forge.labels`", s.Keys.Declares(keyInvocationForgeLabels)
+		},
+	},
+	{
+		pins:          map[string]string{"bundle.ForgeLabelsSince": ForgeLabelsSince},
+		onManifestKey: true,
+		consequence:   "a build older than the release that reads it decodes the manifest strictly, knows no such field under the `forge` block and refuses the whole document",
+		need: func(s FloorSubject) (string, string, bool) {
+			return ForgeLabelsSince, "`forge.labels`", s.Keys.Declares(keyForgeLabels)
+		},
+	},
 }
 
 // declaresEmptyTools reports whether any agent or judge of the file — top

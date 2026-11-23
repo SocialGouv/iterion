@@ -27,6 +27,8 @@ func floorProbes() []FloorSubject {
 		{Keys: ManifestKeys{keyTags: true}},
 		{Keys: ManifestKeys{keyExportsSkills: true}},
 		{Keys: ManifestKeys{keyDependenciesSkills: true}},
+		{Keys: ManifestKeys{keyInvocationForgeLabels: true}},
+		{Keys: ManifestKeys{keyForgeLabels: true}},
 	}
 }
 
