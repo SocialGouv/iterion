@@ -47,6 +47,21 @@ the local SDK call returns. A remote handler may still be cleaning up after
 cancellation. The script host joins started handlers before returning;
 handlers must cooperate with cancellation for shutdown to be prompt.
 
+Two dispatch paths are audited for concurrency. The sandbox relay's event
+hooks are attested: each observation is a pure marshal into the runner's
+IPC envelope writer, whose own mutex keeps every event one whole line
+however the batch interleaves. The store hooks are attested for every
+in-process backend: each event crosses the store — already concurrency-
+proven by parallel branches — and every attached observer (ADR-046) is
+invoked under one mutex, so the attestation holds by construction for any
+runtime-owned callback. Three things still keep a batch serial, each on
+purpose: a secret materializer on the node (it has no concurrency
+contract), lifecycle hooks merged from the workspace's
+`.claude/settings.json` (user handlers register non-concurrent-safe), and
+an extra hook chained onto the store hooks without its own attestation.
+The tool events stay readable under overlap: facts travel with each event
+(`tool_use_id`), never with the arrival order.
+
 The launcher keeps reading events and session captures while forwarded tools
 run. Forwarded tools and operator questions share a serial lane; its
 admission and reply backlogs are bounded separately. This does not
