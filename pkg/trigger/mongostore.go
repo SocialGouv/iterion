@@ -58,6 +58,9 @@ func (s *MongoSubscriptionStore) EnsureDerived(ctx context.Context, sub Subscrip
 	if !IsDerivedID(sub.ID) {
 		return false, fmt.Errorf("trigger: %q is not a derived subscription id", sub.ID)
 	}
+	if err := sub.normalize(); err != nil {
+		return false, err
+	}
 	dead, err := s.tombstoned(ctx, sub.ID)
 	if err != nil {
 		return false, err
@@ -70,7 +73,6 @@ func (s *MongoSubscriptionStore) EnsureDerived(ctx context.Context, sub Subscrip
 		}
 		return false, nil
 	}
-	sub.normalize()
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return false, nil
@@ -126,6 +128,9 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}, {Key: "connector_key", Value: 1}},
 			Options: options.Index().SetName("tenant_bot_connector_key").SetUnique(true).
 				SetPartialFilterExpression(bson.D{{Key: "connector_key", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}})},
+		// The forge router's query: the rows bound to one integration or
+		// webhook, read on every delivery it routes.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "forge_binding", Value: 1}, {Key: "enabled", Value: 1}}, Options: options.Index().SetName("tenant_forge_binding")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		// A tenant that already holds duplicate bindings fails the unique
@@ -141,7 +146,9 @@ func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) error {
-	sub.normalize()
+	if err := sub.normalize(); err != nil {
+		return err
+	}
 	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
 		// The unique partial index (EnsureSchema) is the cross-replica
 		// guard the operator's list-then-create cannot be: two processes
@@ -180,7 +187,9 @@ var subscriptionHealthFields = []string{
 // the stored stamps (absent ones stay absent), as the webhooks twin keeps
 // last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
-	sub.normalize()
+	if err := sub.normalize(); err != nil {
+		return err
+	}
 	filter := storekit.VersionCAS(sub.ID, sub.Version)
 	sub.Version++
 	raw, err := bson.Marshal(sub)
@@ -345,6 +354,7 @@ func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) (
 			"enabled":       true,
 			"connector_key": key,
 			"poller":        poller,
+			"forge_binding": unboundForgeBinding,
 		}, "_id", "trigger: list connector candidates", "trigger: decode connector candidates")
 	}
 	return s.find(ctx, bson.M{
@@ -352,7 +362,20 @@ func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) (
 		"enabled":       true,
 		"repo":          bson.M{"$in": bson.A{ev.Repo, "", nil}},
 		"connector_key": bson.M{"$in": bson.A{"", nil}},
+		"forge_binding": unboundForgeBinding,
 	})
+}
+
+// unboundForgeBinding selects the rows bound to no forge binding: the field
+// is absent on them (omitempty), and an explicit empty one reads the same.
+var unboundForgeBinding = bson.M{"$in": bson.A{"", nil}}
+
+func (s *MongoSubscriptionStore) ListByForgeBinding(ctx context.Context, tenantID, binding string) ([]Subscription, error) {
+	if binding == "" {
+		return nil, ErrEmptyForgeBinding
+	}
+	return mongoutil.FindAllSorted[Subscription](ctx, s.coll, bson.M{"tenant_id": tenantID, "forge_binding": binding},
+		"_id", "trigger: list forge-bound subscriptions", "trigger: decode forge-bound subscriptions")
 }
 
 // DistinctBoardTenants returns the tenants holding at least one ENABLED

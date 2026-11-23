@@ -29,12 +29,39 @@ var ErrDuplicateConnectorBinding = errors.New("trigger: a connector subscription
 // caller re-reads and reapplies; nothing it held was written.
 var ErrSubscriptionConflict = errors.New("trigger: subscription changed concurrently; re-read and retry")
 
+// ErrInvalid is what every refusal of a subscription's own fields matches
+// (errors.Is): a store write refuses the row before it lands.
+var ErrInvalid = errors.New("trigger: invalid subscription")
+
+// InvalidError is a store write's refusal of a subscription whose fields
+// contradict each other. Field is the JSON key of the refused field.
+type InvalidError struct {
+	SubscriptionID string
+	Field          string
+	Reason         string
+}
+
+func (e *InvalidError) Error() string {
+	return fmt.Sprintf("trigger: invalid subscription %q: %s: %s", e.SubscriptionID, e.Field, e.Reason)
+}
+
+// Is makes every InvalidError match ErrInvalid.
+func (e *InvalidError) Is(target error) bool { return target == ErrInvalid }
+
+// ErrEmptyForgeBinding is returned by ListByForgeBinding for an empty
+// binding: it names no integration, and reading it as "the rows with no
+// binding" would hand a forge delivery every bus subscription of the tenant.
+var ErrEmptyForgeBinding = errors.New("trigger: an empty forge binding selects no subscription")
+
 // SubscriptionStore persists trigger subscriptions. It mirrors
 // forge.RepoIntegrationStore: an interface with an in-memory impl (tests /
 // local single-host) and a Mongo impl (cloud multitenant). The three query
 // primitives are the product surfaces — ListByRepo and ListByBot power the
 // studio "by repo" / "by bot" views, ListCandidates is the Evaluator hot path.
 type SubscriptionStore interface {
+	// Create, Update and EnsureDerived refuse, with an *InvalidError
+	// (ErrInvalid), a row of a forge integration's origin that is not bound
+	// to that integration.
 	Create(ctx context.Context, s Subscription) error
 	Get(ctx context.Context, id string) (Subscription, error)
 	// Update replaces the row as a full document, committing only against
@@ -105,8 +132,16 @@ type SubscriptionStore interface {
 	// ListCandidates returns the enabled subscriptions that COULD match ev:
 	// same tenant, and Repo matching ev.Repo or tenant-wide. The Evaluator
 	// applies the full Matcher.Match on the returned set — this is only the
-	// indexed pre-filter, kept coarse so it stays a single-index query.
+	// indexed pre-filter, kept coarse so it stays a single-index query. A
+	// subscription bound to a forge binding is never a candidate, whatever
+	// the event: its binding alone selects it (ListByForgeBinding).
 	ListCandidates(ctx context.Context, ev Event) ([]Subscription, error)
+	// ListByForgeBinding returns the tenant's subscriptions bound to one
+	// forge binding (ForgeBindingForIntegration, ForgeBindingForWebhook),
+	// enabled and disabled alike, sorted by id — a disabled row is part of
+	// the answer a filtered delivery owes its operator. An empty binding is
+	// refused with ErrEmptyForgeBinding.
+	ListByForgeBinding(ctx context.Context, tenantID, binding string) ([]Subscription, error)
 
 	// EnsureDerived creates s — whose id is derived (DerivedSubscriptionID)
 	// — unless a row with that id exists or an operator deleted it (a

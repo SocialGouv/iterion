@@ -1,9 +1,11 @@
 package trigger
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,12 +96,12 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 	return nil
 }
 
-// matchingSubscriptions returns the enabled, matching, non-observational
-// subscriptions an event owes an effect to — the ONE matching prelude shared
-// by the bus path (Handle) and the outbox materialization
-// (MaterializeEffects), so an admission rule added for one path cannot be
-// missed by the other.
-func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event) ([]Subscription, error) {
+// admitEvent reports whether an event is evaluated at all — the admission
+// half of the ONE matching prelude. Every candidate source runs it: the bus
+// path and the outbox materialization (matchingSubscriptions) and the forge
+// router (MatchForgeBound), so an admission rule added here holds for all
+// of them and cannot be missed by one.
+func admitEvent(ev Event) bool {
 	// A machine-caused event owes no effect to anyone — decline at the
 	// SHARED admission prelude, before the outbox materializes durable
 	// rows only MarkDone can retire: a schema migration emits one event
@@ -108,22 +110,44 @@ func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event
 	// head-of-line delay measured in tens of minutes. applyEffect keeps
 	// its own check as defense in depth.
 	if machineCaused(ev) {
-		return nil, nil
+		return false
 	}
-
 	// An event already launched by an authoritative path (today: the inline
 	// forge webhook, which keeps its own admission/idempotency/quota gates)
 	// is OBSERVATIONAL only — never re-launch or re-promote it.
 	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
-		return nil, nil
+		return false
 	}
 	// An event marked observational is never evaluated, whatever it carries;
 	// a connector event is matched from its durable intake by the connector
 	// worker, never from the bus (ADR-168 §8).
 	if v, ok := ev.Payload[PayloadObservational].(bool); ok && v {
-		return nil, nil
+		return false
 	}
-	if ev.Source == SourceConnector {
+	return ev.Source != SourceConnector
+}
+
+// claimDisabled is what claims answers for a disabled subscription.
+const claimDisabled = "disabled"
+
+// claims reports whether one candidate subscription claims an admitted
+// event — the per-row half of the matching prelude, shared like admitEvent:
+// the row is enabled, then its matcher accepts the event. failed is empty
+// when it claims; otherwise it is claimDisabled or the matcher dimension
+// that refused the event (Matcher.Explain).
+func claims(sub Subscription, ev Event) (ok bool, failed string) {
+	if !sub.Enabled {
+		return false, claimDisabled
+	}
+	return sub.Match.Explain(ev)
+}
+
+// matchingSubscriptions returns the enabled, matching, non-observational
+// subscriptions an event owes an effect to — the bus path (Handle) and the
+// outbox materialization (MaterializeEffects) both read their candidates
+// here, through the prelude the forge router shares (admitEvent, claims).
+func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event) ([]Subscription, error) {
+	if !admitEvent(ev) {
 		return nil, nil
 	}
 	cands, err := subs.ListCandidates(ctx, ev)
@@ -137,8 +161,84 @@ func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event
 		if sub.ConnectorKey != "" || sub.Invocation == bundle.InvocationKindConnector {
 			continue
 		}
-		if sub.Enabled && sub.Match.Match(ev) {
+		// A subscription bound to a forge binding is matched by the forge
+		// router only, from its binding (MatchForgeBound): whatever a store
+		// answers, no bus event fires it.
+		if sub.ForgeBinding != "" {
+			continue
+		}
+		if ok, _ := claims(sub, ev); ok {
 			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
+// CandidateVerdict is what the matching prelude answered for one
+// subscription bound to a forge binding.
+type CandidateVerdict struct {
+	SubscriptionID string
+	BotID          string
+	// Enabled and DisabledReason are the row's own.
+	Enabled        bool
+	DisabledReason string
+	// Failed is empty when the subscription claims the event. Otherwise it
+	// is "disabled", or the matcher dimension that refused the event with
+	// what it wants and what the event carries (Matcher.Explain).
+	Failed string
+}
+
+// ForgeMatch is the answer of MatchForgeBound.
+type ForgeMatch struct {
+	// Admitted reports that the event passed the admission prelude. An
+	// event that did not is evaluated against no subscription: Matched and
+	// Verdicts are empty.
+	Admitted bool
+	// Bound counts the subscriptions the binding holds, enabled or not,
+	// whether or not the event was admitted: zero means nothing was ever
+	// projected onto the binding.
+	Bound int
+	// Matched are the subscriptions that claim the event, sorted by bot id,
+	// then by id.
+	Matched []Subscription
+	// Verdicts holds one entry per bound subscription of an admitted event,
+	// the matched ones included, in the order of Matched: bot id, then id.
+	Verdicts []CandidateVerdict
+}
+
+// MatchForgeBound matches a forge delivery's event against the
+// subscriptions bound to its integration or webhook — the forge router's
+// candidate source, where the bus reads ListCandidates. It runs the same
+// prelude as the bus path (admitEvent, claims), selects by binding only —
+// never by repository, never the tenant's unbound subscriptions — and
+// launches nothing: the caller turns each matched subscription into a
+// target. A store error is returned as is, and an empty binding is the
+// store's ErrEmptyForgeBinding.
+func MatchForgeBound(ctx context.Context, st SubscriptionStore, tenantID, binding string, ev Event) (ForgeMatch, error) {
+	rows, err := st.ListByForgeBinding(ctx, tenantID, binding)
+	if err != nil {
+		return ForgeMatch{}, err
+	}
+	out := ForgeMatch{Bound: len(rows)}
+	if !admitEvent(ev) {
+		return out, nil
+	}
+	out.Admitted = true
+	rows = slices.Clone(rows)
+	slices.SortFunc(rows, func(a, b Subscription) int {
+		return cmp.Or(cmp.Compare(a.BotID, b.BotID), cmp.Compare(a.ID, b.ID))
+	})
+	for _, sub := range rows {
+		ok, failed := claims(sub, ev)
+		out.Verdicts = append(out.Verdicts, CandidateVerdict{
+			SubscriptionID: sub.ID,
+			BotID:          sub.BotID,
+			Enabled:        sub.Enabled,
+			DisabledReason: sub.DisabledReason,
+			Failed:         failed,
+		})
+		if ok {
+			out.Matched = append(out.Matched, sub)
 		}
 	}
 	return out, nil
