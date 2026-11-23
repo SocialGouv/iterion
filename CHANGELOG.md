@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.33.0](https://github.com/SocialGouv/iterion/compare/v7.32.0...v7.33.0) (2026-11-23)
+
+### Features
+
+* **codemode:** show programs, their calls and their bounds in the run views ([#3528](https://github.com/SocialGouv/iterion/issues/3528)) ([6fdab66](https://github.com/SocialGouv/iterion/commit/6fdab66f758526fa38bce12805cb658cbc99c246))
+
+    <details><summary>why</summary>
+
+    A codemode program's nested calls now say which program made them: every tool event a nested call produces carries parent_tool_use_id, its batch slot when call.parallel ran it, and an id whose suffix is the program's own frame number. Every refusal of a nested call, withheld classes and budget refusals included, is reported with that id and parent. The program's completion event carries a report: the limits after the clamp, the fields the clamp adjusted, what the child's kernel actually…
+
+    </details>
+
 ## [7.32.0](https://github.com/SocialGouv/iterion/compare/v7.31.0...v7.32.0) (2026-11-23)
 
 ### Features
