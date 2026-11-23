@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -1321,6 +1323,12 @@ func deliveryRowEquals(a, b webhooks.Delivery) bool {
 // gate meters it on the schedule's own team.
 const scheduledLaunchActor = "cloud-scheduler"
 
+// scheduledLaunchOwner is the store owner a schedule's tick launches under —
+// the identity the credential walk resolves keys for. A schedule's key pin is
+// judged against it when the schedule routes write the pin and again at the
+// tick (judgeScheduleKeyPins), so both read the identity from here.
+func scheduledLaunchOwner(botID string) string { return "scheduler:" + botID }
+
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
 // run for its tenant through the run service (cloud → publisher), past the
 // shared org launch gate. The tenant identity is stamped on the ctx so the
@@ -1329,6 +1337,10 @@ const scheduledLaunchActor = "cloud-scheduler"
 // the repo before the bot starts —
 // mandatory for stateful bots that persist state to git (feed-watch
 // state_commit=true), which need a workspace with push credentials wired.
+// The launch names the repository it serves (scheduledProjectPath) — the
+// identity the credential walk's repository audience, the launch gate's
+// per-repository quota and the runner's spend meter all read — and carries
+// the key pins scheduledKeyOverrides composes.
 // Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
 // publisher's bot-secret bindings, so SecretOverrides plumbing is not needed
 // here.
@@ -1336,7 +1348,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if s.runs == nil {
 		return errors.New("run service unavailable")
 	}
-	ctx = store.WithIdentity(ctx, sb.TenantID, "scheduler:"+sb.BotID)
+	ctx = store.WithIdentity(ctx, sb.TenantID, scheduledLaunchOwner(sb.BotID))
 	lb, err := s.resolveBotSource(ctx, sb.TenantID, sb.BotID)
 	if err != nil {
 		return err
@@ -1366,7 +1378,18 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	}
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry, route)
 	spec.PoolAttachment = poolAttachment
-	overrides, err := s.scheduledForgeOverrides(ctx, sb)
+	binding, err := s.scheduledRepoBinding(ctx, sb)
+	if err != nil {
+		return err
+	}
+	spec.ProjectPath = scheduledProjectPath(sb, binding)
+	// Before the forge-token mint: a refused pin mints nothing.
+	keyPins, err := s.scheduledKeyOverrides(ctx, sb, binding)
+	if err != nil {
+		return err
+	}
+	spec.KeyOverrides = keyPins
+	overrides, err := s.scheduledForgeOverrides(ctx, sb, binding)
 	if err != nil {
 		return err
 	}
@@ -1417,7 +1440,31 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 // its token; letting the tick limp on to a doomed clone would just move the
 // failure three minutes later and strip its cause. A schedule with no pinned
 // integration keeps the legacy bot-secret-binding resolution (nil overrides).
-func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot) (map[string]string, error) {
+func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
+	if b == nil {
+		return nil, nil
+	}
+	secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(ctx, b.connection.TenantID), &b.connection, b.integration.RepoFullName, scheduledLaunchOwner(sb.BotID))
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	}
+	return map[string]string{"forge_token": secID}, nil
+}
+
+// scheduledBinding is a repo-bound schedule's integration and the forge
+// connection it rides, read once per tick and tenant-checked: the clone
+// token, the repository the launch names and the integration's key pins all
+// come from this one read.
+type scheduledBinding struct {
+	integration forge.RepoIntegration
+	connection  forge.Connection
+}
+
+// scheduledRepoBinding resolves the integration a schedule is bound to (nil,
+// nil when it names none). Explicit errors, never a silent fall-through: a
+// schedule that pinned an integration wants its token, its repository and its
+// pins, and launching without them is a launch on someone else's terms.
+func (s *Server) scheduledRepoBinding(ctx context.Context, sb cloudsched.ScheduledBot) (*scheduledBinding, error) {
 	if sb.RepoIntegrationID == "" {
 		return nil, nil
 	}
@@ -1435,11 +1482,118 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 	if err != nil {
 		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
 	}
-	secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(ctx, conn.TenantID), &conn, integ.RepoFullName, "scheduler:"+sb.BotID)
-	if err != nil {
-		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	return &scheduledBinding{integration: integ, connection: conn}, nil
+}
+
+// scheduledProjectPath names the repository a scheduled launch serves — the
+// forge slug the credential walk's repository audience reads (a key
+// restricted to that repository funds the schedule that clones it), the
+// launch gate's per-repository quota binds and the runner's spend meter
+// charges. A schedule bound to an integration names the integration's
+// repository, spelled as the forge writes it, when its clone URL names that
+// repository (or it clones nothing); a clone URL naming another repository —
+// a repo_url edited away from the integration since — names the repository
+// the run actually clones, read against the integration's forge base. A
+// schedule bound to none derives the slug from its clone URL alone, the
+// board lane's reading for a card naming no integration. A schedule that
+// clones nothing and is bound to nothing serves no repository.
+func scheduledProjectPath(sb cloudsched.ScheduledBot, b *scheduledBinding) string {
+	if b == nil {
+		return forge.ProjectPathFromCloneURL(sb.RepoURL)
 	}
-	return map[string]string{"forge_token": secID}, nil
+	own := forge.CanonicalRepoSlug(b.integration.RepoFullName)
+	if strings.TrimSpace(sb.RepoURL) == "" {
+		return own
+	}
+	cloned := forge.ProjectPathOnBase(b.connection.BaseURL(), sb.RepoURL)
+	if strings.EqualFold(cloned, own) {
+		return own
+	}
+	return cloned
+}
+
+// scheduledKeyOverrides composes the key pins a scheduled launch carries
+// (provider → api key id). A schedule bound to an integration inherits that
+// integration's pins, read LIVE from its webhook config at the tick under a
+// tenant check — never a copy frozen on the row, so a repin, a clear or the
+// delete sweep of a revoked key on the integration reaches the next tick. The
+// schedule's own pins win over them provider by provider, and are judged at
+// the tick by the rule the write applied (judgeScheduleKeyPins): a pin whose
+// key is gone or no longer spendable refuses the tick by name instead of
+// letting the walk spend another key in its place.
+func (s *Server) scheduledKeyOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
+	if err := s.judgeScheduleKeyPins(ctx, sb); err != nil {
+		return nil, err
+	}
+	inherited, err := s.scheduledIntegrationKeyPins(ctx, sb, b)
+	if err != nil {
+		return nil, err
+	}
+	if len(inherited) == 0 && len(sb.KeyOverrides) == 0 {
+		return nil, nil
+	}
+	pins := make(map[string]string, len(inherited)+len(sb.KeyOverrides))
+	maps.Copy(pins, inherited)
+	maps.Copy(pins, sb.KeyOverrides)
+	return pins, nil
+}
+
+// scheduledIntegrationKeyPins reads the key pins of the integration a
+// schedule is bound to, from the integration's webhook config — where the
+// webhook lane reads them, and where the delete sweep clears a revoked key's
+// pin. An integration with no webhook config yet has no pins to give; one
+// naming a config this server cannot read, or one of another team, refuses
+// the tick: launching without the integration's pins would spend a key the
+// integration did not choose.
+func (s *Server) scheduledIntegrationKeyPins(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
+	if b == nil || b.integration.WebhookID == "" {
+		return nil, nil
+	}
+	if s.webhookConfigs == nil {
+		return nil, fmt.Errorf("schedule %s: repo integration %s names webhook config %s, whose key pins this server cannot read (no webhook config store wired)", sb.ID, b.integration.ID, b.integration.WebhookID)
+	}
+	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), b.integration.WebhookID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: read the key pins of repo integration %s (webhook config %s): %w", sb.ID, b.integration.ID, b.integration.WebhookID, err)
+	}
+	if cfg.TenantID != sb.TenantID {
+		return nil, fmt.Errorf("schedule %s: repo integration %s names webhook config %s, which belongs to another tenant", sb.ID, b.integration.ID, b.integration.WebhookID)
+	}
+	return cfg.KeyOverrides, nil
+}
+
+// judgeScheduleKeyPins holds a schedule's own key pins, at the tick, to the
+// rule the schedule routes applied when they wrote them (keyPinFault against
+// scheduledLaunchOwner). A schedule row is not one of the homes the key
+// delete's sweep clears — its store has no version to fence a concurrent
+// full-row write or the integration rebuild with, so a swept pin could be
+// written back unseen — so a pin is judged here, where it is spent, instead:
+// a key deleted, moved to another provider or re-scoped out of the lane's
+// sight since the write refuses the tick by name, the schedule's last_error
+// says which pin, and no other key is spent in its place. Pins are judged in
+// provider order, so the refusal names the same pin every tick.
+func (s *Server) judgeScheduleKeyPins(ctx context.Context, sb cloudsched.ScheduledBot) error {
+	if len(sb.KeyOverrides) == 0 {
+		return nil
+	}
+	if s.apiKeys == nil {
+		return fmt.Errorf("schedule %s pins api keys (key_overrides) but this server has no api key store to honour them", sb.ID)
+	}
+	tctx := store.WithTenant(ctx, sb.TenantID)
+	for _, prov := range slices.Sorted(maps.Keys(sb.KeyOverrides)) {
+		keyID := sb.KeyOverrides[prov]
+		k, err := s.apiKeys.Get(tctx, keyID)
+		switch {
+		case errors.Is(err, secrets.ErrApiKeyNotFound):
+			return fmt.Errorf("schedule %s: key_overrides[%s] names api key %q, which no longer exists — a schedule's pin is never replaced by another key: repin or clear the schedule's key_overrides", sb.ID, prov, keyID)
+		case err != nil:
+			return fmt.Errorf("schedule %s: key_overrides[%s]: read api key %q: %w", sb.ID, prov, keyID, err)
+		}
+		if err := keyPinFault(prov, keyID, k, sb.TenantID, scheduledLaunchOwner(sb.BotID)); err != nil {
+			return fmt.Errorf("schedule %s: %w", sb.ID, err)
+		}
+	}
+	return nil
 }
 
 // buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,

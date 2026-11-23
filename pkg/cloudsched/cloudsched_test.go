@@ -418,6 +418,7 @@ func TestMongoStore_CAS(t *testing.T) {
 	// mongo store so the two twins never drift.
 	assertMarkRunOutcomeContract(t, store, "sb-1", now)
 	assertIntentContract(t, store)
+	assertKeyOverridesContract(t, store)
 
 	if err := store.Delete(ctx, "sb-1"); err != nil {
 		t.Errorf("Delete: %v", err)

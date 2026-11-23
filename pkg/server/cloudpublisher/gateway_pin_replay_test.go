@@ -9,8 +9,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// ADR-131 §6, the refusal's remedy: a launch takes its pin from the webhook
-// or trigger subscription that launched it, so repinning or clearing that
+// ADR-131 §6, the refusal's remedy: a launch takes its pin from the webhook,
+// trigger subscription or schedule that launched it, so repinning or clearing that
 // entry is what unblocks the next launch. A resume replays the pin the run
 // froze at its launch and never reads the webhook again — after the key's
 // deletion the credential sweep has already cleared the webhook's pin — so
@@ -24,11 +24,11 @@ func TestGatewayPin_TheRefusalOfAReplayNamesTheRunsFrozenPin(t *testing.T) {
 		never  []string
 	}{
 		{"a launch", false,
-			[]string{"repin or clear the openai_compatible entry of key_overrides on the webhook or trigger subscription that launched the run"},
+			[]string{"repin or clear the openai_compatible entry of key_overrides on the webhook, trigger subscription or schedule that launched the run"},
 			[]string{"relaunch"}},
 		{"a resume", true,
 			[]string{"this run's own pin, frozen at its launch", "relaunch the run"},
-			[]string{"repin or clear", "on the webhook or trigger subscription that launched the run"}},
+			[]string{"repin or clear", "on the webhook, trigger subscription or schedule that launched the run"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			p, _ := gatewayKeyPublisher(t)

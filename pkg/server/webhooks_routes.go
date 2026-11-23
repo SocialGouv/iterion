@@ -580,11 +580,12 @@ func validateCredentialPinKeys(field string, pins map[string]string) error {
 // so the cross-org arm is a fail-fast UX guard, not the security boundary;
 // the spendability arm is the opposite — it is the ONLY place that arm can be
 // enforced, because an unspendable pin produces no refusal downstream at all.
-// Both machine lanes that carry pins share it: the webhook routes and the
-// trigger subscription routes.
+// Every machine lane that carries pins shares it: the webhook routes, the
+// trigger subscription routes and the schedule routes.
 //
 // actor is the identity the launch will resolve credentials under
-// (webhookActor / triggerSpineActor for the machine lanes). It fails CLOSED:
+// (webhookActor / triggerSpineActor / scheduledLaunchOwner for the machine
+// lanes). It fails CLOSED:
 // an empty actor matches no key's scope, so an unknown lane is treated as a
 // machine lane rather than skipping the arm — a credential guard with an
 // unused opt-out is a seam for the next caller's false negative.
@@ -600,29 +601,40 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 		if err != nil {
 			return fmt.Errorf("key_overrides[%s]: api key %q not found", prov, keyID)
 		}
-		if k.TenantID != tenantID {
-			return fmt.Errorf("key_overrides[%s]: api key %q belongs to another org", prov, keyID)
+		if err := keyPinFault(prov, keyID, k, tenantID, actor); err != nil {
+			return err
 		}
-		if string(k.Provider) != prov {
-			return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
-		}
-		// A gateway key pins like any key of the team: the walk spends it,
-		// and the launch keeps such a pin exclusive (ADR-131 §6 — a pinned
-		// gateway key the run cannot seal refuses the launch by name,
-		// cloudpublisher's gatewayPinRefusal), so nothing here judges the
-		// provider.
-		//
-		// The one key a launch cannot spend is refused here: this lane fires
-		// under a synthetic actor no key is scoped to, so secrets.Resolve
-		// never even lists a user-scoped key as a candidate — a vendor pin is
-		// dropped and the run seals the team's default instead. Resolve
-		// cannot report it (an invisible key never reaches onWithheld, which
-		// answers for the bot and repository audiences only), so the write
-		// refuses it, and the operator's explicit choice is never replaced in
-		// silence. The secret twin below has always refused the same shape.
-		if !secrets.SpendableBy(k, tenantID, actor) {
-			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
-		}
+	}
+	return nil
+}
+
+// keyPinFault judges one key pin against the key it names, read: the key
+// must be the tenant's, of the pinned provider, and spendable by the actor
+// the lane launches under. The write validator above asks it, and so does the
+// scheduled tick for the schedule's own pins (judgeScheduleKeyPins), so the
+// pin a write admitted is held to the same rule when it is spent.
+func keyPinFault(prov, keyID string, k secrets.ApiKey, tenantID, actor string) error {
+	if k.TenantID != tenantID {
+		return fmt.Errorf("key_overrides[%s]: api key %q belongs to another org", prov, keyID)
+	}
+	if string(k.Provider) != prov {
+		return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
+	}
+	// A gateway key pins like any key of the team: the walk spends it, and
+	// the launch keeps such a pin exclusive (ADR-131 §6 — a pinned gateway
+	// key the run cannot seal refuses the launch by name, cloudpublisher's
+	// gatewayPinRefusal), so nothing here judges the provider.
+	//
+	// The one key a launch cannot spend is refused here: a machine lane fires
+	// under a synthetic actor no key is scoped to, so secrets.Resolve never
+	// even lists a user-scoped key as a candidate — a vendor pin is dropped
+	// and the run seals the team's default instead. Resolve cannot report it
+	// (an invisible key never reaches onWithheld, which answers for the bot
+	// and repository audiences only), so the pin is refused here, and the
+	// operator's explicit choice is never replaced in silence. The secret
+	// twin below has always refused the same shape.
+	if !secrets.SpendableBy(k, tenantID, actor) {
+		return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 	}
 	return nil
 }

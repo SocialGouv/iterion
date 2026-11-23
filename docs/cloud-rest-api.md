@@ -694,6 +694,13 @@ Recurring bots, the cloud counterpart of `iterion schedule` —
 | `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
 | `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
 
+`key_overrides` (provider → api key id) on the create and the `PATCH` pins
+the key a provider spends for the schedule's runs, over its integration's
+own pins; it is validated like a webhook's pin, against `scheduler:<bot_id>`
+— a personal key, another team's key or another provider's is a `400`. On
+the `PATCH`, an absent field keeps the stored pins and `null` or `{}`
+clears them ([byok.md](byok.md#per-webhook-key-override)).
+
 A `config_editor` reaches the same schedule store by another door:
 `PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule` edits the cron of
 the oldest schedule tied to its share's (bot, category) — an enabled, non-read-only share, and

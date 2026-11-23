@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -288,18 +289,169 @@ func TestSchedule_CreateResolvesRepoIntegration(t *testing.T) {
 	}
 }
 
-// The scheduled lane clones a repository but does not NAME it yet: the
-// credential walk's repository is "" for a scheduled run, so a key
-// restricted to that very repository is withheld there (docs/byok.md,
-// `repos` — "where it stops"; ADR-131 §3). #2005 PR-R stamps the lane from
-// its integration; this canary goes red then, and the doc moves with it.
-func TestScheduledLaunchNamesNoRepositoryYet(t *testing.T) {
-	sb := cloudsched.ScheduledBot{ID: "s1", TenantID: "t1", BotID: "nightly-audit", RepoURL: "https://github.com/acme/api.git", RepoRef: "main"}
-	spec := buildScheduledLaunchSpec(sb, "/tmp/x/main.bot", "workflow: {}", nil, nil)
-	if spec.ProjectPath != "" {
-		t.Fatalf("the scheduled lane now names repository %q — lift the \"where it stops\" paragraph of docs/byok.md and ADR-131 §3", spec.ProjectPath)
+// newSchedulePinRouteServer is newScheduleTestServer with an api key store
+// holding the shapes a schedule pin is judged on: t1's org-scoped gateway
+// and anthropic keys, alice's personal key of t1, t2's key, and a key scoped
+// to the identity the feed-watch schedule launches under.
+func newSchedulePinRouteServer(t *testing.T) *Server {
+	t.Helper()
+	s := newScheduleTestServer(t)
+	keys := secrets.NewMemoryApiKeyStore()
+	s.apiKeys = keys
+	seedSweepKey(t, keys, "t1", "key-tech", secrets.ProviderOpenAICompatible)
+	seedSweepKey(t, keys, "t1", "key-design", secrets.ProviderOpenAICompatible)
+	seedSweepKey(t, keys, "t1", "key-anthropic", secrets.ProviderAnthropic)
+	seedSweepKey(t, keys, "t2", "key-t2", secrets.ProviderOpenAICompatible)
+	for _, k := range []secrets.ApiKey{
+		{ID: "key-alice", ScopeTeamID: "t1", ScopeUserID: "alice", Provider: secrets.ProviderOpenAICompatible},
+		{ID: "key-feed-watch-lane", ScopeTeamID: "t1", ScopeUserID: scheduledLaunchOwner("feed-watch"), Provider: secrets.ProviderOpenAICompatible},
+	} {
+		k.Name, k.Fingerprint, k.CreatedAt = k.ID, "fp-"+k.ID, time.Now().UTC()
+		if err := keys.Create(store.WithTenant(t.Context(), "t1"), k); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if (secrets.ApiKey{Repos: []string{"acme/api"}}).ServesRepoForLaunch(spec.ProjectPath) {
-		t.Fatal("a repo-restricted key would be spent by a launch that names no repository")
+	return s
+}
+
+func createScheduleWith(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleCreateSchedule(w, scheduleReq(superAdminCtx(), "POST", "/api/teams/t1/schedules", body, "t1", ""))
+	return w
+}
+
+func patchScheduleWith(t *testing.T, s *Server, id, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleUpdateSchedule(w, scheduleReq(superAdminCtx(), "PATCH", "/api/teams/t1/schedules/"+id, body, "t1", id))
+	return w
+}
+
+func storedKeyPins(t *testing.T, s *Server, id string) map[string]string {
+	t.Helper()
+	sb, err := s.cfg.ScheduledBots.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return sb.KeyOverrides
+}
+
+// TestSchedule_CreateKeyOverrides: the create route stores a pin it admits,
+// returns it on the list, and refuses — storing nothing — every pin the
+// schedule's tick could not spend.
+func TestSchedule_CreateKeyOverrides(t *testing.T) {
+	s := newSchedulePinRouteServer(t)
+	w := createScheduleWith(t, s, `{"bot_id":"feed-watch","cron":"0 6 * * *","key_overrides":{"openai_compatible":"key-design"}}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created cloudsched.ScheduledBot
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"openai_compatible": "key-design"}
+	if got := storedKeyPins(t, s, created.ID); !maps.Equal(got, want) {
+		t.Fatalf("stored key_overrides = %v, want %v", got, want)
+	}
+	lw := httptest.NewRecorder()
+	s.handleListSchedules(lw, scheduleReq(superAdminCtx(), "GET", "/api/teams/t1/schedules", "", "t1", ""))
+	var lr struct {
+		Schedules []cloudsched.ScheduledBot `json:"schedules"`
+	}
+	if err := json.Unmarshal(lw.Body.Bytes(), &lr); err != nil {
+		t.Fatal(err)
+	}
+	if len(lr.Schedules) != 1 || !maps.Equal(lr.Schedules[0].KeyOverrides, want) {
+		t.Fatalf("listed schedules = %+v, want the one row carrying %v", lr.Schedules, want)
+	}
+
+	for _, tc := range []struct{ name, pins, says string }{
+		{"a personal key, invisible to the schedule's lane", `{"openai_compatible":"key-alice"}`, "not spendable"},
+		{"another team's key", `{"openai_compatible":"key-t2"}`, "key-t2"},
+		{"a key of another provider", `{"anthropic":"key-tech"}`, "is for provider"},
+		{"a key that does not exist", `{"openai_compatible":"key-gone"}`, "not found"},
+		{"a name the pin sweep cannot address", `{"openai.compatible":"key-tech"}`, "must not hold"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSchedulePinRouteServer(t)
+			w := createScheduleWith(t, s, `{"bot_id":"feed-watch","cron":"0 6 * * *","key_overrides":`+tc.pins+`}`)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "key_overrides") || !strings.Contains(w.Body.String(), tc.says) {
+				t.Fatalf("create = %d %s, want a 400 naming key_overrides and %q", w.Code, w.Body.String(), tc.says)
+			}
+			if rows, _ := s.cfg.ScheduledBots.ListByTenant(context.Background(), "t1"); len(rows) != 0 {
+				t.Fatalf("a refused create stored %d row(s), want none", len(rows))
+			}
+		})
+	}
+}
+
+// TestSchedule_KeyPinsAreJudgedForTheTicksIdentity: a pin is judged against
+// the identity the schedule's own tick resolves keys under —
+// scheduledLaunchOwner of the row's bot — so the write admits exactly the
+// key the tick can spend: a key scoped to the feed-watch lane is admitted on
+// a feed-watch schedule and refused on another bot's.
+func TestSchedule_KeyPinsAreJudgedForTheTicksIdentity(t *testing.T) {
+	s := newSchedulePinRouteServer(t)
+	pin := `"key_overrides":{"openai_compatible":"key-feed-watch-lane"}`
+	if w := createScheduleWith(t, s, `{"bot_id":"feed-watch","cron":"0 6 * * *",`+pin+`}`); w.Code != http.StatusCreated {
+		t.Fatalf("a key the feed-watch tick spends, pinned on a feed-watch schedule = %d %s, want 201", w.Code, w.Body.String())
+	}
+	w := createScheduleWith(t, s, `{"bot_id":"nightly-audit","cron":"0 6 * * *",`+pin+`}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), scheduledLaunchOwner("nightly-audit")) {
+		t.Fatalf("the same key on a nightly-audit schedule = %d %s, want a 400 naming %q", w.Code, w.Body.String(), scheduledLaunchOwner("nightly-audit"))
+	}
+	// The PATCH judges against the stored row's bot, the one its tick fires.
+	cw := createScheduleWith(t, s, `{"bot_id":"nightly-audit","cron":"0 6 * * *"}`)
+	var created cloudsched.ScheduledBot
+	if err := json.Unmarshal(cw.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if pw := patchScheduleWith(t, s, created.ID, `{`+pin+`}`); pw.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH pinning the feed-watch lane's key on a nightly-audit row = %d %s, want 400", pw.Code, pw.Body.String())
+	}
+}
+
+// TestSchedule_PatchKeyOverrides: absent leaves the pins, an object replaces
+// them (validated), null and {} clear them, and an edit echoing the stored
+// pins back is no write at all — not judged, so a pin whose key was deleted
+// since does not refuse a pause (the tick refuses it by name instead).
+func TestSchedule_PatchKeyOverrides(t *testing.T) {
+	s := newSchedulePinRouteServer(t)
+	w := createScheduleWith(t, s, `{"bot_id":"feed-watch","cron":"0 6 * * *","key_overrides":{"openai_compatible":"key-tech"}}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created cloudsched.ScheduledBot
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := created.ID
+	tech := map[string]string{"openai_compatible": "key-tech"}
+	design := map[string]string{"openai_compatible": "key-design", "anthropic": "key-anthropic"}
+
+	step := func(name, body string, wantCode int, want map[string]string) {
+		t.Helper()
+		pw := patchScheduleWith(t, s, id, body)
+		if pw.Code != wantCode {
+			t.Fatalf("%s: PATCH %s = %d %s, want %d", name, body, pw.Code, pw.Body.String(), wantCode)
+		}
+		if got := storedKeyPins(t, s, id); !maps.Equal(got, want) {
+			t.Fatalf("%s: stored key_overrides = %v, want %v", name, got, want)
+		}
+	}
+	step("absent", `{"disabled":true}`, http.StatusOK, tech)
+	step("replace", `{"key_overrides":{"openai_compatible":"key-design","anthropic":"key-anthropic"}}`, http.StatusOK, design)
+	step("a refused replace stores nothing", `{"key_overrides":{"openai_compatible":"key-alice"}}`, http.StatusBadRequest, design)
+	step("not an object of strings", `{"key_overrides":{"openai_compatible":1}}`, http.StatusBadRequest, design)
+	step("null clears", `{"key_overrides":null}`, http.StatusOK, nil)
+	step("re-pin", `{"key_overrides":{"openai_compatible":"key-tech"}}`, http.StatusOK, tech)
+	step("{} clears", `{"key_overrides":{}}`, http.StatusOK, nil)
+	step("re-pin again", `{"key_overrides":{"openai_compatible":"key-tech"}}`, http.StatusOK, tech)
+
+	if err := s.apiKeys.Delete(store.WithTenant(context.Background(), "t1"), "key-tech"); err != nil {
+		t.Fatal(err)
+	}
+	step("an echo of a pin whose key is gone pauses", `{"disabled":true,"key_overrides":{"openai_compatible":"key-tech"}}`, http.StatusOK, tech)
+	step("a new pin on a gone key is refused", `{"key_overrides":{"anthropic":"key-tech"}}`, http.StatusBadRequest, tech)
 }

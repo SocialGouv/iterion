@@ -93,3 +93,23 @@ func ProjectPathFromCloneURL(cloneURL string) string {
 	// the function's own output.
 	return CanonicalRepoSlug(u)
 }
+
+// ProjectPathOnBase canonicalises a clone URL to its forge slug when the
+// caller knows the forge base the URL is hosted on (a connection's BaseURL,
+// an integration's canonical base): the base's own path is stripped whole,
+// so a forge served under a sub-path ("https://host/gitlab") yields
+// "owner/repo", never "gitlab/owner/repo" — the case ProjectPathFromCloneURL
+// documents it cannot tell apart. A clone URL off that base (or an empty
+// base) falls back to ProjectPathFromCloneURL: the slug a launch stamps is
+// the repository it clones, whatever the integration it names. Every launch
+// surface holding a base derives its repository identity here — the REST
+// repo-targeted launch, the board lane, the scheduled lane — so one
+// repository is one meter key on every surface.
+func ProjectPathOnBase(baseURL, cloneURL string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	u := strings.TrimSpace(cloneURL)
+	if base != "" && strings.HasPrefix(u, base+"/") {
+		return CanonicalRepoSlug(strings.TrimPrefix(u, base+"/"))
+	}
+	return ProjectPathFromCloneURL(u)
+}

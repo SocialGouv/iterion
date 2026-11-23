@@ -1594,6 +1594,11 @@ func (o *Orchestrator) syncSchedulesWithPool(ctx context.Context, tenantID, inte
 				// is re-projected below.
 				sb.Pool = prev.Pool
 				sb.PoolFromIntegration = prev.PoolFromIntegration
+				// The row's key pins are the schedule PATCH's voice alone
+				// (the integration's pins are read live at the tick, never
+				// projected here), so they carry as they stand: a rebuild
+				// that dropped them would spend another key in silence.
+				sb.KeyOverrides = maps.Clone(prev.KeyOverrides)
 				sb.CreatedBy = prev.CreatedBy
 				sb.CreatedAt = prev.CreatedAt
 			}

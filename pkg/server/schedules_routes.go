@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -65,6 +67,11 @@ type createScheduleReq struct {
 	// opt-in, decoded STRICTLY through decodePoolBlock like the routing
 	// block beside it. On create, `null` and absent both mean no block.
 	Pool json.RawMessage `json:"pool,omitempty"`
+	// KeyOverrides pins a BYOK api key per LLM provider (provider → api key
+	// id) for this schedule's runs, over the bound integration's own pins.
+	// Validated like a webhook's or a trigger subscription's pin
+	// (validateKeyOverrides), against the identity the tick launches under.
+	KeyOverrides map[string]string `json:"key_overrides,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -104,6 +111,35 @@ type updateScheduleReq struct {
 	// is the machine lane's grant: the schedule's launches draw the named
 	// pool because an admin of this team wrote it.
 	Pool json.RawMessage `json:"pool,omitempty"`
+	// KeyOverrides (provider → api key id): ABSENT leaves the stored pins
+	// untouched, `null` or `{}` clears them (the schedule inherits its
+	// integration's pins again), an object replaces them wholesale —
+	// validated before it lands, like the create lane.
+	KeyOverrides json.RawMessage `json:"key_overrides,omitempty"`
+}
+
+// decodeScheduleKeyPins reads a PATCH's key_overrides block: spoke is false
+// when the request left the field out, pins is nil when it cleared them.
+func decodeScheduleKeyPins(raw json.RawMessage) (map[string]string, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var pins map[string]string
+	if err := json.Unmarshal(raw, &pins); err != nil {
+		return nil, false, fmt.Errorf("key_overrides: want an object of provider → api key id: %w", err)
+	}
+	if len(pins) == 0 {
+		return nil, true, nil
+	}
+	return pins, true, nil
+}
+
+// validateScheduleKeyPins judges a schedule's key pins for the write: the
+// rule every machine lane's pin passes (validateKeyOverrides), against the
+// identity the schedule's tick resolves credentials under — the tick holds
+// the stored pins to that same rule again when it spends them.
+func (s *Server) validateScheduleKeyPins(ctx context.Context, teamID, botID string, pins map[string]string) error {
+	return s.validateKeyOverrides(teamTenantCtx(ctx, teamID), teamID, scheduledLaunchOwner(botID), pins)
 }
 
 // decodeScheduleRouting decodes a schedule request's routing block through
@@ -231,6 +267,14 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, createPool) {
 		return
 	}
+	if err := s.validateScheduleKeyPins(r.Context(), teamID, botID, req.KeyOverrides); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	var keyPins map[string]string
+	if len(req.KeyOverrides) > 0 {
+		keyPins = req.KeyOverrides
+	}
 	now := s.scheduleNow()
 	sb := cloudsched.ScheduledBot{
 		ID:              uuid.NewString(),
@@ -258,6 +302,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		RetryJitter:       req.RetryJitter,
 		Routing:           routing,
 		Pool:              createPool,
+		KeyOverrides:      keyPins,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -274,7 +319,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.created", "schedule", sb.ID, map[string]any{
 		"bot_id": botID, "cron": cronExpr, "repo_url": sb.RepoURL != "", "disabled": sb.Disabled,
-		"routing_set": sb.Routing != nil,
+		"routing_set": sb.Routing != nil, "key_overrides_set": len(sb.KeyOverrides) > 0,
 	})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, sb)
@@ -427,6 +472,24 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearPool := patchPool == nil && poolSpoke
+	// Key pins: absent leaves the stored pins, null or {} clears, an object
+	// replaces wholesale. An edit dialog echoing the stored pins back writes
+	// nothing and is not judged — a pin whose key was deleted since must not
+	// refuse a pause; the tick refuses it by name (judgeScheduleKeyPins).
+	patchKeyPins, keyPinsSpoke, keyPinsErr := decodeScheduleKeyPins(req.KeyOverrides)
+	if keyPinsErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", keyPinsErr.Error())
+		return
+	}
+	if keyPinsSpoke && maps.Equal(patchKeyPins, cur.KeyOverrides) {
+		patchKeyPins, keyPinsSpoke = nil, false
+	}
+	if keyPinsSpoke {
+		if err := s.validateScheduleKeyPins(r.Context(), teamID, cur.BotID, patchKeyPins); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
+	}
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()
@@ -462,6 +525,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.ClearRouting = clearRouting
 	patch.Pool = patchPool
 	patch.ClearPool = clearPool
+	if keyPinsSpoke {
+		patch.KeyOverrides = &patchKeyPins
+	}
 	// cron and interval_seconds are mutually exclusive cadences; whichever
 	// the request provides recomputes NextFireAt and clears the other. The
 	// exclusive switch (not two independent ifs) makes each patch field set
@@ -524,6 +590,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	s.auditTenant(r, teamID, "schedule.updated", "schedule", updated.ID, map[string]any{
 		"bot_id": updated.BotID, "cron_changed": req.Cron != nil, "disabled_changed": req.Disabled != nil,
 		"routing_set": updated.Routing != nil, "routing_changed": len(req.Routing) > 0,
+		"key_overrides_set": len(updated.KeyOverrides) > 0, "key_overrides_changed": keyPinsSpoke,
 	})
 	writeJSON(w, updated)
 }

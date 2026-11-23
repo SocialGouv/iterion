@@ -53,6 +53,30 @@ func TestProjectPathFromCloneURL_RoundTripsCloneURLFor(t *testing.T) {
 	}
 }
 
+// ProjectPathOnBase is the derivation every launch surface holding a forge
+// base shares: the base is stripped whole (a sub-path forge's own path is
+// never read as a subgroup), and a clone URL off the base is read on its own
+// — the repository the run clones is the one it is metered by.
+func TestProjectPathOnBase(t *testing.T) {
+	cases := []struct{ base, in, want string }{
+		{"https://github.com", "https://github.com/Acme/Widgets.git", "Acme/Widgets"},
+		{"https://github.com/", "https://github.com/acme/widgets.git/", "acme/widgets"},
+		// The sub-path base: stripped whole, so its own path is not a
+		// subgroup of the slug.
+		{"https://host.example/gitlab", "https://host.example/gitlab/group/sub/repo.git", "group/sub/repo"},
+		// Off the base: the clone URL is read on its own.
+		{"https://host.example/gitlab", "https://github.com/acme/widgets.git", "acme/widgets"},
+		// No base: the base-less derivation.
+		{"", "git@github.com:acme/widgets.git", "acme/widgets"},
+		{"https://github.com", "", ""},
+	}
+	for _, c := range cases {
+		if got := ProjectPathOnBase(c.base, c.in); got != c.want {
+			t.Errorf("ProjectPathOnBase(%q, %q) = %q, want %q", c.base, c.in, got, c.want)
+		}
+	}
+}
+
 // CanonicalRepoSlug is the ONE trim every clone-URL→key derivation shares.
 // A ".git/" tail is the spelling a copy-pasted URL carries as often as a
 // bare ".git": a derivation that canonicalised one form and not the other

@@ -1591,11 +1591,13 @@ one:
 
 On the team's policy, a restricted key's cell would also route launches the
 key cannot fund onto the gateway — the team's other repositories or bots,
-and for a repository restriction the scheduled, board and pipeline lanes,
-which name no repository (ADR-131 §3) — and under `llm_fallback=none` such a
-launch is refused (§5). Until PR-R stamps the scheduled lane with its
-integration's repository, an integration's own schedules cannot spend a
-repository-restricted key either.
+and for a repository restriction the pipeline lane, which names no
+repository (ADR-131 §3) — and under `llm_fallback=none` such a launch is
+refused (§5). The scheduled lane names its integration's repository (or its
+`repo_url`'s), so an integration's own schedules spend a key restricted to
+that repository; when two gateway keys of the team serve the same bot and
+repository, a schedule's `key_overrides` picks the one it spends
+([byok.md](byok.md#per-webhook-key-override)).
 
 The cell re-targets the `model:` of every LLM node the record reaches — not
 its `backend:` or `provider:`. A node whose backend resolves to claw (named,
