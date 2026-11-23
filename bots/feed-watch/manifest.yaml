@@ -1,7 +1,11 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.7.1
+version: 1.8.0
+## 1.8.0 — `synthesize` declares no model fallback: the resolved route
+## (on iterion.cloud, the schedules' pin onto the team's PLIAGE gateway
+## key) is the only one a digest spends. An unserved digest fails and its
+## items stay queued for the next one.
 ## 1.7.1 — the three state commits (dedup_queue, commit_state,
 ## notify_silence) send git's own lines to stderr: a node's stdout is the
 ## JSON object its `output:` declares, and `[main 1a2b3c4] chore…` ahead of
