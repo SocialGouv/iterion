@@ -66,9 +66,9 @@ vars:
   ## (scripts/ultra11y.mjs in the npm tarball). bots/rgaa-audit/ultra11y.pin
   ## is the authored copy; bots/rgaa_audit_engine_pin_test.go holds these
   ## three defaults equal to it. Bump deliberately, through the pin file.
-  engine_version: string = "5.49.0"
-  engine_sha256: string = "114cdbd640c837ce14796601e56f1c15df3756987ef9c803a1f411fee9d2a404"
-  engine_size: int = 3805949
+  engine_version: string = "6.0.0"
+  engine_sha256: string = "08e30f90bc775e3bbe0c1134433336b8012ce5f433a242063e4546b3bcd1f9f2"
+  engine_size: int = 3533473
   ## The standard the engine audits against. Only the French RGAA 4.1.2 pack
   ## today: the WCAG core report carries no « Décidés » line and a different
   ## rate semantics, so the cross-checks below would read it as degraded on
@@ -1642,11 +1642,16 @@ tool fold_probe:
     const dir = path.join(RUN, "probe", "r" + round);
     const copy = path.join(dir, "audit-latest.json");
     L.writeJSON(copy, L.readJSON(L.auditPath()));
-    let applied = 0, rejected = [], issueList = [];
+    let applied = 0, rejected = [], gaps = [], issueList = [];
     if (adj.items.length) {
       const r = L.engine(["verify", "--apply", path.join(RUN, "adjudication.json"), "--in", copy, "--out", dir, "--json"].concat(L.std({{input.standard}})), { cwd: {{input.workspace_dir}} });
       if (!r.json) L.die("fold probe printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
       applied = Number(r.json.applied || 0); rejected = L.rejectedOf(r.json, "the fold probe").map(String); issueList = (r.json.issues || []).map(String);
+      // An open criterion the file never mentions is a coverage gap, which the
+      // engine names apart from its refusals (SocialGouv/ultra11y#136): it is
+      // re-asked like a refusal, never read as a decision.
+      if (r.json.notInWorklist !== undefined && !Array.isArray(r.json.notInWorklist)) L.die("the fold probe printed a notInWorklist that is not a list");
+      gaps = (r.json.notInWorklist || []).map(String);
     }
     const probed = L.readJSON(copy);
     const filled = new Set(adj.items.map((i) => i.criteriaId));
@@ -1658,8 +1663,9 @@ tool fold_probe:
     // gap; the merge's own reason (the stray citation) is the one to re-ask with.
     for (const s of issueList) { const m = s.match(/^criterion (\S+): (.*)$/); if (!m) { general.push(s); continue; } if (!issues[m[1]] || !/coverage gap/.test(m[2])) issues[m[1]] = m[2]; }
     for (const id of rejected) if (!issues[id]) issues[id] = "refused by the fold" + (general.length ? ": " + general.join(" | ") : "");
-    for (const id of flaggedOpen) if (!rejected.includes(id) && !unfilled.includes(id)) issues[id] = "the engine found no subject for this criterion and a manual verdict leaves the report inconsistent — decide NA (no subject in the audited scope) or C/NC on the evidence";
-    const pendingIds = Array.from(new Set([].concat(rejected, unfilled, flaggedOpen))).sort();
+    for (const id of gaps) if (!issues[id]) issues[id] = "missing from the adjudication (coverage gap)";
+    for (const id of flaggedOpen) if (!rejected.includes(id) && !gaps.includes(id) && !unfilled.includes(id)) issues[id] = "the engine found no subject for this criterion and a manual verdict leaves the report inconsistent — decide NA (no subject in the audited scope) or C/NC on the evidence";
+    const pendingIds = Array.from(new Set([].concat(rejected, gaps, unfilled, flaggedOpen))).sort();
     const pendingIssues = {};
     for (const id of pendingIds) pendingIssues[id] = issues[id] || "no verdict received";
     L.writeJSON(path.join(RUN, "pending.json"), { round: round + 1, ids: pendingIds, issues: pendingIssues });

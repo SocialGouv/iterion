@@ -71,6 +71,10 @@ edits to `studio/src` are part of what gets judged.
   covers this studio; another repo starts from an empty ledger —
   expect ~$60 for ~100 criteria, so raise the ceiling accordingly
   (`RGAA_DEMO_BUDGET=80` or `--max-cost-usd 80`).
+- Run it in CI (GitHub Actions, GitLab CI) — the path ultra11y's own docs
+  point to since its 6.0.0 dropped its Action: the jobs, the secret and
+  the token knob are in the bot's README,
+  [Run Acci in your CI](../../../bots/rgaa-audit/README.md#run-acci-in-your-ci).
 - `iterion resume --run-id <id> --store-dir .rgaa-demo/store …` resumes
   an interrupted run (add `--loop-budget-guard off` if the guard trips
   on the resumed budget). The measured ceiling of a full run is the

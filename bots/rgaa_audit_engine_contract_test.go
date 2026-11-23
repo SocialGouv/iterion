@@ -34,14 +34,16 @@ import (
 // These tests run the pinned engine on testdata/rgaa-audit-site (two HTML
 // pages and one TSX component with planted defects) and assert the shapes the
 // bot reads: exit codes, JSON keys, counters, file layout. Every assertion
-// below was measured on ultra11y 5.49.0; a pin bump that changes one of them
+// below was measured on ultra11y 6.0.0; a pin bump that changes one of them
 // is a migration, and this file is where it shows first.
 //
 // Facts worth their weight (all measured, all relied on by the bot):
 //   - `verify --apply` folds PARTIALLY by default: exit 0 as soon as one
 //     verdict lands, refusals listed in `issues`/`rejectedCriteria`; exit 1
 //     only when nothing lands or under `--strict`. A criterion absent from the
-//     file is refused as a coverage gap, and stays "à évaluer".
+//     file is no refusal: it is named apart in `notInWorklist` (a coverage
+//     gap, SocialGouv/ultra11y#136), stays "à évaluer", and only `--strict`
+//     lists it in `issues`.
 //   - `audit --standard rgaa` writes a `pack-audit` document whose ROOT
 //     `conformancePct` is the AUTOMATIC pass rate (engine-decided C over
 //     engine-decided C + NC, agent verdicts excluded); `report --json` and
@@ -531,8 +533,13 @@ type foldOut struct {
 	StillManual      int      `json:"stillManual"`
 	Rejected         int      `json:"rejected"`
 	RejectedCriteria []string `json:"rejectedCriteria"`
+	NotInWorklist    []string `json:"notInWorklist"`
 	Issues           []any    `json:"issues"`
 	ConformancePct   float64  `json:"conformancePct"`
+	// Since 6.0.0 (SocialGouv/ultra11y#156): the same automatic number under
+	// an unmistakable name, and the standard's own conformity rate.
+	AutomaticPassRatePct *float64 `json:"automaticPassRatePct"`
+	ConformanceRatePct   *float64 `json:"conformanceRatePct"`
 }
 
 type checkOut struct {
@@ -871,10 +878,17 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		if !f.OK || f.Applied != 1 || f.StillManual != 0 {
 			t.Fatalf("applied=%d stillManual=%d ok=%v — exactly the cited C must land", f.Applied, f.StillManual, f.OK)
 		}
-		// Every other open criterion is absent from the file: the engine
-		// refuses each as a coverage gap and leaves it "à évaluer".
-		if f.Rejected != worklist.Count-1 || len(f.RejectedCriteria) != worklist.Count-1 {
-			t.Fatalf("rejected=%d (%d ids), expected %d coverage gaps", f.Rejected, len(f.RejectedCriteria), worklist.Count-1)
+		// Every other open criterion is absent from the file: a coverage gap,
+		// which the engine names apart in notInWorklist — not a refusal, not
+		// an issue (SocialGouv/ultra11y#136) — and leaves "à évaluer".
+		if f.Rejected != 0 || len(f.RejectedCriteria) != 0 {
+			t.Fatalf("rejected=%d (%v): a coverage gap is not a refusal", f.Rejected, f.RejectedCriteria)
+		}
+		if len(f.NotInWorklist) != worklist.Count-1 || rgaaContains(f.NotInWorklist, targetID) {
+			t.Fatalf("notInWorklist names %d ids, expected the %d coverage gaps (all but %s): %v", len(f.NotInWorklist), worklist.Count-1, targetID, f.NotInWorklist)
+		}
+		if strings.Contains(fmt.Sprint(f.Issues), "coverage gap") {
+			t.Fatalf("a partial fold lists its coverage gaps in issues: %v", f.Issues)
 		}
 		rgaaReadJSON(t, audit, &doc)
 		if got := rgaaStatusCounts(doc)["manual"]; got != worklist.Count-1 {
@@ -895,6 +909,12 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		// pass rate at the document root nor the RGAA rate.
 		if int(f.ConformancePct) != int(doc.Core.ConformancePct) {
 			t.Fatalf("fold conformancePct %.0f ≠ core %.0f", f.ConformancePct, doc.Core.ConformancePct)
+		}
+		if f.AutomaticPassRatePct == nil || *f.AutomaticPassRatePct != f.ConformancePct {
+			t.Fatalf("fold automaticPassRatePct %v ≠ conformancePct %.0f", f.AutomaticPassRatePct, f.ConformancePct)
+		}
+		if want := rgaaRate(rgaaCountDoc(doc)); f.ConformanceRatePct == nil || int(*f.ConformanceRatePct) != want {
+			t.Fatalf("fold conformanceRatePct %v ≠ the RGAA rate %d%% computed from criteria[]", f.ConformanceRatePct, want)
 		}
 		if flagged := rgaaFlagged(doc); len(flagged) != 0 {
 			t.Fatalf("coverage gaps incorrectly marked inapplicable: %v", flagged)
@@ -960,9 +980,17 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 	t.Run("report_and_check_accept_the_raw_audit", func(t *testing.T) {
 		dir, copyPath := probe(t, "raw")
 		var rep struct {
-			Path           string  `json:"path"`
-			ConformancePct float64 `json:"conformancePct"`
-			Date           string  `json:"date"`
+			Path           string   `json:"path"`
+			ConformancePct *float64 `json:"conformancePct"`
+			Conformance    *struct {
+				Pct        int `json:"pct"`
+				Validated  int `json:"validated"`
+				Applicable int `json:"applicable"`
+				NA         int `json:"na"`
+				Open       int `json:"open"`
+			} `json:"conformance"`
+			AutomaticPct *float64 `json:"automaticPct"`
+			Date         string   `json:"date"`
 		}
 		if code := rgaaEngineJSON(t, bin, site, nil, &rep, append([]string{"report", "--in", copyPath, "--out", dir, "--json"}, std...)...); code != 0 {
 			t.Fatalf("report exit %d", code)
@@ -980,16 +1008,21 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		var raw packAuditDoc
 		rgaaReadJSON(t, copyPath, &raw)
 		lines := rgaaReadReportLines(t, rep.Path)
-		// Three different numbers: `report --json` echoes the core (WCAG)
-		// rate; the document root is the automatic pass rate, printed as
-		// « Taux de réussite automatique »; the RGAA rate is the « Taux de
-		// conformité » line, computed from criteria[] and in no JSON at all.
-		if int(rep.ConformancePct) != int(raw.Core.ConformancePct) || lines.Auto != int(raw.ConformancePct) {
-			t.Fatalf("report --json %.0f / core %.0f / automatic line %d / root %.0f disagree", rep.ConformancePct, raw.Core.ConformancePct, lines.Auto, raw.ConformancePct)
+		// Two numbers, each printed where the report prints it: the document
+		// root is the automatic pass rate (« Taux de réussite automatique »,
+		// `automaticPct`); the RGAA rate is the « Taux de conformité » line,
+		// which `report --json` now carries as `conformancePct` with its
+		// operands under `conformance` (SocialGouv/ultra11y#116, #125). The
+		// bot still computes it from criteria[] and cross-checks the line.
+		if lines.Auto != int(raw.ConformancePct) || rep.AutomaticPct == nil || int(*rep.AutomaticPct) != int(raw.ConformancePct) {
+			t.Fatalf("automatic rate: report line %d / report --json %v / root %.0f disagree", lines.Auto, rep.AutomaticPct, raw.ConformancePct)
 		}
 		counts := rgaaCountDoc(raw)
 		if lines.Rate != rgaaRate(counts) {
 			t.Fatalf("report RGAA rate %d%% ≠ %d%% computed from criteria[] (%+v)", lines.Rate, rgaaRate(counts), counts)
+		}
+		if rep.ConformancePct == nil || rep.Conformance == nil || int(*rep.ConformancePct) != lines.Rate || rep.Conformance.Pct != lines.Rate {
+			t.Fatalf("report --json conformancePct %v / conformance %+v ≠ the report's RGAA rate %d%%", rep.ConformancePct, rep.Conformance, lines.Rate)
 		}
 		if lines.Decided != counts {
 			t.Fatalf("report Décidés line %+v ≠ document %+v", lines.Decided, counts)
