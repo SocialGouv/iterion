@@ -482,16 +482,12 @@ schema commit_output:
 ## a board.* grant would buy a card nobody reads. The grant alone opens
 ## them — iterion's own MCP servers sit outside a node's `mcp:` scope.
 ##
-## The gpt_forfait fallback keeps the digest deliverable when the
-## Anthropic subscription window (or iterion's own usage cap on it) is
-## exhausted: usage_window routes the SAME prompt to the OpenAI family
-## through claw, billed on the codex OAuth forfait when no metered key
-## is present. The deny gate survives the route — a sandboxed claw run
-## receives the policy over the IPC and enforces it in-container. The
-## crossing is loud (`model_fallback` event, `_fallback_used` /
-## `_served_by: gpt_forfait` on the output), and the deterministic
-## verify_message firewall downstream judges the digest the same way
-## whoever served it.
+## No model fallback: the route the launch resolves (the node defaults, or
+## a schedule's routing pin onto a team gateway key) is the only one the
+## digest spends. A digest that route cannot serve fails loudly, and
+## nothing is lost — the queue is cleared only after publication
+## (commit_state), so the next digest of the category picks up every
+## unsent item and its window note says how far back it reaches.
 agent synthesize:
   model: "${FEED_WATCH_MODEL:-}"
   backend: "${FEED_WATCH_BACKEND:-claude_code}"
@@ -502,11 +498,6 @@ agent synthesize:
   tools: [web_fetch, todo_write]
   tool_max_steps: 30
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
-  fallbacks:
-    gpt_forfait:
-      backend: "claw"
-      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
-      on: [usage_window]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
