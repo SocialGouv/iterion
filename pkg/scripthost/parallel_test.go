@@ -143,9 +143,9 @@ func TestParallelWireRejectsDuplicateIDsBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	server := &recordingServer{}
 	wire := bytes.NewBufferString(`{"type":"batch","calls":[{"type":"call","id":1,"name":"first"},{"type":"call","id":1,"name":"second"}]}` + "\n")
-	served, err := serveToolCalls(context.Background(), wire, &bytes.Buffer{}, server, DefaultLimits())
-	if err == nil || served != 0 || len(server.seen()) != 0 {
-		t.Fatalf("invalid batch: served=%d, err=%v, calls=%v", served, err, server.seen())
+	stats, err := serveToolCalls(context.Background(), wire, &bytes.Buffer{}, server, DefaultLimits())
+	if err == nil || stats.Served != 0 || len(server.seen()) != 0 {
+		t.Fatalf("invalid batch: served=%d, err=%v, calls=%v", stats.Served, err, server.seen())
 	}
 }
 
@@ -155,7 +155,7 @@ func TestParallelBatchDoesNotOverlapExclusiveTools(t *testing.T) {
 	var seen []recordedCall
 	server := &recordingServer{answer: func(name string, _ json.RawMessage) (ToolOutcome, error) { return ToolOutcome{Text: name}, nil }}
 	srv := parallelTestServer{call: server.CallTool}
-	replies, err := dispatchBatch(context.Background(), srv, calls, Limits{ConcurrentToolCalls: 4, ToolResultBytes: 100}, 0)
+	replies, err := dispatchBatch(context.Background(), srv, calls, callGroup{batch: true, first: 1, size: len(calls)}, Limits{ConcurrentToolCalls: 4, ToolResultBytes: 100}, 0)
 	if err != nil || len(replies) != len(calls) {
 		t.Fatalf("batch replies = %+v, err = %v", replies, err)
 	}

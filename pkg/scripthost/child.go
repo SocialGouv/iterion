@@ -93,6 +93,16 @@ func RunChild(in io.Reader, out io.Writer) error {
 		return writeResponse(out, Refuse(RefusalUnavailable, "the script host could not confine itself: %v", err))
 	}
 
+	// What the kernel accepted, said NOW rather than only in the verdict: a
+	// child the kernel kills mid-script never writes a verdict, and the
+	// bound that killed it may be a deployment's own, stricter than any the
+	// parent asked for. Only to a parent that reads it (Proto ≥ 6).
+	if req.Proto >= 6 {
+		if err := writeResponse(out, Response{Confinement: &applied}); err != nil {
+			return err
+		}
+	}
+
 	if refusal := confinementVerdict(applied, req); refusal != nil {
 		refusal.Confinement = &applied
 		return writeResponse(out, *refusal)

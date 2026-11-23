@@ -33,6 +33,20 @@ const MaxStderrBytes = 4 << 10
 // by 1 GiB of total allocation and took its RSS from 27 MiB to 1033 MiB.
 const stdoutSlack = 64 << 10
 
+// maxEarlyDocument bounds the child's early confinement document (Proto 6),
+// the one document stdout carries before the verdict. The stdout cap is
+// the VERDICT's bound plus exactly this allowance, so the early document
+// costs the verdict nothing; an early document past it is not the child's
+// and is refused (decodeResponse, earlyConfinement), never trusted. A real
+// one — six scalar fields — is under 200 bytes.
+const maxEarlyDocument = 1 << 10
+
+// stdoutCap is what the parent buffers of a child's stdout: the verdict's
+// own bound — the result bound plus its slack — and the early document's.
+func stdoutCap(l Limits) int {
+	return int(l.ResultBytes) + stdoutSlack + maxEarlyDocument
+}
+
 // Host spawns script-host children. One Host serves many scripts; it holds no
 // per-script state, so it is safe for concurrent use (measured: 24 concurrent
 // Run calls on one Host, no race, no fd or goroutine growth over 60 sequential
@@ -116,6 +130,10 @@ type Host struct {
 // outcome a caller branches on, not an exception. A caller that retried a
 // refusal would retry a broken deployment forever, which is why the two are
 // kept apart.
+//
+// [Response.Calls] is the one field an error return also carries: once the
+// child started, the parent counted what the program asked of the channel,
+// whichever way the run ended.
 func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error) {
 	limits, clamped := want.Clamp()
 	if clamped && h.OnClamp != nil {
@@ -200,7 +218,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	outCap := &boundedWriter{to: &stdout, limit: int(limits.ResultBytes) + stdoutSlack}
+	outCap := &boundedWriter{to: &stdout, limit: stdoutCap(limits)}
 	cmd := command(ctx, binary, payload, outCap, &boundedWriter{to: &stderr, limit: MaxStderrBytes})
 
 	// The tool channel is opened BEFORE the spawn and its parent-side ends are
@@ -271,14 +289,28 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	// script, so the thing that must happen next — pause the run, ask — is the
 	// CALLER's, and it gets the server's own error rather than a refusal it
 	// would have to parse.
+	//
+	// The channel's count rides every return from here on, an error return
+	// included: it is the parent's own observation of what the program did,
+	// and a caller reporting an aborted program still owes it.
+	//
+	// So does the child's early confinement document (Proto 6), wherever
+	// the verdict carries none of its own: what the kernel enforced is a
+	// fact the child stated before the script ran, true whichever way it
+	// ended.
+	early := earlyConfinement(stdout.Bytes())
 	if errors.Is(serve.err, errScriptAborted) {
-		return Response{}, serve.err
+		return Response{Calls: serve.stats, Confinement: early}, serve.err
 	}
 
 	// A response that arrived is the verdict, whatever the exit status said:
 	// the child writes its document and then exits, so a document means the
 	// script ran to a conclusion.
 	if resp, ok := decodeResponse(stdout.Bytes()); ok {
+		resp.Calls = serve.stats
+		if resp.Confinement == nil {
+			resp.Confinement = early
+		}
 		return resp, nil
 	}
 
@@ -288,11 +320,11 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	// evidence because it is the more specific fact, and because the evidence
 	// below would otherwise read a channel failure as an unexplained crash.
 	if serve.err != nil {
-		return Response{}, serve.err
+		return Response{Calls: serve.stats, Confinement: early}, serve.err
 	}
 
 	signalled, signal := deathSignal(cmd)
-	return deathToRefusal(deathEvidence{
+	resp, err := deathToRefusal(deathEvidence{
 		callerErr:  caller.Err(),
 		scriptErr:  ctx.Err(),
 		limits:     limits,
@@ -303,7 +335,11 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		stderrText: stderr.String(),
 		stdoutCut:  outCap.cut,
 		probe:      probe,
+		applied:    early,
 	})
+	resp.Calls = serve.stats
+	resp.Confinement = early
+	return resp, err
 }
 
 // rssSampleInterval is how often the parent reads the child's charged memory.
@@ -343,6 +379,9 @@ type deathEvidence struct {
 	stderrText string
 	stdoutCut  bool
 	probe      probeResult
+	// applied is what the child said it enforced before the script ran, nil
+	// when it said nothing (an older child, a death before confinement).
+	applied *Applied
 }
 
 // deathToRefusal names the bound that killed a child that produced no
@@ -423,7 +462,7 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	if e.stdoutCut {
 		return Refuse(RefusalResultBytes,
 			"the script host wrote more than the %d bytes this parent will buffer, so its answer was cut. %s",
-			e.limits.ResultBytes+stdoutSlack, evidence), nil
+			stdoutCap(e.limits), evidence), nil
 	}
 
 	// (5) Signalled, with nothing naming a bound. Genuinely undecidable from a
@@ -444,11 +483,23 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 			blind = fmt.Sprintf(" The resident-set probe never sampled (%s), so a mapping outside "+
 				"RLIMIT_DATA was not ruled out.", why)
 		}
+		// The CPU bound printed is the one the child said its kernel
+		// enforced when it said so: a deployment's own, stricter limit is the
+		// number the burned CPU has to be read against, and the kill on an
+		// inherited hard limit lands ON it, quantised just under — not
+		// attributable from the wait status, so still not a verdict.
+		bound := time.Duration(e.limits.CPUSeconds()) * time.Second
+		enforced := ""
+		if e.applied != nil && e.applied.CPUSeconds > 0 && e.applied.CPUSeconds < e.limits.CPUSeconds() {
+			bound = time.Duration(e.applied.CPUSeconds) * time.Second
+			enforced = fmt.Sprintf(" (the %s the child's kernel enforced, under the %s asked: the deployment's own limit)",
+				bound, e.limits.CPU)
+		}
 		return Refuse(RefusalHostDied,
-			"the script host was killed by %v after burning %s of CPU against a %s bound, and nothing "+
+			"the script host was killed by %v after burning %s of CPU against a %s bound%s, and nothing "+
 				"names a bound; a cgroup memory kill and an external signal are indistinguishable here.%s %s",
 			e.signal, e.burned.Round(time.Millisecond),
-			time.Duration(e.limits.CPUSeconds())*time.Second, blind, evidence), nil
+			bound, enforced, blind, evidence), nil
 	}
 
 	// (6) The child crashed inside the Go runtime. That is the script host
@@ -468,13 +519,15 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 			e.limits.Memory, time.Duration(e.limits.CPUSeconds())*time.Second, evidence), nil
 	}
 
-	// (7) Not signalled, no document, no crash, no bound: the deployment
+	// (7) Not signalled, no verdict, no crash, no bound: the deployment
 	// answered nothing this code understands — a binary that is not iterion, a
 	// version with no such sub-command, a wrapper that swallowed it. That is a
 	// HOST failure, not a script refusal: a caller that read it as a refusal
-	// would hand the model a verdict about a broken rollout.
+	// would hand the model a verdict about a broken rollout. The child may
+	// still have written its early confinement document: that is not a
+	// verdict, and it does not make this one.
 	return Response{}, fmt.Errorf(
-		"scripthost: %s produced no response document and no bound explains it (wait: %v): %s",
+		"scripthost: %s produced no verdict document (an early confinement document may have come before it) and no bound explains it (wait: %v): %s",
 		Subcommand, e.waitErr, evidence)
 }
 
@@ -531,9 +584,15 @@ func command(ctx context.Context, binary string, payload []byte, stdout, stderr 
 	return cmd
 }
 
-// decodeResponse reads the child's single document.
+// decodeResponse reads the child's verdict document.
 //
-// It takes the FIRST document and ignores a trailing byte, because a stray
+// A Proto-6 child writes one confinement-only document before its script
+// runs (see [earlyConfinement]). At most ONE such document is passed over,
+// and only as the FIRST document and within [maxEarlyDocument]: a second
+// one, or an oversized one, is a protocol error and reads as no response —
+// fail closed, never a guess at which document is the verdict.
+//
+// It takes the FIRST verdict and ignores a trailing byte, because a stray
 // byte on the stream used to discard a complete verdict: a descendant that
 // wrote one character to the inherited stdout turned `{"value":"42"}` into
 // "produced no response". The child refuses to WRITE a second document, so
@@ -544,18 +603,44 @@ func command(ctx context.Context, binary string, payload []byte, stdout, stderr 
 // and accepting `{}` as success would hand the model an empty tool result
 // labelled OK.
 func decodeResponse(out []byte) (Response, bool) {
-	if len(bytes.TrimSpace(out)) == 0 {
-		return Response{}, false
-	}
+	dec := json.NewDecoder(bytes.NewReader(out))
 	var resp Response
-	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
+	if err := dec.Decode(&resp); err != nil {
 		return Response{}, false
 	}
-	// A document carrying only a confinement report is not a verdict.
+	if isEarlyDocument(resp) {
+		if dec.InputOffset() > maxEarlyDocument {
+			return Response{}, false
+		}
+		resp = Response{}
+		if err := dec.Decode(&resp); err != nil {
+			return Response{}, false
+		}
+	}
+	// A document carrying neither a value nor a refusal is not a verdict —
+	// a second confinement-only one included.
 	if resp.Value == "" && resp.Refusal == "" {
 		return Response{}, false
 	}
 	return resp, true
+}
+
+// isEarlyDocument reports a confinement-only document: no verdict, a
+// confinement.
+func isEarlyDocument(r Response) bool {
+	return r.Value == "" && r.Refusal == "" && r.Confinement != nil
+}
+
+// earlyConfinement is the confinement the child reported before its script
+// ran — the FIRST document on stdout, confinement-only and within
+// [maxEarlyDocument] — or nil when it wrote none.
+func earlyConfinement(out []byte) *Applied {
+	dec := json.NewDecoder(bytes.NewReader(out))
+	var resp Response
+	if err := dec.Decode(&resp); err != nil || !isEarlyDocument(resp) || dec.InputOffset() > maxEarlyDocument {
+		return nil
+	}
+	return resp.Confinement
 }
 
 // looksLikeMemoryDeath matches what the Go runtime prints when an allocation

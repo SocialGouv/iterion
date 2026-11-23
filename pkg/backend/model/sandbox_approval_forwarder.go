@@ -82,13 +82,10 @@ func sandboxApprovalAskOutcome(ctx context.Context, fwd SandboxApprovalForwarder
 			if isErr {
 				callErr = errors.New(decision.Error)
 			}
-			onToolCall(ToolCallInfo{
-				ToolName:  tu.Name,
-				InputSize: len(tu.PartialJSON),
-				ToolUseID: tu.ID,
-				Output:    decision.Output,
-				Error:     callErr,
-			})
+			info := toolCallInfo(tu)
+			info.Output = decision.Output
+			info.Error = callErr
+			onToolCall(info)
 		}
 		return &block, nil
 	case delegate.PermissionDecisionDeny:

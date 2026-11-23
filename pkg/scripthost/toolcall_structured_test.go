@@ -187,14 +187,14 @@ func TestABudgetRefusalCarriesNoStructuredPayload(t *testing.T) {
 
 	srv := &structuredTestServer{}
 	var out strings.Builder
-	served, err := serveToolCalls(context.Background(),
+	stats, err := serveToolCalls(context.Background(),
 		strings.NewReader(`{"type":"call","id":1,"name":"probe","input":{}}`+"\n"),
 		&out, srv, Limits{ToolCalls: 0, ToolResultBytes: 1 << 10})
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	if served != 0 {
-		t.Fatalf("served %d calls under a zero budget", served)
+	if stats.Served != 0 {
+		t.Fatalf("served %d calls under a zero budget", stats.Served)
 	}
 	var frame Frame
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &frame); err != nil {

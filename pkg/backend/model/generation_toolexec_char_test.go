@@ -236,11 +236,14 @@ func TestExecuteToolsDirect_ResultShapesAndOrder(t *testing.T) {
 	}
 }
 
-// TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk pins the unknown
+// TestExecuteToolsDirect_UnknownToolResultCarriesItsID pins the unknown
 // tool path: an isError "unknown tool: X" result, no execution, no
-// onToolStarted — and the quirk that the OnToolCall info for an unknown tool
-// carries NO ToolUseID (all other error paths stamp it).
-func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
+// onToolStarted — and an OnToolCall info that carries the call's ToolUseID
+// like every other refusal path. This test pinned the opposite once, the id
+// left off this one path; that quirk is removed on purpose (#3451), because
+// a codemode program's call to a tool that does not exist must be
+// attributable to the program it ran in.
+func TestExecuteToolsDirect_UnknownToolResultCarriesItsID(t *testing.T) {
 	t.Parallel()
 	var startedCount int
 	var completed []ToolCallInfo
@@ -271,9 +274,8 @@ func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
 	if completed[0].Error == nil || completed[0].Error.Error() != "unknown tool: nope" {
 		t.Errorf("completed[0].Error = %v", completed[0].Error)
 	}
-	// Quirk: the unknown-tool callback does NOT stamp ToolUseID.
-	if completed[0].ToolUseID != "" {
-		t.Errorf("completed[0].ToolUseID = %q, want empty (current unknown-tool quirk)", completed[0].ToolUseID)
+	if completed[0].ToolUseID != "tu_9" {
+		t.Errorf("completed[0].ToolUseID = %q, want the call's own id tu_9", completed[0].ToolUseID)
 	}
 }
 

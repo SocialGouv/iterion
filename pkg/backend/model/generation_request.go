@@ -390,6 +390,17 @@ func wireReasoningEffort(client api.APIClient, req api.CreateMessageRequest) str
 }
 
 // fireOnRequest calls the OnRequest hook if set.
+//
+// tool_count counts the NODE's tools: opts.Tools less the catalogue-only
+// ones a deferring node keeps off the wire, and never the synthetic
+// structured-output tool, which is not one of the node's. On the tool loop's
+// requests that is exactly what the request declared. On GenerateObjectDirect's
+// structured request it is not: that request strips the node's tools and
+// carries the synthetic tool alone, and the count still reports the node's
+// tools — the same number as the loop's requests, so a node with no tools
+// reports 0 on every request, the forensic signature the review-pr bundle
+// names a tools-less dispatch by. The catalogue-only count sits beside it,
+// not inside it.
 func fireOnRequest(opts GenerationOptions, messageCount int) {
 	if opts.OnRequest != nil {
 		var reasoning string
@@ -399,14 +410,27 @@ func fireOnRequest(opts GenerationOptions, messageCount int) {
 			}
 		}
 		opts.OnRequest(RequestInfo{
-			Model:           opts.Model,
-			WireModel:       wireModelIfDistinct(opts.Model),
-			MessageCount:    messageCount,
-			ToolCount:       len(opts.Tools),
-			ReasoningEffort: reasoning,
-			Timestamp:       time.Now(),
+			Model:              opts.Model,
+			WireModel:          wireModelIfDistinct(opts.Model),
+			MessageCount:       messageCount,
+			ToolCount:          len(opts.Tools) - catalogueOnlyCount(opts.Tools),
+			CatalogueOnlyCount: catalogueOnlyCount(opts.Tools),
+			ReasoningEffort:    reasoning,
+			Timestamp:          time.Now(),
 		})
 	}
+}
+
+// catalogueOnlyCount is how many tools buildRequest keeps off the wire
+// because a deferring node demoted them.
+func catalogueOnlyCount(tools []GenerationTool) int {
+	n := 0
+	for _, t := range tools {
+		if t.catalogueOnly {
+			n++
+		}
+	}
+	return n
 }
 
 // wireModelIfDistinct is the wire id of a spec when it differs from the

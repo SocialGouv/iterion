@@ -391,6 +391,9 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 	if info.WireModel != "" {
 		data["wire_model"] = info.WireModel
 	}
+	if info.CatalogueOnlyCount > 0 {
+		data["catalogue_only_count"] = info.CatalogueOnlyCount
+	}
 	if info.ReasoningEffort != "" {
 		data["reasoning_effort"] = info.ReasoningEffort
 	}
@@ -961,6 +964,7 @@ func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
 	if info.ToolUseID != "" {
 		data["tool_use_id"] = info.ToolUseID
 	}
+	stampToolLineage(data, info.ParentToolUseID, info.Batch)
 	// Persist the raw JSON input. Small inputs land inline
 	// (`data.input`); large inputs go to a sidecar blob so the
 	// event stream stays bounded, with the event carrying a
@@ -1101,12 +1105,28 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	if info.ToolUseID != "" {
 		data["tool_use_id"] = info.ToolUseID
 	}
+	stampToolLineage(data, info.ParentToolUseID, info.Batch)
+	// A codemode program's bounds and verdict ride its own completion
+	// event: the program's source is the call's input, its nested calls
+	// name it as their parent, and this is the rest of what a reader needs.
+	if info.Codemode != nil {
+		data["codemode"] = info.Codemode.eventData()
+	}
+	// The launcher's own event about a forwarded call carries an id the
+	// runner claimed: it is marked, and nothing keyed on that id — the
+	// payload blob below, the remembered input of the log line — is
+	// written or read for it.
+	blobKey := info.ToolUseID
+	if info.EmittedBy != "" {
+		data["emitted_by"] = info.EmittedBy
+		blobKey = ""
+	}
 	// Persist the tool's result so the studio's per-node Tools
 	// tab renders in+out side-by-side (matching Claude Code's
 	// inline display). Small outputs inline; large outputs go
 	// to a sidecar blob with a 4 KB preview + ref, fetched
 	// paginated on demand.
-	persistToolPayload(h.ctx, h.guard, h.toolBlobSink, h.runID, info.ToolUseID, "output", []byte(info.Output), data)
+	persistToolPayload(h.ctx, h.guard, h.toolBlobSink, h.runID, blobKey, "output", []byte(info.Output), data)
 
 	evtType := store.EventToolCalled
 	var errText string
@@ -1138,14 +1158,19 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 		toolName := info.ToolName
 		// The rejected input goes on the same line: an error naming a missing
 		// property is not actionable without the payload that omitted it.
-		if preview := h.takeInput(info.ToolUseID); preview != "" {
+		// Not for the launcher's own event: its id is the runner's claim, and
+		// the input remembered under it may be another call's.
+		if info.EmittedBy != "" {
+			h.logger.Error("Tool error [%s]: %s — %s (%dms, %s, input %d bytes)",
+				nodeID, toolName, errText, info.Duration.Milliseconds(), info.EmittedBy, info.InputSize)
+		} else if preview := h.takeInput(info.ToolUseID); preview != "" {
 			h.logger.Error("Tool error [%s]: %s — %s (%dms)\n  rejected input: %s",
 				nodeID, toolName, errText, info.Duration.Milliseconds(), preview)
 		} else {
 			h.logger.Error("Tool error [%s]: %s — %s (%dms)",
 				nodeID, toolName, errText, info.Duration.Milliseconds())
 		}
-	} else {
+	} else if info.EmittedBy == "" {
 		h.takeInput(info.ToolUseID)
 	}
 }

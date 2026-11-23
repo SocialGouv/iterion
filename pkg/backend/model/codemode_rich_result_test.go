@@ -61,7 +61,7 @@ func TestANestedCallCarriesTheStructuredPayloadAndTheModelsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, abort := srv.CallTool(context.Background(), "mcp.report", json.RawMessage("{}"))
+	out, abort := srv.CallTool(programCall(1), "mcp.report", json.RawMessage("{}"))
 	if abort != nil {
 		t.Fatalf("nested: unexpected abort: %v", abort)
 	}
@@ -100,7 +100,7 @@ func TestARefusedCallCarriesNoStructuredPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, abort := srv.CallTool(context.Background(), "ask_user", nil)
+	out, abort := srv.CallTool(programCall(1), "ask_user", nil)
 	if abort != nil {
 		t.Fatalf("unexpected abort: %v", abort)
 	}

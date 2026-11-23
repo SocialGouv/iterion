@@ -161,9 +161,17 @@ type Envelope struct {
 // fills Name from the tool registry and Input from the LLM tool_use
 // block. Schema validation happens on the launcher side, where the
 // authoritative tool registry lives.
+//
+// ToolUseID and ParentToolUseID are the call's identity in the runner's run
+// events — its tool_use id, and the id of the call that made it (a codemode
+// program's) — so an event the launcher emits about the call carries the
+// same identity as the runner's own. Additive: an older runner omits both,
+// and the launcher's events for its calls stay id-less.
 type ToolCallData struct {
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Name            string          `json:"name"`
+	Input           json.RawMessage `json:"input,omitempty"`
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
+	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
 }
 
 // ToolResultData is the payload of an [EnvelopeToolResult]. Exactly
@@ -421,7 +429,13 @@ func NewTaskEnvelope(task IOTask) (Envelope, error) {
 // across the run so the matching tool_result can be routed back to
 // the waiting goroutine on the runner side.
 func NewToolCallEnvelope(id, name string, input json.RawMessage) (Envelope, error) {
-	data, err := json.Marshal(ToolCallData{Name: name, Input: input})
+	return NewToolCallEnvelopeFor(id, ToolCallData{Name: name, Input: input})
+}
+
+// NewToolCallEnvelopeFor builds a tool_call envelope from the whole call,
+// its run-event identity included.
+func NewToolCallEnvelopeFor(id string, call ToolCallData) (Envelope, error) {
+	data, err := json.Marshal(call)
 	if err != nil {
 		return Envelope{}, fmt.Errorf("delegate: marshal tool_call: %w", err)
 	}
