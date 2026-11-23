@@ -119,6 +119,10 @@ func (t *Ticker) fireIntent(ctx context.Context, intent LaunchIntent, now time.T
 		finish(false)
 		return fired
 	}
+	// The key pins are the row's current ones, like its pause: a slot held
+	// and replayed from its snapshot must not spend a key the operator has
+	// since repinned away or cleared.
+	sb.KeyOverrides = current.KeyOverrides
 	fired++
 	if t.Gate != nil {
 		gateSchedule := sb

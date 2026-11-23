@@ -604,15 +604,20 @@ A cloud schedule is the third home: `key_overrides` on
 (team admin, like every schedule write) lands on
 `cloudsched.ScheduledBot.KeyOverrides`. The write validates through the
 same `validateKeyOverrides`, against `scheduler:<bot_id>` — the identity
-the schedule's tick resolves credentials under. On a PATCH, an absent field
+the schedule's tick resolves credentials under: it judges the pin's
+visibility (the team's key, of that provider, visible to that identity),
+not the key's `bots` and `repos` audiences, which the tick judges. On a
+PATCH, an absent field
 keeps the stored pins, `null` or `{}` clears them, an object replaces them,
 and an edit echoing the stored pins back writes and judges nothing. At the
 tick, a schedule bound to a repo integration inherits that integration's
 pins, read live from its webhook config under a tenant check (an
 integration naming a config that cannot be read, or one of another team,
 refuses the tick); the schedule's own pins win over them provider by
-provider. That is how two gateway keys of one team serving the same bot and
-repository split between schedules: each group of schedules pins its key.
+provider. A slot held by maintenance and replayed launches with the
+schedule's current pins, not the ones its slot snapshotted. That is how two
+gateway keys of one team serving the same bot and repository split between
+schedules: each group of schedules pins its key.
 
 **A pin does not outlive its subject.** Deleting a pinned api key or stored
 secret sweeps every pin that names it — webhook configs and trigger
@@ -679,11 +684,16 @@ cannot leave a dead pin standing behind a silent 204 either.
 A schedule's own pins are the exception, deliberately: the sweep does not
 visit schedule rows, whose store replaces the whole row on an edit and
 whose integration rebuild recreates it, with no version to fence either —
-a swept pin could be written back unseen. The tick judges them instead, by
-the write's own rule (`judgeScheduleKeyPins`): a pin whose key was deleted,
-or no longer passes that rule, refuses the tick by name — the schedule's
-`last_error` names the provider and the key — and no other key is spent in
-its place until the operator repins or clears it. A schedule bound to an
+a swept pin could be written back unseen. The tick judges them instead
+(`judgeScheduleKeyPins`), by the write's own rule and by the key's
+audiences: its `bots` must admit the bot the tick launches (read as the
+walk reads it, botregistry-normalised) and its `repos` the repository the
+tick names — the two fields the key `PATCH` can still narrow, and a pin
+does not lift an audience, so for a vendor provider the walk would spend
+the team's next key. A pin whose key was deleted, or no longer passes
+either judgment, refuses the tick by name — the schedule's `last_error`
+names the provider and the key — and no other key is spent in its place
+until the operator repins or clears it or widens the key. A schedule bound to an
 integration reads that integration's pins live from the webhook config the
 sweep does clear.
 

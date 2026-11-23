@@ -1,6 +1,9 @@
 package forge
 
-import "strings"
+import (
+	"path"
+	"strings"
+)
 
 // CloneURLFor derives the HTTPS clone URL of a repo hosted on a forge
 // instance. All three supported providers (GitHub, GitLab, Forgejo)
@@ -20,8 +23,11 @@ func WebURLFor(baseURL, repoFullName string) string {
 // as readily as the slug — and the stray slashes a clone URL can carry
 // ("acme/widgets.git/", "acme/widgets.git//", "/acme/widgets.git",
 // "acme/widgets.git.git") all fold back to "acme/widgets", the same key
-// whichever spelling arrived. The fold runs to a FIXED point: a single pass
-// turns "acme/widgets.git/" into "acme/widgets.git" and stops there — a key
+// whichever spelling arrived — and so do the "." and ".." segments and the
+// doubled slashes git itself collapses ("x/../acme/widgets",
+// "acme//widgets"), while a dot inside a name ("my.repo") is the name's
+// own. The fold runs to a FIXED point: a single pass turns
+// "acme/widgets.git/" into "acme/widgets.git" and stops there — a key
 // no quota aims at, which is exactly the split this function exists to
 // prevent. The slug's own case survives the fold: "Acme/Widgets" is how the
 // forge writes the repository (a webhook payload carries it byte-for-byte),
@@ -33,16 +39,18 @@ func WebURLFor(baseURL, repoFullName string) string {
 // Every derivation that turns a clone-URL path into a quota/meter key goes
 // through it — a derivation keeping its own trim is how one repository comes
 // to be charged under two keys, each reading its quota as half-used.
-func CanonicalRepoSlug(path string) string {
-	p := strings.Trim(path, "/")
+func CanonicalRepoSlug(slug string) string {
+	p := strings.Trim(slug, "/")
 	for {
 		prev := p
 		if n := len(p); n >= 4 && strings.EqualFold(p[n-4:], ".git") {
 			p = p[:n-4]
 		}
-		if trimmed := strings.Trim(p, "/"); trimmed != p {
-			p = trimmed
-		}
+		// git (libcurl) collapses "." and ".." segments and doubled slashes
+		// before it asks the forge, so "x/../acme/widgets" clones
+		// acme/widgets: the key is the repository cloned, never the
+		// spelling that reached it.
+		p = strings.TrimPrefix(path.Clean("/"+p), "/")
 		if p == prev {
 			return p
 		}

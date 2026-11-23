@@ -247,14 +247,20 @@ stamps for the scheduled and board lanes stay PR-R's.
 
 §3's scheduled stamp and §6's scheduled pins land. A cloud schedule's launch names the
 repository it clones (`scheduledProjectPath`): the bound integration's `RepoFullName` when its
-`repo_url` names that repository, read against the integration's forge base
-(`forge.ProjectPathOnBase`, the derivation the REST and board lanes share), the clone URL's own
-slug otherwise — so a repository-restricted key funds the schedule that clones the repository,
-the per-repository quota binds the tick and the spend meter charges it. §6 is honoured live
+`repo_url` names that repository by the predicate the create route bound it with
+(`repoURLNamesRepo`), another repository of the integration's forge read through that same
+normalisation, the clone URL's own slug for a schedule bound to none — so a
+repository-restricted key funds the schedule that clones the repository, the per-repository
+quota binds the tick and the spend meter charges it. A bound schedule whose `repo_url` is off
+its integration's forge refuses the tick by name, before the forge token is minted and before
+its pins are judged: the token is aimed at that forge only, as on the REST lane. §6 is honoured live
 rather than rebuilt: the tick reads the bound integration's pins from its webhook config under
 a tenant check, and a schedule may carry its own `key_overrides` (written through the schedule
 routes, validated by `validateKeyOverrides` against `scheduler:<bot_id>`), which win provider by
 provider — the per-schedule split of two gateway keys of one team. The schedule's own pins are
 not swept on a key's deletion (the row has no version to fence a concurrent full-row write or the
-integration rebuild); the tick judges them by the write's rule and refuses by name instead. The
-pipeline lane's gateway-pinned cards stay an open arbitration.
+integration rebuild). The write judges a pin's visibility; the tick judges it again and also
+judges the key's `bots` and `repos` audiences against the bot it launches and the repository it
+names, and refuses by name instead of letting the walk withhold the pin and spend another key. A
+slot replayed after a maintenance hold launches with the schedule's current pins. The pipeline
+lane's gateway-pinned cards stay an open arbitration.

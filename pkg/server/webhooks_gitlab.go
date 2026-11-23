@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -1382,9 +1383,14 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	spec.ProjectPath = scheduledProjectPath(sb, binding)
-	// Before the forge-token mint: a refused pin mints nothing.
-	keyPins, err := s.scheduledKeyOverrides(ctx, sb, binding)
+	// Before the forge-token mint and the pins: a clone off the integration's
+	// forge, or a refused pin, mints nothing.
+	repo, err := scheduledProjectPath(sb, binding)
+	if err != nil {
+		return err
+	}
+	spec.ProjectPath = repo
+	keyPins, err := s.scheduledKeyOverrides(ctx, sb, binding, pinAudience{bot: botregistry.NormalizeName(lb.BotID), repo: repo})
 	if err != nil {
 		return err
 	}
@@ -1491,25 +1497,37 @@ func (s *Server) scheduledRepoBinding(ctx context.Context, sb cloudsched.Schedul
 // launch gate's per-repository quota binds and the runner's spend meter
 // charges. A schedule bound to an integration names the integration's
 // repository, spelled as the forge writes it, when its clone URL names that
-// repository (or it clones nothing); a clone URL naming another repository —
-// a repo_url edited away from the integration since — names the repository
-// the run actually clones, read against the integration's forge base. A
-// schedule bound to none derives the slug from its clone URL alone, the
-// board lane's reading for a card naming no integration. A schedule that
-// clones nothing and is bound to nothing serves no repository.
-func scheduledProjectPath(sb cloudsched.ScheduledBot, b *scheduledBinding) string {
+// repository by the very predicate the create route bound it with
+// (repoURLNamesRepo), or when it clones nothing. A clone URL naming another
+// repository of the integration's forge — a repo_url edited since — names
+// that repository, read through the same normalisation. A clone URL off the
+// integration's forge refuses the tick: the integration's forge token is
+// aimed at the host it belongs to only (the REST lane's rule), and the
+// integration's pins fund its forge's repositories. A schedule bound to none
+// derives the slug from its clone URL alone, the board lane's reading for a
+// card naming no integration; one that clones nothing serves no repository.
+func scheduledProjectPath(sb cloudsched.ScheduledBot, b *scheduledBinding) (string, error) {
 	if b == nil {
-		return forge.ProjectPathFromCloneURL(sb.RepoURL)
+		return forge.ProjectPathFromCloneURL(sb.RepoURL), nil
 	}
 	own := forge.CanonicalRepoSlug(b.integration.RepoFullName)
-	if strings.TrimSpace(sb.RepoURL) == "" {
-		return own
+	base := b.connection.BaseURL()
+	if strings.TrimSpace(sb.RepoURL) == "" || repoURLNamesRepo(sb.RepoURL, base, b.integration.RepoFullName) {
+		return own, nil
 	}
-	cloned := forge.ProjectPathOnBase(b.connection.BaseURL(), sb.RepoURL)
-	if strings.EqualFold(cloned, own) {
-		return own
+	slug, onForge := repoOnForgeBase(sb.RepoURL, base)
+	if !onForge {
+		return "", fmt.Errorf("schedule %s: repo_url %q is not on %s, the forge of its repo integration %s — the integration's forge token is aimed at that forge only: point repo_url at a repository there, or recreate the schedule unbound", sb.ID, sb.RepoURL, base, b.integration.ID)
 	}
-	return cloned
+	return slug, nil
+}
+
+// pinAudience is what a schedule's tick launches for, as the credential walk
+// reads it: the bot (botregistry's normalisation, the walk's audienceBotID)
+// and the repository the tick names (scheduledProjectPath).
+type pinAudience struct {
+	bot  string
+	repo string
 }
 
 // scheduledKeyOverrides composes the key pins a scheduled launch carries
@@ -1518,11 +1536,12 @@ func scheduledProjectPath(sb cloudsched.ScheduledBot, b *scheduledBinding) strin
 // tenant check — never a copy frozen on the row, so a repin, a clear or the
 // delete sweep of a revoked key on the integration reaches the next tick. The
 // schedule's own pins win over them provider by provider, and are judged at
-// the tick by the rule the write applied (judgeScheduleKeyPins): a pin whose
-// key is gone or no longer spendable refuses the tick by name instead of
-// letting the walk spend another key in its place.
-func (s *Server) scheduledKeyOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding) (map[string]string, error) {
-	if err := s.judgeScheduleKeyPins(ctx, sb); err != nil {
+// the tick by the rule the write applied and by the key's audiences against
+// aud (judgeScheduleKeyPins): a pin whose key is gone or no longer serves the
+// schedule refuses the tick by name instead of letting the walk spend
+// another key in its place.
+func (s *Server) scheduledKeyOverrides(ctx context.Context, sb cloudsched.ScheduledBot, b *scheduledBinding, aud pinAudience) (map[string]string, error) {
+	if err := s.judgeScheduleKeyPins(ctx, sb, aud); err != nil {
 		return nil, err
 	}
 	inherited, err := s.scheduledIntegrationKeyPins(ctx, sb, b)
@@ -1564,15 +1583,21 @@ func (s *Server) scheduledIntegrationKeyPins(ctx context.Context, sb cloudsched.
 
 // judgeScheduleKeyPins holds a schedule's own key pins, at the tick, to the
 // rule the schedule routes applied when they wrote them (keyPinFault against
-// scheduledLaunchOwner). A schedule row is not one of the homes the key
-// delete's sweep clears — its store has no version to fence a concurrent
-// full-row write or the integration rebuild with, so a swept pin could be
-// written back unseen — so a pin is judged here, where it is spent, instead:
-// a key deleted, moved to another provider or re-scoped out of the lane's
-// sight since the write refuses the tick by name, the schedule's last_error
-// says which pin, and no other key is spent in its place. Pins are judged in
-// provider order, so the refusal names the same pin every tick.
-func (s *Server) judgeScheduleKeyPins(ctx context.Context, sb cloudsched.ScheduledBot) error {
+// scheduledLaunchOwner: the key exists, is the team's, of the pinned
+// provider and visible to the tick's identity) and to the key's audiences:
+// its `bots` must admit the bot the tick launches and its `repos` the
+// repository it names (aud). A pin does not lift an audience — the walk
+// withholds such a key and, for a vendor provider, spends the team's next
+// one — and the key PATCH route can narrow both audiences after the pin was
+// written. A schedule row is not one of the homes the key delete's sweep
+// clears — its store has no version to fence a concurrent full-row write or
+// the integration rebuild with, so a swept pin could be written back unseen
+// — so a pin is judged here, where it is spent, instead: a key deleted or
+// no longer serving the schedule refuses the tick by name, the schedule's
+// last_error says which pin, and no other key is spent in its place. Pins
+// are judged in provider order, so the refusal names the same pin every
+// tick.
+func (s *Server) judgeScheduleKeyPins(ctx context.Context, sb cloudsched.ScheduledBot, aud pinAudience) error {
 	if len(sb.KeyOverrides) == 0 {
 		return nil
 	}
@@ -1591,6 +1616,12 @@ func (s *Server) judgeScheduleKeyPins(ctx context.Context, sb cloudsched.Schedul
 		}
 		if err := keyPinFault(prov, keyID, k, sb.TenantID, scheduledLaunchOwner(sb.BotID)); err != nil {
 			return fmt.Errorf("schedule %s: %w", sb.ID, err)
+		}
+		if !k.ServesBotForLaunch(aud.bot) {
+			return fmt.Errorf("schedule %s: key_overrides[%s]: api key %q does not serve bot %q — its bots audience leaves it out, and a pin does not lift an audience: widen the key's bots, or repin or clear the schedule's key_overrides", sb.ID, prov, keyID, aud.bot)
+		}
+		if !k.ServesRepoForLaunch(aud.repo) {
+			return fmt.Errorf("schedule %s: key_overrides[%s]: api key %q does not serve repository %q — its repos audience leaves it out, and a pin does not lift an audience: widen the key's repos, or repin or clear the schedule's key_overrides", sb.ID, prov, keyID, aud.repo)
 		}
 	}
 	return nil

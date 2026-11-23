@@ -331,8 +331,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 // URL-bound, which the ticker handles identically — the integration id
 // only improves grouping and lifecycle (DeleteByIntegration).
 func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL string) string {
-	target := normalizeRepoURL(repoURL)
-	if target == "" || s.forgeIntegrations == nil || s.forgeConnections == nil {
+	if normalizeRepoURL(repoURL) == "" || s.forgeIntegrations == nil || s.forgeConnections == nil {
 		return ""
 	}
 	integrations, err := s.forgeIntegrations.ListByTenant(ctx, teamID)
@@ -346,22 +345,58 @@ func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL s
 		if cerr != nil || conn.IsSecurityReadOnly() {
 			continue
 		}
-		if normalizeRepoURL(forge.CloneURLFor(conn.BaseURL(), ri.RepoFullName)) == target {
+		if repoURLNamesRepo(repoURL, conn.BaseURL(), ri.RepoFullName) {
 			return ri.ID
 		}
 	}
 	return ""
 }
 
+// repoURLNamesRepo reports whether a schedule's repo_url names the
+// repository fullName of the forge served at baseURL, read through
+// normalizeRepoURL. It is the one predicate the create route binds a
+// schedule to an integration by (resolveRepoIntegrationID) and the tick
+// names the integration's repository by (scheduledProjectPath), so a URL
+// bound to an integration is stamped with that integration's repository
+// whatever its spelling.
+func repoURLNamesRepo(repoURL, baseURL, fullName string) bool {
+	target := normalizeRepoURL(repoURL)
+	return target != "" && normalizeRepoURL(forge.CloneURLFor(baseURL, fullName)) == target
+}
+
+// repoOnForgeBase reads a repo_url against a forge base through the same
+// normalizeRepoURL: ok is false when the URL is not hosted under that base —
+// another host, a userinfo other than the git@ of an ssh URL, a port the
+// base does not carry — and slug is the URL's repository path under the
+// base, case-folded by the normalisation, when it is. Every URL
+// repoURLNamesRepo matches for that base is on it: such a URL normalises to
+// the base's own normalisation followed by the repository.
+func repoOnForgeBase(repoURL, baseURL string) (slug string, ok bool) {
+	base, target := normalizeRepoURL(baseURL), normalizeRepoURL(repoURL)
+	if base == "" || !strings.HasPrefix(target, base+"/") {
+		return "", false
+	}
+	return forge.CanonicalRepoSlug(strings.TrimPrefix(target, base+"/")), true
+}
+
 // normalizeRepoURL canonicalizes a repo URL for equality: lowercase,
-// scheme-less, no trailing ".git" or "/".
+// scheme-less, no trailing ".git" or "/". The scp-like form's colon is its
+// path separator (git@host:owner/repo → host/owner/repo); a scheme URL's
+// colon is its port and stays in the host (https://host:8443/owner/repo →
+// host:8443/owner/repo), so a URL on another port of the host never reads as
+// the host's own.
 func normalizeRepoURL(u string) string {
 	u = strings.ToLower(strings.TrimSpace(u))
+	scheme := false
 	for _, p := range []string{"https://", "http://", "ssh://"} {
-		u = strings.TrimPrefix(u, p)
+		if strings.HasPrefix(u, p) {
+			u, scheme = u[len(p):], true
+		}
 	}
 	u = strings.TrimPrefix(u, "git@")
-	u = strings.Replace(u, ":", "/", 1) // git@host:owner/repo → host/owner/repo
+	if !scheme {
+		u = strings.Replace(u, ":", "/", 1)
+	}
 	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
 	return u
 }

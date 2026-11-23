@@ -34,6 +34,8 @@ func TestProjectPathFromCloneURL(t *testing.T) {
 		{"https://github.com", ""},
 		{"https://github.com/", ""},
 		{"git@github.com", ""},
+		{"https://github.com/x/../acme/widgets.git", "acme/widgets"},
+		{"https://github.com/./acme/widgets.git", "acme/widgets"},
 	}
 	for _, c := range cases {
 		if got := ProjectPathFromCloneURL(c.in); got != c.want {
@@ -100,6 +102,18 @@ func TestCanonicalRepoSlug(t *testing.T) {
 		{"", ""},
 		{"/", ""},
 		{".git", ""},
+		// git (libcurl) collapses "." and ".." segments and doubled slashes
+		// before it asks the forge: the key is the repository it clones.
+		{"x/../acme/widgets", "acme/widgets"},
+		{"./acme/widgets.git", "acme/widgets"},
+		{"acme/./widgets", "acme/widgets"},
+		{"acme//widgets.git/", "acme/widgets"},
+		{"../acme/widgets", "acme/widgets"},
+		{"acme/widgets/x/..", "acme/widgets"},
+		// A dot inside a name is the name's own.
+		{"my.org/my.repo", "my.org/my.repo"},
+		{"acme/widgets.js.git", "acme/widgets.js"},
+		{"acme/..widgets", "acme/..widgets"},
 	}
 	for _, c := range cases {
 		if got := CanonicalRepoSlug(c.in); got != c.want {

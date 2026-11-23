@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -454,4 +455,60 @@ func TestSchedule_PatchKeyOverrides(t *testing.T) {
 	}
 	step("an echo of a pin whose key is gone pauses", `{"disabled":true,"key_overrides":{"openai_compatible":"key-tech"}}`, http.StatusOK, tech)
 	step("a new pin on a gone key is refused", `{"key_overrides":{"anthropic":"key-tech"}}`, http.StatusBadRequest, tech)
+}
+
+// TestSchedule_TheWriteJudgesVisibilityNotAudiences: the schedule routes
+// judge a pin's visibility (validateKeyOverrides: the team's key, of that
+// provider, visible to scheduler:<bot>), not the key's bots and repos
+// audiences — those are the tick's to judge, against the bot it launches and
+// the repository it names (judgeScheduleKeyPins), since the key PATCH can
+// narrow them after any write.
+func TestSchedule_TheWriteJudgesVisibilityNotAudiences(t *testing.T) {
+	s := newSchedulePinRouteServer(t)
+	ctx := store.WithTenant(context.Background(), "t1")
+	for _, k := range []secrets.ApiKey{
+		{ID: "key-bots-other", ScopeTeamID: "t1", Provider: secrets.ProviderAnthropic, Bots: []string{"other-bot"}},
+		{ID: "key-repos-other", ScopeTeamID: "t1", Provider: secrets.ProviderOpenAI, Repos: []string{"acme/other"}},
+	} {
+		k.Name, k.Fingerprint, k.CreatedAt = k.ID, "fp-"+k.ID, time.Now().UTC()
+		if err := s.apiKeys.Create(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := createScheduleWith(t, s, `{"bot_id":"feed-watch","cron":"0 6 * * *","repo_url":"https://github.com/acme/api.git","key_overrides":{"anthropic":"key-bots-other","openai":"key-repos-other"}}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create pinning keys whose audiences leave the schedule out = %d %s, want 201", w.Code, w.Body.String())
+	}
+}
+
+// TestApiKeyPatch_NarrowsOnlyTheAudiences: the key PATCH route refuses a
+// scope, team or provider field as unknown and moves only bots and repos —
+// so the re-scope a schedule's pin can meet after its write is an audience,
+// which its tick judges.
+func TestApiKeyPatch_NarrowsOnlyTheAudiences(t *testing.T) {
+	w := newScheduledPinWorld(t, nil)
+	patch := func(body string) int {
+		r := httptest.NewRequest("PATCH", "/api/teams/t1/api-keys/key-anthropic", strings.NewReader(body))
+		r = r.WithContext(superAdminCtx())
+		r.SetPathValue("id", "t1")
+		r.SetPathValue("key_id", "key-anthropic")
+		rw := httptest.NewRecorder()
+		w.s.handleUpdateApiKey(rw, r)
+		return rw.Code
+	}
+	for _, body := range []string{`{"scope_user_id":"alice"}`, `{"scope_team_id":"t2"}`, `{"provider":"openai"}`} {
+		if code := patch(body); code != http.StatusBadRequest {
+			t.Errorf("key PATCH %s = %d, want 400", body, code)
+		}
+	}
+	if code := patch(`{"bots":["x"],"repos":["acme/x"]}`); code != http.StatusOK {
+		t.Fatalf("key PATCH of the audiences = %d, want 200", code)
+	}
+	k, err := w.keys.Get(store.WithTenant(context.Background(), "t1"), "key-anthropic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.ScopeUserID != "" || k.ScopeTeamID != "t1" || k.Provider != secrets.ProviderAnthropic || !slices.Equal(k.Bots, []string{"x"}) || !slices.Equal(k.Repos, []string{"acme/x"}) {
+		t.Errorf("stored key = scope_user %q scope_team %q provider %q bots %v repos %v, want only the audiences moved", k.ScopeUserID, k.ScopeTeamID, k.Provider, k.Bots, k.Repos)
+	}
 }

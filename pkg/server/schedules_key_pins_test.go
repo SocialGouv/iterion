@@ -3,7 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -186,7 +191,8 @@ func TestScheduledLaunchNamesItsRepository(t *testing.T) {
 	})
 }
 
-// TestScheduledProjectPath walks each reading of scheduledProjectPath.
+// TestScheduledProjectPath walks each reading of scheduledProjectPath; a
+// want of "" with refused set is a tick refused by name.
 func TestScheduledProjectPath(t *testing.T) {
 	gitlab := func(base string) *scheduledBinding {
 		return &scheduledBinding{
@@ -199,23 +205,36 @@ func TestScheduledProjectPath(t *testing.T) {
 		repoURL string
 		b       *scheduledBinding
 		want    string
+		refused bool
 	}{
-		{"no integration: the clone URL's slug", "https://github.com/acme/api.git", nil, "acme/api"},
-		{"no integration, no clone: no repository", "", nil, ""},
-		{"bound, cloning the integration's repository: the forge's spelling", "https://gitlab.com/group/api.git", gitlab(""), "Group/Api"},
-		{"bound, cloning nothing: the integration's repository", "", gitlab(""), "Group/Api"},
+		{"no integration: the clone URL's slug", "https://github.com/acme/api.git", nil, "acme/api", false},
+		{"no integration, no clone: no repository", "", nil, "", false},
+		{"bound, cloning the integration's repository: the forge's spelling", "https://gitlab.com/group/api.git", gitlab(""), "Group/Api", false},
+		{"bound, cloning nothing: the integration's repository", "", gitlab(""), "Group/Api", false},
 		// The connection's sub-path base is stripped whole: read without it,
 		// the base's own path would become a subgroup ("gitlab/group/api")
 		// and the launch would name a repository nobody restricted a key to.
-		{"bound to a sub-path forge", "https://host.example/gitlab/group/api.git", gitlab("https://host.example/gitlab"), "Group/Api"},
+		{"bound to a sub-path forge", "https://host.example/gitlab/group/api.git", gitlab("https://host.example/gitlab"), "Group/Api", false},
 		// A repo_url edited away from the integration names what the run
 		// actually clones, never the integration's repository.
-		{"bound, cloning another repository", "https://gitlab.com/group/other.git", gitlab(""), "group/other"},
+		{"bound, cloning another repository", "https://gitlab.com/group/other.git", gitlab(""), "group/other", false},
+		{"bound, cloning another repository of a sub-path forge", "HTTP://host.example/gitlab/group/other.git", gitlab("https://host.example/gitlab"), "group/other", false},
+		{"bound, an ssh URL of the integration's forge", "git@gitlab.com:Group/Api.git", gitlab(""), "Group/Api", false},
+		// Off the integration's forge: refused, whatever the slug says.
+		{"bound, another host", "https://attacker.example/Group/Api.git", gitlab(""), "", true},
+		{"bound, a host prefixed by the forge's", "https://gitlab.com.attacker.example/group/api.git", gitlab(""), "", true},
+		{"bound, a userinfo naming the forge", "https://gitlab.com@attacker.example/group/api.git", gitlab(""), "", true},
+		{"bound, a port the forge does not carry", "https://gitlab.com:8443/group/api.git", gitlab(""), "", true},
+		{"bound, outside the sub-path base", "https://host.example/other/group/api.git", gitlab("https://host.example/gitlab"), "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			sb := cloudsched.ScheduledBot{ID: "s1", TenantID: "t1", BotID: "probe", RepoURL: c.repoURL}
-			if got := scheduledProjectPath(sb, c.b); got != c.want {
+			got, err := scheduledProjectPath(sb, c.b)
+			if (err != nil) != c.refused {
+				t.Fatalf("scheduledProjectPath(%q) error = %v, want refused=%v", c.repoURL, err, c.refused)
+			}
+			if got != c.want {
 				t.Errorf("scheduledProjectPath(%q) = %q, want %q", c.repoURL, got, c.want)
 			}
 		})
@@ -241,17 +260,30 @@ func TestLaunchScheduledBot_RepoQuotaBindsTheSchedule(t *testing.T) {
 	sb := scheduledBot("t1")
 	sb.RepoURL = "https://github.com/acme/widgets.git/"
 
-	s, pub := newSrv(t, 12)
-	err := s.launchScheduledBot(spineCtx(t), sb)
-	var deny *launchDeniedError
-	if !errors.As(err, &deny) || deny.Reason != denyRepoQuota {
-		t.Fatalf("launchScheduledBot = %v, want the %s denial — the repository is over its quota", err, denyRepoQuota)
-	}
-	if got := pub.count(); got != 0 {
-		t.Errorf("the run service was asked %d time(s) past the repository's quota, want 0", got)
+	// git (libcurl) collapses "." and ".." path segments before it asks the
+	// forge, so each spelling below clones acme/widgets and is held to its
+	// quota.
+	for _, repoURL := range []string{
+		sb.RepoURL,
+		"https://github.com/x/../acme/widgets.git",
+		"https://github.com/./acme/widgets.git",
+		"https://github.com/acme/./widgets.git",
+		"https://github.com/acme//widgets.git",
+	} {
+		s, pub := newSrv(t, 12)
+		over := sb
+		over.RepoURL = repoURL
+		err := s.launchScheduledBot(spineCtx(t), over)
+		var deny *launchDeniedError
+		if !errors.As(err, &deny) || deny.Reason != denyRepoQuota {
+			t.Fatalf("launchScheduledBot(%q) = %v, want the %s denial — the repository is over its quota", repoURL, err, denyRepoQuota)
+		}
+		if got := pub.count(); got != 0 {
+			t.Errorf("the run service was asked %d time(s) past the repository's quota for %q, want 0", got, repoURL)
+		}
 	}
 
-	s, pub = newSrv(t, 4)
+	s, pub := newSrv(t, 4)
 	if err := s.launchScheduledBot(spineCtx(t), sb); err != nil {
 		t.Fatalf("launchScheduledBot under the quota = %v, want a launch", err)
 	}
@@ -358,9 +390,216 @@ func TestLaunchScheduledBot_KeyPins(t *testing.T) {
 		w.refused(t, boundSchedule(map[string]string{"openai_compatible": "key-alice"}), "key-alice", "not spendable")
 	})
 
+	t.Run("a pin naming another team's key refuses the tick", func(t *testing.T) {
+		w := newScheduledPinWorld(t, nil)
+		seedSweepKey(t, w.keys, "t2", "key-of-t2", secrets.ProviderOpenAICompatible)
+		w.refused(t, boundSchedule(map[string]string{"openai_compatible": "key-of-t2"}), "key_overrides[openai_compatible]", "key-of-t2")
+	})
+
 	t.Run("a pin the server has no key store to honour refuses the tick", func(t *testing.T) {
 		w := newScheduledPinWorld(t, nil)
 		w.s.apiKeys = nil
 		w.refused(t, boundSchedule(map[string]string{"openai_compatible": "key-design"}), "no api key store")
 	})
+}
+
+// narrowKeyAudience re-scopes a key through the real key PATCH route — the
+// only re-scope the API offers: `bots` and `repos` (the route refuses a
+// scope, team or provider field as unknown).
+func (w *scheduledPinWorld) narrowKeyAudience(t *testing.T, keyID, body string) {
+	t.Helper()
+	r := httptest.NewRequest("PATCH", "/api/teams/t1/api-keys/"+keyID, strings.NewReader(body))
+	r = r.WithContext(superAdminCtx())
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("key_id", keyID)
+	rw := httptest.NewRecorder()
+	w.s.handleUpdateApiKey(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("key PATCH %s = %d %s", body, rw.Code, rw.Body.String())
+	}
+}
+
+// TestLaunchScheduledBot_APinWhoseAudienceExcludesTheScheduleRefusesTheTick:
+// a key's `bots` and `repos` audiences are what the key PATCH route can
+// still move after a schedule pinned it. The walk withholds a key whose
+// audience excludes the launch and, for a vendor provider, spends the
+// team's next key in silence — so the tick judges both audiences against
+// the bot it launches and the repository it names, and refuses by name.
+func TestLaunchScheduledBot_APinWhoseAudienceExcludesTheScheduleRefusesTheTick(t *testing.T) {
+	t.Run("a bots audience narrowed away from the schedule's bot", func(t *testing.T) {
+		w := newScheduledPinWorld(t, nil)
+		sb := boundSchedule(map[string]string{"anthropic": "key-anthropic"})
+		w.tick(t, sb)
+		w.narrowKeyAudience(t, "key-anthropic", `{"bots":["some-other-bot"]}`)
+		w.refused(t, sb, "key_overrides[anthropic]", "key-anthropic", "bot")
+	})
+	t.Run("a repos audience narrowed away from the repository the schedule names", func(t *testing.T) {
+		w := newScheduledPinWorld(t, nil)
+		sb := boundSchedule(map[string]string{"anthropic": "key-anthropic"})
+		w.narrowKeyAudience(t, "key-anthropic", `{"repos":["group/other"]}`)
+		w.refused(t, sb, "key_overrides[anthropic]", "key-anthropic", "repository")
+	})
+	t.Run("the bot is read as the walk reads it", func(t *testing.T) {
+		// The key route stores a bots entry normalised ("feed_watch" →
+		// "feed-watch") and the walk compares it with the normalised bot id,
+		// so the tick reads the schedule's bot the same way.
+		w := newScheduledPinWorld(t, nil)
+		if err := os.WriteFile(filepath.Join(w.s.cfg.Bots.Paths[0], "feed_watch.bot"), []byte(spineProbeBot), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sb := boundSchedule(map[string]string{"anthropic": "key-anthropic"})
+		sb.BotID = "feed_watch"
+		w.narrowKeyAudience(t, "key-anthropic", `{"bots":["feed_watch"]}`)
+		if got := w.tick(t, sb).KeyOverrides; got["anthropic"] != "key-anthropic" {
+			t.Fatalf("KeyOverrides = %v, want the pin kept", got)
+		}
+	})
+	t.Run("audiences naming the schedule's bot and repository launch", func(t *testing.T) {
+		w := newScheduledPinWorld(t, nil)
+		sb := boundSchedule(map[string]string{"anthropic": "key-anthropic"})
+		// The audience reads the bot as the walk does (botregistry's
+		// normalisation) and the repository case-folded.
+		w.narrowKeyAudience(t, "key-anthropic", `{"bots":["Probe"],"repos":["group/veille"]}`)
+		if got := w.tick(t, sb).KeyOverrides; got["anthropic"] != "key-anthropic" {
+			t.Fatalf("KeyOverrides = %v, want the pin kept", got)
+		}
+	})
+}
+
+// TestLaunchScheduledBot_ABoundScheduleCloningOffItsForgeIsRefused: the
+// integration's forge token is aimed at the host it belongs to only — the
+// REST lane's rule. A schedule bound to an integration whose repo_url names
+// another host is refused by name before the token is minted and before its
+// pins are judged, instead of handing that host the token and funding its
+// clone with the integration's keys.
+func TestLaunchScheduledBot_ABoundScheduleCloningOffItsForgeIsRefused(t *testing.T) {
+	for _, repoURL := range []string{
+		"https://attacker.example/Group/Veille.git",
+		"https://gitlab.com.attacker.example/group/veille.git",
+		"https://gitlab.com@attacker.example/group/veille.git",
+		"https://gitlab.com:8443/group/veille.git",
+	} {
+		for _, own := range []map[string]string{
+			nil,
+			// The refusal names the host before the pins are judged: this
+			// pin names a key that does not exist.
+			{"openai_compatible": "key-gone"},
+		} {
+			t.Run(fmt.Sprintf("%s pinning %v", repoURL, own), func(t *testing.T) {
+				w := newScheduledPinWorld(t, map[string]string{"openai_compatible": "key-tech"})
+				sb := boundSchedule(own)
+				sb.RepoURL = repoURL
+				err := w.s.launchScheduledBot(spineCtx(t), sb)
+				if err == nil || !strings.Contains(err.Error(), pinWorldIntegration) || !strings.Contains(err.Error(), "not on") {
+					t.Errorf("launchScheduledBot = %v, want a refusal naming the integration and the host", err)
+				}
+				if got := w.pub.count(); got != 0 {
+					t.Errorf("the run service was asked %d time(s) for a clone off the integration's forge, want 0", got)
+				}
+				conn, err := w.s.forgeConnections.Get(context.Background(), "t1", "c1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if conn.ManagedSecretID != "" {
+					t.Errorf("the refused tick minted the integration's forge token (%s)", conn.ManagedSecretID)
+				}
+			})
+		}
+	}
+}
+
+// addSubPathIntegration gives the world a second integration of t1, on a
+// GitLab served under a sub-path, for the repository Group/Veille.
+func (w *scheduledPinWorld) addSubPathIntegration(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	sealed, err := connection.SealForgePAT(w.s.sealer, "c-sub", "glpat-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.s.forgeConnections.Create(ctx, forge.Connection{ID: "c-sub", TenantID: "t1", Provider: forge.ProviderGitLab, ForgeBaseURL: "https://host.example/gitlab", SealedPayload: sealed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.s.forgeIntegrations.Create(ctx, forge.RepoIntegration{
+		ID: "ri-sub", TenantID: "t1", ConnectionID: "c-sub", Provider: forge.ProviderGitLab, RepoFullName: pinWorldRepo,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestScheduledLaunch_EverySpellingTheBindingAcceptsNamesTheIntegrationsRepository:
+// the create route binds a repo_url to an integration case-, scheme- and
+// scp-insensitively (normalizeRepoURL); the tick must read the same URL the
+// same way. On a sub-path forge a case- or scheme-sensitive reading takes
+// the base's own path for a subgroup and names "gitlab/group/veille" — a
+// repository no key is restricted to and no quota binds.
+func TestScheduledLaunch_EverySpellingTheBindingAcceptsNamesTheIntegrationsRepository(t *testing.T) {
+	for _, repoURL := range []string{
+		"https://host.example/gitlab/group/veille.git",
+		"http://host.example/gitlab/group/veille.git",
+		"https://HOST.example/gitlab/group/veille.git",
+		"ssh://git@host.example/gitlab/group/veille.git",
+		"HTTPS://host.example/gitlab/group/veille",
+	} {
+		t.Run(repoURL, func(t *testing.T) {
+			w := newScheduledPinWorld(t, nil)
+			w.addSubPathIntegration(t)
+			bound := w.s.resolveRepoIntegrationID(store.WithTenant(context.Background(), "t1"), "t1", repoURL)
+			if bound != "ri-sub" {
+				t.Fatalf("the create route binds %q to %q, want ri-sub — the precondition of this test", repoURL, bound)
+			}
+			sb := scheduledBot("t1")
+			sb.RepoIntegrationID, sb.RepoURL = bound, repoURL
+			if got := w.tick(t, sb).ProjectPath; got != pinWorldRepo {
+				t.Fatalf("ProjectPath = %q, want %q — the repository the schedule is bound to", got, pinWorldRepo)
+			}
+		})
+	}
+}
+
+// TestScheduleBindingImpliesItsForgeHost: the create route's binding
+// (repoURLNamesRepo) and the tick's host reading (repoOnForgeBase) read a
+// repo_url through one normalisation, so no spelling is bound to an
+// integration by the one and refused as off its forge by the other — over
+// every combination of scheme, host, separator, base path, repository and
+// suffix spellings below, against each base.
+func TestScheduleBindingImpliesItsForgeHost(t *testing.T) {
+	bases := []string{"https://gitlab.com", "https://host.example/gitlab", "https://host.example/gitlab/", "https://forge.example:8443"}
+	schemes := []string{"https://", "http://", "HTTPS://", "ssh://", "ssh://git@", "git@", ""}
+	hosts := []string{"gitlab.com", "GitLab.com", "gitlab.com:8443", "gitlab.com@evil.example", "host.example", "HOST.example", "forge.example:8443", "forge.example"}
+	seps := []string{"/", ":"}
+	paths := []string{"", "gitlab/", "GitLab/", "other/", "8443/"}
+	repos := []string{"Group/Veille", "group/veille", "Group/Other", "x/../Group/Veille"}
+	suffixes := []string{"", ".git", ".GIT", "/", ".git/"}
+	bound, refused := 0, 0
+	for _, base := range bases {
+		for _, sc := range schemes {
+			for _, h := range hosts {
+				for _, sep := range seps {
+					for _, p := range paths {
+						for _, r := range repos {
+							for _, sfx := range suffixes {
+								u := sc + h + sep + p + r + sfx
+								_, onForge := repoOnForgeBase(u, base)
+								if !onForge {
+									refused++
+								}
+								if !repoURLNamesRepo(u, base, "Group/Veille") {
+									continue
+								}
+								bound++
+								if !onForge {
+									t.Errorf("repo_url %q is bound to Group/Veille on %s, yet read as off that forge", u, base)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if bound == 0 || refused == 0 {
+		t.Fatalf("bound=%d refused=%d: the spellings exercise only one side", bound, refused)
+	}
+	t.Logf("%d bound spellings, every one on its forge (%d spellings read as off their forge)", bound, refused)
 }
