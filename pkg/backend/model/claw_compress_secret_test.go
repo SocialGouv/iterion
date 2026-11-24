@@ -366,8 +366,10 @@ func TestClawsShellRunsWithTheRunEnvWhateverTheMode(t *testing.T) {
 // The real rtk, as the builtin declares it: the commands it compressed leave
 // nothing in its stores — its history of the commands it ran, its recall of
 // the lines a long output left out. Without the run env the same commands
-// fill both (the probe sees rtk's stores). Skipped where rtk is not
-// installed.
+// fill both (the probe sees rtk's stores). The rtk binary this process
+// locates is pinned through ITERION_RTK_BIN and its directory heads PATH
+// before the arms move HOME, so an rtk installed under `~` stays reachable
+// from every arm. Skipped where rtk is not installed or not enabled.
 func TestTheBuiltinRtkKeepsNoStoreOfACompressedCommand(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	reg, err := plugin.Load()
@@ -375,9 +377,22 @@ func TestTheBuiltinRtkKeepsNoStoreOfACompressedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := reg.EnabledRewriterSpecs()
+	i := slices.IndexFunc(specs, func(s plugin.RewriterSpec) bool { return s.ID == "rtk" })
+	if i < 0 {
+		t.Skip("the builtin rtk rewriter is not enabled")
+	}
+	specs = specs[i : i+1]
 	if !rewrite.NewChain(specs).Available() {
 		t.Skip("rtk is not installed")
 	}
+	// Each arm moves HOME, and the builtin's install paths start at `~`: the
+	// binary this process located is pinned through ITERION_RTK_BIN, read as
+	// inherited whatever PATH planting says, so each arm's chain locates the
+	// same binary; its directory heads PATH so the shell resolves the
+	// rewritten `rtk …`.
+	bin := rewrite.NewRewriter(specs[0]).Locate()
+	t.Setenv("ITERION_RTK_BIN", bin)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ws := t.TempDir()
 	var lines strings.Builder
 	for i := range 60 {
@@ -406,7 +421,11 @@ func TestTheBuiltinRtkKeepsNoStoreOfACompressedCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		ex := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(ws), WithRewriteChain(rewrite.NewChain(c.specs)))
+		chain := rewrite.NewChain(c.specs)
+		if !chain.Available() {
+			t.Fatalf("%s: rtk is not located (env, PATH, paths): nothing would be compressed", c.name)
+		}
+		ex := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(ws), WithRewriteChain(chain))
 		for _, command := range []string{"git log --author=someone -1", "grep -rn token ."} {
 			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}, Command: command, Compress: "on"}
 			if _, err := ex.Execute(context.Background(), node, map[string]any{}); err != nil {
