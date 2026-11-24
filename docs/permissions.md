@@ -100,7 +100,8 @@ Where:
 
 - `Read(**)` — read anything; `Edit(pkg/**)` — edit only under `pkg/`.
 - `Bash(go test:*)` — any `go test …` command (`:*` = prefix match).
-- `Grep` (bare) — any grep; `mcp__github__get_*` — any github MCP `get_` tool.
+- `Grep` (bare) — any grep; `mcp__github__get_*` — any github MCP `get_`
+  tool, whichever separator spelling the call arrives under.
 - `Bash(rm -rf:*)` in `deny:` — never `rm -rf`, even in `ask` mode.
 
 `agent` and `judge` nodes take the same three lists, and the mode
@@ -394,7 +395,8 @@ Matching semantics (`pkg/backend/permission`):
   `deny:` naming a tree binds an MCP search or listing rooted inside or
   above it, and the verbs that carry no `path` —
   `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]`
-  bounds a filesystem server whole — while the opening side keeps the k=v
+  bounds a filesystem server whole, under either spelling of its tools —
+  while the opening side keeps the k=v
   reading below, the gate knowing no MCP tool's argument semantics well
   enough to open by path.
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL,
@@ -418,7 +420,18 @@ Matching semantics (`pkg/backend/permission`):
   pattern but an unbounded one, the gate not knowing which value is a path.
   An MCP tool's `path` value is the one exception, read as a search root by
   the closing verdicts alone (see **Glob / Grep** above).
-- **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
+- **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`. An MCP rule —
+  glob or exact name — binds BOTH separator spellings on every backend: rule
+  and call meet on one collapsed key (`mcp_<server>_<tool>`), the same
+  collapse dispatch applies when it resolves a call, so the spelling the
+  model emits picks no verdict and no spelling is imposed on the author. The
+  key carries no server/tool boundary: `mcp__fs__*` also bounds a server
+  named `fs_more`, and the collapse reaches exact names and operator
+  approvals too — a grant on `mcp__a__b_c` also covers `mcp__a_b__c`. When
+  both servers are attached, name the longer server's rule explicitly (deny
+  wins); a deny on `mcp__fs_more__*` also refuses `fs`'s own tools whose
+  names start with `more_`. The `mcp_` prefix is the whole MCP recognition,
+  so `mcp__*` also binds claw's status-only built-in `mcp_auth`.
 - **Tool classes**: `class:shell` matches by the registry's capability
   metadata — the member set, not a spelling ([tool classes](#tool-classes)).
 - A rule matches if it matches ANY candidate, and a **deny** is matched
@@ -495,7 +508,8 @@ replacing the credential a seeded CLI spends. The armed families are the
 NATIVE ones (Read/Write/Edit/NotebookEdit, LS, Grep, Glob,
 `workspace_grep`); an MCP server the run attaches is the author's to bound —
 `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]` covers a filesystem server
-whole, the closing side reading the filesystem-shaped keys (`path`, a move's
+whole (under either spelling of its tools), the closing side reading the
+filesystem-shaped keys (`path`, a move's
 `source`/`destination`, a multi-read's `paths` list) and not the singular
 `path` alone — because a non-filesystem server's `path` is no host path (a repo-virtual
 one would trip the containment on every call), so the engine arms no MCP

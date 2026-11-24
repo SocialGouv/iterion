@@ -817,6 +817,13 @@ type rule struct {
 	raw    string         // original text, for messages + forwarding
 	tool   string         // canonical tool key, or "*" (any) — literal case
 	toolRe *regexp.Regexp // non-nil when the tool name itself is a glob
+	// mcpKeyRe is non-nil when the tool name is an MCP spelling (mcpMatchKey):
+	// the name's glob or exact form compiled over the collapsed key, so the
+	// rule reaches the call whichever separator spelling each side uses.
+	// The key carries no server/tool boundary — `mcp__fs__*` also bounds a
+	// server named `fs_more` — which is why it is read beside the literal
+	// matches in matchesTool, never instead of them.
+	mcpKeyRe *regexp.Regexp
 	// class is non-empty when the rule names a tool class (`class:shell`)
 	// instead of a tool spelling. Membership is read from the registry's
 	// capability metadata at match time, so the class covers the members
@@ -899,9 +906,16 @@ func parseRule(raw string) (rule, error) {
 		}
 		r.tool = toolPart
 		r.toolRe = re
+		if r.mcpKeyRe, err = mcpKeyRegexp(toolPart); err != nil {
+			return rule{}, fmt.Errorf("bad tool glob: %w", err)
+		}
 		return r, nil
 	}
 	r.tool = canonicalToolName(toolPart)
+	var err error
+	if r.mcpKeyRe, err = mcpKeyRegexp(toolPart); err != nil {
+		return rule{}, fmt.Errorf("bad tool name: %w", err)
+	}
 	return r, nil
 }
 
@@ -933,8 +947,9 @@ func RuleNamesClass(rawRule string) (string, bool) {
 // against every shell-capable built-in a node can call.
 //
 // Coverage is at the TOOL level: a rule matches the tool's canonical key
-// (spelling row), its class membership (class row) or its name (glob row),
-// whatever (arg) pattern the rule carries. An argument scope is the
+// or, for an MCP rule, the collapsed MCP key (spelling row), its class
+// membership (class row) or its name (glob row), whatever (arg) pattern the
+// rule carries. An argument scope is the
 // author's finer contract over that tool — `Bash(git push:*)` bounds bash
 // for one command family — and the warning exists for the coarser hole, a
 // tool NO row names at all. Read as "does any row bound this tool", never
@@ -1092,12 +1107,16 @@ func matchScoped(rs []rule, rawName, canon string, cands candidates, literalOnly
 }
 
 // matchBareExactTool recognizes a generic ask only when it names this exact
-// canonical tool. A wildcard ask remains a catch-all approval rule, and so
-// does a class ask: a class spans tools, so its asks are approval gates, never
-// the exact-tool shape a literal allow may supersede.
+// tool. The exact-name shape is argRe == nil, toolRe == nil and class == "":
+// a bare `*` parses as a glob (toolRe set), so the any-tool ask is outside
+// it. matchesTool decides whether that name reaches the call, on the literal
+// key or, for an MCP rule, the collapsed key. A wildcard ask remains a
+// catch-all approval rule, and so does a class ask: a class spans tools, so
+// its asks are approval gates, never the exact-tool shape a literal allow may
+// supersede.
 func matchBareExactTool(rs []rule, rawName, canon string) (rule, bool) {
 	for _, r := range rs {
-		if r.argRe == nil && r.toolRe == nil && r.class == "" && r.tool == canon && r.matchesTool(rawName, canon) {
+		if r.argRe == nil && r.toolRe == nil && r.class == "" && r.matchesTool(rawName, canon) {
 			return r, true
 		}
 	}
@@ -1127,26 +1146,78 @@ func (r rule) matchesSummary(cands []string) bool {
 	return false
 }
 
+// matchesTool judges the tool name. A rule and a call that name the SAME
+// tool must reach the same verdict whichever spelling each side uses:
+//   - the literal glob is matched against the raw name (so
+//     `mcp__github__get_*` works on the FQN form) and the canonical key;
+//   - an MCP rule additionally meets the call on the collapsed key
+//     (matchesMCPKey) — claw advertises `mcp_<server>_<tool>` where the
+//     docs spell rules `mcp__<server>__*`, and dispatch resolves either
+//     spelling of a call to the same tool, so the spelling the model
+//     emits must not pick the verdict.
 func (r rule) matchesTool(rawName, canon string) bool {
 	if r.class != "" {
 		return toolcatalog.ClassContains(r.class, canon)
 	}
 	if r.toolRe != nil {
-		// Glob is matched against the raw name (so `mcp__github__get_*`
-		// works on the FQN form) and the canonical key.
-		return r.toolRe.MatchString(rawName) || r.toolRe.MatchString(canon)
+		return r.toolRe.MatchString(rawName) || r.toolRe.MatchString(canon) || r.matchesMCPKey(canon)
 	}
 	if r.tool == "*" {
 		return true
 	}
-	return r.tool == canon
+	return r.tool == canon || r.matchesMCPKey(canon)
+}
+
+// matchesMCPKey reports whether this rule bounds an MCP call read through
+// the one key both spellings collapse onto. Rules and calls without the MCP
+// prefix leave it false. The prefix is the whole recognition, as in
+// isMCPToolName: claw's status-only built-in `mcp_auth` carries it, so a
+// rule such as `mcp__*` binds it like an MCP call.
+func (r rule) matchesMCPKey(name string) bool {
+	if r.mcpKeyRe == nil {
+		return false
+	}
+	key, ok := mcpMatchKey(name)
+	if !ok {
+		return false
+	}
+	return r.mcpKeyRe.MatchString(key)
+}
+
+// mcpMatchKey renders the one key an MCP rule and an MCP call spell each
+// other in: lower-cased, separators collapsed to single underscores — the
+// same collapse dispatch applies when it resolves the name a model emitted
+// and the registry applies when it sanitizes a qualified name for the wire.
+// ok is false for a name without an MCP prefix (`mcp_`, `mcp__` or `mcp.`),
+// so the key is never offered for anything else. The prefix alone decides:
+// a built-in carrying it (claw's `mcp_auth`) is read as an MCP name.
+func mcpMatchKey(name string) (string, bool) {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasPrefix(n, "mcp_") && !strings.HasPrefix(n, "mcp.") {
+		return "", false
+	}
+	return normalizeMCPName(n), true
+}
+
+// mcpKeyRegexp compiles a tool part into the collapsed-key matcher
+// matchesMCPKey reads. A nil regexp with no error means the part names no
+// MCP spelling — a class row and a bare `*` keep the matcher off, their
+// own matching already spelling-independent.
+func mcpKeyRegexp(toolPart string) (*regexp.Regexp, error) {
+	key, ok := mcpMatchKey(toolPart)
+	if !ok {
+		return nil, nil
+	}
+	return globToRegexp(key)
 }
 
 // globToRegexp converts a `*`/`**` glob to an anchored regexp. Both `*`
 // and `**` translate to `.*` (greedy) — a faithful, predictable
 // superset of Claude Code's segment-aware globbing that covers the
 // common rule shapes (`pkg/**`, `*.go`, `mcp__srv__get_*`). Documented
-// in docs/permissions.md.
+// in docs/permissions.md. An MCP rule's collapsed-key matcher is the same
+// glob compiled over mcpMatchKey's output, so it binds both spellings of
+// every name it matches.
 func globToRegexp(glob string) (*regexp.Regexp, error) {
 	parts := strings.Split(glob, "*")
 	for i, part := range parts {
