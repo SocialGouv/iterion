@@ -69,11 +69,22 @@ func TestClawExecute_RefusesAToolWithNoSandboxPlacement(t *testing.T) {
 		`node "orchestrator"`,
 		`tool "lsp"`,
 		"sandboxed runner cannot execute in-container",
-		"run the workflow unsandboxed",
+		"refused on any host",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q: %v", want, err)
 		}
+	}
+	// lsp is typed-refused on every host: running the workflow unsandboxed
+	// earns the same refusal, so the remedy must not offer it.
+	if strings.Contains(err.Error(), "unsandboxed") {
+		t.Errorf("the lsp refusal offers running unsandboxed, where every call to it is refused too: %v", err)
+	}
+
+	// A refused placement the launcher DOES serve unsandboxed keeps that remedy.
+	task.ToolDefs = []delegate.ToolDef{{Name: "screenshot"}}
+	if _, err := b.Execute(context.Background(), task); err == nil || !strings.Contains(err.Error(), "run the workflow unsandboxed") {
+		t.Errorf("the screenshot refusal does not offer running unsandboxed, where the launcher serves it: %v", err)
 	}
 }
 

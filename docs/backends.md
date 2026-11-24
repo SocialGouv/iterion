@@ -1431,11 +1431,13 @@ types correctly — but its own failure is always unclassifiable, and it
 > path, or open a model-supplied URL, and `agent`, run in-container;
 > launcher-owned state (MCP, `ask_user`, the `task_*` / `team_*` /
 > `cron_*` registries, `todo_write`, `config`, `tool_search`, plan mode,
-> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`,
+> the privacy pair, `web_search`) keeps the IPC proxy; and `lsp`
+> (typed-refused on every host: no language server is registered for it),
 > `screenshot`, `computer_use` and the `worker_*` family have no
 > in-container form, so a sandboxed node declaring one is refused when it
 > executes (its `fallbacks:` still get their turn) — drop it, or run the
-> workflow unsandboxed (`sandbox: none` / `--sandbox none`). A
+> workflow unsandboxed (`sandbox: none` / `--sandbox none`); for `lsp`,
+> drop it is the only remedy. A
 > `tool_policy` allowlist is applied to the in-container tools when the
 > node is built: a tool it denies is not advertised at all. The full table
 > and its reasons: [sandbox.md](sandbox.md#claw-backend-in-sandbox).

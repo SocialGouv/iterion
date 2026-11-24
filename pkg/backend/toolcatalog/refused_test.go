@@ -3,6 +3,7 @@ package toolcatalog
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -88,7 +89,7 @@ func TestTheShippedPagesSayTheCapabilityIsServed(t *testing.T) {
 		},
 		{
 			page:     "docs/references/diagnostics.md",
-			required: "**No name is in that state today**",
+			required: "left the list when iterion wired the subagent runner at both of its hosts",
 		},
 		{
 			page:     "docs/plugins.md",
@@ -132,9 +133,8 @@ func collapseProse(b []byte) string {
 
 // TestTheRefusalCarriesNoBackticks: doc pages and the live witness quote the
 // rendered sentence, and a backtick inside it would make every quotation an
-// inexact one. The compile-time list is empty, so the unwired-subagent
-// refusal is taken explicitly rather than through a loop that would range
-// over nothing and pass.
+// inexact one. The unwired-subagent refusal is not on the compile-time list,
+// so it is taken explicitly beside the listed ones.
 func TestTheRefusalCarriesNoBackticks(t *testing.T) {
 	refusals := map[string]ClawRefusal{"the unwired subagent runner": ClawUnwiredSubagentRefusal}
 	for _, name := range ClawRefusedBuiltins() {
@@ -148,42 +148,58 @@ func TestTheRefusalCarriesNoBackticks(t *testing.T) {
 	}
 }
 
-// TestTheCompileTimeRefusalListIsEmpty is the flip of #1940 on this side: the
-// list drives C159, and `agent` left it when the subagent runner was wired at
-// both hosts. A name here warns an author about a tool that works.
-func TestTheCompileTimeRefusalListIsEmpty(t *testing.T) {
-	if names := ClawRefusedBuiltins(); len(names) != 0 {
-		t.Fatalf("the compile-time refusal list carries %v; every name claw registers, iterion serves", names)
+// TestTheCompileTimeRefusalListHoldsWhatNothingConsumes pins the list C159
+// reads: the cron_*, team_* and lsp families, whose executors answer success
+// into registries iterion never reads back. `agent` stays off it — the
+// subagent runner is wired at both hosts (#1940) — and so does the worker_*
+// family, which the model itself drives (TestTheWorkerFamilyIsModelDrivenNotRefused).
+func TestTheCompileTimeRefusalListHoldsWhatNothingConsumes(t *testing.T) {
+	want := []string{
+		"cron_create", "cron_delete", "cron_get", "cron_list",
+		"lsp",
+		"team_create", "team_delete", "team_get", "team_list",
+	}
+	if names := ClawRefusedBuiltins(); strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("the compile-time refusal list is %v; want exactly %v", names, want)
+	}
+	for _, name := range want {
+		if !IsBuiltin(name) {
+			t.Errorf("%q is refused but is not a catalog builtin, so C135 rejects it before C159 can speak", name)
+		}
 	}
 	if _, refused := ClawRefusesBuiltin("agent"); refused {
-		t.Error("`agent` is still refused at compile time, so every claw node declaring it warns about a capability both hosts serve")
+		t.Error("`agent` is refused at compile time, so every claw node declaring it warns about a capability both hosts serve")
 	}
 }
 
-// TestTheRefusalSeamStillFires: with an empty list, the readers of this
-// catalog (C159 in pkg/dsl/ir, the registry side in pkg/backend/tool) are fed
-// by nothing, and a mechanism no test can fire is a mechanism nobody knows
-// still works. The injection hook is what keeps them exercised, so it owes
-// its own guard: it must install, be read back, and restore.
+// TestTheRefusalSeamStillFires: the injection hook is what lets the readers of
+// this catalog (C159 in pkg/dsl/ir, the registry side in pkg/backend/tool) be
+// driven over a name of a test's choosing, so it owes its own guard: it must
+// install, be read back, and restore the production list exactly.
 func TestTheRefusalSeamStillFires(t *testing.T) {
 	const probe = "web_search"
 	if !IsBuiltin(probe) {
 		t.Fatalf("%q is not a catalog builtin, so a refusal over it would describe a tool the registry does not hold", probe)
 	}
+	if _, refused := ClawRefusesBuiltin(probe); refused {
+		t.Fatalf("%q is refused in production, so the probe would install nothing new", probe)
+	}
+	productionNames := ClawRefusedBuiltins()
+	production := strings.Join(productionNames, ",")
 	want := ClawRefusal{Reason: "a probe reason", Remedy: "A probe remedy"}
 	restore := SetClawRefusedBuiltinForTest(probe, want)
 	got, refused := ClawRefusesBuiltin(probe)
 	if !refused || got != want {
 		t.Fatalf("the injected refusal reads back as (%+v, %v); want (%+v, true)", got, refused, want)
 	}
-	if names := ClawRefusedBuiltins(); len(names) != 1 || names[0] != probe {
-		t.Errorf("the list reads %v while the probe is installed; want exactly [%s]", names, probe)
+	if names := ClawRefusedBuiltins(); len(names) != len(productionNames)+1 || !slices.Contains(names, probe) {
+		t.Errorf("the list reads %v while the probe is installed; want the production list plus %s", names, probe)
 	}
 	restore()
 	if _, refused := ClawRefusesBuiltin(probe); refused {
 		t.Errorf("%q is still refused after restore, so a test would leak a refusal into the next one", probe)
 	}
-	if names := ClawRefusedBuiltins(); len(names) != 0 {
-		t.Errorf("the list reads %v after restore; want the empty production list back", names)
+	if names := strings.Join(ClawRefusedBuiltins(), ","); names != production {
+		t.Errorf("the list reads %v after restore; want the production list %v back", names, production)
 	}
 }

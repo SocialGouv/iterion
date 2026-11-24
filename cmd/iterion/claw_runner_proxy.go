@@ -623,8 +623,7 @@ func buildHybridToolDefs(
 			}
 		default:
 			return nil, fmt.Errorf(
-				"tool %q cannot be executed by a sandboxed runner (%s) — "+
-					"drop it, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)", name, reason)
+				"tool %q cannot be executed by a sandboxed runner (%s) — drop it%s", name, reason, tool.UnsandboxedRemedy(name))
 		}
 	}
 	return out, nil
