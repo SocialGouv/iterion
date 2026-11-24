@@ -274,8 +274,14 @@ jobs:
   govulncheck:
     required: no
     checks: 1
-    disposition: unwritten
-    residual: expressible — govulncheck is a go run away — but it needs the vulnerability database over the network, and nobody wrote it.
+    disposition: partial
+    members: ["vuln"]
+    residual: >-
+      `task vuln` runs the same call-graph scan, `govulncheck ./...`; the job's
+      `-format sarif` flag, its empty-SARIF fallback and the upload to the
+      Security tab stay CI-side. The scan needs the vulnerability database
+      over the network, so the member is not a `task check` one — it runs on
+      demand, like the `live` layer.
 
   desktop-vet-linux:
     required: no

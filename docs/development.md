@@ -40,6 +40,7 @@ task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
+task vuln              # govulncheck over the Go module — reachable CVEs only; needs the network
 task check             # lint + the free layer: bot format, unit, goldens, studio, pi extension, brand, DSL and map checks
 ```
 
