@@ -84,7 +84,7 @@ func TestEveryCapabilityGrantReachesTheModelOnItsClawRoutes(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no capability-granting claw route in the catalogue — this guard lost its subject; it must see at least review-pr/converge_gpt")
+		t.Fatal("no capability-granting claw route in the catalogue — this guard lost its subject; it must see at least review-pr/converge")
 	}
 	if len(inert) > 0 {
 		t.Errorf("%d capability grant(s) the claw route cannot expose — declare the node's `tools:` list, which is its whole surface there, or drop the grant:\n  %s",

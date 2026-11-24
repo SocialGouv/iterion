@@ -18,6 +18,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -381,6 +383,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			} else {
 				cfg.Connections = connStore
 				cfg.ConnectorCatalog, cfg.ConnectorCatalogForRun = LocalConnectorPlane(dir, store.GlobalIterionDataDir())
+				// The local scope's durable intake, beside its connections: the
+				// connector worker drains it like the cloud's (ADR-168 §8).
+				cfg.ConnectorIntakes = intake.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "intakes.json"))
+				// And its pollers' state, beside it (ADR-168 §7).
+				cfg.ConnectorPollers = poller.NewFileStore(filepath.Join(resolvedStoreDir, "connector", "pollers.json"))
 			}
 		}
 	}
@@ -437,11 +444,10 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			} else {
 				logger.Warn("studio: dispatcher manager init: %v", mgrErr)
 			}
-			// Activate the event-driven trigger spine when any discovered bot
-			// declares a board: invocation. The server then promotes matching
-			// cards the moment they transition (the dispatcher claims them now,
-			// not at the next poll). nil = no board triggers → spine stays off.
-			cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
+			// The event-driven trigger spine over the local subscription
+			// journal: the bots' manifest invocations and the operator's own
+			// subscriptions, persisted across restarts.
+			cfg.TriggerStore = openLocalTriggerStore(resolvedStoreDir, botsPaths, logger)
 		}
 	} else {
 		// Without the native store, cfg.NativeTrackerStore AND cfg.Dispatcher

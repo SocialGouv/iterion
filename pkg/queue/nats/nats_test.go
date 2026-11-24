@@ -23,6 +23,10 @@ func (r *recordingSchemaManager) CreateOrUpdateStream(_ context.Context, cfg jet
 	return nil, nil
 }
 
+func (r *recordingSchemaManager) CreateKeyValue(ctx context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	return r.CreateOrUpdateKeyValue(ctx, cfg)
+}
+
 func (r *recordingSchemaManager) CreateOrUpdateKeyValue(_ context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
 	r.kvs = append(r.kvs, cfg)
 	return nil, nil

@@ -253,6 +253,7 @@ func markLogicalDescendants(n ast.Node, marked map[ast.Node]bool) {
 // the reason it is NOT a predicate call. Adding a set means arguing its
 // reason here.
 var negativeSpaceAllowlist = map[string]allowEntry{
+	"pkg/store/storetest/birth_identity.go :: Finished+Queued+Running": {[]string{"testBirthIdentity"}, "test-only ordered lifecycle transition sequence proves birth identity survives execution epoch rotation; not a status membership policy"},
 	// -- pkg/store: transition machinery + harnesses.
 	"pkg/store/storetest/team_alive_runs.go :: Queued+Running":                                                                             {[]string{"TeamAliveRuns"}, "test-only independent cutover oracle; calling the production predicate here would hide a changed eligibility set"},
 	"pkg/store/storetest/team_alive_runs.go :: Cancelled+Failed+FailedResumable+Finished+PausedOperator+PausedWaitingHuman+Queued+Running": {[]string{"TeamAliveRuns"}, "test-only lifecycle matrix exercises every known status on both store twins; production cutover policy lives in lifecycle.go"},

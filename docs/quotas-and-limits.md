@@ -765,7 +765,8 @@ expect: a launch judged as ordinary work faces the ceiling its OWN reservation
 lowered, so a *missing* subject makes a reservation refuse the very workload it
 protects. Every automated surface names its bot — the webhook launches, the
 trigger spine, the cloud scheduler, the board dispatcher, the retry sweeper —
-and so does `POST /api/runs` (from the request's `bot_id`).
+and so does `POST /api/runs` (from the request's `bot_id` — the studio's
+launch of a bot posts one in cloud, pinned to the program its form rendered).
 
 A resume names its bot too — `POST /api/runs/{id}/resume` and the WS answer
 that resumes a run both read it off the RUN, which is the only place it is

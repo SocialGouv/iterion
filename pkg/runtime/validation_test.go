@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -159,7 +160,7 @@ func TestSchemaValidation_StoreWithoutCorrectionCapabilityKeepsTypedFailure(t *t
 	}
 	eng := New(validationWorkflow(), runStoreOnly{RunStore: base}, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
 	rs := eng.newRunState("run-val-base-store", nil)
-	_, err := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", eng.workflow.Nodes["my_agent"], map[string]any{
+	_, err := correctGenericWithGrant(t, eng, context.Background(), rs, "my_agent", eng.workflow.Nodes["my_agent"], map[string]any{
 		"summary": "invalid", "score": "not-a-number",
 	})
 	var rtErr *RuntimeError
@@ -230,7 +231,7 @@ func TestSchemaValidation_PreseededTerminalEpisodeIsNotReinvoked(t *testing.T) {
 			rs := &runState{ctx: context.Background(), runID: "run-val-preseed"}
 			// A changed replay payload is still the same durable invocation and
 			// must not reset either terminal correction budget.
-			_, validationErr := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "different", "score": "still-bad"})
+			_, validationErr := correctGenericWithGrant(t, eng, context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "different", "score": "still-bad"})
 			if validationErr == nil || exec.calls != 0 {
 				t.Fatalf("preseeded %s episode invoked corrector: calls=%d err=%v", status, exec.calls, validationErr)
 			}
@@ -339,7 +340,7 @@ func TestSchemaValidation_RaisedRunBudgetReopensSpendBlockedEpisode(t *testing.T
 	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
 	invalid := map[string]any{"summary": "bad", "score": "x", "_tokens": 100}
 	lowBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 100}, nil)}
-	if _, err := eng.correctAndValidateNodeOutput(ctx, lowBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+	if _, err := correctGenericWithGrant(t, eng, ctx, lowBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
 	}
 	if exec.calls != 0 {
@@ -347,7 +348,7 @@ func TestSchemaValidation_RaisedRunBudgetReopensSpendBlockedEpisode(t *testing.T
 	}
 
 	highBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 1000}, nil)}
-	out, err := eng.correctAndValidateNodeOutput(ctx, highBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid)
+	out, err := correctGenericWithGrant(t, eng, ctx, highBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid)
 	if err != nil || exec.calls != 1 || out["score"] != 1 {
 		t.Fatalf("raised spend result = (%+v, %v), calls=%d", out, err, exec.calls)
 	}
@@ -372,7 +373,7 @@ func TestSchemaValidation_RaisedBudgetReopensExhaustedEpisode(t *testing.T) {
 	}
 	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
 		"my_agent": {
-			EpisodeID: "my_agent", NodeID: "my_agent", Budget: 1, Attempts: 1,
+			EpisodeID: "my_agent", NodeID: "my_agent", Budget: 1, Attempts: 1, Generation: "modern-generation", Revision: 1, TerminalKind: "candidate_rejected",
 			Status: correctionStatusExhausted, InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
 		},
 	}
@@ -384,7 +385,7 @@ func TestSchemaValidation_RaisedBudgetReopensExhaustedEpisode(t *testing.T) {
 		return map[string]any{"summary": "fixed", "score": 1}, nil
 	}
 	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
-	out, validationErr := eng.correctAndValidateNodeOutput(ctx, &runState{ctx: ctx, runID: run.ID}, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "bad", "score": "x"})
+	out, validationErr := correctGenericWithGrant(t, eng, ctx, &runState{ctx: ctx, runID: run.ID}, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "bad", "score": "x"})
 	if validationErr != nil || exec.calls != 1 || out["score"] != 1 {
 		t.Fatalf("raised budget result = (%+v, %v), calls=%d", out, validationErr, exec.calls)
 	}
@@ -430,108 +431,116 @@ func TestSchemaValidation_UnchangedSemanticPayloadChargesFailedCorrection(t *tes
 }
 
 func TestSchemaValidation_CorrectionHonorsRemainingDuration(t *testing.T) {
-	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
-	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"summary": "initial", "score": "bad"}, nil
+	synctest.Test(t, func(t *testing.T) {
+		exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+		exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"summary": "initial", "score": "bad"}, nil
+		})
+		clock := newBudgetTestClock()
+		var interruptErr error
+		exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+			<-ctx.Done()
+			interruptErr = ctx.Err()
+			clock.Advance(30 * time.Millisecond)
+			return nil, OutputCorrectionUsage{Tokens: 3}, ctx.Err()
+		}
+		wf := validationWorkflow()
+		wf.Budget = &ir.Budget{MaxDuration: "30ms"}
+		// The synctest bubble advances time only when the correction blocks.
+		// This also covers the durable initial/round reservations now inside the
+		// invocation deadline, without a scheduler race before the corrector enters.
+		// The budget reads a FROZEN clock, so the run's preamble — the initial
+		// agent call, the output validation, the correction setup — can never
+		// consume the 30ms before the correction starts: every budget read up to
+		// that point sees the full allowance and correct() is always REACHED.
+		// The wall-clock window this removes is the flake of #2131: on a loaded
+		// -race runner the preamble alone outlived 30ms, Run returned
+		// ErrBudgetExceeded without ever invoking correct, and interruptErr
+		// stayed nil. The deadline under observation is untouched:
+		// outputCorrectionContext still arms it from the remaining budget at
+		// correction setup, and correct blocks until it strikes.
+		eng := New(wf, tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+		eng.budgetClock = clock.Now
+		started := time.Now()
+		err := eng.Run(context.Background(), "run-val-duration", nil)
+		if !errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+		}
+		// The mechanism is the assertion: the budget's own deadline — not a
+		// caller cancel, not a correction-side timeout — is what stopped the
+		// correction. A correction context that loses its deadline identity
+		// (a plain cancel, or an interrupt the budgetDeadline attribution no
+		// longer recognizes) reddens here.
+		if !errors.Is(interruptErr, context.DeadlineExceeded) {
+			t.Fatalf("correction interrupted by %v, want the max_duration deadline", interruptErr)
+		}
+		// The wall clock only guards a hang: the correction returns as soon as
+		// the deadline strikes (~30ms), and everything past it is scheduler
+		// latency, which a starved -race runner stretches arbitrarily. A
+		// correction that ignores max_duration blocks forever and dies on the
+		// go test timeout instead.
+		if elapsed := time.Since(started); elapsed > 5*time.Second {
+			t.Fatalf("correction ignored max_duration: elapsed %v", elapsed)
+		}
 	})
-	var interruptErr error
-	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
-		<-ctx.Done()
-		interruptErr = ctx.Err()
-		return nil, OutputCorrectionUsage{Tokens: 3}, ctx.Err()
-	}
-	wf := validationWorkflow()
-	wf.Budget = &ir.Budget{MaxDuration: "30ms"}
-	// The budget reads a FROZEN clock, so the run's preamble — the initial
-	// agent call, the output validation, the correction setup — can never
-	// consume the 30ms before the correction starts: every budget read up to
-	// that point sees the full allowance and correct() is always REACHED.
-	// The wall-clock window this removes is the flake of #2131: on a loaded
-	// -race runner the preamble alone outlived 30ms, Run returned
-	// ErrBudgetExceeded without ever invoking correct, and interruptErr
-	// stayed nil. The deadline under observation is untouched:
-	// outputCorrectionContext still arms it from the remaining budget at
-	// correction setup, and correct blocks until it strikes.
-	clock := newBudgetTestClock()
-	eng := New(wf, tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
-	eng.budgetClock = clock.Now
-	started := time.Now()
-	err := eng.Run(context.Background(), "run-val-duration", nil)
-	if !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
-	}
-	// The mechanism is the assertion: the budget's own deadline — not a
-	// caller cancel, not a correction-side timeout — is what stopped the
-	// correction. A correction context that loses its deadline identity
-	// (a plain cancel, or an interrupt the budgetDeadline attribution no
-	// longer recognizes) reddens here.
-	if !errors.Is(interruptErr, context.DeadlineExceeded) {
-		t.Fatalf("correction interrupted by %v, want the max_duration deadline", interruptErr)
-	}
-	// The wall clock only guards a hang: the correction returns as soon as
-	// the deadline strikes (~30ms), and everything past it is scheduler
-	// latency, which a starved -race runner stretches arbitrarily. A
-	// correction that ignores max_duration blocks forever and dies on the
-	// go test timeout instead.
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("correction ignored max_duration: elapsed %v", elapsed)
-	}
 }
 
 func TestSchemaValidation_DurationInterruptedCorrectionResumesUnusedAttempt(t *testing.T) {
-	ctx := context.Background()
-	st := tmpStore(t)
-	if _, err := st.CreateRun(ctx, "run-val-duration-resume", "validation_test", nil); err != nil {
-		t.Fatal(err)
-	}
-	wf := validationWorkflow()
-	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
-	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
-		if exec.calls == 1 {
-			<-ctx.Done()
-			return nil, OutputCorrectionUsage{}, ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		st := tmpStore(t)
+		if _, err := st.CreateRun(ctx, "run-val-duration-resume", "validation_test", nil); err != nil {
+			t.Fatal(err)
 		}
-		return map[string]any{"summary": "repaired", "score": 7}, OutputCorrectionUsage{}, nil
-	}
-	eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
-	invalid := map[string]any{"summary": "invalid", "score": "not-an-int"}
+		wf := validationWorkflow()
+		exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+		exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+			if exec.calls == 1 {
+				<-ctx.Done()
+				return nil, OutputCorrectionUsage{}, ctx.Err()
+			}
+			return map[string]any{"summary": "repaired", "score": 7}, OutputCorrectionUsage{}, nil
+		}
+		eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+		invalid := map[string]any{"summary": "invalid", "score": "not-an-int"}
 
-	// Frozen clocks on the hand-built budgets: the correction loop must see
-	// the full allowance at setup whatever the scheduler did between
-	// newSharedBudget and the correction call — otherwise the deadline
-	// strikes before correct() starts, no interrupted attempt is ever
-	// recorded, and the episode reads active/0. Same pre-correction window
-	// as #2131, one helper earlier (useClock is what newRunBudget applies
-	// when the engine builds the budget itself).
-	clock := newBudgetTestClock()
-	short := newSharedBudget(&ir.Budget{MaxDuration: "20ms"}, nil)
-	short.useClock(clock.Now)
-	shortBudget := &runState{
-		ctx: ctx, runID: "run-val-duration-resume",
-		budget: short,
-	}
-	if _, err := eng.correctAndValidateNodeOutput(ctx, shortBudget, "my_agent", wf.Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
-	}
-	run, err := st.LoadRun(ctx, "run-val-duration-resume")
-	if err != nil {
-		t.Fatal(err)
-	}
-	episode := run.OutputCorrections["my_agent"]
-	if episode.Status != correctionStatusActive || episode.Attempts != 1 {
-		t.Fatalf("interrupted episode = %+v, want active with one unused attempt", episode)
-	}
+		// Frozen clocks on the hand-built budgets: the correction loop must see
+		// the full allowance at setup whatever the scheduler did between
+		// newSharedBudget and the correction call — otherwise the deadline
+		// strikes before correct() starts, no interrupted attempt is ever
+		// recorded, and the episode reads active/0. Same pre-correction window
+		// as #2131, one helper earlier (useClock is what newRunBudget applies
+		// when the engine builds the budget itself).
+		clock := newBudgetTestClock()
+		short := newSharedBudget(&ir.Budget{MaxDuration: "20ms"}, nil)
+		short.useClock(clock.Now)
+		shortBudget := &runState{
+			ctx: ctx, runID: "run-val-duration-resume",
+			budget: short,
+		}
+		if _, err := correctGenericWithGrant(t, eng, ctx, shortBudget, "my_agent", wf.Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+			t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
+		}
+		run, err := st.LoadRun(ctx, "run-val-duration-resume")
+		if err != nil {
+			t.Fatal(err)
+		}
+		episode := run.OutputCorrections["my_agent"]
+		if episode.Status != correctionStatusActive || episode.Attempts != 1 {
+			t.Fatalf("interrupted episode = %+v, want active with one unused attempt", episode)
+		}
 
-	long := newSharedBudget(&ir.Budget{MaxDuration: "1s"}, nil)
-	long.useClock(clock.Now)
-	longBudget := &runState{
-		ctx: ctx, runID: "run-val-duration-resume",
-		budget: long,
-	}
-	out, err := eng.correctAndValidateNodeOutput(ctx, longBudget, "my_agent", wf.Nodes["my_agent"], invalid)
-	if err != nil || out["score"] != 7 || exec.calls != 2 {
-		t.Fatalf("resumed correction = (%+v, %v), calls=%d", out, err, exec.calls)
-	}
+		long := newSharedBudget(&ir.Budget{MaxDuration: "1s"}, nil)
+		long.useClock(clock.Now)
+		longBudget := &runState{
+			ctx: ctx, runID: "run-val-duration-resume",
+			budget: long,
+		}
+		out, err := correctGenericWithGrant(t, eng, ctx, longBudget, "my_agent", wf.Nodes["my_agent"], invalid)
+		if err != nil || out["score"] != 7 || exec.calls != 2 {
+			t.Fatalf("resumed correction = (%+v, %v), calls=%d", out, err, exec.calls)
+		}
+	})
 }
 
 func TestSchemaValidation_CancellationDuringCorrectionCancelsRun(t *testing.T) {

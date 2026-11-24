@@ -1,10 +1,66 @@
 schema_version: 1
 connector: forgejo
+
+# The inbound contract: how a delivery is read and believed before any trigger
+# sees it (ADR-168 §3). Every value here is Forgejo's own wire shape — the
+# same one the provider lane reads in pkg/server/webhooks_forgejo.go.
+ingress:
+  body: json
+  credential:
+    scheme: hmac-sha256
+    in: header
+    name: X-Forgejo-Signature
+    encoding: hex
+    signed: "{body}"
+    # The secret is iterion's: the wizard mints it and shows it once, and the
+    # operator pastes it into the hook's Secret field.
+    secret: minted
+  # Forgejo signs no timestamp, so there is no replay window to enforce. Two
+  # deliveries of one body are the vendor's retry; the body digest is what
+  # dedups them.
+  event: { header: X-Forgejo-Event }
+  delivery_id: { header: X-Forgejo-Delivery }
+  headers: [X-Forgejo-Event, X-Forgejo-Delivery]
+  ack: { status: 200 }
+  # Gitea-compatible deployments spell both headers X-Gitea-*, which the
+  # provider lane accepts too. One ingress names one header per value, so a
+  # Gitea-only instance is not served here until the format carries a
+  # fallback list.
+
 triggers:
   - id: forgejo.issue.commented
     event: issue_comment
+    display_name: Issue or pull request commented
     description: >-
       A comment was created, edited or deleted on an issue or a pull request.
-      Forgejo and Gitea both deliver it as X-Forgejo-Event/X-Gitea-Event
-      `issue_comment`, with the action in the payload; selecting one action
-      rather than another is a filter, which this format does not carry yet.
+      Both arrive as `issue_comment`: Forgejo signals a pull request through
+      the issue's `pull_request` object, which `thread` follows.
+    outputs:
+      - { name: subject, from: 'payload.issue.title' }
+      - { name: subject_state, from: 'payload.issue.state' }
+      - { name: actor, from: 'payload.sender.login' }
+      - { name: repo, from: 'payload.repository.full_name' }
+      - { name: repo_url, from: 'payload.repository.html_url' }
+      - { name: thread, from: 'payload.issue.html_url' }
+      - { name: labels, from: 'map(payload.issue.labels, l => l.name)', type: list }
+      - { name: issue_number, from: 'payload.issue.number', type: int }
+      - { name: comment_id, from: 'payload.comment.id', type: int }
+      - { name: comment_body, from: 'payload.comment.body' }
+      - { name: comment_url, from: 'payload.comment.html_url' }
+      - { name: is_pull_request, from: 'payload.is_pull', type: bool }
+    filters:
+      - id: action
+        from: 'payload.action'
+        type: enum
+        options: [created, edited, deleted]
+        # An edit is usually typo repair, and a delete rarely deserves a run;
+        # a subscription that wants them says so.
+        default: [created]
+      # A list filter: a comment on an issue or pull request carrying any of
+      # the chosen label names.
+      - { id: label, from: 'map(payload.issue.labels, l => l.name)', type: list }
+    # The loop guard: iterion's own account is the one it comments with, so its
+    # comments are dropped before any subscription is read (pkg/forge's
+    # project bot is `iterion-bot`).
+    ignore: 'payload.sender.login == "iterion-bot"'
+    sample: samples/issue-commented.json

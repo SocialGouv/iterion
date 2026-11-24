@@ -51,7 +51,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-att",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-att",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Priority: 0,
 	}); err != nil {
@@ -73,7 +73,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 		t.Fatalf("seed gateway key: %v", err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible)), PoolID: "pool-att",
+		ID: credpool.PledgeID("gw-lender", credpool.SourceAPIKey, string(secrets.ProviderOpenAICompatible), "key-gw"), PoolID: "pool-att",
 		UserID:     "gw-lender",
 		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible), KeyID: "key-gw"},
 		Enabled:    true, Health: credpool.HealthOK,
@@ -238,7 +238,7 @@ func TestAttachedPool_explicitKeyKeepsItsSlot(t *testing.T) {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-mix",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-mix",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
@@ -259,7 +259,7 @@ func TestAttachedPool_explicitKeyKeepsItsSlot(t *testing.T) {
 		t.Fatalf("seed other key: %v", err)
 	}
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("other-donor", credpool.SourceAPIKey, "anthropic"), PoolID: "pool-mix",
+		ID: credpool.PledgeID("other-donor", credpool.SourceAPIKey, "anthropic", "key-other"), PoolID: "pool-mix",
 		UserID: "other-donor", Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "anthropic", KeyID: "key-other"},
 		Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
@@ -316,7 +316,7 @@ func TestAttachedPool_disabledBlocksTheLegacyTier(t *testing.T) {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-legacy",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-legacy",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
@@ -405,14 +405,14 @@ func TestAttachedPool_resetHoldKeepsTheSwitchedEntryOnResume(t *testing.T) {
 		ctx := context.Background()
 		seedOAuth(t, f.oauth, f.sealer, "donor2", "sk-ant-donated-2")
 		second := credpool.Pledge{
-			ID: credpool.PledgeID("donor2", credpool.SourceOAuth, "claude_code"), PoolID: "pool-att",
+			ID: credpool.PledgeID("donor2", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-att",
 			UserID: "donor2", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 			Enabled: true, Health: credpool.HealthOK, Priority: 3,
 		}
 		if err := f.pledges.Upsert(ctx, second); err != nil {
 			t.Fatal(err)
 		}
-		firstID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+		firstID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 		setCooldown := func(until *time.Time) {
 			p, err := f.pledges.Get(ctx, firstID)
 			if err != nil {

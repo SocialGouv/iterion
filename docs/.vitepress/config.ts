@@ -250,6 +250,7 @@ const sidebar = [
     text: 'Architecture & contribution',
     items: [
       { text: 'Architecture', link: '/architecture' },
+      { text: 'Code architecture', link: '/code-architecture' },
       { text: 'Development', link: '/development' },
       { text: 'E2E coverage', link: '/e2e_coverage' },
       { text: 'Live E2E coverage', link: '/live-e2e-coverage' },

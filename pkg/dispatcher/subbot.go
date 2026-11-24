@@ -53,10 +53,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 	if len(runEnv) > 0 {
 		projectEnv = runEnv[0]
 	}
-	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (_ map[string]any, retErr error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
+		}
+		// A child keeps the parent's original intention; a reload is not its source.
+		if err := store.RequireRunValueFormat(ctx, req.ParentRunID); err != nil {
+			return nil, err
 		}
 
 		// Le workDir EFFECTIF du parent prime : sous `worktree: auto` le moteur a
@@ -82,6 +86,12 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
 			return out, aerr
 		}
+		// Only a fresh child needs a birth capability; existing-child reads
+		// remain available to an exact parent with its original binding.
+		if _, err := runview.CheckSubbotBirthInvocation(ctx, req.ParentRunID); err != nil {
+			return nil, err
+		}
+
 		childPath := resolvedSource.Path
 		// The child's {{workspace}} is the tree its engine roots at — the
 		// effective childWorkDir resolved above, never the child .bot's
@@ -103,29 +113,40 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if err != nil {
 			return nil, err
 		}
+		if parentCtx, _, err := store.LoadRunWithValueFormat(ctx, s, req.ParentRunID); err == nil {
+			ctx = parentCtx
+		} else if !errors.Is(err, store.ErrRunNotFound) {
+			return nil, err
+		}
 		// Record the child on the parent BEFORE running it, so a restart while
 		// parked below re-attaches instead of spawning fresh.
+		lease, err := runview.AcquireSubbotLease(ctx, s, req.ParentRunID, childRunID, runview.SubbotLeaseOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = lease.Release() }()
+		childInvocation, err := lease.PrepareInvocation(lease.Context, s, store.RunCreateSpec{ID: childRunID, WorkflowName: childWf.Name, Inputs: req.Vars, Status: store.RunStatusRunning})
+		childValueCtx := ctx
+		if childInvocation.Context != nil {
+			childValueCtx = childInvocation.Context
+		}
+		if err != nil {
+			return nil, runtime.RetirePreparedRun(childValueCtx, s, childInvocation, err)
+		}
+		engineHandoff := false
+		defer func() {
+			if !engineHandoff {
+				retErr = runtime.RetirePreparedRun(childValueCtx, s, childInvocation, retErr)
+			}
+		}()
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
-		// Hold the CHILD's run flock for its active pass. runview's orphan reaper
-		// uses LockRun as its liveness probe, and a dispatcher-spawned child is
-		// neither in runview's Manager (the studio's runner registers one; there
-		// is nothing here to register with) nor a detached-.pid runner — so
-		// without this a reconcile tick reads an unlocked `running` child as dead
-		// and flips it to failed_resumable WHILE its engine and delegate
-		// subprocesses are still working. Observed on the first dispatched run
-		// that reached a subbot: the child was reaped 2.5 minutes in and only
-		// survived because its human-gate write landed 16 seconds later and won.
-		// A long child — a Blender render, a video generation — has no such luck.
-		// Released as soon as the active pass returns (see below), never held
-		// across the park.
-		var releaseLock func()
-		if lock, lerr := s.LockRun(ctx, childRunID); lerr == nil {
-			releaseLock = func() { _ = lock.Unlock() }
-		} else {
-			releaseLock = func() {}
-			logger.Warn("subbot child %s: run lock unavailable (%v) — the orphan reaper may misjudge it as dead mid-flight", childRunID, lerr)
+		parkCtx, err := runview.SubbotParkContext(ctx, childInvocation)
+		if err != nil {
+			return nil, err
 		}
+
+		releaseLock := func() { _ = lease.Release() }
 
 		childBotID, _ := runview.SubbotChildBotIdentity(childPath, childBundle)
 		// A subbot is a run of its own, with its own guard: BuildExecutor
@@ -134,7 +155,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// parent's, which holds other values (iterion#2822).
 		childLogger := logger.WithOwnRedactor()
 		execSpec := runview.ExecutorSpec{
-			Ctx:      ctx,
+			Ctx:      childValueCtx,
 			Workflow: childWf,
 			Store:    s,
 			// Same as the dispatcher's own runs: no tier is set on the
@@ -162,7 +183,6 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if len(childWf.Secrets) > 0 {
 			lstore, lerr := secrets.LocalStoreForProject(storeDir)
 			if lerr != nil {
-				releaseLock()
 				return nil, fmt.Errorf("engine runner: local secrets store for child %q: %w", req.Source, lerr)
 			}
 			execSpec.LocalSecrets = lstore
@@ -176,16 +196,27 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// connectors.
 		childConnectors, childConnectorClient, cerr := runview.LocalConnectors(childWf, workDir, storeDir, sealer, connection.TrustOfRun(trust))
 		if cerr != nil {
-			releaseLock()
 			return nil, fmt.Errorf("engine runner: connector catalog for child %q: %w", req.Source, cerr)
 		}
 		execSpec.Connectors = childConnectors
 		execSpec.ConnectorClient = childConnectorClient
 		childExec, err := runview.BuildExecutor(execSpec)
 		if err != nil {
-			releaseLock()
 			return nil, err
 		}
+
+		childClosed := false
+		closeChild := func() {
+			if childClosed {
+				return
+			}
+			childClosed = true
+			if c, ok := any(childExec).(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+		defer closeChild()
+
 		childExec.SetRunExtraEnv(projectEnv)
 
 		// Capture what the child emits — the terminal-node output (the last
@@ -252,13 +283,15 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			opts = append(opts, runtime.WithDailyCap(dailyCap))
 		}
 		childEng := runtime.New(childWf, s, childExec, opts...)
-		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		runErr := childEng.Run(childCtx, childRunID, req.Vars)
+		childCtx := context.WithValue(childValueCtx, subbotDepthKey{}, depth+1)
+		engineHandoff = true
+		runErr := childEng.RunPrepared(childCtx, childRunID, req.Vars, childInvocation)
 		// Release the flock the moment the ACTIVE pass returns — before the park
 		// below, which can last hours. A parked child is paused, so the reaper
 		// leaves it alone, and an external `iterion resume` of it must be able to
 		// take the lock itself. Holding it across the park would block that
 		// resume — the very thing the park is waiting for.
+		closeChild()
 		releaseLock()
 		// Close promptly — BEFORE a potentially hours-long human wait below — so
 		// per-child MCP servers / board-store watchers don't accumulate under
@@ -266,16 +299,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// studio). A `defer` here would hold all N of them open for the whole
 		// park, and this path is the fan-out-heavy one: a chapter bot dispatches
 		// N identity subbots at once and every one of them parks on its gate.
-		if c, ok := any(childExec).(io.Closer); ok {
-			_ = c.Close()
-		}
+		closeChild()
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run; that is not a
 			// parent failure. Park this subbot node until the operator answers
 			// the child's review and it reaches a terminal state, then pick up
 			// its output from the store.
 			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
-				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+				out, aerr := runview.AwaitSubbotTerminal(parkCtx, s, childRunID, logger)
 				if aerr == nil {
 					// Consumed — tidy the record. On error (shutdown mid-park or
 					// a failed child) LEAVE it for the resume-time re-attach.

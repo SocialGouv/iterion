@@ -243,6 +243,10 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 
 // ----- StreamResponse --------------------------------------------------------
 
+// WireReasoningEffort is level as named (api.EffortWire): the request sets
+// reasoning_effort whenever the request names one.
+func (c *Client) WireReasoningEffort(_, level string) string { return level }
+
 // StreamResponse sends a streaming chat completions request to the Azure
 // OpenAI / Foundry deployment and emits api.StreamEvents in the same shape as
 // the OpenAI provider. The SSE → api.StreamEvent translation is delegated to

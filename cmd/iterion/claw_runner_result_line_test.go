@@ -64,10 +64,17 @@ func TestClawRunner_OversizedPendingConversationEmitsNonResumableFallback(t *tes
 		}},
 	}, "tool_calls")
 
-	got := collectOversizedResult(t, []delegate.Envelope{{
-		Type: delegate.EnvelopePermissionPolicy,
-		Data: json.RawMessage(`{"mode":"ask"}`),
-	}}, delegate.IOTask{
+	approvalEnv, approvalErr := delegate.NewApprovalChannelEnvelope()
+	if approvalErr != nil {
+		t.Fatal(approvalErr)
+	}
+	got := collectOversizedResult(t, []delegate.Envelope{
+		approvalEnv,
+		{
+			Type: delegate.EnvelopePermissionPolicy,
+			Data: json.RawMessage(`{"mode":"ask"}`),
+		},
+	}, delegate.IOTask{
 		NodeID: "copi", Model: "openai/gpt-5", UserPrompt: "hello",
 		HasTools: true, ToolMaxSteps: 5,
 		ToolDefs: []delegate.IOToolDef{{Name: "bash", Description: "shell",
@@ -397,12 +404,28 @@ func collectOversizedResult(t *testing.T, preTask []delegate.Envelope, task dele
 
 	resultCh := make(chan oversizedResultOutcome, 1)
 	go func() {
+		writer := delegate.NewEnvelopeWriter(stdinW)
 		reader := delegate.NewEnvelopeReader(stdoutR)
 		for {
 			env, err := reader.Read()
 			if err != nil {
 				resultCh <- oversizedResultOutcome{readErr: err}
 				return
+			}
+			if env.Type == delegate.EnvelopePermissionAsk {
+				// The approval channel is live: defer this ask to a human,
+				// which is what raises the oversized pause this test drives.
+				decision, derr := delegate.NewPermissionDecisionEnvelope(env.ID,
+					delegate.PermissionDecisionData{Decision: delegate.PermissionDecisionDefer, Error: "test: deferred to the operator"})
+				if derr != nil {
+					resultCh <- oversizedResultOutcome{readErr: derr}
+					return
+				}
+				if werr := writer.Write(decision); werr != nil {
+					resultCh <- oversizedResultOutcome{readErr: werr}
+					return
+				}
+				continue
 			}
 			if env.Type == delegate.EnvelopeResult {
 				var result delegate.IOResult

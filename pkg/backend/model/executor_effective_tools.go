@@ -163,6 +163,7 @@ func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 		defaultBackend:    wf.DefaultBackend,
 		wfAutoMemory:      wf.AutoMemory,
 		wfCodemode:        wf.Codemode,
+		wfCodemodeDefer:   wf.CodemodeDefer,
 		wfCodemodeBounds:  wf.CodemodeBounds,
 		wfCapabilities:    wf.Capabilities,
 		// The image-attachment append is decided by the PROGRAM — a

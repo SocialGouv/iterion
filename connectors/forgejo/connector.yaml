@@ -46,6 +46,9 @@ auth:
   in: header
   name: X-FORGEJO-OTP
 maturity: experimental
+category: source_control
+brand_color: "#ff9e1b"
+icon: icon.svg
 default_security:
 - terms:
   - scheme: basic

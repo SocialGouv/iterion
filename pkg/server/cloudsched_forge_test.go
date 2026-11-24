@@ -10,6 +10,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
+// forgeOverridesAtTick runs the tick's two forge steps in its order: the
+// integration binding read (tenant-checked), then the clone-token mint.
+func forgeOverridesAtTick(s *Server, sb cloudsched.ScheduledBot) (map[string]string, error) {
+	b, err := s.scheduledRepoBinding(context.Background(), sb)
+	if err != nil {
+		return nil, err
+	}
+	return s.scheduledForgeOverrides(context.Background(), sb, b)
+}
+
 // TestScheduledForgeOverrides pins the A23 fix: a repo-bound schedule mints
 // its clone token from the pinned integration's connection at the tick —
 // the same managed-secret path every studio/API launch uses — instead of
@@ -35,7 +45,7 @@ func TestScheduledForgeOverrides(t *testing.T) {
 
 	t.Run("pinned integration mints the managed secret", func(t *testing.T) {
 		s, _ := newWorld(t)
-		ov, err := s.scheduledForgeOverrides(context.Background(), cloudsched.ScheduledBot{
+		ov, err := forgeOverridesAtTick(s, cloudsched.ScheduledBot{
 			ID: "sch1", TenantID: "t1", BotID: "feed-watch", RepoIntegrationID: "i1",
 		})
 		if err != nil {
@@ -55,7 +65,7 @@ func TestScheduledForgeOverrides(t *testing.T) {
 
 	t.Run("no pinned integration keeps the legacy binding path", func(t *testing.T) {
 		s, _ := newWorld(t)
-		ov, err := s.scheduledForgeOverrides(context.Background(), cloudsched.ScheduledBot{
+		ov, err := forgeOverridesAtTick(s, cloudsched.ScheduledBot{
 			ID: "sch2", TenantID: "t1", BotID: "feed-watch",
 		})
 		if err != nil || ov != nil {
@@ -65,7 +75,7 @@ func TestScheduledForgeOverrides(t *testing.T) {
 
 	t.Run("tenant mismatch is refused explicitly", func(t *testing.T) {
 		s, _ := newWorld(t)
-		_, err := s.scheduledForgeOverrides(context.Background(), cloudsched.ScheduledBot{
+		_, err := forgeOverridesAtTick(s, cloudsched.ScheduledBot{
 			ID: "sch3", TenantID: "t2", BotID: "feed-watch", RepoIntegrationID: "i1",
 		})
 		if err == nil || !strings.Contains(err.Error(), "another tenant") {
@@ -75,7 +85,7 @@ func TestScheduledForgeOverrides(t *testing.T) {
 
 	t.Run("a dangling integration id fails the tick loudly", func(t *testing.T) {
 		s, _ := newWorld(t)
-		_, err := s.scheduledForgeOverrides(context.Background(), cloudsched.ScheduledBot{
+		_, err := forgeOverridesAtTick(s, cloudsched.ScheduledBot{
 			ID: "sch4", TenantID: "t1", BotID: "feed-watch", RepoIntegrationID: "gone",
 		})
 		if err == nil {

@@ -9,7 +9,9 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -49,6 +51,38 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// a legal launch and an intended "deny" would bless one the launch
 	// refuses.
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
+	// The launch itself 400s an invalid codemode spelling; the preview —
+	// the surface that answers for that launch — refuses the same input
+	// instead of judging a value the launch will never accept.
+	if !ir.ValidCodemode(req.Codemode) {
+		httpError(w, http.StatusBadRequest, "codemode: %q is not a codemode value (on|off, empty inherits the DSL)", req.Codemode)
+		return
+	}
+	// The codemode launch choice rides to the preview's warnings, the same
+	// way the permission knob rides to its screen: the preview answers for
+	// the launch the caller is about to shape, whose request carries the
+	// same field. An unparsable duration refuses the preview with a 400,
+	// naming the field — the same contract as the launch's own parse.
+	codemodeBounds, err := req.CodemodeBounds.ToBounds()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	spec.Launch.Codemode = req.Codemode
+	spec.Launch.CodemodeBounds = codemodeBounds
+	// The review-mode knob rides the same way: `paired` puts the second
+	// reviewer on the run's topology, so a preview without it would walk a
+	// plan the launch never takes. It resolves through the SAME injection
+	// the launch applies (the retired spellings map there), and the concrete
+	// mode is written into the vars the walk reads — the topology lives on
+	// the vars, not on a field beside them.
+	spec.Launch.ReviewMode = strings.TrimSpace(req.ReviewMode)
+	if spec.Launch.Vars == nil {
+		spec.Launch.Vars = map[string]string{}
+	}
+	if spec.Launch.ReviewMode != "" {
+		spec.Launch.Vars["review_mode"] = reviewtopology.Resolve(spec.Launch.ReviewMode)
+	}
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer
@@ -144,6 +178,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		}
 		if len(req.Vars) > 0 {
 			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
+			return
+		}
+		if strings.TrimSpace(req.ReviewMode) != "" {
+			httpError(w, http.StatusBadRequest, "webhook source takes its review topology from the integration's own vars; a caller-supplied review_mode is not part of that launch")
 			return
 		}
 		// A fork-lane config launches untrusted targets only (the gesture),

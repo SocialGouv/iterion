@@ -117,7 +117,10 @@ attempts per node invocation when unset), while
 schema correction loop for agents, judges and LLM routers shares the runtime's
 durable allowance; `0` disables correction. Other outputs warn by default and
 reject in strict mode (`ITERION_STRICT_OUTPUT_VALIDATION=1` or
-`WithOutputValidation(true)`). Changing the correction budget does not disable
+`WithOutputValidation(true)`); a tool recipe's stdout that is not a JSON object
+under a declared `output:` is refused in the default too, and wrapped again
+only when the dial is written out as off
+([the output contract](dsl.md#tool)). Changing the correction budget does not disable
 the reliability controls listed above. The `output_corrections` ledger stays
 readable either way — pre-pilot runs simply have none.
 

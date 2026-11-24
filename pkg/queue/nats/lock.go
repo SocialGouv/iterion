@@ -66,6 +66,7 @@ type Lock struct {
 	runID    string
 	runnerID string              // pod identity stamped at acquire time, re-used on every refresh
 	ident    store.LeaseIdentity // admitted identity stamped at acquire time, re-verified before every action
+	ttl      time.Duration       // effective bucket TTL validated before acquisition
 	rev      uint64              // last observed revision for CAS Update
 }
 
@@ -89,6 +90,14 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 	if !ok || ident.TenantID == "" {
 		return nil, ErrLeaseUnattributed
 	}
+	status, err := c.kv.Status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("queue/nats: read effective lease TTL: %w", err)
+	}
+	ttl := status.TTL()
+	if ttl <= 0 || ttl != c.cfg.LockTTL {
+		return nil, fmt.Errorf("queue/nats: lease TTL mismatch: bucket=%s configured=%s; drain holders and align bucket configuration", ttl, c.cfg.LockTTL)
+	}
 	body, err := newLeaseBody(runnerID, ident)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: marshal lease: %w", err)
@@ -103,8 +112,11 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 		}
 		return nil, fmt.Errorf("queue/nats: KV create %s: %w", runID, err)
 	}
-	return &Lock{conn: c, runID: runID, runnerID: runnerID, ident: ident, rev: rev}, nil
+	return &Lock{conn: c, runID: runID, runnerID: runnerID, ident: ident, rev: rev, ttl: ttl}, nil
 }
+
+// LeaseTTL is the effective TTL under which this lease was acquired.
+func (l *Lock) LeaseTTL() time.Duration { return l.ttl }
 
 // Refresh updates the lease (resets the bucket TTL) so a long-running
 // run keeps holding the lock past the default 60s TTL. The CAS Update

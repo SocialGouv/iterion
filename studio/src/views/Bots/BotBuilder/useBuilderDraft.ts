@@ -4,7 +4,7 @@
 // "Draft saved" hint, and the created-bot handoff that clears the
 // draft and refreshes the shared bots store.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { BotCreateResult } from "@/api/bots";
 import { useBotsStore } from "@/store/bots";
@@ -40,7 +40,15 @@ export function useBuilderDraft() {
     };
   }, [draft, created]);
 
+  const mounted = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
   const onCreated = (entry: BotCreateResult) => {
+    // An earlier team's create can settle after the builder remounts.
+    if (!mounted.current) return;
     try {
       localStorage.removeItem(DRAFT_KEY);
     } catch {

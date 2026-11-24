@@ -101,6 +101,48 @@ type Subscription struct {
 	// claims). Empty inherits the invocation's EffectiveMode at evaluation.
 	Mode  bundle.ExecutionMode `json:"mode,omitempty" bson:"mode,omitempty"`
 	Match Matcher              `json:"match" bson:"match"`
+
+	// The connector binding (Invocation == connector, ADR-168 §6). A
+	// connector subscription is matched by the connector worker from the
+	// intake of its connection, never from the bus.
+	//
+	// ConnectionID and TriggerID say which connection's which declared
+	// trigger it listens to; ConnectorKey is derived from them by every
+	// store write (normalize), never client-set — the one scalar the
+	// candidate query selects on.
+	ConnectionID string `json:"connection_id,omitempty" bson:"connection_id,omitempty"`
+	TriggerID    string `json:"trigger_id,omitempty" bson:"trigger_id,omitempty"`
+	ConnectorKey string `json:"connector_key,omitempty" bson:"connector_key,omitempty"`
+	// Poller names the poller a polled trigger listens to (ADR-168 §7);
+	// empty listens to the connection's ingresses. Derived at save from the
+	// connection, the trigger and PollQuery, never client-set.
+	Poller string `json:"poller,omitempty" bson:"poller,omitempty"`
+	// PollQuery is what the operator typed for a polled trigger's query
+	// fields: the poller is the query, so two subscriptions asking the same
+	// one of the same connection listen to one poller.
+	PollQuery map[string]string `json:"poll_query,omitempty" bson:"poll_query,omitempty"`
+	// PollerSince is the poller's sequence when the subscription was last
+	// activated (created enabled, enabled again, or moved to another
+	// poller): it receives the intakes above it, so a late-visible item is
+	// still delivered and nothing before the activation is (ADR-168 §7).
+	// Server-managed.
+	PollerSince int64 `json:"poller_since,omitempty" bson:"poller_since,omitempty"`
+	// Backfill makes the last Backfill intakes of its poller at or below
+	// PollerSince — primed ones included — eligible for this subscription
+	// alone; BackfillDone records that the poller paired them.
+	// BackfillDone is server-managed.
+	Backfill     int  `json:"backfill,omitempty" bson:"backfill,omitempty"`
+	BackfillDone bool `json:"backfill_done,omitempty" bson:"backfill_done,omitempty"`
+	// Filters are the chosen values per filter id the trigger declares;
+	// When is an optional expression over `event` that must hold too.
+	Filters map[string][]string `json:"filters,omitempty" bson:"filters,omitempty"`
+	When    string              `json:"when,omitempty" bson:"when,omitempty"`
+	// VarMap maps a bot var to an expression over `event`; empty passes
+	// each output named like a declared var under that name.
+	VarMap map[string]string `json:"var_map,omitempty" bson:"var_map,omitempty"`
+	// NoLiveRun is what deliver does with no live run to reach ("" |
+	// launch | drop) — stored now, read by #3136.
+	NoLiveRun string `json:"no_live_run,omitempty" bson:"no_live_run,omitempty"`
 	// ConsumeLabels (board-source, direct-mode only) strips the Match.Labels
 	// set from the card before launching, making the labels a one-shot
 	// trigger: duplicate card events can't double-launch, and re-adding the
@@ -250,13 +292,30 @@ func (s Subscription) RetryPolicy() retrypolicy.Policy {
 	}
 }
 
-// EffectiveMode returns the subscription's execution mode, defaulting an empty
-// value to ExecutionDirect (mirrors bundle.Invocation.EffectiveMode).
-func (s Subscription) EffectiveMode() bundle.ExecutionMode {
-	if s.Mode == bundle.ExecutionBoard {
-		return bundle.ExecutionBoard
+// ConnectorKey is the scalar a connector subscription is selected on: its
+// connection and the trigger it listens to. Two connections to one vendor
+// never share a key, so they never fire each other's bots.
+func ConnectorKey(connectionID, triggerID string) string {
+	if connectionID == "" || triggerID == "" {
+		return ""
 	}
-	return bundle.ExecutionDirect
+	return connectionID + "/" + triggerID
+}
+
+// normalize derives what a subscription's own fields determine: the
+// connector key of a connector subscription. Every store write runs it, so
+// the key cannot disagree with the two fields it is made of.
+func (s *Subscription) normalize() {
+	s.ConnectorKey = ConnectorKey(s.ConnectionID, s.TriggerID)
+}
+
+// EffectiveMode returns the subscription's execution mode through the one
+// reading every builder and dispatcher shares (bundle.ResolveMode): "" and
+// direct launch, board promotes a card, and deliver, an unknown mode, or
+// board on a connector subscription are a typed ErrUnsupported — never a
+// launch.
+func (s Subscription) EffectiveMode() (bundle.ExecutionMode, error) {
+	return bundle.ResolveMode(s.Invocation, s.Mode, "subscription "+s.ID)
 }
 
 // FromBoardInvocation derives a board-trigger Subscription from a bot's
@@ -273,6 +332,11 @@ func (s Subscription) EffectiveMode() bundle.ExecutionMode {
 // routing the card TO it" shape.
 func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
 	if inv.Kind != bundle.InvocationKindBoard || inv.Board == nil {
+		return Subscription{}, false
+	}
+	// A mode no effect honours (deliver until #3136) derives nothing: it
+	// is never silently read as board or direct.
+	if _, err := inv.EffectiveMode(); err != nil {
 		return Subscription{}, false
 	}
 	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
@@ -301,6 +365,11 @@ func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle
 	if inv.Kind != bundle.InvocationKindSchedule || inv.Schedule == nil {
 		return Subscription{}, false
 	}
+	// A mode no effect honours (deliver until #3136) derives nothing: it
+	// is never silently read as board or direct.
+	if _, err := inv.EffectiveMode(); err != nil {
+		return Subscription{}, false
+	}
 	cronExpr := strings.TrimSpace(inv.Schedule.SuggestedCron)
 	if cronExpr == "" {
 		return Subscription{}, false
@@ -326,6 +395,11 @@ func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle
 // missing/unparseable interval.
 func FromKeepaliveInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
 	if inv.Kind != bundle.InvocationKindKeepalive || inv.Keepalive == nil {
+		return Subscription{}, false
+	}
+	// A mode no effect honours (deliver until #3136) derives nothing: it
+	// is never silently read as board or direct.
+	if _, err := inv.EffectiveMode(); err != nil {
 		return Subscription{}, false
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(inv.Keepalive.Interval))

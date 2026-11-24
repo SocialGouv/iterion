@@ -73,7 +73,7 @@ func TestTailEventsFile_DrainsBacklogThenTailsAppends(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	col := &collector[int64]{}
-	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger())
+	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger(), nil)
 
 	col.waitFor(t, 3*time.Second, func(s []int64) bool { return len(s) == 2 }, "backlog drain")
 
@@ -94,7 +94,7 @@ func TestTailEventsFile_PartialLineIsNotEmitted(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	col := &collector[int64]{}
-	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger())
+	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger(), nil)
 	col.waitFor(t, 3*time.Second, func(s []int64) bool { return len(s) == 1 }, "initial drain")
 
 	// Append a partial line (no trailing newline) — must NOT be emitted.
@@ -135,7 +135,7 @@ func TestTailEventsFile_FileAppearsLate(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	col := &collector[int64]{}
-	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger())
+	go TailEventsFile(path, done, func(evt store.Event) { col.add(evt.Seq) }, quietLogger(), nil)
 
 	time.Sleep(150 * time.Millisecond) // tailer is waiting on a missing file
 	writeEventLine(t, path, store.Event{Seq: 0, RunID: "r", Type: store.EventRunStarted})

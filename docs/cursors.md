@@ -51,7 +51,7 @@ agent reviewer:
     enabled: true
     ambition: ambitious      # enum lookup
     depth: 0.7               # numeric → matches the 0.67..1.0 band
-    rigor: "${ITERION_RIGOR}" # env-substitution allowed (quoted)
+    rigor: "${ITERION_RIGOR}" # env-substitution allowed (quoted); C315 warns
 ```
 
 When `enabled: false` (or the block is absent), no `## Calibration`

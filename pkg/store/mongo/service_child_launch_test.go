@@ -56,6 +56,16 @@ workflow gate:
   gate -> fail when not approve
 `
 
+// These service tests exercise tenant/provenance propagation through Mongo.
+// Give their local in-process hosts real filesystem locks; the separate
+// TestSubbotLeaseMongoNATS covers renewable distributed ownership.
+type serviceFixtureLocks struct{ runs *store.FilesystemRunStore }
+
+func (l serviceFixtureLocks) AcquireLock(ctx context.Context, id, _ string) (store.RunLock, error) {
+	return l.runs.LockRun(ctx, id)
+}
+func (l serviceFixtureLocks) RunnerID() string { return "mongo-service-fixture" }
+
 // serviceOnTheMongoStore is a run service executing in process over a fresh
 // Mongo database — no cloud publisher, so a launch and a resume run their
 // engine here — with bots written into its directory. Skips without
@@ -70,7 +80,11 @@ func serviceOnTheMongoStore(t *testing.T, dbPrefix string, bots map[string]strin
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
-	s, err := New(ctx, Config{URI: uri, Database: dbPrefix + bsonNonce(t), Blob: newInMemoryBlob()})
+	locks, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(ctx, Config{URI: uri, Database: dbPrefix + bsonNonce(t), Blob: newInMemoryBlob(), LockProvider: serviceFixtureLocks{runs: locks}})
 	if err != nil {
 		t.Fatalf("mongo New: %v", err)
 	}

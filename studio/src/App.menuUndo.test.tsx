@@ -7,7 +7,7 @@
 // editor left for another page is a document the author cannot see (#1788).
 import { Suspense, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/components/shared/AppShell", () => ({
   default: ({ children }: { children: ReactNode }) => <Suspense fallback={null}>{children}</Suspense>,
@@ -22,12 +22,14 @@ vi.mock("@/hooks/useProjectSwitchListener", () => ({ useProjectSwitchListener: (
 vi.mock("@/hooks/useProjectScopeSync", () => ({ useProjectScopeSync: () => undefined }));
 vi.mock("@/views/ProjectSwitcher", () => ({ default: () => null }));
 vi.mock("@/hooks/useDesktop", () => ({ useDesktop: () => ({ ready: true, isDesktop: false }) }));
-// The tab's own content is not what this is about: the editor route is on
-// screen once the tabs view is.
-vi.mock("@/components/shared/EditorTabHost", () => ({ default: () => <div data-testid="editor-tab" /> }));
+// Keep the rendered identity; menu readiness also needs the view's effect.
+vi.mock("@/components/shared/EditorTabHost", () => ({
+  default: ({ tabId }: { tabId: string }) => <div data-testid="editor-tab" data-tab-id={tabId} />,
+}));
 vi.mock("@/components/Home/RecentFilesPanel", () => ({ default: () => <div>recent files</div> }));
 
 import App from "@/App";
+import { editorTabOnScreen } from "@/components/Editor/editorOnScreen";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createEmptyDocument } from "@/lib/defaults";
 import { getOrCreateDocumentStore, type DocumentStore } from "@/store/document";
@@ -43,7 +45,17 @@ function editedTab() {
   store.getState().markSaved();
   store.getState().addComment({ text: "e1" });
   store.getState().addComment({ text: "e2" });
-  return store;
+  return { id, store };
+}
+async function readyEditorTab(expectedId?: string) {
+  const tab = await screen.findByTestId("editor-tab", undefined, { timeout: 5000 });
+  const id = tab.getAttribute("data-tab-id");
+  expect(id).toBeTruthy();
+  if (expectedId !== undefined) expect(id).toBe(expectedId);
+  // The DOM can precede publication by the view's passive effect. Wait for
+  // the command target BEFORE sending a single message, never retry Undo.
+  await waitFor(() => expect(editorTabOnScreen()).toBe(id));
+  return id;
 }
 const shellMenu = (menu: "undo" | "redo") =>
   act(async () => {
@@ -53,7 +65,7 @@ const shellMenu = (menu: "undo" | "redo") =>
 beforeEach(() => {
   window.history.replaceState({}, "", "/");
   useServerInfoStore.setState({ info: null, loading: false, error: null });
-  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
+  useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null, currentProjectKey: null });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request) => {
@@ -71,7 +83,7 @@ afterEach(() => {
 
 describe("Edit → Undo from the menu", () => {
   it("does nothing to an editor tab while another page is on screen", async () => {
-    const store = editedTab();
+    const { store } = editedTab();
     render(
       <QueryClientProvider client={new QueryClient()}>
         <App />
@@ -87,14 +99,14 @@ describe("Edit → Undo from the menu", () => {
   });
 
   it("undoes and redoes one step in the editor tab on screen", async () => {
-    const store = editedTab();
+    const { id, store } = editedTab();
     window.history.replaceState({}, "", "/editor?file=bots%2Fa.bot");
     render(
       <QueryClientProvider client={new QueryClient()}>
         <App />
       </QueryClientProvider>,
     );
-    await screen.findByTestId("editor-tab", undefined, { timeout: 5000 });
+    await readyEditorTab(id);
     await shellMenu("undo");
     expect(marks(store)).toBe("A,e1");
     await shellMenu("redo");
@@ -109,7 +121,7 @@ describe("Edit → Undo from the menu, on a link into another project's file", (
   // acts on the tab the editor shows, never on the hidden project's store.
   it("acts on the tab on screen, not on another project's tab", async () => {
     useTabsStore.getState().setCurrentProjectKey("/p1");
-    const store = editedTab();
+    const { store } = editedTab();
     useTabsStore.getState().setCurrentProjectKey("/p2");
     window.history.replaceState({}, "", "/editor?file=bots%2Fa.bot");
     render(
@@ -118,9 +130,7 @@ describe("Edit → Undo from the menu, on a link into another project's file", (
       </QueryClientProvider>,
     );
     // A tab of THIS project is what the editor shows for the link.
-    await screen.findByTestId("editor-tab", undefined, { timeout: 5000 });
-    const onScreenId = useTabsStore.getState().activeEditorTabId;
-    expect(onScreenId).not.toBeNull();
+    const onScreenId = await readyEditorTab();
     expect(useTabsStore.getState().tabs.find((t) => t.id === onScreenId)?.projectKey).toBe("/p2");
     await shellMenu("undo");
     expect(marks(store)).toBe("A,e1,e2");

@@ -452,6 +452,9 @@ function processEvent(
       const banner = out[idx];
       if (!banner || banner.kind !== "banner") break;
       const data = evt.data ?? {};
+      // A codemode program's nested call runs within its program, which
+      // the banner already counted: the count is the calls the model made.
+      if (data.parent_tool_use_id) break;
       const toolName = data.tool || undefined;
       const prev = banner.progress ?? { toolCount: 0 };
       out[idx] = {

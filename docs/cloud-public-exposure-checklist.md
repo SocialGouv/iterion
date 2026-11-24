@@ -69,10 +69,10 @@ How to verify: kill a runner pod; `/api/runs/<id>/events` should not stream new 
 ## 7. Probes + autoscaling
 
 - [ ] **livenessProbe** and **readinessProbe** wired on **server** AND **runner** deployments. Both shipped in the chart; verify they appear in `kubectl get deploy -o yaml | grep -i probe`.
-- [ ] **KEDA ScaledObject** drives the runner pool from NATS queue depth. Consumer name is parameterised (`runner.keda.consumerName`); two parallel deployments do not collide on the same JetStream consumer.
+- [ ] **KEDA ScaledObject** drives the runner pool from NATS queue depth (`runner.keda.enabled`). Its consumer is the runner's durable `iterion-runners`, a constant no runner setting renames: keep `runner.keda.consumerName` at that value, since any other name points the scaler at a consumer no runner binds.
 - [ ] **PodDisruptionBudget** for the server (chart ships one). Cluster auto-upgrades won't take down all server replicas at once.
 
-How to verify: `kubectl get scaledobject -n <ns> -o yaml | grep consumer` shows the parameterised name. Drain a runner node; KEDA recreates pods on a remaining node within ~30s.
+How to verify: `kubectl get scaledobject -n <ns> -o yaml | grep consumer` shows `iterion-runners`. Drain a runner node; the Deployment recreates the evicted pods on a remaining node.
 
 ## 8. Resource limits + cost guards
 

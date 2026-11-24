@@ -724,9 +724,9 @@ func TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly(t *testi
 func TestGitLabNoteHook_ReplyInThreadRoutesToConverse(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
-	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
+	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, webhooks.ThreadAnchor, error) {
 		// authorized + a reply in a Revi thread, with the fetched transcript.
-		return true, true, "@revi (you, the bot):\nThe SSRF fix pins the host.\n\n---\n\n@alice:\nCan you expand on the SSRF fix?", "reply", nil
+		return true, true, "@revi (you, the bot):\nThe SSRF fix pins the host.\n\n---\n\n@alice:\nCan you expand on the SSRF fix?", "reply", webhooks.ThreadAnchor{}, nil
 	}
 	var calls int
 	var gotBot string
@@ -802,7 +802,7 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 
 	t.Run("allowlist authorizes without a role probe", func(t *testing.T) {
 		api := &fakeGitlabNoteAPI{who: bot, notes: botThread}
-		authorized, replyInThread, transcript, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		authorized, replyInThread, transcript, reason, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
 		if err != nil || !authorized || !replyInThread || reason != "allowlist" {
 			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
 		}
@@ -816,12 +816,12 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 
 	t.Run("role gate", func(t *testing.T) {
 		api := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessDeveloper, member: true}
-		authorized, _, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api)
+		authorized, _, _, reason, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api)
 		if err != nil || !authorized || reason != "role" {
 			t.Fatalf("developer>=developer must pass: authorized=%v reason=%q err=%v", authorized, reason, err)
 		}
 		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessGuest, member: true}
-		authorized, _, _, reason, err = s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api2)
+		authorized, _, _, reason, _, err = s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api2)
 		if err != nil || authorized || !strings.HasPrefix(reason, "replier not authorized") {
 			t.Fatalf("guest<developer must refuse: authorized=%v reason=%q err=%v", authorized, reason, err)
 		}
@@ -832,7 +832,7 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 			{AuthorID: 3, AuthorUsername: "bob", Body: "top-level human note"},
 			{AuthorID: 2, AuthorUsername: "alice", Body: "why?"},
 		}}
-		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		authorized, replyInThread, _, reason, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
 		if err != nil || authorized || replyInThread || !strings.Contains(reason, "not a /revi command or a reply in a Revi thread") {
 			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
 		}
@@ -843,7 +843,7 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 
 	t.Run("self note loop-guard refuses before any thread fetch", func(t *testing.T) {
 		api := &fakeGitlabNoteAPI{who: gitlab.User{ID: 2, Username: "alice"}, notes: botThread}
-		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		authorized, replyInThread, _, reason, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
 		if err != nil || authorized || replyInThread || reason != "self note (loop-guard)" {
 			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
 		}
@@ -854,7 +854,7 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 
 	t.Run("bot identity unresolved fails closed before any thread fetch", func(t *testing.T) {
 		api := &fakeGitlabNoteAPI{whoErr: fmt.Errorf("401 unauthorized"), notes: botThread}
-		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		authorized, replyInThread, _, reason, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
 		if err != nil || authorized || replyInThread || reason != "bot identity unresolved; cannot classify reply" {
 			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
 		}
@@ -865,11 +865,11 @@ func TestGitlabNoteGateWithAPI(t *testing.T) {
 
 	t.Run("infra errors propagate", func(t *testing.T) {
 		api := &fakeGitlabNoteAPI{who: bot, discErr: fmt.Errorf("boom")}
-		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api); err == nil {
+		if _, _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api); err == nil {
 			t.Fatal("discussion fetch error must propagate, not filter")
 		}
 		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, permErr: fmt.Errorf("boom")}
-		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api2); err == nil {
+		if _, _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api2); err == nil {
 			t.Fatal("member-access-level error must propagate, not filter")
 		}
 	})

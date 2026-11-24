@@ -1,0 +1,41 @@
+{
+  "headers": {
+    "Content-Type": "application/json",
+    "Sentry-Hook-Resource": "metric_alert",
+    "Request-ID": "9c4d2e7a30b14f5e8a6c1d2b3e4f5a60"
+  },
+  "payload": {
+    "action": "critical",
+    "installation": {
+      "uuid": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    },
+    "actor": {
+      "type": "application",
+      "id": "sentry",
+      "name": "Sentry"
+    },
+    "data": {
+      "description_title": "Critical: Too many failed deliveries",
+      "description_text": "1000 events in the last 10 minutes\nFilter: level:error",
+      "web_url": "https://acme.sentry.io/alerts/rules/details/7/",
+      "metric_alert": {
+        "id": "4",
+        "identifier": "1",
+        "title": "Sacred Marmot",
+        "organization_id": "5",
+        "projects": ["backend"],
+        "status": 2,
+        "type": 2,
+        "alert_rule": {
+          "id": "7",
+          "name": "Too many failed deliveries",
+          "organization_id": "5",
+          "projects": ["backend"],
+          "query": "level:error",
+          "aggregate": "count()",
+          "triggers": []
+        }
+      }
+    }
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v2"
@@ -54,6 +55,13 @@ type Trigger struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	// DisplayName is the catalog's label for the event.
 	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	// Delivery is how the trigger's events reach iterion: webhook (empty,
+	// matched by Event on an authenticated delivery) or poll (read by its
+	// own poller through Poll).
+	Delivery string `yaml:"delivery,omitempty" json:"delivery,omitempty"`
+	// Poll is a polled trigger's query: the operation, its parameters, and
+	// how items, identities and the checkpoint are read (poll.go).
+	Poll *TriggerPoll `yaml:"poll,omitempty" json:"poll,omitempty"`
 	// Outputs are the named values extracted from a delivery: what the
 	// studio offers for mapping and what a run receives by default.
 	Outputs []TriggerOutput `yaml:"outputs,omitempty" json:"outputs,omitempty"`
@@ -76,6 +84,54 @@ type triggersDoc struct {
 	Connector string    `yaml:"connector"`
 	Ingress   *Ingress  `yaml:"ingress,omitempty"`
 	Triggers  []Trigger `yaml:"triggers"`
+}
+
+// WebhookTrigger is the one reading of "which trigger does this delivery's
+// event name": the first webhook trigger declaring exactly that vendor event.
+// A polled trigger is fed by its poller alone and is never a delivery's, and
+// an empty name — a delivery whose event header is absent — names nothing,
+// rather than every trigger that declares none.
+func WebhookTrigger(triggers []Trigger, event string) (*Trigger, bool) {
+	if event == "" {
+		return nil, false
+	}
+	for i := range triggers {
+		if !triggers[i].Polled() && triggers[i].Event == event {
+			return &triggers[i], true
+		}
+	}
+	return nil, false
+}
+
+// IngressTriggers are the triggers a delivery can reach: the webhook
+// triggers of a package that declares the ingress they arrive through. An
+// ingress bind requires one — an ingress no trigger reads accepts what
+// nothing can route.
+func (p *Package) IngressTriggers() []Trigger {
+	if p.Ingress == nil {
+		return nil
+	}
+	var out []Trigger
+	for _, t := range p.Triggers {
+		if !t.Polled() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// DeliverableTriggers are the triggers an operator can plug a subscription
+// into: the ones a delivery reaches (IngressTriggers) and every polled one,
+// which its poller feeds. A webhook trigger of a package with no ingress is
+// neither: nothing can reach it.
+func (p *Package) DeliverableTriggers() []Trigger {
+	out := p.IngressTriggers()
+	for _, t := range p.Triggers {
+		if t.Polled() {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // readTriggers loads the package's declared events, if it declares any.
@@ -148,6 +204,7 @@ func validateTriggers(p *Package) error {
 		return err
 	}
 	seen := map[string]bool{}
+	events := map[string]string{}
 	for _, t := range p.Triggers {
 		// Prevents: a declaration no workflow could ever name, which is the
 		// silently-inert capability shape this repo calls a defect.
@@ -163,10 +220,17 @@ func validateTriggers(p *Package) error {
 			return fmt.Errorf("connector %q: trigger %q names connector %q — a package declares events in its own namespace only",
 				p.Connector.ID, t.ID, first)
 		}
-		// Prevents: a trigger iterion could never match to a delivery. The
-		// vendor's event name is the only thing an inbound request carries
-		// that says what happened.
-		if strings.TrimSpace(t.Event) == "" {
+		// Prevents: a delivery mode nothing serves, judged before anything
+		// that depends on it so the refusal names the value at fault.
+		if t.Delivery != "" && t.Delivery != DeliveryWebhook && t.Delivery != DeliveryPoll {
+			return fmt.Errorf("connector %q: trigger %q: delivery %q is not %s or %s",
+				p.Connector.ID, t.ID, t.Delivery, DeliveryWebhook, DeliveryPoll)
+		}
+		// Prevents: a webhook trigger iterion could never match to a
+		// delivery. The vendor's event name is the only thing an inbound
+		// request carries that says what happened. A polled trigger is named
+		// by its poller instead, and validatePoll refuses it an event.
+		if !t.Polled() && strings.TrimSpace(t.Event) == "" {
 			return fmt.Errorf("connector %q: trigger %q declares no event — a delivery is matched by the vendor's own event name, so a trigger without one can never fire",
 				p.Connector.ID, t.ID)
 		}
@@ -176,6 +240,17 @@ func validateTriggers(p *Package) error {
 			return fmt.Errorf("connector %q: duplicate trigger %q", p.Connector.ID, t.ID)
 		}
 		seen[t.ID] = true
+		// Prevents: a trigger the catalogue offers and no delivery reaches.
+		// A delivery is routed by its event name to ONE webhook trigger, so a
+		// second trigger on the same event is pluggable and never fires; a
+		// trigger that narrows the event says so with its filters.
+		if !t.Polled() {
+			if first, dup := events[t.Event]; dup {
+				return fmt.Errorf("connector %q: triggers %q and %q both declare event %q — a delivery reaches one trigger, so the second would never fire; narrow one trigger with filters instead",
+					p.Connector.ID, first, t.ID, t.Event)
+			}
+			events[t.Event] = t.ID
+		}
 		// Prevents: one id meaning two things. An operation is called and a
 		// trigger is received, but both are named by authored text in this
 		// package's namespace, and a format that allowed the collision could
@@ -184,9 +259,17 @@ func validateTriggers(p *Package) error {
 		if _, ok := p.Operation(t.ID); ok {
 			return fmt.Errorf("connector %q: trigger %q is also an operation id — one id is one thing", p.Connector.ID, t.ID)
 		}
+		if err := validatePoll(p, t); err != nil {
+			return err
+		}
 		if err := validateTriggerExtraction(p, t); err != nil {
 			return err
 		}
+	}
+	// Prevents: polled setup notes nothing shows — the wizard reads
+	// setup-poll.md for a polled trigger only.
+	if p.SetupPoll != nil && !slices.ContainsFunc(p.Triggers, Trigger.Polled) {
+		return fmt.Errorf("connector %q: ships %s but declares no polled trigger — the notes are shown for a polled trigger only", p.Connector.ID, SetupPollFile)
 	}
 	return nil
 }

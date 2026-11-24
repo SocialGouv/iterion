@@ -37,12 +37,17 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	if srv.runs == nil {
 		t.Fatalf("expected run console service to be wired")
 	}
+	streams := &testOwnedRunStreams{Source: srv.runs.StreamSource()}
+	runview.WithStreamSource(streams)(srv.runs)
 	hs := httptest.NewServer(srv.mux)
 	t.Cleanup(func() {
 		hs.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
+		if err := streams.Close(); err != nil {
+			t.Errorf("join run streams: %v", err)
+		}
 	})
 	return srv, hs
 }

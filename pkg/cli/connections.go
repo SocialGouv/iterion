@@ -33,12 +33,17 @@ type ConnectionAddOptions struct {
 	// Scheme is which auth scheme the credential satisfies. Empty picks the
 	// package's only one, and refuses when there are several.
 	Scheme string
-	// TokenEnv names the environment variable holding the credential.
+	// TokenEnv names the environment variable holding the credential: the
+	// token, or an HTTP basic scheme's password. A scheme of kind none takes
+	// none.
 	//
 	// An ENV VAR rather than a flag, deliberately: a token passed as an
 	// argument lands in the shell history and in `ps` output for the life of
 	// the process. There is no --token flag for the same reason.
 	TokenEnv string
+	// Username is an HTTP basic scheme's username — an identifier, not a
+	// secret, so a flag; its password comes from TokenEnv.
+	Username string
 	// Capabilities is what the connection may be used for. Empty grants
 	// `action` only — the narrower of the two, since an agent choosing its own
 	// calls is a decision an operator should make deliberately.
@@ -57,34 +62,14 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if strings.TrimSpace(opts.Connector) == "" {
 		return errors.New("connections add: --connector is required")
 	}
-	if strings.TrimSpace(opts.TokenEnv) == "" {
-		return errors.New("connections add: --token-env is required (the name of an environment variable holding the credential; a token passed as a flag would land in your shell history)")
-	}
-	token := os.Getenv(opts.TokenEnv)
-	if token == "" {
-		return fmt.Errorf("connections add: $%s is empty", opts.TokenEnv)
-	}
-	// The SAME shape gate `iterion secret set` applies, for the reason it
-	// states: "a value that could not possibly authenticate is refused at the
-	// paste, not discovered as a provider 401 in the middle of a run hours
-	// later". A credential arriving through the environment is the case that
-	// needs it most — a k8s `envFrom`, a `.env` line, a CI variable and a
-	// `$(cat file)` all bring a trailing newline, which this command sealed
-	// happily. The connection then listed as active and failed at its first
-	// call with a 401, or with Go's opaque "invalid header field value for
-	// Authorization" — a layer away from the command that created it, which is
-	// the same failure checkSchemeIsWritable and checkBaseURL were added here
-	// to close.
-	if err := secrets.ValidateTokenShape(fmt.Sprintf("$%s", opts.TokenEnv), token); err != nil {
-		return fmt.Errorf("connections add: %w", err)
-	}
 	alias := strings.TrimSpace(opts.Alias)
 	if alias == "" {
 		alias = "main"
 	}
 
 	// The package is loaded FIRST, so a typo in the connector id or an
-	// unknown scheme is refused before a credential is sealed anywhere.
+	// unknown scheme is refused before a credential is read or sealed
+	// anywhere — and the scheme says which material the command reads.
 	cat, err := localCatalog(opts.StoreDir)
 	if err != nil {
 		return err
@@ -97,10 +82,73 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := checkSchemeIsWritable(pkg, scheme); err != nil {
+	authScheme, ok := pkg.Connector.AuthScheme(scheme)
+	if !ok {
+		return fmt.Errorf("connections add: connector %q declares no auth scheme %q", opts.Connector, scheme)
+	}
+	token, err := readCredential(opts, authScheme.Kind)
+	if err != nil {
 		return err
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
+	return addConnection(opts, out, cat, pkg, tier, scheme, authScheme, alias, token)
+}
+
+// readCredential reads what a scheme of kind presents: nothing for kind
+// none — a --token-env or --username given for it is refused, not ignored —
+// the password from TokenEnv beside --username for HTTP basic, a token from
+// TokenEnv otherwise.
+func readCredential(opts ConnectionAddOptions, kind spec.AuthKind) (string, error) {
+	username := strings.TrimSpace(opts.Username)
+	switch {
+	case kind == spec.AuthNone:
+		if strings.TrimSpace(opts.TokenEnv) != "" || username != "" {
+			return "", errors.New("connections add: this scheme presents no credential — drop --token-env and --username")
+		}
+		return "", nil
+	case kind == spec.AuthBasic && username == "":
+		return "", errors.New("connections add: an HTTP basic scheme needs --username, its password in --token-env")
+	case kind != spec.AuthBasic && username != "":
+		return "", fmt.Errorf("connections add: --username is HTTP basic's, and this scheme is %s", kind)
+	}
+	if strings.TrimSpace(opts.TokenEnv) == "" {
+		return "", errors.New("connections add: --token-env is required (the name of an environment variable holding the credential; a token passed as a flag would land in your shell history)")
+	}
+	token := os.Getenv(opts.TokenEnv)
+	if token == "" {
+		return "", fmt.Errorf("connections add: $%s is empty", opts.TokenEnv)
+	}
+	if kind == spec.AuthBasic {
+		// A password is not token-shaped: it may hold spaces.
+		if err := secrets.ValidateBasicShape(username, token); err != nil {
+			return "", fmt.Errorf("connections add: %w", err)
+		}
+		return token, nil
+	}
+	// The SAME shape gate `iterion secret set` applies, for the reason it
+	// states: "a value that could not possibly authenticate is refused at the
+	// paste, not discovered as a provider 401 in the middle of a run hours
+	// later". A credential arriving through the environment is the case that
+	// needs it most — a k8s `envFrom`, a `.env` line, a CI variable and a
+	// `$(cat file)` all bring a trailing newline, which this command sealed
+	// happily. The connection then listed as active and failed at its first
+	// call with a 401, or with Go's opaque "invalid header field value for
+	// Authorization" — a layer away from the command that created it, which is
+	// the same failure readCredential's scheme checks and checkBaseURL close.
+	if err := secrets.ValidateTokenShape(fmt.Sprintf("$%s", opts.TokenEnv), token); err != nil {
+		return "", fmt.Errorf("connections add: %w", err)
+	}
+	return token, nil
+}
+
+// addConnection pins the origin, seals the credential the scheme presents
+// and stores the record.
+func addConnection(opts ConnectionAddOptions, out io.Writer, cat connection.Catalog, pkg *spec.Package, tier connection.Tier, scheme string, authScheme spec.AuthScheme, alias, token string) error {
+	baseURL := strings.TrimSpace(opts.BaseURL)
+	if !pkg.AddressesBaseURL() {
+		// The executor joins an operation's path after the base; a URL that
+		// IS the resource (a feed's) keeps its trailing slash.
+		baseURL = strings.TrimRight(baseURL, "/")
+	}
 	if err := checkBaseURL(pkg, baseURL); err != nil {
 		return err
 	}
@@ -147,7 +195,15 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 		return fmt.Errorf("connections add: generate id: %w", err)
 	}
 	id = "conn_" + id
-	sealed, err := connection.SealToken(sealer, id, token, time.Time{})
+	var sealed []byte
+	switch authScheme.Kind {
+	case spec.AuthNone:
+		sealed, err = connection.SealNone(sealer, id)
+	case spec.AuthBasic:
+		sealed, err = connection.SealBasic(sealer, id, strings.TrimSpace(opts.Username), token)
+	default:
+		sealed, err = connection.SealToken(sealer, id, token, time.Time{})
+	}
 	if err != nil {
 		return err
 	}
@@ -164,10 +220,6 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// from a header into a query string — where the vendor's logs, proxies and
 	// referrers keep it. What a credential may be sent to, AND how, is decided
 	// when it is entrusted.
-	authScheme, ok := pkg.Connector.AuthScheme(scheme)
-	if !ok {
-		return fmt.Errorf("connections add: connector %q declares no auth scheme %q", opts.Connector, scheme)
-	}
 	placement := connection.PlacementOf(authScheme)
 
 	conn := connection.Connection{
@@ -210,12 +262,12 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// tell an operator whether their PAT rides a header or a query string.
 	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
-	// A grant nothing performs is said at the moment it is MADE. `agent` and
-	// `trigger` are accepted (each is a settled decision, and the operator's
-	// choice is not silently narrowed); `agent` is performed — the MCP facade
-	// reads it (#2758) — while `trigger` is still inert, so the one surface
-	// that could tell them must: the alternative is a warning about a grant
-	// that works, or silence about one that does not.
+	// A grant nothing performs is said at the moment it is MADE: the one
+	// surface that could tell a working grant from an inert one must, or it
+	// warns about a grant that works or keeps silent about one that does not.
+	// Today every grant is performed — `agent` by the MCP facade (#2758),
+	// `trigger` by the connector ingress and the pollers — so GrantAdvice
+	// answers "" until a new capability lands ahead of what reads it.
 	if advice := connection.GrantAdvice(caps); advice != "" {
 		fmt.Fprintf(out, "  warning: %s\n", advice)
 	}
@@ -392,25 +444,10 @@ func checkBaseURL(pkg *spec.Package, baseURL string) error {
 	if u.Host == "" {
 		return fmt.Errorf("connections add: --base-url %q names no host", baseURL)
 	}
-	return nil
-}
-
-// checkSchemeIsWritable refuses a scheme this command cannot supply the
-// material for.
-//
-// `add` seals a TOKEN (there is no --username-env, and `connection.SealBasic`
-// has no caller), so choosing a basic scheme produced a record whose username
-// and password are empty: `connections list` showed it, `checkUsable` passed
-// it, and every call was refused locally with "basic auth needs a username" —
-// a message pointing nowhere near the command that created the record. Forgejo
-// makes this easy to hit: it declares several schemes, so --scheme is
-// mandatory, and the disambiguation error lists `basic` first.
-func checkSchemeIsWritable(pkg *spec.Package, schemeID string) error {
-	s, ok := pkg.Connector.AuthScheme(schemeID)
-	if !ok || s.Kind != spec.AuthBasic {
-		return nil
+	if u.User != nil {
+		return errors.New("connections add: --base-url names a user and password — they would be stored unsealed and sent with every call; pick the package's basic scheme (--username, the password in --token-env)")
 	}
-	return fmt.Errorf("connections add: scheme %q of connector %q is HTTP basic, which needs a username and a password — this command seals a token only; name a token-shaped scheme with --scheme", schemeID, pkg.Connector.ID)
+	return nil
 }
 
 // warnTo sends the sealer's warnings where the command's own output goes, so a

@@ -1,5 +1,5 @@
 import * as RT from "@radix-ui/react-tooltip";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useHiddenSubtree } from "./hiddenSubtree";
 
 export interface TooltipProps {
@@ -9,6 +9,10 @@ export interface TooltipProps {
   align?: "start" | "center" | "end";
   delayDuration?: number;
   disabled?: boolean;
+  /** Keeps the trigger at one place in the tree whether or not there is
+   *  anything to show. Without it a trigger that gains or loses its tooltip
+   *  is remounted — and a control that had the keyboard focus loses it. */
+  stable?: boolean;
 }
 
 export function Tooltip({
@@ -18,16 +22,25 @@ export function Tooltip({
   align = "center",
   delayDuration = 250,
   disabled = false,
+  stable = false,
 }: TooltipProps) {
   const hidden = useHiddenSubtree();
-  if (disabled || content === null || content === undefined || content === "") {
+  // A stable tooltip is controlled: with nothing to show it stays closed,
+  // rather than leave the tree.
+  const [open, setOpen] = useState(false);
+  const empty = disabled || content === null || content === undefined || content === "";
+  // Nothing left to show closes it for good: left "open" under an empty
+  // content, it would show again the moment content comes back — with the
+  // focus long gone elsewhere.
+  if (stable && empty && open) setOpen(false);
+  if (empty && !stable) {
     return <>{children}</>;
   }
   return (
     <RT.Provider delayDuration={delayDuration}>
-      <RT.Root>
+      <RT.Root {...(stable ? { open: !empty && open, onOpenChange: setOpen } : {})}>
         <RT.Trigger asChild>{children}</RT.Trigger>
-        {!hidden && (
+        {!empty && !hidden && (
         <RT.Portal>
           <RT.Content
             side={side}

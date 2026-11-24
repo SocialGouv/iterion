@@ -240,6 +240,9 @@ parent's).
     { "session_id": "sess-…", "tasks": ["auditor (local_agent, a1b2)"] }
   ],
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
+  "node_failure_streaks": {
+    "merge": { "fingerprint": "sha256:5f0c…", "count": 1 }
+  },
   "recovery_pause": true,
   "recovery_code": "AUTH_FAILED",
   "budget_tokens_used": 42000,
@@ -267,6 +270,18 @@ marks the checkpointed conversation as a stranded sandbox crossing's own turns
 so the resumed crossing keeps its captures out of the session store (#2461);
 recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`node_failure_streaks` holds, per tool node, the last failure of its command
+and how many executions in a row ended on it — what an identical repeat is
+recorded as `TOOL_FAILED_PERMANENT` on, across engines
+([resume.md](resume.md#a-tool-command-that-fails-the-same-way-again-is-permanent)).
+`fingerprint` is a SHA-256 of the exit status and the failure's text, salted
+with the run and the node: the checkpoint never holds the command's output.
+Only a command that ran to an exit status of its own is counted, and never a
+failure whose output names an outage. A node's entry leaves with its success,
+with a failure that is not counted or reads differently, and with a rewind
+that replays it; the field is absent with
+`ITERION_NODE_MAX_IDENTICAL_FAILURES=0` and on checkpoints written before it
+existed, which reads as no streak.
 The union of `artifact_owners` and `artifacts` is the authoritative logical
 publish-name snapshot. `artifact_owners` is the complete catalog: when a
 logical value is identical to its producer's `outputs` entry, the body is

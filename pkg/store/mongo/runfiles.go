@@ -43,18 +43,40 @@ func (s *Store) runFilesScratchDir(runID string) string {
 // per-run local scratch dir (the sandbox bind-mount source). Loosens the
 // perms like the filesystem store so the in-container user (uid 1000)
 // can write into a host-owned mount. Idempotent.
-func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
+func (s *Store) EnsureRunFilesDir(ctx context.Context, runID string) (string, error) {
+	ctx, _, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	format, err := store.ValueFormatForWrite(ctx, runID)
+	if err != nil {
+		return "", err
+	}
 	if err := store.SanitizePathComponent("run ID", runID); err != nil {
 		return "", err
 	}
 	if s.runFilesScratch == "" {
 		return "", fmt.Errorf("store/mongo: run-files scratch dir not configured")
 	}
-	dir := s.runFilesScratchDir(runID)
+	if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+		g, err := s.OpenRunFilesGrant(ctx, runID)
+		if err != nil {
+			return "", err
+		}
+		defer g.Close()
+		return g.HostPath(), nil
+	}
+	dir, err := s.runFilesScratchForBinding(ctx, runID, format)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return "", fmt.Errorf("store/mongo: mkdir run files scratch: %w", err)
 	}
 	_ = os.Chmod(dir, 0o775)
+	if err := s.checkRunObjects(ctx, runID); err != nil {
+		return "", err
+	}
 	return dir, nil
 }
 
@@ -107,10 +129,32 @@ func (r *runFileUploadReader) Read(p []byte) (int, error) {
 // the runner. A failed upload keeps the dir so the bytes aren't lost to a
 // transient S3 error.
 func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	format, err := store.ValueFormatForWrite(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
 	if err := store.SanitizePathComponent("run ID", runID); err != nil {
 		return 0, err
 	}
-	root := s.runFilesScratchDir(runID)
+	if s.runFilesScratch == "" {
+		return 0, nil
+	}
+	if binding, ok := store.RunDataBindingFrom(ctx); ok && binding.Header().Protocol == store.IncarnationRunData {
+		g, err := s.OpenRunFilesGrant(ctx, runID)
+		if err != nil {
+			return 0, err
+		}
+		defer g.Close()
+		return s.UploadRunFilesFrom(ctx, runID, g)
+	}
+	root, err := s.runFilesScratchForBinding(ctx, runID, format)
+	if err != nil {
+		return 0, err
+	}
 	info, err := os.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -171,8 +215,11 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		// AWS SDK can rewind the body for a transient-error retry. A concurrent
 		// truncate produces io.ErrUnexpectedEOF and keeps the scratch tree for
 		// the later authoritative upload once the writer is quiescent.
-		if putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size()); putErr != nil {
+		if putErr := objects.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size()); putErr != nil {
 			return fmt.Errorf("put %s: %w", rel, putErr)
+		}
+		if err := s.checkRunObjects(ctx, runID); err != nil {
+			return err
 		}
 		putSucceeded = true
 		return nil
@@ -183,6 +230,9 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 	// Durable copies are in S3 now; drop the redundant runner-local tree
 	// so it can't accumulate on a long-lived runner pod. Best-effort — a
 	// removal failure must not turn a successful upload into an error.
+	if err := s.checkRunObjects(ctx, runID); err != nil {
+		return uploaded, err
+	}
 	_ = os.RemoveAll(root)
 	return uploaded, nil
 }
@@ -191,10 +241,17 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 // artifact files from S3, sorted by path. Empty slice (no error) when the
 // run produced none.
 func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFileInfo, error) {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if errors.Is(err, store.ErrRunDeleted) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	if err := store.SanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
-	objs, err := s.blob.ListRunFiles(ctx, runID)
+	objs, err := objects.ListRunFiles(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list run files %s: %w", runID, err)
 	}
@@ -218,10 +275,14 @@ func (s *Store) ListRunFiles(ctx context.Context, runID string) ([]store.RunFile
 // absolute paths + `..`/empty segments), so an invalid path and a missing
 // object both surface as a clean error the HTTP layer maps to 404.
 func (s *Store) OpenRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
+	ctx, objects, err := s.captureRunObjects(ctx, runID)
+	if err != nil {
+		return nil, store.RunFileInfo{}, runObjectsReadError(err)
+	}
 	if err := store.SanitizePathComponent("run ID", runID); err != nil {
 		return nil, store.RunFileInfo{}, err
 	}
-	rc, obj, err := s.blob.GetRunFile(ctx, runID, relPath)
+	rc, obj, err := objects.GetRunFile(ctx, runID, relPath)
 	if err != nil {
 		return nil, store.RunFileInfo{}, fmt.Errorf("store/mongo: run file not found: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -290,19 +291,39 @@ func (s *Server) handleServeAttachment(w http.ResponseWriter, r *http.Request) {
 	// Verifying both preserves the studio's UX (no signature in
 	// dev-tools URLs) while still allowing presigned URLs to work
 	// from any user agent.
-	exp := r.URL.Query().Get("exp")
-	sig := r.URL.Query().Get("sig")
-	if exp == "" || sig == "" {
+	query, queryErr := url.ParseQuery(r.URL.RawQuery)
+	if queryErr != nil {
+		s.httpErrorFor(w, r, http.StatusForbidden, "invalid attachment query")
+		return
+	}
+	exp, sig, valueFormat := query.Get("exp"), query.Get("sig"), query.Get("vf")
+	var rc io.ReadCloser
+	var rec store.AttachmentRecord
+	var err error
+	// Any signed parameter opts into signature validation. Partial/duplicate
+	// fields cannot downgrade to the unsigned safe-origin route.
+	signed := query.Has("exp") || query.Has("sig") || query.Has("vf")
+	if signed {
+		if len(query["exp"]) != 1 || len(query["sig"]) != 1 || len(query["vf"]) > 1 || (query.Has("vf") && valueFormat == "") {
+			s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
+			return
+		}
+		rc, rec, err = s.runs.OpenPresignedAttachment(r.Context(), id, name, exp, sig, valueFormat)
+	} else {
 		if !s.requireSafeOrigin(w, r) {
 			return
 		}
-	} else if !s.verifyAttachmentSig(id, name, exp, sig) {
-		s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
-		return
+		rc, rec, err = s.runs.OpenAttachment(r.Context(), id, name)
 	}
-
-	rc, rec, err := s.runs.OpenAttachment(r.Context(), id, name)
 	if err != nil {
+		if errors.Is(err, store.ErrAttachmentSignature) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "invalid or expired signature")
+			return
+		}
+		if errors.Is(err, store.ErrValueFormatChanged) {
+			s.httpErrorFor(w, r, http.StatusConflict, "attachment value format changed")
+			return
+		}
 		if errors.Is(err, store.ErrAttachmentNotFound) {
 			s.httpErrorFor(w, r, http.StatusNotFound, "attachment not found")
 			return
@@ -357,19 +378,6 @@ func (s *Server) handlePresignAttachment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.writeJSONFor(w, r, map[string]string{"url": signed})
-}
-
-// verifyAttachmentSig dispatches the signature check to the
-// underlying RunStore when the local backend supports it. Cloud
-// (S3-presigned) URLs never reach this server — they are signed by
-// AWS and consumed by the client directly — so we treat unknown
-// stores as "no HMAC support", which forces requireSafeOrigin to
-// guard the path.
-func (s *Server) verifyAttachmentSig(runID, name, exp, sig string) bool {
-	if s.runs == nil {
-		return false
-	}
-	return s.runs.VerifyAttachmentSignature(runID, name, exp, sig)
 }
 
 // applyUploadDefaults fills in MaxUploadSize / total / per-run when

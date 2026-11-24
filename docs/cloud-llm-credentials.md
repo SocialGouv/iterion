@@ -607,10 +607,13 @@ Four things worth knowing before building one:
   it looks: the provider RETIRES the refresh token it is handed, so a refresh
   aimed at the wrong record spends a live credential's token and leaves the
   dying one exactly as dying.
-- **Only the primary can be lent to the credential pool.** A pledge is keyed
-  on (owner, source, kind) with no rank, so `pool lend` offers rank 0. Lending
-  a specific fallback is not wired — see
-  [docs/credential-pool.md](credential-pool.md).
+- **Only the primary of a chain can be lent to the credential pool — for a
+  subscription.** An `oauth` pledge is keyed on (owner, source, kind) with no
+  rank, so `pool lend` offers rank 0; lending a specific fallback is not
+  wired. A metered `api_key` is the other case: it is identified by the key
+  itself (`key_id`), so two personal keys of one provider — two Anthropic
+  keys, say — can both be lent, as two pledges the broker fails over between.
+  See [docs/credential-pool.md](credential-pool.md).
 
 ## Preview the effective fallback order
 
@@ -1096,7 +1099,7 @@ and no refusal.
 **They fold differently, and the rule is each field's own.** `overrides`
 folds **entry-wise per (selector, field) cell** — a team pinning
 `judge → backend: claw` and an integration pinning
-`reviewer_gpt → model: <gateway id>` both hold, each cell's provenance keyed
+`reviewer → model: <gateway id>` both hold, each cell's provenance keyed
 `overrides.<selector>.<field>`. `providers` is one list and **replaces** like
 `pair_order`, first setter wins (ADR-129 §2).
 

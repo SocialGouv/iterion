@@ -76,7 +76,7 @@ build+test into `verify.sh`, `verify_run` re-runs it on the actual exit code) wi
   **Ran SANDBOXED** (`iterion-sandbox-full:edge`, `worktree: auto`) — unlike the
   019ec599 run which forced `--sandbox none`. Forfait forced.
 - **Result: converged + committed.** survey_existing → plan → act → simplify →
-  **2 review cycles** (reviewer_claude→streak_check→reviewer_gpt→streak_check,
+  **2 review cycles** (reviewer_alternate→streak_check→reviewer→streak_check,
   cross-family double-approval, **0 fixer iterations, no oscillation**) →
   prepare_commit → commit. **$3.52 / ~16 min / 58k tokens.** Committed
   `a7f44eb3` ("feat(git): gate git clone sources to safe https/ssh transports",
@@ -94,7 +94,7 @@ build+test into `verify.sh`, `verify_run` re-runs it on the actual exit code) wi
   `ValidateBranchName` pre-existed (stayed in scope).
 - **Engine/forfait health:** clean run — **no `StructuredOutput: no such tool`
   error** (d8e8dde1 holding on schema+tools claude_code nodes), no forfait
-  flakiness, no retries. **Sandboxed claude_code + reviewer_gpt (claw/forfait)
+  flakiness, no retries. **Sandboxed claude_code + reviewer (claw/forfait)
   both ran cleanly in-container** — the sandbox path is viable for Fini now
   (contrast the 019ec599 bilan's "host-mode until ~/.codex mounted" caveat).
 
@@ -131,7 +131,7 @@ build+test into `verify.sh`, `verify_run` re-runs it on the actual exit code) wi
   (forfait) is not mounted into the container. `worktree: auto` still isolated
   the Go edits; forfait forced (`ITERION_OPENAI_USE_OAUTH=1`).
 - **Result: converged + committed.** Flow: survey_existing → plan → act →
-  simplify → reviewer_claude + reviewer_gpt **both approved cross-family on the
+  simplify → reviewer_alternate + reviewer **both approved cross-family on the
   first pass (0 fixer iterations)** → prepare_commit → commit_changes → done
   (~18 min, 12:07→12:25). Committed `88943d4b` ("feat(git): cap diff payload
   reads to avoid OOM on oversized files", **5 files, +267/-30**) on the

@@ -27,7 +27,7 @@ func (h *harness) r4GatewayDonor(t *testing.T, userID string, lim Limits, mutate
 	if err := h.apiKeys.Create(ctx, k); err != nil {
 		t.Fatalf("seed gateway key: %v", err)
 	}
-	p := Pledge{ID: PledgeID(userID, SourceAPIKey, string(secrets.ProviderOpenAICompatible)), PoolID: "pool-1", UserID: userID,
+	p := Pledge{ID: APIKeyPledgeID(userID, string(secrets.ProviderOpenAICompatible), keyID), PoolID: "pool-1", UserID: userID,
 		Credential: Credential{Source: SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible), KeyID: keyID},
 		Enabled:    true, Health: HealthOK, Limits: lim}
 	for _, m := range mutate {

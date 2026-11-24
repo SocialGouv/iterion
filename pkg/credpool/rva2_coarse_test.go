@@ -30,8 +30,8 @@ func TestPoolReview2_coarseReportOfASideBySideAttemptChargesEverySiblingTheWhole
 			h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 100})
 			h.donorKey(t, "bob", "openai", Limits{MaxUSDPerDay: 100})
 			_, attID, _ := attachForTest(t, h, Strategy{}, DrawLimits{})
-			pa := PledgeID("alice", SourceAPIKey, "anthropic")
-			pb := PledgeID("bob", SourceAPIKey, "openai")
+			pa := keyPledgeID("alice", "anthropic")
+			pb := keyPledgeID("bob", "openai")
 			day := h.now
 
 			a1, err := h.broker.Acquire(ctx, rva2AttKeyReq("run-c", "anthropic", attID, "A1", false))

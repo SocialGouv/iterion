@@ -185,14 +185,14 @@ func TestTheAcceptedSpellingsAreExactlyOnOffAndInherit(t *testing.T) {
 			continue
 		}
 		if value == "" {
-			if p := ResolveCodemode(value, ""); p.Source != CodemodeFromDefault {
+			if p := ResolveCodemode("", value, ""); p.Source != CodemodeFromDefault {
 				t.Errorf("%q is the ABSENCE of a declaration and must inherit, got %+v", value, p)
 			}
 			continue
 		}
 		// An accepted spelling must be DECIDED, never silently read as off:
 		// the node's rung has to answer, and the answer has to match the word.
-		p := ResolveCodemode(value, "")
+		p := ResolveCodemode("", value, "")
 		if p.Source != CodemodeFromNode {
 			t.Errorf("%q did not decide at the node rung: %+v", value, p)
 		}

@@ -16,12 +16,13 @@ type reattachReadErrorStore struct {
 	store.RunStore
 	failID  string
 	didFail bool
+	readErr error
 }
 
 func (s *reattachReadErrorStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	if id == s.failID && !s.didFail {
 		s.didFail = true
-		return nil, errors.New("temporary store read failure")
+		return nil, s.readErr
 	}
 	return s.RunStore.LoadRun(ctx, id)
 }
@@ -60,10 +61,12 @@ workflow child:
 				t.Fatal(err)
 			}
 			original := svc.store
-			svc.store = &reattachReadErrorStore{RunStore: original, failID: failID}
-			_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{Source: "child.bot", Vars: map[string]any{"path": "duplicate.txt", "content": "fresh child effect"}, ParentRunID: "parent", NodeID: "invoke", ReattachKey: "invoke", WorkDir: dir})
-			if runErr == nil {
-				t.Error("a failed reattachment read returns success")
+			readErr := errors.New("temporary store read failure")
+			wrapped := &reattachReadErrorStore{RunStore: original, failID: failID, readErr: readErr}
+			svc.store = wrapped
+			_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent.bot"), iterlog.Nop())(boundLegacySubbotFixture(t, ctx, "parent"), runtime.SubbotRequest{Source: "child.bot", Vars: map[string]any{"path": "duplicate.txt", "content": "fresh child effect"}, ParentRunID: "parent", NodeID: "invoke", ReattachKey: "invoke", WorkDir: dir})
+			if !wrapped.didFail || !errors.Is(runErr, readErr) {
+				t.Fatalf("REATTACH_READ_ORACLE_NOT_REACHED: reached=%v error=%v", wrapped.didFail, runErr)
 			}
 			parent, err := original.LoadRun(ctx, "parent")
 			if err != nil {

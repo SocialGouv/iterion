@@ -76,8 +76,26 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, snap)
 		return
 	}
-	snap, err := s.runs.SnapshotCtx(r.Context(), id)
+	// A request whose expected birth runOriginGate admitted reads under that
+	// origin (actionOrigin.bind): a successor recreated after the admission
+	// is refused 409, never served as the snapshot of the run the caller meant.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	bound := a.checked
+	// A request the gate admitted on its expected birth only reads: it skips
+	// the merge reconciliation write (SnapshotWithoutReconcileCtx).
+	snapshot := s.runs.SnapshotCtx
+	if bound {
+		snapshot = s.runs.SnapshotWithoutReconcileCtx
+	}
+	snap, err := snapshot(ctx, id)
 	if err != nil {
+		if s.writeBoundReadFailure(w, r, id, bound, err) {
+			return
+		}
 		if errors.Is(err, store.ErrRunDeleted) {
 			// 410, not 404: the run existed and was deliberately
 			// deleted — the studio shows "run deleted" instead of a
@@ -147,8 +165,18 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, map[string]any{"events": events})
 		return
 	}
-	events, err := s.runs.LoadEventsCtx(r.Context(), id, from, to)
+	// Bound to the admitted origin like handleGetRun: a successor's events
+	// never answer a request that expected its predecessor.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	events, err := s.runs.LoadEventsCtx(ctx, id, from, to)
 	if err != nil {
+		if s.writeBoundReadFailure(w, r, id, a.checked, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "load events: %v", err)
 		return
 	}

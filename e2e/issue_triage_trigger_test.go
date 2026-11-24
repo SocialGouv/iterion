@@ -60,8 +60,8 @@ func TestIssueTriageTrigger_E2E_ConsumeAndLaunch(t *testing.T) {
 		t.Fatal("issue-triage manifest yields no board subscription")
 	}
 	sub.Enabled = true
-	if sub.EffectiveMode() != bundle.ExecutionDirect || !sub.ConsumeLabels {
-		t.Fatalf("subscription shape: mode=%q consume=%v, want direct+consume", sub.Mode, sub.ConsumeLabels)
+	if mode, err := sub.EffectiveMode(); err != nil || mode != bundle.ExecutionDirect || !sub.ConsumeLabels {
+		t.Fatalf("subscription shape: mode=%q (%v) consume=%v, want direct+consume", sub.Mode, err, sub.ConsumeLabels)
 	}
 
 	ns, err := native.NewStore(t.TempDir())

@@ -175,6 +175,10 @@ func (s *Server) handleConnectorIngress(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	srcIP := s.clientIP(r)
 	cfg, err := s.webhookConfigs.Get(ctx, r.PathValue("id"))
+	if err != nil && !errors.Is(err, webhooks.ErrNotFound) {
+		s.webhookConfigUnavailable(w, webhooks.ProviderConnector, err)
+		return
+	}
 	if err != nil || cfg.Provider != webhooks.ProviderConnector {
 		// Not found and another provider's id answer alike, so the id space
 		// cannot be probed.
@@ -309,7 +313,7 @@ func (s *Server) handleConnectorIngress(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ingressWriteTimeout)
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.ingressWriteBound())
 	defer cancel()
 	_, created, err := s.connectorIntakes.Accept(storeCtx, intake.Intake{
 		TenantID:     cfg.TenantID,
@@ -324,10 +328,17 @@ func (s *Server) handleConnectorIngress(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		s.warnIngress(cfg, srcIP, "intake write failed", err)
 		// The write's answer was lost, not necessarily the write: a row
-		// that landed is the delivery stored and charged. The unit goes back
-		// only for a row proven absent.
-		switch _, gerr := s.connectorIntakes.GetIntake(storeCtx, cfg.TenantID, intakeID); {
+		// that landed is the delivery stored — charged when this call wrote
+		// it, a concurrent twin's otherwise. The unit goes back for a twin's
+		// row and for a row proven absent. The re-read runs under its own
+		// bound: the write's may be the very deadline that failed it.
+		readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), s.ingressWriteBound())
+		defer cancelRead()
+		switch _, gerr := s.connectorIntakes.GetIntake(readCtx, cfg.TenantID, intakeID); {
 		case gerr == nil:
+			if !created {
+				release()
+			}
 			s.markWebhookUsed(cfg)
 			writeIngressAck(w, d.Ack)
 			return
@@ -344,6 +355,15 @@ func (s *Server) handleConnectorIngress(w http.ResponseWriter, r *http.Request) 
 	}
 	s.markWebhookUsed(cfg)
 	writeIngressAck(w, d.Ack)
+}
+
+// ingressWriteBound is the bound of the intake write and of its re-read
+// (ingressWriteTimeout unless a test sets ingressWriteLimit).
+func (s *Server) ingressWriteBound() time.Duration {
+	if s.ingressWriteLimit > 0 {
+		return s.ingressWriteLimit
+	}
+	return ingressWriteTimeout
 }
 
 // ingressNow is the lane's clock (ingressClock).

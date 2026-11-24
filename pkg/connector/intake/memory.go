@@ -114,6 +114,28 @@ func (m *MemoryStore) ListIntakes(_ context.Context, tenantID, state string, lim
 	return out, nil
 }
 
+func (m *MemoryStore) ListPollerIntakes(_ context.Context, tenantID, pollerID string, maxSeq int64, limit int) ([]Intake, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	var out []Intake
+	for _, in := range m.intakes {
+		if in.TenantID == tenantID && in.PollerID == pollerID && in.PollerID != "" && in.Sequence <= maxSeq {
+			out = append(out, copyIntake(*in))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sequence != out[j].Sequence {
+			return out[i].Sequence > out[j].Sequence
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) ClaimIntakes(_ context.Context, owner string, now time.Time, ttl time.Duration, limit int) ([]Intake, error) {
 	if err := checkClaim(owner, ttl, limit); err != nil {
 		return nil, err
@@ -284,6 +306,46 @@ func (m *MemoryStore) ListPairs(_ context.Context, tenantID string, q PairQuery,
 	return out, nil
 }
 
+func (m *MemoryStore) LaunchedPair(_ context.Context, tenantID, subscriptionID, itemKey string) (Pair, bool, error) {
+	if err := checkItemKey(subscriptionID, itemKey); err != nil {
+		return Pair{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	var first *Pair
+	for _, p := range m.pairs {
+		if p.TenantID != tenantID || p.SubscriptionID != subscriptionID || p.ItemKey != itemKey || p.State != PairLaunched {
+			continue
+		}
+		if first == nil || launchedBefore(*p, *first) {
+			first = p
+		}
+	}
+	if first == nil {
+		return Pair{}, false, nil
+	}
+	return copyPair(*first), true, nil
+}
+
+// launchedBefore is LaunchedPair's order: earliest launched, then lowest
+// id. A launched pair without its instant sorts first, as Mongo sorts a
+// missing field.
+func launchedBefore(a, b Pair) bool {
+	at, bt := launchedAt(a), launchedAt(b)
+	if !at.Equal(bt) {
+		return at.Before(bt)
+	}
+	return a.ID < b.ID
+}
+
+func launchedAt(p Pair) time.Time {
+	if p.LaunchedAt == nil {
+		return time.Time{}
+	}
+	return *p.LaunchedAt
+}
+
 // pairBefore is ListPairs' order: newest intake first, then intake id, then
 // subscription id.
 func pairBefore(a, b Pair) bool {
@@ -441,6 +503,41 @@ func (m *MemoryStore) ReplayPair(_ context.Context, tenantID, id string, now tim
 	p.LastError = ""
 	p.UpdatedAt = stamp(now)
 	return copyPair(*p), nil
+}
+
+func (m *MemoryStore) RejudgePair(_ context.Context, tenantID, id string, v Verdict, now time.Time) (Pair, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prune()
+	p, ok := m.pairs[id]
+	if !ok || p.TenantID != tenantID {
+		return Pair{}, fmt.Errorf("%w: pair %s", ErrNotFound, id)
+	}
+	if p.State != PairRefused || !p.MatchRefusal {
+		return Pair{}, fmt.Errorf("%w: pair %s is %s, not refused by matching", ErrNotReplayable, p.ID, p.State)
+	}
+	// A pair matching refused was never launched: its attempts are whole.
+	p.State, p.Reason, p.MatchRefusal = rejudged(v)
+	p.Generation++
+	p.NotBefore = stamp(now)
+	p.LastError = ""
+	p.UpdatedAt = stamp(now)
+	return copyPair(*p), nil
+}
+
+// rejudged is the state, reason and match-refusal mark a new verdict gives
+// a pair matching refused (Store.RejudgePair).
+func rejudged(v Verdict) (state, reason string, matchRefusal bool) {
+	switch {
+	case v.Refusal != "":
+		return PairRefused, v.Refusal, true
+	case v.Matched:
+		return PairPending, "", false
+	}
+	if v.Reason == "" {
+		return PairNotMatched, "the subscription's filters did not match", false
+	}
+	return PairNotMatched, v.Reason, false
 }
 
 // replayable says why a pair cannot be replayed, if it cannot.

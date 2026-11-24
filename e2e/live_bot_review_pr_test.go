@@ -19,7 +19,7 @@ import (
 // schema-valid output, and at least one finding is surfaced for the
 // planted bug. Then the quality panel grades the findings + value.
 //
-// Requires: claude CLI (reviewer_claude/emit) + OpenAI (reviewer_gpt).
+// Requires: claude CLI (reviewer_alternate) + OpenAI (reviewer/converge).
 // Expected: ~10-20 min, a few dollars.
 func TestLive_Bot_ReviewPR(t *testing.T) {
 	if testing.Short() {
@@ -85,9 +85,9 @@ func Pick(items []string, idx int) string {
 	})
 
 	// Reliability invariants.
-	assertNodesFinished(t, res.events, "diff_precheck", "fan", "reviewer_claude", "reviewer_gpt", "emit")
-	assertSchemaValid(t, res.wf, res.events, "emit")
-	emit, ok := lastNodeOutput(res.events, "emit")
+	assertNodesFinished(t, res.events, "diff_precheck", "fan", "reviewer", "reviewer_alternate", "converge")
+	assertSchemaValid(t, res.wf, res.events, "converge")
+	emit, ok := lastNodeOutput(res.events, "converge")
 	if !ok {
 		t.Fatalf("emit produced no output")
 	}
@@ -103,7 +103,7 @@ func Pick(items []string, idx int) string {
 		kind:          "bot",
 		name:          "review-pr",
 		persona:       "Revi",
-		primaryFamily: "anthropic", // reviewer_claude + emit run on claude_code
+		primaryFamily: "anthropic", // reviewer_alternate runs on claude_code
 		task:          "Review a base..branch diff containing a planted unbounded-index bug; surface findings (read-only, board disabled).",
 		workProduct:   work,
 	})

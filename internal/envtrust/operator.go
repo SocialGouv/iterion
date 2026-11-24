@@ -60,6 +60,14 @@ var operatorInfraPrefixes = []string{
 	// intake): server-side bounds on what an inbound delivery may cost and
 	// how long it is kept — the operator's, never a bot's.
 	"ITERION_CONNECTOR_INTAKE_", "ITERION_CONNECTOR_PAIR_",
+	// The feed decoder's bounds (pkg/connector/exec/feed.go): how many items
+	// and how deep a vendor's answer may decode — an amplification guard a
+	// bot that lifted it would aim at the server's own memory.
+	"ITERION_CONNECTOR_FEED_",
+	// The pollers' cadence, floor and seen-set retention
+	// (pkg/connector/polling): how often iterion spends a tenant's
+	// connection against its vendor — the operator's call.
+	"ITERION_CONNECTOR_POLL_",
 	// Processes and fleet rather than runs: the runner, the board
 	// dispatcher and its MCP capabilities, the studio's alerts, the instance
 	// registry, lifecycle and logs.
@@ -163,6 +171,8 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_SECURITY_HEADERS":            true,
 	"ITERION_CANONICAL_REDIRECT":          true,
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK": true,
+	// The expected-birth comparison of run-addressed requests.
+	"ITERION_RUN_BIRTH_CHECK": true,
 	// Private-network reach (SSRF) and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE": true,
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,
@@ -276,9 +286,18 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_NODE_MAX_RETRIES":           true,
 	"ITERION_NODE_MAX_TRANSIENT_RETRIES": true,
 	"ITERION_OUTPUT_CORRECTION_BUDGET":   true,
+	// How many identical failures in a row decide that a tool node's command
+	// fails for good: at 0 the verdict is gone and every such failure is
+	// redelivered to the queue's bound, a sandbox each. The operator's
+	// bound, never a bot's.
+	"ITERION_NODE_MAX_IDENTICAL_FAILURES": true,
 	// The operator's strict output contract is process policy; a bot var
 	// cannot turn a rejection into an advisory warning.
-	"ITERION_STRICT_OUTPUT_VALIDATION":        true,
+	"ITERION_STRICT_OUTPUT_VALIDATION": true,
+	// Its twin on a tool body's output references: off, a node runs its
+	// command on a field the producer declared and did not supply. A bot
+	// var must not lift the refusal for the bot it would stop.
+	"ITERION_STRICT_OUTPUT_REFS":              true,
 	"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT": true,
 	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
 	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,
@@ -338,6 +357,8 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_PROJECTS_CONFIG":           true,
 	"ITERION_SCHEDULES_FILE":            true,
 	"ITERION_SCHEDULER_INTERVAL":        true,
+	"ITERION_CONNECTOR_WORKER_INTERVAL": true,
+	"ITERION_CONNECTOR_ICON_MAX_BYTES":  true,
 	"ITERION_SERVER_URL":                true,
 	"ITERION_NATIVE_INDEX_RESCAN":       true,
 	"ITERION_ORPHAN_RECONCILE_INTERVAL": true,

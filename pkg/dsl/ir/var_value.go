@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -128,21 +129,35 @@ func varExpander(vt VarType, lookup func(string) string, keepUnresolved bool) fu
 }
 
 func resolveVarText(v any, vt VarType, expand func(string) string) (any, error) {
+	return resolveVarTextWithCoercion(v, vt, expand, CoerceVarValue)
+}
+
+func resolveVarTextWithCoercion(v any, vt VarType, expand func(string) string, coerce func(any, VarType) (any, error)) (any, error) {
+	return resolveVarTextWithCoercionContext(context.Background(), v, vt, func(s string) (string, error) { return expand(s), nil }, coerce)
+}
+func resolveVarTextWithCoercionContext(ctx context.Context, v any, vt VarType, expand func(string) (string, error), coerce func(any, VarType) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s, isStr := v.(string)
 	if !isStr {
 		return v, nil
 	}
 	if vt == VarJSON {
-		out, err := CoerceVarValue(s, vt)
+		out, err := coerce(s, vt)
 		if err != nil {
 			return nil, err
 		}
-		if text, notJSON := out.(string); notJSON {
-			return expand(text), nil
+		if text, ok := out.(string); ok {
+			return expand(text)
 		}
-		return expandJSONLeaves(out, expand), nil
+		return expandJSONLeavesContext(ctx, out, expand)
 	}
-	return CoerceVarValue(expand(s), vt)
+	text, err := expand(s)
+	if err != nil {
+		return nil, err
+	}
+	return coerce(text, vt)
 }
 
 // expandJSONLeaves expands the env forms in every STRING LEAF of a decoded
@@ -153,21 +168,43 @@ func resolveVarText(v any, vt VarType, expand func(string) string) (any, error) 
 // type change this reading exists to remove. Object KEYS are names, not
 // values, and are left as the author wrote them.
 func expandJSONLeaves(v any, expand func(string) string) any {
+	out, _ := expandJSONLeavesContext(context.Background(), v, func(s string) (string, error) { return expand(s), nil })
+	return out
+}
+func expandJSONLeavesContext(ctx context.Context, v any, expand func(string) (string, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch x := v.(type) {
 	case string:
 		return expand(x)
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
-			out[i] = expandJSONLeaves(e, expand)
+			var err error
+			out[i], err = expandJSONLeavesContext(ctx, e, expand)
+			if err != nil {
+				return nil, err
+			}
 		}
-		return out
+		return out, nil
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
-			out[k] = expandJSONLeaves(e, expand)
+			a, err := expandJSONLeavesContext(ctx, e, expand)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = a
 		}
-		return out
+		return out, nil
 	}
-	return v
+	return v, nil
+}
+func varExpanderContext(ctx context.Context, vt VarType, lookup func(string) string, keep bool) func(string) (string, error) {
+	policy := expandPolicy{bracedOnly: vt == VarJSON, keepUnresolved: keep}
+	return func(s string) (string, error) {
+		out, _, err := expandWithDefaultContext(ctx, s, lookup, policy)
+		return out, err
+	}
 }

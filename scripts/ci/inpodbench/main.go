@@ -54,11 +54,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -115,10 +117,10 @@ const spinner = `let n=0; for(let i=0;i<6000000;i++){ n+=i%7 } n`
 const spinnerBudget = time.Minute
 
 // bombMemory is the package's own default, and it may not be shrunk to make
-// the leg cheaper: RLIMIT_DATA bounds the Go HEAP, and a bound below what the
-// child's own runtime needs makes it CRASH instead of being refused —
-// measured at 64 MiB, which produced `script_host_died` with a SIGSEGV where
-// the leg wanted `memory_exceeded`.
+// the leg cheaper: the leg proves the bound a deployment RUNS, which is the
+// default. (The bound is room above the child's own data segment, #3383; a
+// bomb at the 64 MiB floor dies with the runtime's "out of memory" too, but
+// that is not the number production runs.)
 //
 // So the leg adapts to the container instead of to the bound: three
 // concurrent bombs at this size need ~768 MiB, and under a tighter cgroup the
@@ -208,7 +210,27 @@ func main() {
 		"refuse to measure unless this process runs as this uid, has a seccomp filter loaded, "+
 			"holds no capability in its effective or bounding set, and has no_new_privs set "+
 			"(empty disables the check)")
+	// The supplementary groups a container runtime derives from the IMAGE are
+	// not something the chart decides, so a pod whose image ships them can
+	// only be measured if the operator names them. Empty keeps the strict
+	// answer: the group `-require-uid` names, and nothing else.
+	expectGroups := flag.String("expect-groups", "",
+		"comma-separated supplementary group ids this deployment really gives (the image's own "+
+			"groups included); observed and declared must match EXACTLY, in both directions. "+
+			"Empty means only the group -require-uid names")
 	flag.Parse()
+
+	var declaredGroups []int
+	if *expectGroups != "" {
+		for _, raw := range strings.Split(*expectGroups, ",") {
+			g, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || g < 0 {
+				fmt.Fprintf(os.Stderr, "inpodbench: -expect-groups %q: %q is not a group id\n", *expectGroups, raw)
+				os.Exit(exitUsage)
+			}
+			declaredGroups = append(declaredGroups, g)
+		}
+	}
 
 	// Strengthening the probe set broke the mutants twice: their profiles
 	// denied one syscall, then two, while the set grew to five, and each time
@@ -261,7 +283,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "inpodbench: -require-uid %q is not a uid\n", *requireUID)
 			os.Exit(exitUsage)
 		}
-		if err := requirePosture(int(wantUID)); err != nil {
+		if err := requirePosture(int(wantUID), declaredGroups); err != nil {
 			fmt.Printf("VERDICT: this process is not under the posture it was asked to measure: %v\n", err)
 			// Through verdict() like every other measuring exit. It is a no-op
 			// on this branch — reaching it means -require-uid was given, so
@@ -305,11 +327,19 @@ func main() {
 	case posture.Confinement.LandlockABI == 0:
 		// Reachable only with -allow-without-landlock: without it the child
 		// refuses and lands on exitPostureRefused above.
-		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem and " +
-			"unrestricted sockets. -allow-without-landlock accepted that; it is not a pass.")
+		fmt.Println("VERDICT: the child ran with NO Landlock domain — an unrestricted filesystem. " +
+			"-allow-without-landlock accepted that; it is not a pass.")
 		os.Exit(verdict(exitUnconfined))
 	case !posture.Confinement.AllThreads:
 		fmt.Println("VERDICT: the bounds covered ONE thread, not the process. That is not what codemode promises.")
+		os.Exit(verdict(exitLegFailed))
+	case !posture.Confinement.SocketsDenied:
+		// The IMAGE's child, not this bench's: leg 5 below proves the bench's
+		// own Confine, which is HEAD. A deployed binary that predates the
+		// socket wall reports false here, and a posture leg that let it pass
+		// would call a child with an open network confined.
+		fmt.Println("VERDICT: the image's child does not deny itself socket creation (sockets_denied=false): " +
+			"it predates the network wall, so a compromised child of this deployment reaches the network.")
 		os.Exit(verdict(exitLegFailed))
 	}
 
@@ -411,6 +441,7 @@ const (
 	escapeProbeEnv   = "INPODBENCH_ESCAPE_PROBE"
 	escapeFileEnv    = "INPODBENCH_ESCAPE_FILE"
 	escapeConnectEnv = "INPODBENCH_ESCAPE_CONNECT"
+	escapeUDPEnv     = "INPODBENCH_ESCAPE_UDP"
 	escapeExecEnv    = "INPODBENCH_ESCAPE_EXEC"
 )
 
@@ -468,8 +499,26 @@ type escapeReport struct {
 	Applied scripthost.Applied `json:"applied"`
 	Open    attempt            `json:"open"`
 	Connect attempt            `json:"connect"`
+	SendUDP attempt            `json:"send_udp"`
+	IOURing attempt            `json:"io_uring"`
 	Exec    attempt            `json:"exec"`
 	Fatal   string             `json:"fatal,omitempty"`
+}
+
+// refusedAfter is the weaker oracle for io_uring, and only for it: a runtime's
+// own seccomp profile may refuse io_uring_setup BEFORE the confinement (docker's
+// and containerd's defaults do, with EPERM), so the before/after pair cannot be
+// required. What is required is that the confined child cannot have it — by
+// the child's filter (EACCES) or by the runtime's (EPERM).
+func (a attempt) refusedAfter(what string) error {
+	switch {
+	case a.After == "":
+		return fmt.Errorf("%s SUCCEEDED inside the confinement", what)
+	case a.AfterErrno != int(syscall.EACCES) && a.AfterErrno != int(syscall.EPERM):
+		return fmt.Errorf("%s failed inside the confinement with errno %d (%s), not a permission "+
+			"refusal: something else stopped it, so this is not a witness", what, a.AfterErrno, a.After)
+	}
+	return nil
 }
 
 func aCompromisedChildCannotEscape(host scripthost.Host) error {
@@ -509,6 +558,14 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 		}
 	}()
 
+	// The UDP target: no Landlock right has ever covered UDP, so this is the
+	// attempt that tells the socket wall from the TCP one on every ABI.
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("%s: cannot listen for the UDP attempt: %w", name, err)
+	}
+	defer func() { _ = udp.Close() }()
+
 	// Something executable that exists in THIS image. A missing one would make
 	// the exec attempt fail on both sides and prove nothing, which heldBy
 	// refuses rather than passes.
@@ -529,6 +586,7 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 		escapeProbeEnv+"=1",
 		escapeFileEnv+"="+target,
 		escapeConnectEnv+"="+ln.Addr().String(),
+		escapeUDPEnv+"="+udp.LocalAddr().String(),
 		escapeExecEnv+"="+execTarget,
 	)
 	out, err := cmd.Output()
@@ -544,32 +602,34 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 			name, rep.Fatal)
 	}
 
-	fmt.Printf("LEG %-50s abi=%d all_threads=%t open=%s connect=%s exec=%s\n",
-		name, rep.Applied.LandlockABI, rep.Applied.AllThreads,
-		shortErrno(rep.Open), shortErrno(rep.Connect), shortErrno(rep.Exec))
+	fmt.Printf("LEG %-50s abi=%d all_threads=%t sockets_denied=%t open=%s connect=%s udp=%s io_uring=%s exec=%s\n",
+		name, rep.Applied.LandlockABI, rep.Applied.AllThreads, rep.Applied.SocketsDenied,
+		shortErrno(rep.Open), shortErrno(rep.Connect), shortErrno(rep.SendUDP), shortErrno(rep.IOURing),
+		shortErrno(rep.Exec))
 
+	// The network attempts are required on EVERY ABI. They used to be exempt
+	// below ABI 4, where Landlock has no TCP right — and on the production
+	// nodes (ABI 2) a compromised child's connect SUCCEEDED. The socket wall
+	// (scripthost's seccomp filter) does not depend on Landlock.
 	var problems []string
+	if !rep.Applied.SocketsDenied {
+		problems = append(problems, "the confinement reports no socket wall (sockets_denied=false)")
+	}
 	for _, c := range []struct {
 		what string
 		a    attempt
-		// netOnly: Landlock gained TCP rights at ABI 4. Below it the domain
-		// does not claim to refuse a connect, so requiring one would be
-		// asserting a guarantee the kernel never offered — and passing
-		// silently would be worse.
-		netOnly bool
 	}{
-		{"open", rep.Open, false},
-		{"exec", rep.Exec, false},
-		{"connect", rep.Connect, true},
+		{"open", rep.Open},
+		{"exec", rep.Exec},
+		{"connect", rep.Connect},
+		{"a UDP send", rep.SendUDP},
 	} {
-		if c.netOnly && rep.Applied.LandlockABI < 4 {
-			fmt.Printf("  NOTE %s: Landlock ABI %d has no TCP rights, so the connect attempt is NOT covered here\n",
-				name, rep.Applied.LandlockABI)
-			continue
-		}
 		if err := c.a.heldBy(c.what); err != nil {
 			problems = append(problems, err.Error())
 		}
+	}
+	if err := rep.IOURing.refusedAfter("io_uring_setup"); err != nil {
+		problems = append(problems, err.Error())
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%s: %s", name, strings.Join(problems, "; "))
@@ -583,6 +643,7 @@ func aCompromisedChildCannotEscape(host scripthost.Host) error {
 func beTheEscapeProbe() {
 	rep := escapeReport{}
 	target, addr, execTarget := os.Getenv(escapeFileEnv), os.Getenv(escapeConnectEnv), os.Getenv(escapeExecEnv)
+	udpAddr := os.Getenv(escapeUDPEnv)
 
 	tryOpen := func() error {
 		f, err := os.Open(target)
@@ -598,10 +659,31 @@ func beTheEscapeProbe() {
 		}
 		return err
 	}
+	trySendUDP := func() error {
+		c, err := net.Dial("udp", udpAddr)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = c.Close() }()
+		_, err = c.Write([]byte("escape"))
+		return err
+	}
+	// io_uring can create a socket without socket(2) (IORING_OP_SOCKET).
+	tryIOURing := func() error {
+		var params [120]byte // struct io_uring_params
+		fd, _, errno := syscall.Syscall(unix.SYS_IO_URING_SETUP, 1, uintptr(unsafe.Pointer(&params[0])), 0)
+		if errno != 0 {
+			return errno
+		}
+		_ = syscall.Close(int(fd))
+		return nil
+	}
 	tryExec := func() error { return exec.Command(execTarget, "-c", ":").Run() }
 
 	rep.Open.Before, rep.Open.BeforeErrno = describe(tryOpen())
 	rep.Connect.Before, rep.Connect.BeforeErrno = describe(tryConnect())
+	rep.SendUDP.Before, rep.SendUDP.BeforeErrno = describe(trySendUDP())
+	rep.IOURing.Before, rep.IOURing.BeforeErrno = describe(tryIOURing())
 	rep.Exec.Before, rep.Exec.BeforeErrno = describe(tryExec())
 
 	applied, err := scripthost.Confine(scripthost.Limits{
@@ -618,6 +700,8 @@ func beTheEscapeProbe() {
 
 	rep.Open.After, rep.Open.AfterErrno = describe(tryOpen())
 	rep.Connect.After, rep.Connect.AfterErrno = describe(tryConnect())
+	rep.SendUDP.After, rep.SendUDP.AfterErrno = describe(trySendUDP())
+	rep.IOURing.After, rep.IOURing.AfterErrno = describe(tryIOURing())
 	rep.Exec.After, rep.Exec.AfterErrno = describe(tryExec())
 	emit(rep)
 }
@@ -1083,7 +1167,73 @@ func readFile(path string) []byte {
 //
 // Seccomp: 2 is SECCOMP_MODE_FILTER. The twin reading is what makes it mean
 // something — an Unconfined container reports 0 — and both are measured.
-func requirePosture(wantUID int) error {
+// groupSet renders a supplementary-group set in a stable order, so a message
+// never depends on map iteration order (a flaky expectation is worse than a
+// missing one).
+func groupSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := strconv.Atoi(out[i])
+		b, _ := strconv.Atoi(out[j])
+		return a < b
+	})
+	return out
+}
+
+// checkGroups judges the `Groups:` field of /proc/self/status against the
+// posture asked for. It is a pure function of that field so both directions
+// have a witness that needs no process.
+//
+// With NOTHING declared, only a widening is refused: a group other than the
+// one the chart names (fsGroup = runAsUser). The ABSENCE of that group widens
+// nothing, and the first version of this check did not require it — docker's
+// `--user uid:gid` puts the gid there today (measured on 29.10: `Groups:
+// 1000`), but the docker arm must not start refusing its own posture on a
+// runtime that does not.
+//
+// With a set DECLARED, it is the deployment's real answer, named by the
+// operator for the case the chart does not decide: a container runtime adds
+// the IMAGE's supplementary groups (`devbox` is in `sudo` and `users` in the
+// runner image). Then the match is EXACT in both directions — a group beyond
+// the set is a widening nobody stated, and a declared group that is absent
+// means the declaration does not describe this pod.
+func checkGroups(groupsField string, wantUID int, declared []int) error {
+	want := map[string]bool{strconv.Itoa(wantUID): true}
+	if len(declared) > 0 {
+		want = map[string]bool{}
+		for _, g := range declared {
+			want[strconv.Itoa(g)] = true
+		}
+	}
+	observed := map[string]bool{}
+	for _, g := range strings.Fields(groupsField) {
+		observed[g] = true
+		if !want[g] {
+			return fmt.Errorf("supplementary group %s (Groups: %s), want only %v: the chart sets "+
+				"fsGroup to runAsUser and names no supplementalGroups, so a group beyond the "+
+				"declared set is a widening the deployment did not state",
+				g, groupsField, groupSet(want))
+		}
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+	// In SORTED order: ranging over the map named a random absent group when
+	// several were missing, and a message must not depend on map order.
+	for _, g := range groupSet(want) {
+		if !observed[g] {
+			return fmt.Errorf("declared supplementary group %s is ABSENT (Groups: %s, want %v): "+
+				"the declaration does not describe this pod, so the posture is not the one named",
+				g, groupsField, groupSet(want))
+		}
+	}
+	return nil
+}
+
+func requirePosture(wantUID int, declared []int) error {
 	// runAsNonRoot: true is the one field of the chart's pod securityContext
 	// that a plain container CAN honour, and it was the one this check did not
 	// require: `--uid 0` reported every leg held, indistinguishable from a
@@ -1139,12 +1289,9 @@ func requirePosture(wantUID int) error {
 	// out root-group and group-writable. The chart sets fsGroup to runAsUser
 	// (values.yaml:891), so any other group is a widening of the boundary the
 	// pod IS.
-	for _, g := range strings.Fields(field("Groups")) {
-		if g != strconv.Itoa(wantUID) {
-			return fmt.Errorf("supplementary group %s (Groups: %s), want only %d: the chart sets "+
-				"fsGroup to runAsUser and names no supplementalGroups",
-				g, field("Groups"), wantUID)
-		}
+	//
+	if err := checkGroups(field("Groups"), wantUID, declared); err != nil {
+		return err
 	}
 	if got := field("NoNewPrivs"); got != "1" {
 		return fmt.Errorf("NoNewPrivs %q, want \"1\": privilege escalation is not blocked", got)

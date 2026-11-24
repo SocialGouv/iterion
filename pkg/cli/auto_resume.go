@@ -197,8 +197,9 @@ func usageLimitDelay(err error, pol retrypolicy.Policy, now time.Time) time.Dura
 	return delay
 }
 
-// autoResumeLoop drives the bounded run-level auto-resume. It re-uses eng (so
-// launch overrides carry over) and returns the final engine error. A no-op
+// autoResumeLoop drives the bounded run-level auto-resume. It reuses eng so
+// launch overrides carry over; the engine consumes any explicit resume quota
+// patch at its first successful claim. It returns the final engine error. A no-op
 // (returns err unchanged) when disabled, when err is nil/paused/cancelled, or
 // when the failure is not auto-recoverable.
 func autoResumeLoop(
@@ -210,7 +211,7 @@ func autoResumeLoop(
 	err error,
 	logger *iterlog.Logger,
 ) error {
-	if cfg.MaxAttempts <= 0 || err == nil {
+	if cfg.MaxAttempts <= 0 || err == nil || store.IsValueFormatRefusal(err) {
 		return err
 	}
 	// A paused (human) or cancelled (user Ctrl-C) exit is never auto-resumed.
@@ -223,11 +224,15 @@ func autoResumeLoop(
 		// The store status is the authoritative discriminator: only a
 		// failed_resumable run carries a checkpoint to resume from. FailNode
 		// (→ failed), paused, cancelled and finished all fall out here.
-		r, loadErr := s.LoadRun(ctx, runID)
+		bound, r, loadErr := store.LoadRunWithValueFormat(ctx, s, runID)
 		if loadErr != nil {
+			if store.IsValueFormatRefusal(loadErr) {
+				return loadErr
+			}
 			logger.Warn("auto-resume: load run %s: %v — stopping", runID, loadErr)
 			return err
 		}
+		ctx = bound
 		if !r.Status.CanAutoResume() {
 			return err
 		}
@@ -288,7 +293,7 @@ func autoResumeLoop(
 		}
 		// A resume that pauses for human input or is cancelled must not be
 		// re-driven — hand it back to the reporter.
-		if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunCancelled) {
+		if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunCancelled) || store.IsValueFormatRefusal(err) {
 			return err
 		}
 	}

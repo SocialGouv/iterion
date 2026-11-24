@@ -34,7 +34,18 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	// with a non-request context, so without this gate the mongo tenant
 	// filter never runs and a cross-tenant run could be cancelled by id.
 	// (Also rejects a malformed id via the store's path-component check.)
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	// A request the gate admitted on its expected birth reads under that
+	// origin: this load is the pre-check of the ID-keyed cancel signal, and
+	// the inactive branch's flip is bound to the admitted run.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -46,7 +57,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: cancel run %q via HTTP from %s", id, s.clientIP(r))
 	}
-	if err := s.runs.Cancel(id); err != nil {
+	if err := s.cancelAdmitted(ctx, a); err != nil {
 		// If the run is not currently active in this process, the
 		// operator's "cancel" intent depends on the persisted status:
 		//   - dispatcher-spawned + running: the runview Manager only
@@ -66,20 +77,31 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 				s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
 				return
 			}
-			r2, loadErr := s.runs.LoadRunCtx(r.Context(), id)
+			r2, loadErr := s.runs.LoadRunCtx(ctx, id)
 			if loadErr != nil {
+				if s.writeActionFailure(w, r, a, loadErr) {
+					return
+				}
 				s.httpErrorFor(w, r, http.StatusNotFound, "run not active and not on disk: %v", loadErr)
 				return
 			}
-			if cancelled, cancelErr := s.runs.CancelInactiveCtx(r.Context(), id); cancelErr == nil && cancelled {
+			if cancelled, cancelErr := s.runs.CancelInactiveCtx(ctx, id); cancelErr == nil && cancelled {
 				w.WriteHeader(http.StatusAccepted)
 				s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: string(store.RunStatusCancelled)})
 				return
 			} else if cancelErr != nil {
+				// A flip refused because the admitted run is gone is a loss,
+				// never the 202 of a run left as it was.
+				if s.writeActionFailure(w, r, a, cancelErr) {
+					return
+				}
 				s.logger.Warn("server: cancel inactive run %s: %v", id, cancelErr)
 			}
 			w.WriteHeader(http.StatusAccepted)
 			s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: string(r2.Status)})
+			return
+		}
+		if s.writeActionFailure(w, r, a, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "cancel: %v", err)
@@ -87,6 +109,20 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
+}
+
+// cancelAdmitted signals the cancel of the run a cancels. A checked cancel
+// hands its bound context, detached from the request (the flip is the
+// cancel's record and outlives the client), to the run service: in cloud
+// mode the publisher's load and status flip refuse a successor recreated
+// under the ID, and its NATS cancel follows only a flip that landed. An
+// unchecked one is Cancel, on context.Background, as every caller without an
+// expectation cancels.
+func (s *Server) cancelAdmitted(bound context.Context, a actionOrigin) error {
+	if !a.checked {
+		return s.runs.Cancel(a.runID)
+	}
+	return s.runs.CancelCtx(context.WithoutCancel(bound), a.runID)
 }
 
 // watchResponse is the body of the watch endpoints — the run's full
@@ -125,16 +161,24 @@ func (s *Server) mutateWatch(w http.ResponseWriter, r *http.Request, add bool) {
 	// Through the service, not the raw store: the wrapper emits the
 	// observational veille event the assistant dock renders its standby
 	// banner from.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
 	var (
 		watched []string
 		err     error
 	)
 	if add {
-		watched, err = s.runs.AddWatchedIssues(r.Context(), id, []string{issueID})
+		watched, err = s.runs.AddWatchedIssues(ctx, id, []string{issueID})
 	} else {
-		watched, err = s.runs.RemoveWatchedIssues(r.Context(), id, []string{issueID})
+		watched, err = s.runs.RemoveWatchedIssues(ctx, id, []string{issueID})
 	}
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "watch: %v", err)
 		return
 	}
@@ -167,7 +211,17 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Tenant scoping: confirm the caller can see this run before the
 	// pause mutation (see handleCancelRun for the cloud-mode rationale).
-	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+	// Under an admitted expectation this load is the bound pre-check of the
+	// ID-keyed pause signal.
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -175,6 +229,9 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("server: pause run %q via HTTP from %s", id, s.clientIP(r))
 	}
 	if err := s.runs.Pause(id); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		if errors.Is(err, runview.ErrRunNotActive) {
 			// 409 is the right code for "operator pause is meaningless
 			// right now" — either the run is terminal or it's running
@@ -232,15 +289,26 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: fork run %q at node %q from %s", id, req.NodeID, s.clientIP(r))
 	}
+	// Under an admitted expectation the fork verifies its source; the child
+	// it creates is another run, created unbound.
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	result, err := s.runs.Fork(r.Context(), runview.ForkSpec{
-		RunID:      id,
-		NodeID:     req.NodeID,
-		TurnIndex:  req.TurnIndex,
-		RewindCode: req.RewindCode,
-		ForkName:   req.ForkName,
-		NewInputs:  req.NewInputs,
+		RunID:              id,
+		NodeID:             req.NodeID,
+		TurnIndex:          req.TurnIndex,
+		RewindCode:         req.RewindCode,
+		ForkName:           req.ForkName,
+		NewInputs:          req.NewInputs,
+		SourceExpectOrigin: expect,
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		// A node with no turn checkpoint is a caller mistake, not a server
 		// fault: only agent/judge nodes that completed at least one LLM
 		// turn are forkable (tool/compute nodes never checkpoint turns).
@@ -328,8 +396,19 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Under an admitted expectation Rewind verifies the run it loads; this
+	// load stays unbound (it resolves the source), and a failure answers
+	// run_origin_lost only for a lost run (writeActionFailure).
+	a := s.admittedAction(r, id)
+	expect, ok := s.actionExpectation(w, r, a)
+	if !ok {
+		return
+	}
 	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
@@ -407,8 +486,12 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		RestoreScope:      restoreScope,
 		SourcePath:        sourcePath,
 		CurrentSourcePath: currentPath,
+		ExpectOrigin:      expect,
 	})
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, runview.ErrRewindNotRewindable), errors.Is(err, store.ErrRunConflict):
 			// 409: the run is running or terminal — a state conflict the
@@ -485,8 +568,16 @@ func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request) {
 	if len(req.Skills) > 0 {
 		qopts = append(qopts, runview.WithMessageSkills(req.Skills))
 	}
-	msg, err := s.runs.QueueMessage(r.Context(), id, req.Text, qopts...)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	msg, err := s.runs.QueueMessage(ctx, id, req.Text, qopts...)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "queue message: %v", err)
 		return
 	}
@@ -507,7 +598,15 @@ func (s *Server) handleCancelQueuedMessage(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or message id")
 		return
 	}
-	if err := s.runs.CancelQueuedMessage(r.Context(), id, msgID); err != nil {
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if err := s.runs.CancelQueuedMessage(ctx, id, msgID); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, store.ErrQueuedMessageNotFound):
 			s.httpErrorFor(w, r, http.StatusNotFound, "queued message not found")

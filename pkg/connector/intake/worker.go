@@ -35,10 +35,11 @@ type Matcher interface {
 // acknowledged. Repeating a call for the same key never produces a second
 // run (runview.LaunchSpec.SubmissionKey).
 //
-// Its error is read for three classes, by method so the launch path need not
+// Its error is read for four classes, by method so the launch path need not
 // import this package: SubmissionSpent() true — the key's run never left the
 // launch path, the pair moves to its next epoch; RefusalReason() — no retry
-// of this pair can succeed; schedgate.ErrMaintenanceHold — postponed,
+// of this pair can succeed; PostponeFor() true — a transient denial, the
+// pair waits the duration with its attempts whole; schedgate.ErrMaintenanceHold — postponed,
 // without spending an attempt. Anything else is a transient failure.
 type Submitter interface {
 	Submit(ctx context.Context, in Intake, p Pair) (runID string, err error)
@@ -72,6 +73,16 @@ func refusalReason(err error) (string, bool) {
 		return r.RefusalReason(), true
 	}
 	return "", false
+}
+
+// postponeFor reads a transient denial off err: how long the pair waits
+// before it is tried again, without spending an attempt (ADR-168 Q3).
+func postponeFor(err error) (time.Duration, bool) {
+	var p interface{ PostponeFor() (time.Duration, bool) }
+	if errors.As(err, &p) {
+		return p.PostponeFor()
+	}
+	return 0, false
 }
 
 // submissionSpent reads a spent submission off err.
@@ -211,25 +222,7 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 	// Each pair is keyed by (intake, subscription) and written once, so the
 	// record never depends on the order the matcher answered in.
 	now := w.now()
-	pairs := make([]Pair, 0, len(verdicts))
-	for _, v := range verdicts {
-		p := Pair{
-			TenantID: in.TenantID, IntakeID: in.ID, SubscriptionID: v.SubscriptionID,
-			ReceivedAt: in.ReceivedAt, ExpiresAt: in.ExpiresAt, CreatedAt: now,
-		}
-		switch {
-		case v.Refusal != "":
-			p.State, p.Reason = PairRefused, v.Refusal
-		case v.Matched:
-			p.State = PairPending
-		default:
-			p.State, p.Reason = PairNotMatched, v.Reason
-			if p.Reason == "" {
-				p.Reason = "the subscription's filters did not match"
-			}
-		}
-		pairs = append(pairs, p)
-	}
+	pairs := PairsOf(in, verdicts, now)
 	if err := w.Store.WritePairs(ctx, pairs); err != nil {
 		w.failIntake(ctx, in, fmt.Errorf("write pairs: %w", err))
 		return
@@ -239,6 +232,31 @@ func (w *Worker) matchOne(ctx context.Context, in Intake) {
 		// intake again writes nothing they do not already say.
 		w.warn("intake: intake %s matched, but the mark did not land: %v", in.ID, err)
 	}
+}
+
+// PairsOf is what an intake owes the candidates that judged it: a pending
+// pair where a subscription matched, a refused one where its verdict could
+// not be reached, a not_matched one otherwise. The matching worker writes
+// them, and so does a poller's backfill, which judges primed and earlier
+// intakes for one subscription.
+func PairsOf(in Intake, verdicts []Verdict, now time.Time) []Pair {
+	pairs := make([]Pair, 0, len(verdicts))
+	for _, v := range verdicts {
+		p := PairFor(in, v.SubscriptionID, now)
+		switch {
+		case v.Refusal != "":
+			p.State, p.Reason = PairRefused, v.Refusal
+		case v.Matched:
+			// PairFor's pending is the matched verdict.
+		default:
+			p.State, p.Reason = PairNotMatched, v.Reason
+			if p.Reason == "" {
+				p.Reason = "the subscription's filters did not match"
+			}
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs
 }
 
 // checkVerdicts refuses an answer no pair set can record.
@@ -315,17 +333,30 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 	// window is judged again before the launch, never handed a spent one.
 	rctx, rcancel := context.WithTimeout(ctx, deadline.Sub(w.now()))
 	in, err := w.Store.GetIntake(rctx, p.TenantID, p.IntakeID)
-	rcancel()
 	if errors.Is(err, ErrNotFound) {
+		rcancel()
 		w.refusePair(ctx, p, "its intake is gone (expired or removed)")
 		return
 	}
+	if err != nil {
+		err = fmt.Errorf("read intake %s: %w", p.IntakeID, err)
+	}
+	var delivered Pair
+	var already bool
+	if err == nil {
+		delivered, already, err = w.delivered(rctx, p)
+	}
+	rcancel()
 	if !w.now().Before(deadline) {
 		release()
 		return
 	}
 	if err != nil {
-		w.failPair(ctx, p, fmt.Errorf("read intake %s: %w", p.IntakeID, err))
+		w.failPair(ctx, p, err)
+		return
+	}
+	if already {
+		w.refusePair(ctx, p, fmt.Sprintf("already delivered to this subscription: pair %s launched run %s for the same item revision", delivered.ID, delivered.RunID))
 		return
 	}
 	// The remaining share of the window, as a duration: the worker's clock
@@ -344,12 +375,17 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 		}
 		return
 	}
+	delay, postponed := postponeFor(err)
 	switch reason, refused := refusalReason(err); {
 	case refused:
 		w.refusePair(ctx, p, reason)
 	case errors.Is(err, schedgate.ErrMaintenanceHold):
 		// Postponed, not attempted: the attempt budget stays whole.
 		w.retryPair(ctx, p, PairRetry{Attempts: p.Attempts, NotBefore: w.now().Add(w.Pairs.Backoff), LastError: err.Error(), Epoch: p.Epoch})
+	case postponed:
+		// A transient denial — the team's concurrency cap, its launch rate —
+		// is lifted by waiting, not by trying: the budget stays whole too.
+		w.retryPair(ctx, p, PairRetry{Attempts: p.Attempts, NotBefore: w.now().Add(delay), LastError: err.Error(), Epoch: p.Epoch})
 	case submissionSpent(err):
 		// The run of this epoch's key never left the launch path and stays
 		// as it is; the next attempt submits under the next key.
@@ -357,6 +393,23 @@ func (w *Worker) launchOne(ctx context.Context, p Pair) {
 	default:
 		w.failPair(ctx, p, err)
 	}
+}
+
+// delivered finds the launched pair that already delivered a polled pair's
+// item revision to its subscription, through this pair's poller or another
+// one of the connection (Store.LaunchedPair). It is read under the claim,
+// just before the submission: a pair the launch path refused, or one still
+// owed, delivered nothing, and this one launches. A webhook pair names no
+// item and is never judged so.
+func (w *Worker) delivered(ctx context.Context, p Pair) (Pair, bool, error) {
+	if p.ItemKey == "" {
+		return Pair{}, false, nil
+	}
+	prior, found, err := w.Store.LaunchedPair(ctx, p.TenantID, p.SubscriptionID, p.ItemKey)
+	if err != nil {
+		return Pair{}, false, fmt.Errorf("read the pair that may have delivered item %s to subscription %s: %w", p.ItemKey, p.SubscriptionID, err)
+	}
+	return prior, found, nil
 }
 
 func (w *Worker) failPair(ctx context.Context, p Pair, cause error) {

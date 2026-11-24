@@ -43,7 +43,7 @@ func TestReviConversePublishReplyEvaluationModeSendsNothing(t *testing.T) {
 				vars := publishVars(tc, f.srv.URL, pr)
 				vars["publish_mode"] = mode
 				script := renderReviConversePublish(t,
-					map[string]any{"answer": publishAnswer, "skipped_reason": ""},
+					map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""},
 					vars, publishRunURL, writeToken(t))
 				res, raw := runPublish(t, script, noProxyEnv())
 				hits := f.seen()
@@ -80,7 +80,7 @@ func TestReviConversePublishReplyEvaluationModeSendsNothing(t *testing.T) {
 // that went fine. None of them reaches the forge either.
 func TestReviConversePublishReplyEvaluationModeKeepsItsChecks(t *testing.T) {
 	requirePython(t)
-	answer := map[string]any{"answer": publishAnswer, "skipped_reason": ""}
+	answer := map[string]any{"answer": publishAnswer, "skipped_reason": "", "unchecked": ""}
 	for _, c := range []struct {
 		name           string
 		input          map[string]any
@@ -91,9 +91,9 @@ func TestReviConversePublishReplyEvaluationModeKeepsItsChecks(t *testing.T) {
 		wantPreview    string
 	}{
 		{name: "no token mounted", input: answer, prPath: "/o/r/pull/1", noToken: true, wantEvaluation: true, wantReason: evalWithheldReason, wantPreview: publishAnswer},
-		{name: "an empty draft", input: map[string]any{"answer": "", "skipped_reason": "no question in the note"}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
+		{name: "an empty draft", input: map[string]any{"answer": "", "skipped_reason": "no question in the note", "unchecked": ""}, prPath: "/o/r/pull/1", wantReason: "no question in the note"},
 		{name: "a pr_url this step cannot reply on", input: answer, prPath: "/o/r/issues/1", wantReason: "not a pull request URL"},
-		{name: "an answer carrying the forge token", input: map[string]any{"answer": "Re: op\n\nThe key is " + publishToken + " (app.go:3).", "skipped_reason": ""}, prPath: "/o/r/pull/1", wantReason: "the answer carries the forge token", wantPreview: "(withheld: the answer carried a credential)"},
+		{name: "an answer carrying the forge token", input: map[string]any{"answer": "Re: op\n\nThe key is " + publishToken + " (app.go:3).", "skipped_reason": "", "unchecked": ""}, prPath: "/o/r/pull/1", wantReason: "the answer carries the forge token", wantPreview: "(withheld: the answer carried a credential)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newConverseFakeForge(t)

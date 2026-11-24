@@ -335,7 +335,11 @@ type converseModel struct {
 
 // converseSeen is what claw sent the scripted model.
 type converseSeen struct {
-	offered      []string
+	offered []string
+	// defsJSON is the offered tools' FULL definitions (name, description,
+	// input schema) as the wire carried them, marshalled once — the
+	// byte-stability witnesses compare defs, not just names.
+	defsJSON     []byte
 	results      map[string]string
 	system, user string
 	schema       map[string]bool
@@ -403,6 +407,12 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 	for _, tl := range req.Tools {
 		names = append(names, tl.Name)
 	}
+	if m.seen.defsJSON == nil && len(req.Tools) > 0 {
+		// Marshalled once, on the first tooled request: encoding/json is
+		// field-order deterministic for one struct shape, so two runs
+		// marshal to identical bytes unless a def differs.
+		m.seen.defsJSON, _ = json.Marshal(req.Tools)
+	}
 	var evs []api.StreamEvent
 	switch {
 	case slices.Contains(names, "bash") && m.next < len(steps):
@@ -429,7 +439,7 @@ func (m *converseModel) StreamResponse(_ context.Context, req api.CreateMessageR
 // outputLocked is converse_output from what the reads returned: the draft
 // when the diff was read, an honest skipped_reason when no tool ever ran.
 func (m *converseModel) outputLocked() string {
-	out := map[string]any{"answer": "", "forge": m.forge, "skipped_reason": "", "summary": "Question: why does A return 2 now?"}
+	out := map[string]any{"answer": "", "forge": m.forge, "skipped_reason": "", "summary": "Question: why does A return 2 now?", "unchecked": ""}
 	if strings.Contains(m.seen.results["diff"], "return 2") {
 		out["answer"] = m.answer
 		out["summary"] = "Answered from the diff (app.go:3)."
@@ -468,6 +478,7 @@ func (m *converseModel) observed() converseSeen {
 	s := m.seen
 	s.offered = slices.Clone(m.seen.offered)
 	s.results = make(map[string]string, len(m.seen.results))
+	s.defsJSON = slices.Clone(m.seen.defsJSON)
 	for k, v := range m.seen.results {
 		s.results[k] = v
 	}
@@ -575,7 +586,7 @@ func TestReviConverseStepLimitedDraftIsStillPublished(t *testing.T) {
 			env[name] = val
 		}
 	}
-	pub, err := e.Execute(withCarriedEnv(ctx, env), publish, map[string]any{"answer": out["answer"], "skipped_reason": out["skipped_reason"]})
+	pub, err := e.Execute(withCarriedEnv(ctx, env), publish, map[string]any{"answer": out["answer"], "skipped_reason": out["skipped_reason"], "unchecked": out["unchecked"]})
 	if err != nil {
 		t.Fatalf("publish_reply: %v", err)
 	}
@@ -623,7 +634,7 @@ func (m *stepHungryModel) StreamResponse(_ context.Context, req api.CreateMessag
 	}
 	m.requests = append(m.requests, fmt.Sprintf("final=%v tools=%d msgs=%d", final, len(names), len(req.Messages)))
 	output := func() string {
-		b, _ := json.Marshal(map[string]any{"answer": m.answer, "forge": "gitlab", "skipped_reason": "N/A", "summary": "Stopped at the step limit."})
+		b, _ := json.Marshal(map[string]any{"answer": m.answer, "forge": "gitlab", "skipped_reason": "N/A", "summary": "Stopped at the step limit.", "unchecked": ""})
 		return string(b)
 	}
 	var evs []api.StreamEvent

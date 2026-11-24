@@ -312,8 +312,10 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 	ctx = auth.WithIdentity(ctx, auth.Identity{UserID: actor, TeamID: cfg.TenantID, Role: identity.RoleMember, Kind: auth.KindWebhook})
 	ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
 	t := d.RetryTarget
+	// DeliveryID rides along: the retry rewrites the row, and a trigger lane
+	// knows the event's later redeliveries by it (laneEvent.claimedBy).
 	meta := webhookEventMeta{Kind: d.EventKind, Action: d.EventAction, ProjectPath: d.ProjectPath,
-		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA}
+		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA, DeliveryID: d.ForgeDeliveryID}
 	out, launch := s.prepareWebhookTarget(ctx, syntheticRequestForBase(d.PublicBase), cfg, meta, forgeLaunchTarget{
 		durableRetry: true, retryAttempt: &d.Attempts, BotID: d.BotID, IdemKey: d.IdempotencyKey, Vars: cloneWebhookVars(t.Vars), RepoURL: t.RepoURL,
 		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA, ForkAuthor: t.ForkAuthor,

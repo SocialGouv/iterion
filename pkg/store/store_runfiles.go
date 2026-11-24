@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,27 +17,49 @@ import (
 // Run files (tool-produced artifact files surfaced via the studio)
 // ---------------------------------------------------------------------------
 
-// runFilesDir returns the per-run scratch directory where tool-produced
-// artifact files live. The path is bind-mounted into the sandbox at
-// ITERION_ARTIFACT_FILES_DIR so in-container tools can write files
-// without going through the worktree (and committing them into the
-// bench repo).
-func (s *FilesystemRunStore) runFilesDir(runID string) string {
-	return filepath.Join(s.runDir(runID), "artifact_files")
+// runFilesDirForFormat selects the retained incarnation's file namespace.
+// The historical format suffix remains unchanged for existing callers.
+func (s *FilesystemRunStore) runFilesDirForFormat(ctx context.Context, runID string, f ValueFormat) (string, error) {
+	return s.runPayloadPath(ctx, runID, runFilesNamespacePart(f))
+}
+func runFilesNamespacePart(f ValueFormat) string {
+	if f == ExactValueFormat {
+		return "artifact_files-v2"
+	}
+	return "artifact_files"
 }
 
 // EnsureRunFilesDir satisfies RunFilesStore. Idempotent.
-func (s *FilesystemRunStore) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
+func (s *FilesystemRunStore) EnsureRunFilesDir(ctx context.Context, runID string) (string, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return "", err
 	}
 	// Tombstone guard BEFORE the MkdirAll below: re-provisioning the
 	// scratch dir gets the typed refusal instead of rebuilding a deleted
 	// run's tree.
-	if err := s.guardNotDeleted(runID); err != nil {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
 		return "", err
 	}
-	runDir := s.runDir(runID)
+	defer unlock()
+	format, _, err := s.valueRecordFormatLocked(ctx, runID, false)
+	if err != nil {
+		return "", err
+	}
+	if binding, ok := RunDataBindingFrom(ctx); ok && binding.Header().Protocol == IncarnationRunData {
+		grant, err := s.openBoundRunFilesGrantLocked(ctx, runID, format)
+		if err != nil {
+			return "", err
+		}
+		defer grant.Close()
+		return grant.HostPath(), nil
+	}
+
+	dir, err := s.runFilesDirForFormat(ctx, runID, format)
+	if err != nil {
+		return "", err
+	}
+	runDir := filepath.Dir(dir)
 	if err := os.MkdirAll(runDir, dirPerm); err != nil {
 		return "", fmt.Errorf("store: mkdir run dir: %w", err)
 	}
@@ -44,7 +67,6 @@ func (s *FilesystemRunStore) EnsureRunFilesDir(_ context.Context, runID string) 
 		return "", fmt.Errorf("store: chmod run dir: %w", err)
 	}
 
-	dir := s.runFilesDir(runID)
 	if err := ensurePlainDirNoSymlink(dir, dirPerm); err != nil {
 		return "", fmt.Errorf("store: mkdir run files dir: %w", err)
 	}
@@ -125,13 +147,38 @@ func cleanRunFilePath(relPath string) ([]string, string, error) {
 
 // ListRunFiles satisfies RunFilesStore. Returns a sorted slice (by path)
 // for stable output; empty (no error) when no files exist.
-func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]RunFileInfo, error) {
+func (s *FilesystemRunStore) ListRunFiles(ctx context.Context, runID string) ([]RunFileInfo, error) {
+	// Historical filesystem tombstones have no format header. The run ID
+	// and context remain checkable before deleted-run compatibility applies.
+	if _, err := ValueFormatForWrite(ctx, runID); err != nil {
+		return nil, err
+	}
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if errors.Is(err, ErrRunDeleted) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	format, _, err := s.valueRecordFormatLocked(ctx, runID, false)
+	if err != nil {
+		return nil, err
+	}
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
-	root := s.runFilesDir(runID)
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, runFilesNamespacePart(format))
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	if dir.parent.strict {
+		return listRetainedRunFiles(ctx, dir)
+	}
+	root := dir.parent.key
 	var out []RunFileInfo
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if os.IsNotExist(walkErr) {
 				return filepath.SkipAll
@@ -174,7 +221,16 @@ func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]Ru
 // avoids the EvalSymlinks-then-open TOCTOU gap where a sandbox-controlled
 // artifact_files tree could swap an intermediate directory for a symlink
 // after validation and trick the server into streaming an arbitrary host file.
-func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
+func (s *FilesystemRunStore) OpenRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return nil, RunFileInfo{}, err
+	}
+	defer unlock()
+	format, _, err := s.valueRecordFormatLocked(ctx, runID, false)
+	if err != nil {
+		return nil, RunFileInfo{}, err
+	}
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, RunFileInfo{}, err
 	}
@@ -182,10 +238,28 @@ func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath strin
 	if err != nil {
 		return nil, RunFileInfo{}, err
 	}
-	root := s.runFilesDir(runID)
-	f, info, err := openRunFileAt(root, components)
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, runFilesNamespacePart(format))
+	if err != nil {
+		return nil, RunFileInfo{}, err
+	}
+	defer dir.Close()
+	var f *os.File
+	var info fs.FileInfo
+	if dir.parent.strict {
+		if dir.parent.root == nil {
+			err = os.ErrNotExist
+		} else {
+			f, info, err = openRunFileRetained(dir.parent.root, components)
+		}
+	} else {
+		f, info, err = openRunFileAt(dir.parent.key, components)
+	}
 	if err != nil {
 		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	if err := ctx.Err(); err != nil {
+		_ = f.Close()
+		return nil, RunFileInfo{}, err
 	}
 	return f, RunFileInfo{
 		Path:       filepath.ToSlash(cleaned),

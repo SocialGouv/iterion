@@ -245,6 +245,29 @@ func NewPolicyFromConfig(cfg PolicyConfig) (*Policy, error) {
 	return p, nil
 }
 
+// CanAskAbout reports whether this policy could ever produce an Ask
+// verdict for a call to tool, whatever its arguments: the mode default,
+// an exemption check, or any ask rule naming the tool — argument scopes
+// included, which an Evaluate on unknown arguments cannot judge.
+func (p *Policy) CanAskAbout(tool string) bool {
+	if p == nil || !p.Enabled() {
+		return false
+	}
+	if p.isExempt(tool) {
+		return false
+	}
+	if p.Mode == ModeAsk {
+		return true
+	}
+	canon, _, _ := p.candidateSets(tool, map[string]any{})
+	for i := range p.ask {
+		if p.ask[i].matchesTool(tool, canon) {
+			return true
+		}
+	}
+	return false
+}
+
 // CanAsk reports whether evaluating this policy can produce an Ask decision.
 // ModeDeny is not sufficient by itself: an explicit ask rule has precedence
 // over the mode default.

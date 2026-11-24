@@ -30,7 +30,9 @@ type Tab = "forges" | "connectors" | "webhooks" | "secrets" | "bindings" | "prov
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "forges", label: FORGES_LABEL },
-  { id: "connectors", label: "Connectors" },
+  // The connectors tab is worded in French, as the source catalogue and the
+  // plug wizard that send the operator to it are.
+  { id: "connectors", label: "Connecteurs" },
   { id: "webhooks", label: "Webhooks" },
   { id: "secrets", label: "Secrets" },
   { id: "bindings", label: "Bot bindings" },

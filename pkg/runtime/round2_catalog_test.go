@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +37,19 @@ func r2repo(t *testing.T) string {
 // One real catalog tool node, verbatim (same IR node, same schemas), as the
 // entry of a one-node workflow, executed by the production ClawExecutor.
 func r2RunCatalogNode(t *testing.T, botPath, nodeID string, vars map[string]any, inputs map[string]any, strict bool) (*store.Run, error) {
+	t.Helper()
+	r, _, warnings, err := r2RunCatalogNodeWarnings(t, botPath, nodeID, vars, inputs, strict)
+	if !strict && warnings != 1 {
+		t.Errorf("warning count=%d want 1", warnings)
+	}
+	return r, err
+}
+
+// r2RunCatalogNodeWarnings is r2RunCatalogNode with the count of schema
+// warnings the run raised handed back instead of judged — a node that violates
+// its schema raises one in the default mode, a node that conforms raises none
+// — beside the output the node published (nil when it did not finish).
+func r2RunCatalogNodeWarnings(t *testing.T, botPath, nodeID string, vars map[string]any, inputs map[string]any, strict bool) (*store.Run, map[string]any, int, error) {
 	t.Helper()
 	u, err := unit.LoadDir(botPath)
 	if err != nil {
@@ -75,7 +90,11 @@ func r2RunCatalogNode(t *testing.T, botPath, nodeID string, vars map[string]any,
 		t.Fatal(loadErr)
 	}
 	warnings := 0
+	var published map[string]any
 	for _, ev := range events {
+		if ev.Type == store.EventNodeFinished && ev.NodeID == nodeID {
+			published, _ = ev.Data["output"].(map[string]any)
+		}
 		if ev.Type == "node_output_schema_mismatch" {
 			warnings++
 			if ev.Data["schema"] != tn.OutputSchema || ev.Data["fields"] == nil {
@@ -83,11 +102,8 @@ func r2RunCatalogNode(t *testing.T, botPath, nodeID string, vars map[string]any,
 			}
 		}
 	}
-	if !strict && warnings != 1 {
-		t.Errorf("warning count=%d want 1", warnings)
-	}
 	r, _ := st.LoadRun(context.Background(), "r2-"+nodeID)
-	return r, runErr
+	return r, published, warnings, runErr
 }
 
 func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
@@ -113,20 +129,6 @@ func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 		inputs          func(t *testing.T) map[string]any
 	}
 	cases := []tc{
-		{"adr-cartograph/mark_issue_for_review (manual run, no issue_id)", "bots/adr-cartograph/main.bot", "mark_issue_for_review",
-			func(*testing.T) map[string]any { return map[string]any{"issue_id": ""} }, func(*testing.T) map[string]any { return nil }},
-		{"adr-rechallenge/commit_changes (a real change committed)", "bots/adr-rechallenge/main.bot", "commit_changes", nil,
-			func(t *testing.T) map[string]any {
-				repo := r2repo(t)
-				_ = os.WriteFile(filepath.Join(repo, "a.txt"), []byte("two\n"), 0o644)
-				return map[string]any{"workspace_dir": repo, "files": "a.txt", "full_message": "docs(adr): rechallenge"}
-			}},
-		{"bmady/commit_changes (a real change committed)", "bots/bmady/main.bot", "commit_changes", nil,
-			func(t *testing.T) map[string]any {
-				repo := r2repo(t)
-				_ = os.WriteFile(filepath.Join(repo, "a.txt"), []byte("two\n"), 0o644)
-				return map[string]any{"workspace_dir": repo, "message": "feat: story"}
-			}},
 		{"test-coverage/verify_run (NET DIRTY refusal loop-back)", "bots/test-coverage/main.bot", "verify_run",
 			func(t *testing.T) map[string]any {
 				repo := r2repo(t)
@@ -177,6 +179,167 @@ func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 				t.Errorf("strict accepted catalog output: %s: %v", c.name, err)
 			}
 			t.Logf("%s | %s: code=%s status=%s storedFailureCode=%s err=%.240v", c.name, mode, code, status, fcode, err)
+		}
+	}
+}
+
+// The catalog nodes whose stdout was not the JSON object their `output:`
+// declares, each on the paths that print: a `git commit` summary where the
+// answer belongs (adr-rechallenge, bmady), the dispatcher's own response or a
+// `{"skipped": …}` under a schema that declares `text` (adr-cartograph). The
+// engine fails such a node where it stands (#3421), so each now prints its
+// declared fields and nothing else — proven here by running the real node
+// under the production executor in both modes: finished, and not one schema
+// warning, which is what conforming means.
+func TestR2CatalogNodesThatPrintedBesideTheirAnswerNowConform(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(EnvOutputValidation, "")
+	dirty := func(t *testing.T) string {
+		repo := r2repo(t)
+		if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("two\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+	head := func(t *testing.T, repo string) string {
+		return strings.TrimSpace(gittest.Run(t, repo, "rev-parse", "HEAD"))
+	}
+	cases := []struct {
+		name, bot, node string
+		vars            map[string]any
+		// dispatcher is the HTTP status a stub dispatcher answers the
+		// node's request with; 0 points the node at a port nothing
+		// listens on.
+		dispatcher int
+		inputs     func(t *testing.T) (in map[string]any, repo string)
+		// want reads the published output against the repository the node
+		// acted on: the commit it says it made is the one that is there.
+		want func(t *testing.T, out map[string]any, repo, before string)
+	}{
+		{"adr-rechallenge/commit_changes commits a real change", "bots/adr-rechallenge/main.bot", "commit_changes", nil, 0,
+			func(t *testing.T) (map[string]any, string) {
+				repo := dirty(t)
+				return map[string]any{"workspace_dir": repo, "files": "a.txt", "full_message": "docs(adr): rechallenge"}, repo
+			},
+			func(t *testing.T, out map[string]any, repo, before string) {
+				if now := head(t, repo); now == before || out["success"] != true || out["output"] != "committed "+now {
+					t.Errorf("output = %v, HEAD %s -> %s", out, before, now)
+				}
+			}},
+		{"adr-rechallenge/commit_changes has nothing to commit", "bots/adr-rechallenge/main.bot", "commit_changes", nil, 0,
+			func(t *testing.T) (map[string]any, string) {
+				repo := r2repo(t)
+				return map[string]any{"workspace_dir": repo, "files": "a.txt", "full_message": "docs(adr): rechallenge"}, repo
+			},
+			func(t *testing.T, out map[string]any, repo, before string) {
+				if now := head(t, repo); now != before || out["success"] != true || out["output"] != "nothing to commit" {
+					t.Errorf("output = %v, HEAD %s -> %s", out, before, now)
+				}
+			}},
+		{"bmady/commit_changes commits a real change", "bots/bmady/main.bot", "commit_changes", nil, 0,
+			func(t *testing.T) (map[string]any, string) {
+				repo := dirty(t)
+				return map[string]any{"workspace_dir": repo, "message": "feat: story"}, repo
+			},
+			func(t *testing.T, out map[string]any, repo, before string) {
+				if now := head(t, repo); now == before || out["success"] != true || out["output"] != "committed "+now {
+					t.Errorf("output = %v, HEAD %s -> %s", out, before, now)
+				}
+			}},
+		{"bmady/commit_changes has nothing to commit", "bots/bmady/main.bot", "commit_changes", nil, 0,
+			func(t *testing.T) (map[string]any, string) {
+				repo := r2repo(t)
+				return map[string]any{"workspace_dir": repo, "message": "feat: story"}, repo
+			},
+			func(t *testing.T, out map[string]any, repo, before string) {
+				if now := head(t, repo); now != before || out["success"] != true || out["output"] != "nothing to commit" {
+					t.Errorf("output = %v, HEAD %s -> %s", out, before, now)
+				}
+			}},
+		{"adr-cartograph/mark_issue_for_review on a manual run", "bots/adr-cartograph/main.bot", "mark_issue_for_review",
+			map[string]any{"issue_id": ""}, 0,
+			func(*testing.T) (map[string]any, string) { return nil, "" },
+			func(t *testing.T, out map[string]any, _, _ string) {
+				if out["text"] != "skipped: no issue_id" {
+					t.Errorf("output = %v", out)
+				}
+			}},
+		// No dispatcher listens on the port: curl fails, which is the path
+		// that used to print curl's own error where the answer belongs.
+		{"adr-cartograph/mark_issue_for_review with the dispatcher down", "bots/adr-cartograph/main.bot", "mark_issue_for_review",
+			map[string]any{"issue_id": "native:42"}, 0,
+			func(*testing.T) (map[string]any, string) { return nil, "" },
+			func(t *testing.T, out map[string]any, _, _ string) {
+				if out["text"] != "skipped: the transition request failed or the dispatcher is down" {
+					t.Errorf("output = %v", out)
+				}
+			}},
+		{"adr-cartograph/mark_issue_for_review accepted by the dispatcher", "bots/adr-cartograph/main.bot", "mark_issue_for_review",
+			map[string]any{"issue_id": "native:42"}, http.StatusOK,
+			func(*testing.T) (map[string]any, string) { return nil, "" },
+			func(t *testing.T, out map[string]any, _, _ string) {
+				if out["text"] != "transition to review requested" {
+					t.Errorf("output = %v", out)
+				}
+			}},
+		// A refusal is an HTTP status, which curl reports as a failed
+		// request only when asked to (`-f`): without it this path read
+		// "transition requested" on a transition the dispatcher refused.
+		{"adr-cartograph/mark_issue_for_review refused by the dispatcher", "bots/adr-cartograph/main.bot", "mark_issue_for_review",
+			map[string]any{"issue_id": "native:42"}, http.StatusConflict,
+			func(*testing.T) (map[string]any, string) { return nil, "" },
+			func(t *testing.T, out map[string]any, _, _ string) {
+				if out["text"] != "skipped: the transition request failed or the dispatcher is down" {
+					t.Errorf("output = %v", out)
+				}
+			}},
+	}
+	for _, c := range cases {
+		for _, strict := range []bool{false, true} {
+			mode := "default"
+			if strict {
+				mode = "strict"
+			}
+			t.Run(c.name+"/"+mode, func(t *testing.T) {
+				if c.node == "mark_issue_for_review" && c.vars["issue_id"] != "" {
+					if _, err := exec.LookPath("curl"); err != nil {
+						t.Skipf("curl not on PATH: %v", err)
+					}
+				}
+				// The dispatcher the node asks: a stub answering with the
+				// case's status and recording the request, or a port
+				// nothing listens on.
+				port, asked := "9", ""
+				if c.dispatcher != 0 {
+					stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						asked = r.Method + " " + r.URL.Path
+						w.WriteHeader(c.dispatcher)
+						_, _ = w.Write([]byte(`{"state": "CANARY-dispatcher-answer"}`))
+					}))
+					defer stub.Close()
+					port = stub.URL[strings.LastIndexByte(stub.URL, ':')+1:]
+				}
+				t.Setenv("ITERION_DISPATCHER_PORT", port)
+				defer func() {
+					if c.dispatcher != 0 && asked != "POST /api/v1/native/issues/42/transition" {
+						t.Errorf("the dispatcher was asked %q", asked)
+					}
+				}()
+				inputs, repo := c.inputs(t)
+				before := ""
+				if repo != "" {
+					before = head(t, repo)
+				}
+				r, out, warnings, err := r2RunCatalogNodeWarnings(t, filepath.Join("../..", c.bot), c.node, c.vars, inputs, strict)
+				if err != nil || r == nil || r.Status != "finished" {
+					t.Fatalf("the node did not finish: %v (%+v)", err, r)
+				}
+				if warnings != 0 {
+					t.Errorf("%d schema warning(s): the output still misses its schema", warnings)
+				}
+				c.want(t, out, repo, before)
+			})
 		}
 	}
 }

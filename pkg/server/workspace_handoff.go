@@ -173,6 +173,9 @@ func (h *WorkspaceHost) createHandoff(w http.ResponseWriter, r *http.Request, so
 		Destination string `json:"destination_project"`
 		Summary     string `json:"summary"`
 		SourceRunID string `json:"source_run_id,omitempty"`
+		// SourceRunBirth is the birth the caller expects of SourceRunID
+		// (checkCarriedBirth), compared right after its load.
+		SourceRunBirth string `json:"source_run_birth,omitempty"`
 	}
 	if err := decodeWorkspaceHandoffJSON(w, r, 64<<10, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
@@ -227,6 +230,10 @@ func (h *WorkspaceHost) createHandoff(w http.ResponseWriter, r *http.Request, so
 		run, err := source.server.runs.LoadRunCtx(r.Context(), req.SourceRunID)
 		if err != nil {
 			h.writeError(w, http.StatusNotFound, "source assistant run not found")
+			return
+		}
+		if err := checkCarriedBirth("source_run_birth", req.SourceRunBirth, run); err != nil {
+			writeCarriedBirthFailureJSON(w, err)
 			return
 		}
 		if run.Source == nil || run.Source.Kind != store.RunSourceKindStudioChat ||
@@ -352,12 +359,19 @@ func (h *WorkspaceHost) bindHandoff(w http.ResponseWriter, r *http.Request, dest
 	var req struct {
 		HandoffID        string `json:"handoff_id"`
 		DestinationRunID string `json:"destination_run_id"`
+		// DestinationRunBirth is the birth the caller expects of
+		// DestinationRunID (checkCarriedBirth), compared right after its load.
+		DestinationRunBirth string `json:"destination_run_birth,omitempty"`
 	}
 	if err := decodeWorkspaceHandoffJSON(w, r, 16<<10, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	record, run, status, message := h.validatedDestinationRun(r.Context(), destinationID, req.HandoffID, req.DestinationRunID)
+	record, run, status, message, birthErr := h.validatedDestinationRun(r.Context(), destinationID, req.HandoffID, req.DestinationRunID, req.DestinationRunBirth)
+	if birthErr != nil {
+		writeCarriedBirthFailureJSON(w, birthErr)
+		return
+	}
 	if status != 0 {
 		h.writeError(w, status, message)
 		return
@@ -381,31 +395,37 @@ func (h *WorkspaceHost) bindHandoff(w http.ResponseWriter, r *http.Request, dest
 	h.writeJSON(w, map[string]any{"handoff_id": current.ID, "bound": true})
 }
 
-func (h *WorkspaceHost) validatedDestinationRun(ctx context.Context, destinationID, handoffID, runID string) (*workspaceHandoff, *store.Run, int, string) {
+// validatedDestinationRun loads the handoff's destination run and checks it
+// owns the handoff. birthErr is a checkCarriedBirth refusal of runBirth, the
+// birth the caller expects of runID; status/message is any other refusal.
+func (h *WorkspaceHost) validatedDestinationRun(ctx context.Context, destinationID, handoffID, runID, runBirth string) (record *workspaceHandoff, run *store.Run, status int, message string, birthErr error) {
 	h.mu.RLock()
-	record := h.handoffs[strings.TrimSpace(handoffID)]
+	current := h.handoffs[strings.TrimSpace(handoffID)]
 	runtime := h.runtimes[destinationID]
 	var snapshot workspaceHandoff
-	if record != nil {
-		snapshot = *record
+	if current != nil {
+		snapshot = *current
 	}
 	h.mu.RUnlock()
-	if record == nil || snapshot.SourceRunID == "" || snapshot.DestinationID != destinationID || !snapshot.TicketConsumed {
-		return nil, nil, http.StatusNotFound, "workspace handoff not found"
+	if current == nil || snapshot.SourceRunID == "" || snapshot.DestinationID != destinationID || !snapshot.TicketConsumed {
+		return nil, nil, http.StatusNotFound, "workspace handoff not found", nil
 	}
 	if runtime == nil || runtime.state != "ready" || runtime.server == nil || runtime.server.runs == nil {
-		return nil, nil, http.StatusServiceUnavailable, "destination project runtime is unavailable"
+		return nil, nil, http.StatusServiceUnavailable, "destination project runtime is unavailable", nil
 	}
 	run, err := runtime.server.runs.LoadRunCtx(ctx, strings.TrimSpace(runID))
 	if err != nil {
-		return nil, nil, http.StatusNotFound, "destination assistant run not found"
+		return nil, nil, http.StatusNotFound, "destination assistant run not found", nil
+	}
+	if err := checkCarriedBirth("destination_run_birth", runBirth, run); err != nil {
+		return nil, nil, 0, "", err
 	}
 	if run.Source == nil || run.Source.Kind != store.RunSourceKindStudioChat ||
 		run.Source.ClientID != snapshot.DestinationClientID ||
 		run.Source.ConversationID != snapshot.DestinationConversationID {
-		return nil, nil, http.StatusConflict, "destination run does not own this workspace handoff"
+		return nil, nil, http.StatusConflict, "destination run does not own this workspace handoff", nil
 	}
-	return &snapshot, run, 0, ""
+	return &snapshot, run, 0, "", nil
 }
 
 func (h *WorkspaceHost) completeHandoff(w http.ResponseWriter, r *http.Request, destinationID string) {
@@ -414,21 +434,27 @@ func (h *WorkspaceHost) completeHandoff(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	var req struct {
-		HandoffID        string   `json:"handoff_id"`
-		DestinationRunID string   `json:"destination_run_id"`
-		Status           string   `json:"status"`
-		Summary          string   `json:"summary"`
-		ChangedFiles     []string `json:"changed_files,omitempty"`
-		CommitSHA        string   `json:"commit_sha,omitempty"`
-		Branch           string   `json:"branch,omitempty"`
-		PRURL            string   `json:"pr_url,omitempty"`
-		NextStep         string   `json:"next_step,omitempty"`
+		HandoffID        string `json:"handoff_id"`
+		DestinationRunID string `json:"destination_run_id"`
+		// DestinationRunBirth: as on bind.
+		DestinationRunBirth string   `json:"destination_run_birth,omitempty"`
+		Status              string   `json:"status"`
+		Summary             string   `json:"summary"`
+		ChangedFiles        []string `json:"changed_files,omitempty"`
+		CommitSHA           string   `json:"commit_sha,omitempty"`
+		Branch              string   `json:"branch,omitempty"`
+		PRURL               string   `json:"pr_url,omitempty"`
+		NextStep            string   `json:"next_step,omitempty"`
 	}
 	if err := decodeWorkspaceHandoffJSON(w, r, 32<<10, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	record, run, status, message := h.validatedDestinationRun(r.Context(), destinationID, req.HandoffID, req.DestinationRunID)
+	record, run, status, message, birthErr := h.validatedDestinationRun(r.Context(), destinationID, req.HandoffID, req.DestinationRunID, req.DestinationRunBirth)
+	if birthErr != nil {
+		writeCarriedBirthFailureJSON(w, birthErr)
+		return
+	}
 	if status != 0 {
 		h.writeError(w, status, message)
 		return

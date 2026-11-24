@@ -20,6 +20,9 @@ export interface SeedState {
   /** Native kanban card seeded in the `inbox` state. */
   issueId: string;
   maxConcurrentPipelines: number;
+  /** The binary under test and the isolation environment its CLI runs
+   *  under (throwaway HOME, pinned sealer, offline backends). */
+  cli: { bin: string; env: Record<string, string> };
 }
 
 let cached: SeedState | null = null;

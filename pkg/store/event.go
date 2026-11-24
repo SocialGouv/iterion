@@ -669,7 +669,8 @@ const (
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:
 	//   - reason: short summary
-	//   - limitations_v1: known V1 caveats
+	//   - limitations_v1: the caveats of this path (launcher-side MCP and
+	//     ask_user tools, docs/sandbox.md "Claw backend in sandbox")
 	EventSandboxClawRoutedViaRunner EventType = "sandbox_claw_routed_via_runner"
 	// EventSandboxHostStateMounted fires when the runtime auto-binds
 	// the host's persistent state directories (`~/.iterion` run store
@@ -1111,6 +1112,8 @@ const (
 // time field) + run_id partition key. The Mongo backend assigns _id
 // itself (ObjectId), so we don't expose one here.
 type Event struct {
+	observation RunObservation
+
 	Seq       int64          `json:"seq" bson:"seq"`      // monotonic sequence within the run
 	Timestamp time.Time      `json:"timestamp" bson:"ts"` // wall-clock time
 	Type      EventType      `json:"type" bson:"type"`

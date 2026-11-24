@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,28 +81,26 @@ func AsPlanStore(s RunStore) PlanStore {
 	return capability[PlanStore](s)
 }
 
-// plansDir returns <root>/runs/<runID>/plans after validating runID.
-func (s *FilesystemRunStore) plansDir(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.root, "runs", runID, "plans"), nil
-}
-
 // AppendPlanSnapshot implements PlanStore over runs/<id>/plans/<NNNN>.json.
 // Holds s.mu across the read-max-seq + dedup-compare + write so parallel
 // branches firing TodoWrite concurrently can't collide on a sequence
 // number or race the dedup check.
-func (s *FilesystemRunStore) AppendPlanSnapshot(_ context.Context, runID string, snap PlanSnapshot) (PlanSnapshot, bool, error) {
-	dir, err := s.plansDir(runID)
+func (s *FilesystemRunStore) AppendPlanSnapshot(ctx context.Context, runID string, snap PlanSnapshot) (PlanSnapshot, bool, error) {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return PlanSnapshot{}, false, err
+	}
+	defer unlock()
+	_, validationErr := json.Marshal(snap)
+	// Invalid unused snapshot fields may still deduplicate. Read without
+	// creating a namespace; ordinary encoding below reports non-duplicates.
+	dir, err := s.openRunPayloadDirectory(ctx, runID, validationErr == nil, "plans")
 	if err != nil {
 		return PlanSnapshot{}, false, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	seqs, err := planSeqs(dir)
+	defer dir.Close()
+	seqs, err := planSeqsDirectory(dir)
 	if err != nil {
 		return PlanSnapshot{}, false, err
 	}
@@ -116,7 +113,7 @@ func (s *FilesystemRunStore) AppendPlanSnapshot(_ context.Context, runID string,
 	nextSeq := 0
 	if len(seqs) > 0 {
 		last := seqs[len(seqs)-1]
-		prev, perr := readPlanFile(dir, last)
+		prev, perr := readPlanFileDirectory(dir, last)
 		if perr == nil {
 			if prevTodos, merr := json.Marshal(prev.Todos); merr == nil && bytes.Equal(prevTodos, newTodos) {
 				return prev, false, nil
@@ -133,11 +130,7 @@ func (s *FilesystemRunStore) AppendPlanSnapshot(_ context.Context, runID string,
 	if err != nil {
 		return PlanSnapshot{}, false, fmt.Errorf("store: marshal plan snapshot: %w", err)
 	}
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return PlanSnapshot{}, false, fmt.Errorf("store: mkdir plans: %w", err)
-	}
-	p := filepath.Join(dir, fmt.Sprintf("%04d.json", nextSeq))
-	if err := writeFileAtomic(p, data, filePerm); err != nil {
+	if err := dir.WriteAtomic(ctx, fmt.Sprintf("%04d.json", nextSeq), data, filePerm); err != nil {
 		return PlanSnapshot{}, false, err
 	}
 	return snap, true, nil
@@ -145,12 +138,13 @@ func (s *FilesystemRunStore) AppendPlanSnapshot(_ context.Context, runID string,
 
 // ListPlanSnapshots implements PlanStore: every snapshot under
 // runs/<id>/plans in ascending Seq order.
-func (s *FilesystemRunStore) ListPlanSnapshots(_ context.Context, runID string) ([]PlanSnapshot, error) {
-	dir, err := s.plansDir(runID)
+func (s *FilesystemRunStore) ListPlanSnapshots(ctx context.Context, runID string) ([]PlanSnapshot, error) {
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, "plans")
 	if err != nil {
 		return nil, err
 	}
-	seqs, err := planSeqs(dir)
+	defer dir.Close()
+	seqs, err := planSeqsDirectory(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +153,7 @@ func (s *FilesystemRunStore) ListPlanSnapshots(_ context.Context, runID string) 
 	}
 	out := make([]PlanSnapshot, 0, len(seqs))
 	for _, seq := range seqs {
-		snap, rerr := readPlanFile(dir, seq)
+		snap, rerr := readPlanFileDirectory(dir, seq)
 		if rerr != nil {
 			// Skip an unreadable/corrupt snapshot rather than failing the
 			// whole listing — a partial plan history is more useful than
@@ -173,8 +167,9 @@ func (s *FilesystemRunStore) ListPlanSnapshots(_ context.Context, runID string) 
 
 // planSeqs returns the sorted sequence numbers of the <NNNN>.json plan
 // files in dir. A missing dir is (nil, nil).
-func planSeqs(dir string) ([]int, error) {
-	entries, err := os.ReadDir(dir)
+func planSeqs(dir string) ([]int, error) { return planSeqsDirectory(historicalSnapshotDirectory(dir)) }
+func planSeqsDirectory(dir snapshotDirectory) ([]int, error) {
+	entries, err := dir.ReadDir()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -197,10 +192,9 @@ func planSeqs(dir string) ([]int, error) {
 	return seqs, nil
 }
 
-// readPlanFile reads and decodes one plan snapshot by sequence number.
-func readPlanFile(dir string, seq int) (PlanSnapshot, error) {
-	p := filepath.Join(dir, fmt.Sprintf("%04d.json", seq))
-	data, err := os.ReadFile(p)
+// readPlanFileDirectory reads and decodes one plan snapshot by sequence number.
+func readPlanFileDirectory(dir snapshotDirectory, seq int) (PlanSnapshot, error) {
+	data, err := dir.ReadFile(fmt.Sprintf("%04d.json", seq))
 	if err != nil {
 		return PlanSnapshot{}, fmt.Errorf("store: read plan snapshot: %w", err)
 	}

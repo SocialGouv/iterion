@@ -5,7 +5,7 @@
 // bound since the page loaded — hence a witness at the wire, not at the call.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { updateForgeRepoBots } from "@/api/forgeConnections";
+import { enableForgeRepoBots, updateForgeRepoBots } from "@/api/forgeConnections";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; method?: string; body: Record<string, unknown> }[] = [];
@@ -82,5 +82,43 @@ describe("updateForgeRepoBots — routing on the wire", () => {
     });
 
     expect(calls[0]?.body).toEqual({ routing: { providers: ["anthropic"] } });
+  });
+});
+
+describe("enableForgeRepoBots — the label filter on the wire", () => {
+  // POST /api/teams/{id}/forge/repo-bots reads `label_allowlist` three ways
+  // (pkg/server forgeEnableReq): ABSENT keeps the list the repo holds, an
+  // EMPTY list clears it — every freshly applied label dispatches again —
+  // and a non-empty list replaces it. The first two differ only by the key's
+  // presence, which a body-cleaning `x.length > 0 ? x : undefined` (the
+  // treatment schedule_crons rightly gets one line above) would erase: the
+  // operator's clear would then keep the filter, with nothing said.
+  it("omits label_allowlist entirely when the caller says nothing (keep)", async () => {
+    await enableForgeRepoBots("t1", "c1", "org/api", ["featurly"]);
+
+    expect(calls[0]?.url).toBe("/api/teams/t1/forge/repo-bots");
+    expect(calls[0]?.method).toBe("POST");
+    expect(Object.keys(calls[0]?.body ?? {})).not.toContain("label_allowlist");
+    expect(calls[0]?.body).toEqual({
+      connection_id: "c1",
+      repo: "org/api",
+      bot_ids: ["featurly"],
+    });
+  });
+
+  it("sends label_allowlist: [] when the caller clears the filter", async () => {
+    await enableForgeRepoBots("t1", "c1", "org/api", ["featurly"], undefined, undefined, []);
+
+    expect(Object.keys(calls[0]?.body ?? {})).toContain("label_allowlist");
+    expect(calls[0]?.body.label_allowlist).toEqual([]);
+  });
+
+  it("sends the list when the caller sets or replaces the filter", async () => {
+    await enableForgeRepoBots("t1", "c1", "org/api", ["featurly"], undefined, undefined, [
+      "securite",
+      "bug",
+    ]);
+
+    expect(calls[0]?.body.label_allowlist).toEqual(["securite", "bug"]);
   });
 });

@@ -102,19 +102,21 @@ refuse.
 
 Seven legs, each counted:
 
-1. **the posture** — and it is judged, not just printed: `LandlockABI > 0` and
-   `AllThreads`, or the bench exits non-zero;
+1. **the posture** — judged, not just printed: `LandlockABI > 0`, `AllThreads`
+   and `SocketsDenied`, or the bench exits non-zero;
 2. **a memory bomb** → `memory_exceeded`;
 3. **a native regex bomb** → `cpu_time_exceeded`;
 4. **a benign program** after them, which must still return its value;
-5. **a compromised child** that tries to `open`, `connect` and `exec` — the
+5. **a compromised child** that tries to `open`, `connect`, send UDP, set up
+   `io_uring` and `exec` — the
    leg that proves the domain *refuses*. Each attempt runs twice, before and
    after `Confine`, because one that fails on both sides proves nothing. And
    it must fail with **`EACCES`**, the errno Landlock refuses with on ABI 4
    (connect included, measured): a mutant that installed no domain and set
    `RLIMIT_NOFILE` to zero made all three fail with `EMFILE`, and a leg asking
-   only *whether* they failed printed "too many open files" and passed. Below
-   ABI 4 there are no TCP rights, so connect is reported **not covered**;
+   only *whether* they failed printed "too many open files" and passed. The
+   network attempts hold on every ABI — the wall is seccomp (`sockets_denied`),
+   not Landlock — and `io_uring` may already be refused by the runtime (`EPERM`);
 6. **three bombs beside three benign programs**, where all six must end the
    way their bounds promise *and* some 5 ms sample must have seen a bomb and a
    sibling alive **at the same instant**. Two weaker forms both died to a
@@ -143,8 +145,8 @@ reported in the log: unpinned, the same command measured 2.1.1 then 2.2.0.
 
 Each arm reads its filter back against an `Unconfined` twin reporting
 `Seccomp: 0`, which also settles that `NoNewPrivs: 1` comes from
-`allowPrivilegeEscalation: false` and not from seccomp — the twin keeps that
-flag so only seccomp differs, and both arms now assert it.
+`allowPrivilegeEscalation: false`: the twin keeps that flag, so only seccomp
+differs.
 
 The claim these arms support is precise: **under the full posture a child still
 OBTAINS a Landlock domain (ABI 4, all threads) — none of these flags refuses
@@ -153,6 +155,11 @@ and an exec is leg 5's business, not an inference from the ABI. For a
 non-blocking claim the conjunction suffices: these flags are restrictions and a
 syscall's success is monotonically decreasing in restrictions, so if one
 blocked Landlock the run carrying all of them would have failed.
+
+## The remote arm
+
+`bench:codemode-bench-image` + `bench:codemode-remote` carry this bench to a
+cluster this host does not own: [its own page](posture-bench-remote.md).
 
 ## The mutants, and why the bench ships with them
 
@@ -172,9 +179,9 @@ branch's parent and nothing here touches `pkg/scripthost`. And **the cluster
 arm's posture readback is a sibling pod**: the bench pod checks itself through
 `-require-uid`, which is what makes the arm sound.
 
-**The production node's containerd.** `kind` runs containerd 2.1.1, and a
-default profile is a property of its build, so re-run this bench against a
-production node and record the version it reports.
+**The production node's confinements.** Measured 2026-11-18: containerd 2.3.6,
+kernel 6.1, **Landlock ABI 2 — its network wall is the seccomp filter (#3371)**
+([detail](posture-bench-remote.md)).
 
 The production **runner image** is no longer owed: `iterion-runner-devbox`
 (uid 1000, `iterion v6.1.0+f446b258cf38`, `tini`) holds 7/7 with the escape leg
@@ -184,18 +191,15 @@ to its default in silence. The first version of this note gave the opposite
 reason, "go-task would inherit it from the shell", and measurement refuted it:
 `UID` is not exported.
 
-**A native payload's real ceiling.** `RLIMIT_DATA` bounds the Go heap, and
-`Confine`'s own comment is explicit that *a `MAP_SHARED` or memfd mapping is
-not charged to it, so a native payload's real ceiling is the pod's memory
-cgroup*. That axis is the ground `oom_score_adj` and RSS probing were meant to
-cover in #3155, and neither mechanism exists in this codebase (zero production
-sites, every spelling). So those two legs cannot be written as specified — but
-the axis is **owed**, not covered: leg 6 bounds each bomb by its own
-`RLIMIT_DATA` and cannot observe an eviction.
+**A native payload's real ceiling.** Covered in the product, not by this bench:
+`RLIMIT_DATA` does not charge a `MAP_SHARED` or memfd mapping, so the parent
+samples the child's resident set and kills it ([native-ceiling.md](native-ceiling.md)).
+The in-pod leg is still owed — this bench wires no tool channel, so it cannot
+produce such a payload.
 
-**A floor on the memory bound.** Found by this bench: `Limits.Clamp` caps
-`Memory` and fills an unset value from the default but enforces no minimum, so
-a bound below what the child's Go runtime needs makes it **crash** — measured
-at 64 MiB, `script_host_died` with a SIGSEGV where the caller asked for
-`memory_exceeded`. The bench uses the shipped default and refuses leg 6 when
-the cgroup cannot hold the bombs; the product behaviour is its own ticket.
+**A floor on the memory bound.** Found by this bench: at 64 MiB a bomb
+**crashed** (`script_host_died`, SIGSEGV) instead of `memory_exceeded`. Now
+`Clamp` raises a bound to the floor (#3290), and the bound is room above the
+child's own ~86 MiB, not a total spent before the script ran (#3383). The
+bench uses the shipped default and refuses leg 6 when the cgroup cannot hold
+the bombs.

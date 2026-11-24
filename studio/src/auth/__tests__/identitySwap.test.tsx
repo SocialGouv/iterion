@@ -5,6 +5,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { useActiveRepoStore } from "@/store/activeRepo";
+import { useLaunchesInFlight } from "@/store/launchesInFlight";
 
 const ALICE = { id: "u-alice", email: "alice@example.test", status: "active", is_super_admin: false };
 const BOB = { id: "u-bob", email: "bob@example.test", status: "active", is_super_admin: false };
@@ -76,6 +77,8 @@ describe("the browser's identity changing under a live session", () => {
     render(<AuthProvider><Probe /></AuthProvider>);
     expect(await screen.findByText("u-alice")).toBeTruthy();
     expect(useActiveRepoStore.getState().selection.kind).toBe("repo");
+    // A launch Alice sent is in flight.
+    useLaunchesInFlight.setState({ byTarget: { "bot\u0000t1\u0000nestor": 1 } });
 
     // The password-reset confirm handed the browser Bob's cookies.
     whoami = BOB;
@@ -84,6 +87,8 @@ describe("the browser's identity changing under a live session", () => {
     expect(await screen.findByText("u-bob")).toBeTruthy();
     expect(useActiveRepoStore.getState().selection).toEqual({ kind: "none" });
     expect(useActiveRepoStore.getState().storageKey).toBeNull();
+    // Bob's session holds nothing of it (#3416).
+    expect(useLaunchesInFlight.getState().byTarget).toEqual({});
   });
 
   // The same call runs on an ordinary refresh, where nothing changed. Resetting
@@ -91,11 +96,15 @@ describe("the browser's identity changing under a live session", () => {
   it("leaves the context alone when the account is the same", async () => {
     render(<AuthProvider><Probe /></AuthProvider>);
     expect(await screen.findByText("u-alice")).toBeTruthy();
+    useLaunchesInFlight.setState({ byTarget: { "bot\u0000t1\u0000nestor": 1 } });
 
     await act(async () => { screen.getByText("reload").click(); });
 
     expect(screen.getByTestId("who").textContent).toBe("u-alice");
     expect(useActiveRepoStore.getState().selection.kind).toBe("repo");
+    // Her launch in flight is still hers, and still held.
+    expect(useLaunchesInFlight.getState().byTarget).toEqual({ "bot\u0000t1\u0000nestor": 1 });
+    useLaunchesInFlight.setState({ byTarget: {} });
   });
 
   // The comparison has to live in the callback body, not in the setState

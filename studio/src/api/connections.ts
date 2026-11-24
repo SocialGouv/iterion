@@ -21,10 +21,38 @@ export async function listConnections(
 ): Promise<ConnectorConnection[]> {
   const r = await guard404("connections", () =>
     apiGet("/api/teams/{id}/connections", {
-      params: { id: teamID, ...(connector ? { connector } : {}) },
+      params: { id: teamID },
+      query: { connector: connector || undefined },
     }),
   );
   return (r.connections ?? []) as ConnectorConnection[];
+}
+
+// CredentialShape is what a scheme kind takes at the paste, the server's
+// sealConnectionCredential gate: nothing for "none" (a public resource), a
+// username and a password for "basic", a token for every other kind. A
+// value the scheme does not take is a 400, so the form sends only these.
+export type CredentialShape = "none" | "basic" | "token";
+
+export function credentialShapeOf(kind: string | undefined): CredentialShape {
+  if (kind === "none") return "none";
+  if (kind === "basic") return "basic";
+  return "token";
+}
+
+// credentialFields is the credential part of a create body for a shape.
+export function credentialFields(
+  shape: CredentialShape,
+  values: { token: string; username: string; password: string },
+): Pick<ConnectorConnectionCreate, "token" | "username" | "password"> {
+  switch (shape) {
+    case "none":
+      return {};
+    case "basic":
+      return { username: values.username, password: values.password };
+    case "token":
+      return { token: values.token };
+  }
 }
 
 export async function createConnection(

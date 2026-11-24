@@ -213,7 +213,12 @@ func (s *Server) diskUnitBytes(path string) int64 {
 	if err != nil {
 		return 0
 	}
-	root := filepath.Dir(abs)
+	return workflowBytesUnder(filepath.Dir(abs))
+}
+
+// workflowBytesUnder sums the sizes of the workflow files under root — the
+// weight of a unit load from that directory — with diskUnitBytes' cap.
+func workflowBytesUnder(root string) int64 {
 	var total int64
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

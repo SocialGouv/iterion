@@ -1251,6 +1251,24 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
+		if wf.BusinessStores != nil {
+			w.b.WriteString("  business_stores:\n")
+			if len(wf.BusinessStores) == 0 {
+				w.b.WriteByte('\n')
+			}
+			for _, declaration := range wf.BusinessStores {
+				fmt.Fprintf(&w.b, "    %s:\n", w.b.str(declaration.ID))
+				if declaration.Kind != "" {
+					writeStrProp(&w.b, "      ", "kind", declaration.Kind)
+				}
+				if declaration.Namespace != "" {
+					writeStrProp(&w.b, "      ", "namespace", declaration.Namespace)
+				}
+				if declaration.Required != nil {
+					fmt.Fprintf(&w.b, "      required: %t\n", *declaration.Required)
+				}
+			}
+		}
 		if wf.MCP != nil {
 			writeMCPConfigBlock(&w.b, wf.MCP, "  ")
 		}
@@ -1945,24 +1963,29 @@ func writeAgentFields(b *buf, f llmFields) {
 // Writing it among the blocks instead would reorder those files to say the
 // same thing — allowed, since fmt only promises the same program, but a
 // reordering nobody asked for is a diff reviewers have to read.
+//
+// A declared `defer` also takes the block form: the short form has no way to
+// carry it, and writing the short form there would drop the property.
 func codemodeShortMode(cb *ast.CodemodeBlock) string {
-	if cb == nil || cb.Bounded() {
+	if cb == nil || cb.Bounded() || cb.Defer != "" {
 		return ""
 	}
 	return cb.Mode
 }
 
 // writeCodemodeBlock writes the indented `codemode:` block, and nothing at
-// all unless a bound is declared — the mode-only case is the short form,
-// handled by codemodeShortMode above.
+// all unless a bound or a `defer` is declared — the mode-only case is the
+// short form, handled by codemodeShortMode above.
 //
 // `mode:` is written first and only when it is not the implied `on`: the
 // block form implies the capability it bounds, so emitting `mode: on` beside
 // bounds would add a line the author did not write and the parser does not
 // need. An explicit `off` IS written — it is the one the author must see,
-// since it makes the bounds beside it inert (C348).
+// since it makes the bounds beside it inert (C348). `defer:` is written as
+// declared, empty meaning unset: it is not a bound, so there is no implied
+// value to omit — what the author wrote is what comes back.
 func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
-	if cb == nil || !cb.Bounded() {
+	if cb == nil || (!cb.Bounded() && cb.Defer == "") {
 		return
 	}
 	inner := indent + "  "
@@ -1970,10 +1993,16 @@ func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
 	if cb.Mode != "" && cb.Mode != "on" {
 		fmt.Fprintf(b, "%smode: %s\n", inner, cb.Mode)
 	}
+	if cb.Defer != "" {
+		fmt.Fprintf(b, "%sdefer: %s\n", inner, cb.Defer)
+	}
 	// The order of the DSL block's own listing, so the written form and the
 	// reference read alike.
 	if cb.ToolCalls != 0 {
 		fmt.Fprintf(b, "%stool_calls: %d\n", inner, cb.ToolCalls)
+	}
+	if cb.ConcurrentToolCalls != 0 {
+		fmt.Fprintf(b, "%sconcurrent_tool_calls: %d\n", inner, cb.ConcurrentToolCalls)
 	}
 	if cb.Wall != "" {
 		writeStrProp(b, inner, "wall", cb.Wall)
@@ -1992,6 +2021,12 @@ func writeCodemodeBlock(b *buf, cb *ast.CodemodeBlock, indent string) {
 	}
 	if cb.ToolResultBytes != 0 {
 		fmt.Fprintf(b, "%stool_result_bytes: %d\n", inner, cb.ToolResultBytes)
+	}
+	if cb.StoreEntries != 0 {
+		fmt.Fprintf(b, "%sstore_entries: %d\n", inner, cb.StoreEntries)
+	}
+	if cb.StoreBytes != 0 {
+		fmt.Fprintf(b, "%sstore_bytes: %d\n", inner, cb.StoreBytes)
 	}
 }
 

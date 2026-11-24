@@ -44,6 +44,7 @@ var connectionsAddCmd = &cobra.Command{
 		o.BaseURL, _ = cmd.Flags().GetString("base-url")
 		o.Scheme, _ = cmd.Flags().GetString("scheme")
 		o.TokenEnv, _ = cmd.Flags().GetString("token-env")
+		o.Username, _ = cmd.Flags().GetString("username")
 		o.Capabilities, _ = cmd.Flags().GetStringSlice("capability")
 		o.DisplayName, _ = cmd.Flags().GetString("name")
 		o.StoreDir = connectionsStoreDir
@@ -80,7 +81,8 @@ func init() {
 	connectionsAddCmd.Flags().String("alias", "main", "the name a .bot writes in `connection:`")
 	connectionsAddCmd.Flags().String("base-url", "", "the instance to authenticate to (required for a self-hosted connector; otherwise the package's own)")
 	connectionsAddCmd.Flags().String("scheme", "", "which of the package's auth schemes the credential satisfies (required when it declares several)")
-	connectionsAddCmd.Flags().String("token-env", "", "name of the environment variable holding the credential")
+	connectionsAddCmd.Flags().String("token-env", "", "name of the environment variable holding the credential (an HTTP basic scheme's password; none for a scheme that presents nothing)")
+	connectionsAddCmd.Flags().String("username", "", "an HTTP basic scheme's username (its password comes from --token-env)")
 	connectionsAddCmd.Flags().StringSlice("capability", nil,
 		"what the connection may serve, comma-separated: "+strings.Join(connection.CapabilityNames(), ", ")+" (action is the default)")
 	connectionsAddCmd.Flags().String("name", "", "display name")

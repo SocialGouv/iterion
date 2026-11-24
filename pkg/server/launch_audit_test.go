@@ -37,6 +37,9 @@ import (
 // directly, with the reason.
 var launchAuditSweepAllowed = map[string]string{
 	"runs_launch_audit.go": "the audited choke point itself",
+	// c.launcher is the trigger launcher (serviceLauncher), whose launch
+	// goes through launchTriggered → launchRun, the audited choke point.
+	"connector_submitter.go": "launches through the trigger launcher, which reaches launchRun",
 }
 
 // TestLaunchAuditSweep_NoRawRunServiceLaunch: a launch surface that asks the

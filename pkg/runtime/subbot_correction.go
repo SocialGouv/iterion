@@ -44,6 +44,17 @@ func (e *Engine) seedSubbotCorrections(ctx context.Context, run *store.Run) erro
 		if _, exists := run.OutputCorrections[key]; exists {
 			continue
 		}
+		// A replacement child inherits correction allowance and the terminal
+		// decision, not the previous run's paid receipts or execution authority.
+		// Those remain billable exactly once in their original run. A fresh
+		// generation is assigned by the child's first fenced decision.
+		ep.Generation = ""
+		ep.Revision = 0
+		ep.LedgerKey = ""
+		ep.Reservations = nil
+		ep.Usage = store.OutputCorrectionUsage{}
+		ep.RetiredAt = nil
+		ep.RetiredReason = ""
 		ep.LastError = e.recordedFailureText(ep.LastError)
 		if err := e.persistCorrectionEpisode(ctx, run.ID, key, ep); err != nil {
 			return err

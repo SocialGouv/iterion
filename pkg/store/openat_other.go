@@ -30,3 +30,11 @@ func openRunFileAt(root string, components []string) (*os.File, fs.FileInfo, err
 	}
 	return f, info, nil
 }
+
+func openRunFileRetained(_ *os.Root, _ []string) (*os.File, fs.FileInfo, error) {
+	return nil, nil, ErrRunDataCapability
+}
+
+func openRegularRunFileRetained(_ *os.Root, _ string) (*os.File, fs.FileInfo, error) {
+	return nil, nil, ErrRunDataCapability
+}

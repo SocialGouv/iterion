@@ -8,6 +8,7 @@ package cloudsched
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -87,6 +88,14 @@ type ScheduledBot struct {
 	// it came from; an operator's block (the flag false) is the more
 	// specific voice and survives until the operator speaks again.
 	RoutingFromIntegration bool `bson:"routing_from_integration,omitempty" json:"routing_from_integration,omitempty"`
+	// KeyOverrides pins a BYOK api key per LLM provider (provider name →
+	// api key id) for every run this schedule launches — the schedule's own
+	// voice, written only through the schedule routes (validated against the
+	// identity the tick launches under) and carried across an integration
+	// rebuild. A repo-bound schedule's integration pins are NOT copied here:
+	// the tick reads them live from the integration, and this map wins over
+	// them provider by provider. nil = the schedule pins nothing.
+	KeyOverrides map[string]string `bson:"key_overrides,omitempty" json:"key_overrides,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -222,6 +231,9 @@ type SchedulePatch struct {
 	// together are contradictory — the route handler refuses that shape.
 	Pool      *PoolBinding
 	ClearPool bool
+	// KeyOverrides replaces the schedule's key pins wholesale: nil = leave
+	// untouched, a pointer to an empty (or nil) map clears them.
+	KeyOverrides *map[string]string
 	// Retry policy fields; nil = leave untouched. An explicit empty string
 	// (or 0) clears the field so the schedule stops overriding the bot.
 	RetryUsageWindow *string
@@ -320,6 +332,14 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.Pool != nil {
 		sb.Pool = patch.Pool
 		sb.PoolFromIntegration = false
+	}
+	if patch.KeyOverrides != nil {
+		// A cleared map is stored as no map, so the row reads the same
+		// whichever store holds it (the Mongo twin omits an empty one).
+		sb.KeyOverrides = nil
+		if len(*patch.KeyOverrides) > 0 {
+			sb.KeyOverrides = maps.Clone(*patch.KeyOverrides)
+		}
 	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow

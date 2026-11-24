@@ -156,7 +156,11 @@ func TestEngineRun_AParentsWorktreeIsolatesTheWholeFamily(t *testing.T) {
 			WithParentNodeID(req.NodeID),
 			WithLogger(log.New(log.LevelWarn, os.Stderr)),
 		)
-		return map[string]any{}, child.Run(ctx, "run-family-child", nil)
+		inv, err := prepareResourceInvocation(ctx, s, "run-family-child", req.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{}, child.Run(inv.Context, "run-family-child", nil)
 	}
 	parentWf := &ir.Workflow{
 		Name: "family-parent", Entry: "run_child", Worktree: "auto",
@@ -459,7 +463,11 @@ func TestEngineRun_IsolatedSubbotSiblingsOverlap(t *testing.T) {
 			WithIsolatedChild(req.Isolated),
 			WithLogger(log.New(log.LevelWarn, os.Stderr)),
 		)
-		return map[string]any{}, child.Run(ctx, childID, nil)
+		inv, err := prepareResourceInvocation(ctx, s, childID, req.ParentRunID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{}, child.Run(inv.Context, childID, nil)
 	}
 
 	exec := newStubExecutor()
@@ -657,7 +665,11 @@ func TestEngineRun_IsolatedSiblingsQueueWhenAutoCannotGiveEachATree(t *testing.T
 					opts = append(opts, tc.extra(repo)...)
 				}
 				child := New(tc.childWf("child"), s, childExec, opts...)
-				return map[string]any{}, child.Run(ctx, childID, nil)
+				inv, err := prepareResourceInvocation(ctx, s, childID, req.ParentRunID)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{}, child.Run(inv.Context, childID, nil)
 			}
 
 			exec := newStubExecutor()
@@ -832,4 +844,10 @@ func TestIsolatedChildsCommitIsReplayableOnlyWhereAutoGivesItATree(t *testing.T)
 			}
 		})
 	}
+}
+
+// The rootless fixture changes only workspace placement. Explicit birth is
+// delegated to its real FS store without advertising other optional ports.
+func (s rootlessStore) CreateRunWithValueFormat(ctx context.Context, spec store.RunCreateSpec) (*store.Run, error) {
+	return store.CreateRunWithValueFormat(ctx, s.RunStore, spec)
 }

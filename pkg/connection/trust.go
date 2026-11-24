@@ -68,6 +68,20 @@ type ActionTrust struct {
 // their credentials from that document long after the launch.
 func TrustOfRun(t store.RunTrust) ActionTrust { return ActionTrust{trust: t, stated: true} }
 
+// TrustOfTenantConfiguration is the trust of a call no run makes: a poller
+// reading a connection's polled trigger (ADR-168 §7), whose operation, query
+// and connection are what the tenant's operator configured. No workspace is
+// involved, so there is no code whose author could be anyone but the tenant.
+//
+// It is the trust of the tenant's own code, stated: what the operator
+// configured is the tenant's as surely as its own checkout is. Named, never
+// the zero value, like TrustOfRun: the site that means "the tenant's own
+// configuration" says so, and a builder that forgot to state a trust still
+// refuses every action.
+func TrustOfTenantConfiguration() ActionTrust {
+	return ActionTrust{trust: store.RunTrustDefault, stated: true}
+}
+
 // TrustUnknown is the honest value of a builder that cannot read the run's
 // trust — a subbot whose parent document does not load.
 //

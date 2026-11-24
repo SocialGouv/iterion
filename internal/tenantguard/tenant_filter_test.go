@@ -17,10 +17,10 @@
 // without panicking), not that the caller propagates that error — the
 // per-store behaviour tests do that, and pkg/secrets'
 // run_secrets_tenant_scope_test.go is the worked example. It reads the
-// `bson.M` map-assignment form, which every tenant-scoped filter of the
-// tree uses today (the 50 other `Key: "tenant_id"` sites are index key
-// specifications, carrying `Value: 1`, not filters); a filter written as
-// a `bson.D` element would sit outside it.
+// `bson.M` map-assignment form. It does not inspect `bson.D` elements:
+// these include index keys and query filters such as the immutable selection
+// filter in pkg/store/mongo/stream_selection.go. Their runtime scoping needs
+// separate behavioral tests; this shape gate does not prove it.
 package tenantguard
 
 import (
@@ -58,6 +58,9 @@ const minFamilySize = 7
 // the tenant-less shape safe — they are named here so the next helper
 // written by copy-paste has to look at them, not so they are blessed.
 var conditionalByDesign = map[string]string{
+	"pkg/store/mongo/stream_namespace.go": "filter always calls fail-closed withTenantFilter; strict namespace seeds the canonical parent tenant for privileged reads, while stamp writes INSERT documents, not optional query clauses",
+	"pkg/store/mongo/value_records.go":    "tenant field on a temporary INSERT reservation; reads and deletes use the fail-closed tenant helper",
+	"pkg/store/mongo/value_delete.go":     "tenant field on an INSERT deletion tombstone; metadata lookup uses the fail-closed tenant helper",
 	"pkg/runwatch/mongo.go":               "the tenant comes from the episode record, not the ctx; the conditional handles the omitempty empty-tenant shape of a local watch",
 	"pkg/secrets/byok.go":                 "MarkFingerprintUsed deliberately escapes the run's tenant filter: a lent key's row lives in the donor's tenant (documented at pkg/secrets/run_secrets.go's lending comment)",
 	"pkg/store/mongo/memory.go":           "spaceDocFilter takes the tenant from the SpaceRef, not the ctx; the global space's documents carry none",

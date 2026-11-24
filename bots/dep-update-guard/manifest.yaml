@@ -1,7 +1,18 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.12.2
+version: 2.12.3
+## 2.12.3 — a commit report whose id has no legal width no longer holds a
+## good alignment red. Live on buildkit-operator#65 (run 01a1e07f): the
+## commit agent dropped two hex digits of the pushed sha (40 hex became 38),
+## and commit_probe refused every id that does not resolve to the workspace
+## head ("the commit report names …, which is not the workspace head"), so
+## the verdict came back hold_lost_alignment on a push git itself certified.
+## An id that cannot be a commit id in any repository (not 40 hex for sha-1,
+## not 64 for sha-256) is a transcription and is set aside like a report
+## without a commit id — the parents check and `git ls-remote` are the
+## evidence. A full-width id the workspace cannot resolve names a commit the
+## workspace does not hold, and still refuses.
 ## 2.12.2 — the verify baseline is built in a repository that ignores the
 ## mirror. Live on buildkit-operator#65 (run 01a1dfbb-046c), 2.12.1 printed
 ## VERIFY BASELINE NOT BUILT: the repository ignores .claude, and `git add`

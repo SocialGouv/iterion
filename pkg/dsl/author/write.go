@@ -1188,7 +1188,7 @@ func (w *writer) memory(m *ast.MemoryBlock) *yaml.Node {
 // also what keeps every document written before the bounds existed
 // byte-identical: `codemode: on` reads and writes as it did.
 func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
-	if !cb.Bounded() {
+	if !cb.Bounded() && cb.Defer == "" {
 		return str(cb.Mode)
 	}
 	p := w.props("codemode")
@@ -1198,13 +1198,19 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 	if cb.Mode != "" && cb.Mode != "on" {
 		p.str("mode", cb.Mode)
 	}
+	// defer: is written as declared, empty meaning unset — there is no
+	// implied value to omit, so what the author wrote comes back.
+	p.str("defer", cb.Defer)
 	p.int64("tool_calls", cb.ToolCalls)
+	p.int64("concurrent_tool_calls", cb.ConcurrentToolCalls)
 	p.str("wall", cb.Wall)
 	p.str("cpu", cb.CPU)
 	p.int64("memory", cb.Memory)
 	p.int64("script_bytes", cb.ScriptBytes)
 	p.int64("result_bytes", cb.ResultBytes)
 	p.int64("tool_result_bytes", cb.ToolResultBytes)
+	p.int64("store_entries", cb.StoreEntries)
+	p.int64("store_bytes", cb.StoreBytes)
 	return p.node()
 }
 
@@ -1441,6 +1447,20 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	}
 	if wf.Attachments != nil {
 		p.set("attachments", w.attachments(wf.Attachments))
+	}
+	if wf.BusinessStores != nil {
+		items := make([]*yaml.Node, 0, len(wf.BusinessStores))
+		for _, declaration := range wf.BusinessStores {
+			entry := w.props("business_store")
+			entry.lead.set("id", str(declaration.ID))
+			entry.str("kind", declaration.Kind)
+			entry.str("namespace", declaration.Namespace)
+			if declaration.Required != nil {
+				entry.set("required", boolNode(*declaration.Required))
+			}
+			items = append(items, entry.node())
+		}
+		p.set("business_stores", blockSeq(items))
 	}
 	if wf.Budget != nil {
 		b := w.props("budget")

@@ -485,3 +485,36 @@ func literalHost(ip net.IP) string {
 	}
 	return s
 }
+
+// ValidateBasicShape is ValidateTokenShape for an HTTP basic credential,
+// which is not token-shaped: a password may hold spaces ("correct horse
+// battery staple"), and a username may not hold the colon that ends it on
+// the wire. Both refuse what a paste glues on — a newline, a NUL, a control
+// or invisible character — and nothing else; the username is the one the
+// caller will send, already trimmed.
+func ValidateBasicShape(username, password string) error {
+	if username == "" {
+		return &ShapeError{Field: "username", Reason: "is empty"}
+	}
+	if strings.ContainsRune(username, ':') {
+		return &ShapeError{Field: "username", Reason: "contains a colon — HTTP basic ends the username at the first one"}
+	}
+	for _, f := range []struct{ field, value string }{{"username", username}, {"password", password}} {
+		if f.value == "" {
+			return &ShapeError{Field: f.field, Reason: "is empty"}
+		}
+		if !utf8.ValidString(f.value) {
+			return &ShapeError{Field: f.field, Reason: "is not valid UTF-8"}
+		}
+		for i, r := range f.value {
+			switch {
+			case r == '\n' || r == '\r':
+				return &ShapeError{Field: f.field, Reason: fmt.Sprintf("contains a newline at position %d — this looks like a paste, not the credential", i)}
+			case r == ' ' && f.field == "password":
+			case r < 0x20 || r == 0x7f || (!unicode.IsPrint(r) && r != ' '):
+				return &ShapeError{Field: f.field, Reason: fmt.Sprintf("contains a control or invisible character (U+%04X) at position %d", r, i)}
+			}
+		}
+	}
+	return nil
+}

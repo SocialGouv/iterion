@@ -705,23 +705,29 @@ func recoveryBlockFromJSON(j *jsonRecoveryBlock) *RecoveryBlock {
 // refuse every stored document, and a writer that only emitted it would churn
 // every golden to say the same thing.
 type jsonCodemodeBlock struct {
-	Mode            string `json:"mode,omitempty"`
-	ToolCalls       int64  `json:"tool_calls,omitempty"`
-	Wall            string `json:"wall,omitempty"`
-	CPU             string `json:"cpu,omitempty"`
-	Memory          int64  `json:"memory,omitempty"`
-	ScriptBytes     int64  `json:"script_bytes,omitempty"`
-	ResultBytes     int64  `json:"result_bytes,omitempty"`
-	ToolResultBytes int64  `json:"tool_result_bytes,omitempty"`
+	Mode                string `json:"mode,omitempty"`
+	Defer               string `json:"defer,omitempty"`
+	ToolCalls           int64  `json:"tool_calls,omitempty"`
+	ConcurrentToolCalls int64  `json:"concurrent_tool_calls,omitempty"`
+	Wall                string `json:"wall,omitempty"`
+	CPU                 string `json:"cpu,omitempty"`
+	Memory              int64  `json:"memory,omitempty"`
+	ScriptBytes         int64  `json:"script_bytes,omitempty"`
+	ResultBytes         int64  `json:"result_bytes,omitempty"`
+	ToolResultBytes     int64  `json:"tool_result_bytes,omitempty"`
+	StoreEntries        int64  `json:"store_entries,omitempty"`
+	StoreBytes          int64  `json:"store_bytes,omitempty"`
 }
 
-// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared.
+// bounded mirrors ast.CodemodeBlock.Bounded: any bound declared. A declared
+// `defer` counts too — it is a property only the block form can carry, so a
+// defer-only block must take the object form or the transport would drop it.
 func (c *jsonCodemodeBlock) bounded() bool {
 	if c == nil {
 		return false
 	}
-	return c.ToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
-		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0
+	return c.Defer != "" || c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
 }
 
 // MarshalJSON writes the short form while there is nothing but a mode to say.
@@ -756,14 +762,18 @@ func codemodeBlockToJSON(c *CodemodeBlock) *jsonCodemodeBlock {
 		return nil
 	}
 	return &jsonCodemodeBlock{
-		Mode:            c.Mode,
-		ToolCalls:       c.ToolCalls,
-		Wall:            c.Wall,
-		CPU:             c.CPU,
-		Memory:          c.Memory,
-		ScriptBytes:     c.ScriptBytes,
-		ResultBytes:     c.ResultBytes,
-		ToolResultBytes: c.ToolResultBytes,
+		Mode:                c.Mode,
+		Defer:               c.Defer,
+		ToolCalls:           c.ToolCalls,
+		ConcurrentToolCalls: c.ConcurrentToolCalls,
+		Wall:                c.Wall,
+		CPU:                 c.CPU,
+		Memory:              c.Memory,
+		ScriptBytes:         c.ScriptBytes,
+		ResultBytes:         c.ResultBytes,
+		ToolResultBytes:     c.ToolResultBytes,
+		StoreEntries:        c.StoreEntries,
+		StoreBytes:          c.StoreBytes,
 	}
 }
 
@@ -798,14 +808,18 @@ func codemodeBlockFromJSON(j *jsonCodemodeBlock) *CodemodeBlock {
 		mode = "on"
 	}
 	return &CodemodeBlock{
-		Mode:            mode,
-		ToolCalls:       j.ToolCalls,
-		Wall:            j.Wall,
-		CPU:             j.CPU,
-		Memory:          j.Memory,
-		ScriptBytes:     j.ScriptBytes,
-		ResultBytes:     j.ResultBytes,
-		ToolResultBytes: j.ToolResultBytes,
+		Mode:                mode,
+		Defer:               j.Defer,
+		ToolCalls:           j.ToolCalls,
+		ConcurrentToolCalls: j.ConcurrentToolCalls,
+		Wall:                j.Wall,
+		CPU:                 j.CPU,
+		Memory:              j.Memory,
+		ScriptBytes:         j.ScriptBytes,
+		ResultBytes:         j.ResultBytes,
+		ToolResultBytes:     j.ToolResultBytes,
+		StoreEntries:        j.StoreEntries,
+		StoreBytes:          j.StoreBytes,
 	}
 }
 
@@ -993,18 +1007,19 @@ type jsonFailDecl struct {
 type jsonWorkflowDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File           string                `json:"file,omitempty"`
-	Name           string                `json:"name,omitempty"`
-	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry          string                `json:"entry,omitempty"`
-	Contract       string                `json:"contract,omitempty"`
-	DefaultBackend string                `json:"default_backend,omitempty"`
-	ToolPolicy     []string              `json:"tool_policy,omitempty"`
-	Capabilities   *[]string             `json:"capabilities,omitempty"`
-	Skills         []string              `json:"skills,omitempty"`
-	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	File           string                    `json:"file,omitempty"`
+	Name           string                    `json:"name,omitempty"`
+	Vars           *jsonVarsBlock            `json:"vars,omitempty"`
+	Attachments    *jsonAttachmentsBlock     `json:"attachments,omitempty"`
+	BusinessStores *[]*jsonBusinessStoreDecl `json:"business_stores,omitempty"`
+	Entry          string                    `json:"entry,omitempty"`
+	Contract       string                    `json:"contract,omitempty"`
+	DefaultBackend string                    `json:"default_backend,omitempty"`
+	ToolPolicy     []string                  `json:"tool_policy,omitempty"`
+	Capabilities   *[]string                 `json:"capabilities,omitempty"`
+	Skills         []string                  `json:"skills,omitempty"`
+	MCP            *jsonMCPConfigDecl        `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock          `json:"budget,omitempty"`
 	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
 	// (a block the canvas created and did not fill in, or a plain file's) is
 	// `{}`, an absent block is no key — with a plain map, omitempty would
@@ -1780,6 +1795,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		DefaultBackend:      w.DefaultBackend,
 		ToolPolicy:          w.ToolPolicy,
 		Capabilities:        declaredListToJSON(w.Capabilities),
+		BusinessStores:      businessStoresToJSON(w.BusinessStores),
 		Skills:              w.Skills,
 		MCP:                 mcpConfigToJSON(w.MCP),
 		Compaction:          compactionToJSON(w.Compaction),
@@ -2641,6 +2657,10 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 }
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
+	businessStores, err := businessStoresFromJSON(jw.BusinessStores)
+	if err != nil {
+		return nil, err
+	}
 	w := &WorkflowDecl{
 		Name:                jw.Name,
 		Entry:               jw.Entry,
@@ -2648,6 +2668,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		DefaultBackend:      jw.DefaultBackend,
 		ToolPolicy:          jw.ToolPolicy,
 		Capabilities:        declaredListFromJSON(jw.Capabilities),
+		BusinessStores:      businessStores,
 		Skills:              jw.Skills,
 		MCP:                 mcpConfigFromJSON(jw.MCP),
 		Compaction:          compactionFromJSON(jw.Compaction),

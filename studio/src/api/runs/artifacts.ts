@@ -5,6 +5,7 @@
 
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { downloadBlob } from "@/lib/download";
+import { runFetch } from "@/lib/lostRuns";
 import { apiURL, extractErrorMessage, request, withStoreParam } from "./client";
 import type {
   Artifact,
@@ -40,7 +41,7 @@ export async function listAllArtifacts(
 export async function getRunWorkflow(runId: string, attemptId?: string): Promise<WireWorkflow> {
   const params = new URLSearchParams();
   if (attemptId) params.set("attempt", attemptId);
-  const qs = withStoreParam(params).toString();
+  const qs = withStoreParam(params, runId).toString();
   return request(`/runs/${encodeURIComponent(runId)}/workflow${qs ? `?${qs}` : ""}`);
 }
 
@@ -93,11 +94,13 @@ export async function listArtifactFiles(runId: string): Promise<ArtifactFile[]> 
 // Build the URL to download a single artifact file. Returns a string
 // (not a fetch wrapper) because the caller hands it straight to an
 // `<a href>` for browser download / new-tab preview.
-export function artifactFileURL(runId: string, relPath: string): string {
+// `download` asks for an attachment disposition; the query is built here,
+// before apiURL adds the run's expected birth.
+export function artifactFileURL(runId: string, relPath: string, opts: { download?: boolean } = {}): string {
   // The path can contain `/` segments; encodeURIComponent would clobber
   // them. Encode each segment individually so subdirs survive.
   const segments = relPath.split("/").map(encodeURIComponent).join("/");
-  return apiURL(`/runs/${encodeURIComponent(runId)}/artifact-files/${segments}`);
+  return apiURL(`/runs/${encodeURIComponent(runId)}/artifact-files/${segments}${opts.download ? "?download=1" : ""}`);
 }
 
 // fetchArtifactFile downloads one artifact file body via the same
@@ -110,8 +113,8 @@ export async function fetchArtifactFile(
   relPath: string,
   opts: { download?: boolean } = {},
 ): Promise<{ blob: Blob; contentType: string }> {
-  const url = artifactFileURL(runId, relPath) + (opts.download ? "?download=1" : "");
-  const res = await fetch(url, { credentials: "include" });
+  const url = artifactFileURL(runId, relPath, opts);
+  const res = await runFetch(url, { credentials: "include" });
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }

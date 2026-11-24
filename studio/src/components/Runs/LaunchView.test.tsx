@@ -235,16 +235,17 @@ describe("an authorisation is withdrawn, not hidden", () => {
     expect(runsApi.createRun).not.toHaveBeenCalled();
   });
 
-  it("a Confirm over a re-initialised form is refused by name, not posted blank", async () => {
+  // The unsaved buffer's form is its editor tab's (#3416): when another
+  // buffer is elected and the first one back, the form is another one — even
+  // when the first document kept its identity because the second's render
+  // never landed. The question asked over the form before it is gone with
+  // it: there is no Confirm left to post a re-initialised form.
+  it("a confirmation does not outlive the form it was asked over", async () => {
     switchProject("/p1");
     editorTab("ticket");
     switchProject("/p2");
     editorTab("other");
     switchProject("/p1");
-    // The second buffer's render never lands: its election is superseded
-    // before the round trip answers, so the hook's answer is never replaced
-    // and the first document keeps its identity across the reload. Nothing a
-    // tag on the authorisation can tell — only the submit can.
     api.unparse.mockImplementation(async (d: IterDocument) => {
       const n = d.vars?.fields?.[0]?.name;
       if (n === "other") return new Promise<{ source: string }>(() => {});
@@ -261,18 +262,9 @@ describe("an authorisation is withdrawn, not hidden", () => {
     await waitFor(() => expect(api.unparse).toHaveBeenCalledTimes(2));
     switchProject("/p1");
     await waitFor(() => expect(varInput("ticket").value).toBe(""));
-    // The dialog is still up — same document, same identity.
-    expect(unsandboxed()).not.toBeNull();
-
-    clickUnsandboxed();
-    // Refused before any request leaves the browser, by the name of what is
-    // missing — not posted with the required var silently dropped. The
-    // page-level banner (role alert), not the inline caption the blanked form
-    // already carried: that one is on screen before the Confirm.
+    expect(unsandboxed()).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(runsApi.createRun).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toBe("Required input missing: ticket"),
-    );
   });
 });
 

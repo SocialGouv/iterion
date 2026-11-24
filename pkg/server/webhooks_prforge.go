@@ -162,7 +162,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	// route returns inside dispatchInvocation without reaching the tail at
 	// all, and is refused there instead, because a card carries no seat for
 	// provenance.
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP, launchProvenance{}, nil)
 }
 
 // realWebhookPRForgePRResolver fetches the PR a command comment sits on, with
@@ -590,11 +590,14 @@ func prforgeReviewCommentMeta(p prforge.ParsedReviewComment) webhookEventMeta {
 // review-thread reply: the PR context (reviewPRVars) + the conversation vars
 // the converse bot declares. discussion_id is the THREAD ROOT comment id —
 // exactly what GitHub's /pulls/{n}/comments/{id}/replies endpoint wants
-// (revi-converse's publish_reply posts there). No re_review flag: a reply
-// is a question, never a fresh review.
+// (revi-converse's publish_reply posts there). The thread's diff position
+// rides the payload (a review-thread reply carries the same anchor its root
+// does), so the converse bot can focus its diff read on the anchored hunk
+// instead of walking the whole change. No re_review flag: a reply is a
+// question, never a fresh review.
 func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext string, launchVars map[string]string) map[string]string {
 	question := strings.TrimSpace(p.CommentBody)
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.PRTitle+"\n\n"+p.PRBody), launchVars, map[string]string{
+	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.PRTitle+"\n\n"+p.PRBody), launchVars, mergeVarsInto(map[string]string{
 		"source_branch":     p.SourceBranch,
 		"head_sha":          p.HeadSHA,
 		"conversation_mode": "reply",
@@ -602,7 +605,7 @@ func buildPRForgeReviewReplyVars(p prforge.ParsedReviewComment, threadContext st
 		"trigger_note":      p.CommentBody,
 		"replier":           p.AuthorLogin,
 		"converse_question": question,
-	})
+	}, p.ThreadAnchor().LaunchVars()))
 	if threadContext != "" {
 		vars["thread_context"] = threadContext
 	}

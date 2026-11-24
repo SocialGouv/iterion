@@ -393,10 +393,11 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 	tools := make([]GenerationTool, 0, len(defs))
 	for _, td := range defs {
 		tools = append(tools, GenerationTool{
-			Name:        td.QualifiedName,
-			Description: td.Description,
-			InputSchema: td.InputSchema,
-			Execute:     td.Execute,
+			Name:           td.QualifiedName,
+			Description:    td.Description,
+			InputSchema:    td.InputSchema,
+			Execute:        td.Execute,
+			concurrentSafe: td.ToDelegateDef().ConcurrentSafe,
 		})
 	}
 	return filterSubagentTools(tools, allowed)
@@ -438,6 +439,12 @@ func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []Gene
 		if allowed != nil && !allowed[t.Name] {
 			continue
 		}
+		// A child conversation runs no codemode program — GenerateTextDirect,
+		// never installCodemode — so a tool its parent deferred to the
+		// codemode catalogue would be unreachable here: neither declared to
+		// the child nor callable from a program it does not have. The
+		// deferral is the parent's, and stops at the delegation.
+		t.catalogueOnly = false
 		out = append(out, t)
 	}
 	return out

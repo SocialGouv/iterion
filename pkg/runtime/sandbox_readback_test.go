@@ -392,7 +392,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 	t.Run("a failing drain says so on the run", func(t *testing.T) {
 		events = nil
 		run := &drainFakeRun{exportErr: errors.New("kubectl exec failed")}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 || events[0].Type != store.EventSandboxRunFilesDrainFailed {
 			t.Fatalf("events = %+v, want one sandbox_runfiles_drain_failed", events)
 		}
@@ -409,7 +409,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 	t.Run("a typed loss carries its reason as a stable token", func(t *testing.T) {
 		events = nil
 		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackOverCap, Err: errors.New("the run's read-back set is over the 256 MiB cap (ADR-143) at big.bin")}}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 || events[0].Type != store.EventSandboxRunFilesDrainFailed {
 			t.Fatalf("events = %+v, want one sandbox_runfiles_drain_failed", events)
 		}
@@ -427,7 +427,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 				{Dir: "/iterion/artifact-files", Name: "latest.html", Why: sandbox.DeclinedHardlinkTarget},
 			},
 		}}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 || events[0].Type != store.EventSandboxRunFilesDrainFailed {
 			t.Fatalf("events = %+v, want one sandbox_runfiles_drain_failed — a set short of a member is a loss on the run, not a log line", events)
 		}
@@ -452,7 +452,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 	t.Run("a set that may hold a raced attempt's leftovers says so", func(t *testing.T) {
 		events = nil
 		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackOverCap, Err: errors.New("over the cap, after a raced attempt"), Stale: true}}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 || events[0].Data["stale"] != true {
 			t.Fatalf("events = %+v, want one event with stale=true — over_cap alone reads as the failing attempt's partial set", events)
 		}
@@ -467,7 +467,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 			many = append(many, sandbox.ReadBackDeclinedMember{Dir: "/iterion/artifact-files", Name: fmt.Sprintf("fifo-%04d", i), Why: sandbox.DeclinedKind})
 		}
 		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackDeclined, Err: errors.New("declined"), Declined: many}}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 {
 			t.Fatalf("events = %+v, want one", events)
 		}
@@ -492,7 +492,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 			{Dir: "/iterion/artifact-files", Name: "fifo-00002", Why: sandbox.DeclinedKind},
 		}
 		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackDeclined, Err: errors.New("declined"), Declined: named, DeclinedCount: 100000}}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 1 {
 			t.Fatalf("events = %+v, want one", events)
 		}
@@ -506,14 +506,14 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 	t.Run("a clean drain stays silent", func(t *testing.T) {
 		events = nil
 		run := &drainFakeRun{}
-		drainRunFilesOnCleanup(run, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), run, nil, emit)
 		if len(events) != 0 {
 			t.Fatalf("events = %+v, want none — success is the log's, not the stream's", events)
 		}
 	})
 	t.Run("a run without the export seam is not asked", func(t *testing.T) {
 		events = nil
-		drainRunFilesOnCleanup(&plainFakeRun{}, nil, emit)
+		drainRunFilesOnCleanup(context.Background(), &plainFakeRun{}, nil, emit)
 		if len(events) != 0 {
 			t.Fatalf("events = %+v, want none", events)
 		}
@@ -529,7 +529,7 @@ func TestAFailedDrainWarnsThePartialUploadNotAnEmptyPanel(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	run := &drainFakeRun{exportErr: errors.New("kubectl exec failed")}
-	drainRunFilesOnCleanup(run, logger, func(store.EventType, map[string]any) error { return nil })
+	drainRunFilesOnCleanup(context.Background(), run, logger, func(store.EventType, map[string]any) error { return nil })
 
 	out := buf.String()
 	if out == "" {

@@ -11,6 +11,8 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { forgetLostRunsForTest } from "@/lib/lostRuns";
+
 import { RunShellPanel } from "./RunShellPanel";
 
 const written: (string | Uint8Array)[] = [];
@@ -98,6 +100,9 @@ async function openedPanel(): Promise<FakeWebSocket> {
 }
 
 beforeEach(() => {
+  // A scope_lost close marks the run lost for the page; each witness starts
+  // on a page that lost nothing.
+  forgetLostRunsForTest();
   written.length = 0;
   FakeWebSocket.instances.length = 0;
   vi.stubGlobal("WebSocket", FakeWebSocket);

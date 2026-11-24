@@ -885,3 +885,62 @@ func TestRun_RejectsAnUnusableSpec(t *testing.T) {
 		}
 	}
 }
+
+// stopsInFlight answers an Acquire the way a call already in flight does when
+// its caller stops: the store read a live context and its write landed, and
+// the stop arrives before the answer.
+type stopsInFlight struct {
+	Store
+	stop context.CancelFunc
+}
+
+func (s stopsInFlight) Acquire(ctx context.Context, name, owner string, now time.Time, ttl time.Duration) (bool, error) {
+	ok, err := s.Store.Acquire(context.WithoutCancel(ctx), name, owner, now, ttl)
+	s.stop()
+	return ok, err
+}
+
+// A campaign stopped while the acquire that takes the lease is in flight
+// serves no term: fn would start on a cancelled context, and a pass that runs
+// before it reads its context is work done by a replica that was stopping —
+// the peer pass that flaked the idle-holder witness (#3400). The lease it was
+// granted goes back at once, for Run and for TryRun.
+func TestRun_aCampaignStoppedWhileItsAcquireIsInFlightServesNoTerm(t *testing.T) {
+	for _, entry := range []struct {
+		name string
+		run  func(ctx context.Context, st Store, sp Spec, fn func(context.Context)) error
+	}{
+		{"Run", Run},
+		{"TryRun", func(ctx context.Context, st Store, sp Spec, fn func(context.Context)) error {
+			ran, err := TryRun(ctx, st, sp, fn)
+			if ran {
+				return errors.New("TryRun reported a term served")
+			}
+			if !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("TryRun = %v, want the stop named (context.Canceled)", err)
+			}
+			return nil
+		}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			mem := NewMemoryStore()
+			sp := spec("replica-0", 150*time.Millisecond, &logSink{})
+			served := 0
+			if err := entry.run(ctx, stopsInFlight{Store: mem, stop: stop}, sp, func(context.Context) { served++ }); err != nil {
+				t.Fatal(err)
+			}
+			if served != 0 {
+				t.Fatalf("a campaign stopped while its acquire was in flight served %d term(s) on a cancelled context", served)
+			}
+			h, held, err := mem.Holder(context.Background(), sp.Name)
+			if err != nil {
+				t.Fatalf("Holder: %v", err)
+			}
+			if held {
+				t.Fatalf("the lease the late answer granted is still held by %q: a live peer waits out the TTL", h.Owner)
+			}
+		})
+	}
+}

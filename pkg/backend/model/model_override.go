@@ -209,12 +209,13 @@ func (o ModelOverrides) LadderRoute(n ir.LLMNode) (model, provider string) {
 // NodeFieldSources names, per routing field, the rule that won it on a node
 // (ForNodeFieldSources). A zero FieldSource: no rule set the field.
 type NodeFieldSources struct {
-	Backend, Model, Provider FieldSource
+	Backend, Model, Provider, Effort FieldSource
 }
 
 // ForNodeFieldSources resolves exactly as ForNode and additionally names,
 // for the fields the launch's composed checks read (backend, model,
-// provider), the rule that won each. ONE walk: ForNode delegates here, so
+// provider) and the one the effort's provenance reads, the rule that won
+// each. ONE walk: ForNode delegates here, so
 // a check's provenance and the resolution it names cannot drift (#2637).
 func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, NodeFieldSources) {
 	var out NodeModelOverride
@@ -247,6 +248,7 @@ func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeMo
 		}
 		if r.Effort != "" && takes(r.rank, score, be) {
 			out.Effort, be = r.Effort, best{r.rank, score}
+			src.Effort = FieldSource{Selector: r.selector}
 		}
 	}
 	return out, src

@@ -1,12 +1,8 @@
 import { memo, useCallback } from "react";
 
 import { EVENT_BADGE, indentForType, type AnnotatedEvent } from "./eventModel";
-import {
-  ToolPayloadBlock,
-  pickInlinePayload,
-  pickRef,
-  pickSize,
-} from "../detail/ToolCalls";
+import { ToolPayloadBlock } from "../detail/ToolCalls";
+import { pickInlinePayload, pickRef, pickSize } from "../detail/toolCallModel";
 
 // Event types that carry a tool I/O payload worth expanding inline (the
 // timeline equivalent of the per-node Tools tab). tool_started carries the

@@ -264,7 +264,7 @@ func TestEnsureRunFilesDirReplacesSymlink(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	outside := t.TempDir()
-	dir := s.runFilesDir(runID)
+	dir := filepath.Join(s.runDir(runID), "artifact_files")
 	if err := os.Symlink(outside, dir); err != nil {
 		if runtime.GOOS == "windows" {
 			t.Skipf("symlink unavailable on windows: %v", err)
@@ -334,62 +334,70 @@ func TestOpenRunFileRejectsIntermediateSymlinkSwap(t *testing.T) {
 	}
 }
 
-// TestWriteRunEventsSyncBarrier pins the write-ahead ordering barrier:
-// once an AppendEvent fsync failure flags a run, the next run.json write
-// re-syncs events.jsonl first and clears the flag — the checkpoint can
-// never be durably ahead of its event log.
+// TestWriteRunEventsSyncBarrier exercises the barrier through a fresh handle,
+// which cannot inherit process-local knowledge of an earlier append/fsync.
 func TestWriteRunEventsSyncBarrier(t *testing.T) {
+	t.Parallel()
 	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	r, err := s.CreateRun(ctx, "run-barrier", "wf", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AppendEvent(ctx, "run-barrier", Event{Type: EventRunStarted}); err != nil {
+	if _, err := s.AppendEvent(ctx, r.ID, Event{Type: EventRunStarted}); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a prior fsync failure (fault injection at the syscall level
-	// isn't portable; the flag is the observable contract).
-	s.mu.Lock()
-	s.eventsUnsynced["run-barrier"] = true
-	s.mu.Unlock()
-
-	if err := s.SaveRun(ctx, r); err != nil {
-		t.Fatalf("SaveRun with pending events re-sync: %v", err)
+	other, err := New(s.root)
+	if err != nil {
+		t.Fatal(err)
 	}
-	s.mu.Lock()
-	still := s.eventsUnsynced["run-barrier"]
-	s.mu.Unlock()
-	if still {
-		t.Fatal("writeRun did not clear the unsynced flag after re-syncing events.jsonl")
+	if err := other.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
 	}
-
-	// A flagged run with NO events file (append failed before creating it)
-	// must not block the checkpoint write.
+	before, err := os.ReadFile(s.runJSONPath(r.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := s.eventsPath(r.ID)
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.SaveRun(ctx, r); err == nil {
+		t.Fatal("checkpoint ignored unreadable shared event log")
+	}
+	after, err := os.ReadFile(s.runJSONPath(r.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed durability barrier changed checkpoint")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".saved", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.SaveRun(ctx, r); err != nil {
+		t.Fatalf("repaired log blocks checkpoint: %v", err)
+	}
 	r2, err := s.CreateRun(ctx, "run-barrier-noevents", "wf", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	s.eventsUnsynced["run-barrier-noevents"] = true
-	s.mu.Unlock()
-	if err := s.SaveRun(ctx, r2); err != nil {
-		t.Fatalf("SaveRun with missing events file: %v", err)
+	if err := other.SaveRun(ctx, r2); err != nil {
+		t.Fatalf("missing events file: %v", err)
 	}
-	// A successful AppendEvent fsync clears the flag on its own.
-	s.mu.Lock()
-	s.eventsUnsynced["run-barrier"] = true
-	s.mu.Unlock()
-	if _, err := s.AppendEvent(ctx, "run-barrier", Event{Type: EventNodeStarted}); err != nil {
+	if _, err := s.AppendEvent(ctx, r.ID, Event{Type: EventNodeStarted}); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	still = s.eventsUnsynced["run-barrier"]
-	s.mu.Unlock()
-	if still {
-		t.Fatal("a successful AppendEvent fsync must clear the unsynced flag")
+	if err := other.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
 	}
 }

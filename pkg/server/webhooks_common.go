@@ -122,6 +122,10 @@ type webhookEventMeta struct {
 	// not guarantee delivery order — see webhooks.DeferredPayloadIsStale.
 	// Empty when the payload omits it.
 	EventUpdatedAt string
+	// DeliveryID is the forge's own id of this event, the one its
+	// redeliveries carry again (forgeDeliveryID). Set by the lanes that
+	// read it; persisted as Delivery.ForgeDeliveryID.
+	DeliveryID string
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -729,6 +733,7 @@ func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payl
 		ClosesSubject:   meta.ClosesSubject,
 		SubjectSHA:      meta.SubjectSHA,
 		PayloadHash:     payloadHash,
+		ForgeDeliveryID: meta.DeliveryID,
 		Status:          status,
 		SourceIP:        srcIP,
 		ReceivedAt:      now,
@@ -860,11 +865,17 @@ type forgeLaunchTarget struct {
 	// row (the sweeper, the manual retry — prepareWebhookRetry) rebuilds the
 	// target without it and posts no note, and a duplicate fires none.
 	onLaunched func(webhookLaunchResult)
-	BotID      string
-	IdemKey    string
-	Vars       map[string]string
-	RepoURL    string
-	RepoRef    string
+	// onClaimDecided, when set, learns how the tail decided this target's
+	// claim before anything launches: claimed (the row under IdemKey is this
+	// delivery's now — inserted, or a failed claim taken over), or a
+	// duplicate of existing, the row that answers it. Never persisted, like
+	// onLaunched; an admission refusal decides no claim and fires none.
+	onClaimDecided func(claimed bool, existing *webhooks.Delivery)
+	BotID          string
+	IdemKey        string
+	Vars           map[string]string
+	RepoURL        string
+	RepoRef        string
 	// Trust says who wrote the code at (RepoURL, RepoRef). The zero value is
 	// the trusted default, so every target built before the fork lane existed
 	// keeps its meaning. launchWebhookTarget cross-checks it against the
@@ -879,6 +890,13 @@ type forgeLaunchTarget struct {
 	// per-contributor bound the tail's admission gate meters. Nil on every
 	// lane but the fork gesture's.
 	ForkAuthor *webhooks.ForkAuthorRef
+}
+
+// claimDecided reports the tail's claim decision to the target's observer.
+func (t forgeLaunchTarget) claimDecided(claimed bool, existing *webhooks.Delivery) {
+	if t.onClaimDecided != nil {
+		t.onClaimDecided(claimed, existing)
+	}
 }
 
 // webhookLaunchResult is one bot's outcome inside a (possibly multi-bot)
@@ -1271,6 +1289,7 @@ func (s *Server) prepareWebhookTarget(
 			if existing.Status != webhooks.StatusLaunchError || existing.RunID != "" {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
+				t.claimDecided(false, &existing)
 				return out, nil
 			}
 			ex := existing
@@ -1390,9 +1409,11 @@ func (s *Server) prepareWebhookTarget(
 				out.DeliveryID = reusePriorFailure.ID
 				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
 					out.duplicateOf(existing)
+					t.claimDecided(false, &existing)
 				}
 				return out, nil
 			}
+			t.claimDecided(true, nil)
 		}
 	} else if s.webhookDeliveries != nil {
 		if err := s.webhookDeliveries.Insert(ctx, delivery); err != nil {
@@ -1416,6 +1437,7 @@ func (s *Server) prepareWebhookTarget(
 				}
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
+				t.claimDecided(false, &existing)
 				return out, nil
 			}
 			adm.rollback(s.logger)
@@ -1424,6 +1446,7 @@ func (s *Server) prepareWebhookTarget(
 			out.httpStatus = http.StatusInternalServerError
 			return out, nil
 		}
+		t.claimDecided(true, nil)
 	}
 
 	out.Status, out.DeliveryID = webhooks.StatusAccepted, delivery.ID

@@ -28,6 +28,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { formatDate } from "@/lib/format";
+import { storedLabelFilter } from "@/lib/labelFilter";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
@@ -482,7 +483,9 @@ function ReplaceTokenRow({
               type="password"
               value={draft}
               placeholder="glpat-…"
-              autoComplete="off"
+              // "new-password", not "off": a browser ignores "off" on a
+              // password input and fills the saved login's password into it.
+              autoComplete="new-password"
               onChange={(e) => setDraft(e.target.value)}
               disabled={busy}
             />
@@ -532,6 +535,7 @@ function RepoRow({
   const [lastSync, setLastSync] = useState<ForgeSyncResult | null>(null);
   const toggleAction = useAsyncAction();
   const syncAction = useAsyncAction();
+  const labelFilter = storedLabelFilter(integration);
 
   const onToggle = async (next: boolean) => {
     // Optimistic: flip immediately, revert on error so the checkbox never
@@ -584,6 +588,19 @@ function RepoRow({
             {integration.repo_full_name}
           </Link>{" "}
           <span className="text-fg-muted">· {integration.bot_ids.join(", ")}</span>
+          {labelFilter.length > 0 && (
+            // The filter narrows which issue label starts the bots named just
+            // before it: a repo whose bots stay silent on a label is read
+            // here, without opening the Enable panel.
+            <span
+              className="text-fg-muted"
+              title="Only these freshly applied issue labels start this repo's bots — pull requests and commands are not filtered"
+            >
+              {" "}
+              · starts only on issue labels:{" "}
+              <span className="font-mono">{labelFilter.join(", ")}</span>
+            </span>
+          )}
           {integration.project_bot?.login && (
             <span
               className="text-fg-muted"
