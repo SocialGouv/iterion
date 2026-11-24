@@ -469,6 +469,12 @@ without a size is not finite: any `subagents_*` line without
 the reserve. Beside `mode: off` the reserve arms nothing as written
 (**C357**), the reach **C348** names for the bounds.
 
+A permission gate judges the program itself: under `permission: deny` or
+`ask`, the `codemode` tool needs an allow rule like any tool, or every
+program is refused (deny) or pauses the run (ask) — **C358** warns at compile
+time. Listing `"codemode"` in `allow:` widens nothing the rules do not already
+allow: each call a program makes is judged one by one, by the same gate.
+
 Use `store_entries` and `store_bytes` in the **workflow** `codemode:` block,
 not on an agent or judge. They bound the bank shared by all codemode programs
 in the run: 32 keys and 131072 bytes of UTF-8 keys plus stored JSON by default,

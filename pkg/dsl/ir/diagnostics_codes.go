@@ -572,4 +572,13 @@ const (
 	// the workflow's reserve is a default every node that turns codemode on
 	// itself inherits.
 	DiagCodemodeSubagentsWithModeOff DiagCode = "C357" // codemode subagents reserve declared beside `mode: off` on a node — no program runs, so the reserve arms nothing (warning)
+
+	// A node whose authored codemode resolves on, under a permission gate
+	// (deny or ask) that does not allow the `codemode` tool itself: the gate
+	// judges the program's vehicle like any tool, so under deny every program
+	// is refused and under ask every program pauses the run. The nested calls
+	// are judged one by one anyway; listing "codemode" in `allow` is the
+	// author's explicit opt-in (#3647). A warning: a launch rung can still
+	// change codemode, and a grant can still change the gate.
+	DiagCodemodeRefusedByPermissionGate DiagCode = "C358" // codemode on under a deny/ask permission gate that does not allow the `codemode` tool — every program is refused (deny) or pauses the run (ask) (warning)
 )

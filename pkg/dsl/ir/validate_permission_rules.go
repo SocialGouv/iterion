@@ -101,6 +101,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 	c.checkPermissionRuleSyntax(w)
 	c.checkShellClassCoverage(w)
 	c.checkRulesWithoutToolSurface(w)
+	c.checkCodemodeUnderPermissionGate(w)
 
 	// An unresolvable mode makes every reachability verdict below rest on a
 	// run that cannot start. C110 is what the author must fix first; C111
@@ -614,3 +615,49 @@ func joinRuleKinds(kinds []string) string {
 	}
 	return strings.Join(out, "/")
 }
+
+// checkCodemodeUnderPermissionGate warns (C358) where a node's authored
+// codemode resolves on and the permission gate the node runs under would not
+// let the program itself run. The verdict is the gate's own: the node's
+// effective mode and rules are handed to permission.Evaluate for the
+// `codemode` tool, the call the dispatcher makes before any program starts —
+// a prediction re-derived here from rule text would drift from it.
+func (c *compiler) checkCodemodeUnderPermissionGate(w *Workflow) {
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok || !ResolveCodemode("", nn.GetCodemode(), w.Codemode).On {
+			continue
+		}
+		mode := EffectivePermission(nn.GetPermission(), w.Permission)
+		if !gateModeIsOn(mode) {
+			continue
+		}
+		parsed, err := permission.ParseMode(mode)
+		if err != nil {
+			continue // C110 names an unknown mode
+		}
+		policy, err := permission.NewPolicy(parsed,
+			EffectivePermissionRules(nn.GetPermissionAllow(), w.PermissionAllow),
+			EffectivePermissionRules(nn.GetPermissionAsk(), w.PermissionAsk),
+			EffectivePermissionRules(nn.GetPermissionDeny(), w.PermissionDeny))
+		if err != nil {
+			continue // C154 names the malformed rule
+		}
+		decision, _ := policy.Evaluate(CodemodeToolName, nil)
+		switch decision {
+		case permission.Deny:
+			c.warnfAt(DiagCodemodeRefusedByPermissionGate, nn.NodeID(), "",
+				"%s %q turns codemode on, but its permission gate (%s) does not allow the `codemode` tool: every program it writes is refused before it runs",
+				nn.NodeKind().String(), nn.NodeID(), mode)
+		case permission.Ask:
+			c.warnfAt(DiagCodemodeRefusedByPermissionGate, nn.NodeID(), "",
+				"%s %q turns codemode on, but its permission gate (%s) asks about the `codemode` tool: every program it writes pauses the run for an approval",
+				nn.NodeKind().String(), nn.NodeID(), mode)
+		}
+	}
+}
+
+// CodemodeToolName is the tool the claw route registers a node's programs
+// under. pkg/backend/model.ScriptHostToolName IS this constant, so the name
+// the gate is asked about here is the name the dispatcher asks about.
+const CodemodeToolName = "codemode"

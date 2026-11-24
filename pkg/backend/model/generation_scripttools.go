@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
@@ -18,19 +19,14 @@ import (
 // The script host's tool server: a nested call IS a direct call.
 // ---------------------------------------------------------------------------
 
-// ScriptHostToolName is the name the codemode tool will carry when a later
-// slice registers it on a node.
+// ScriptHostToolName is the name the codemode tool carries on a node.
 //
-// Declared now, and already honoured by [keepsPlaceholders] and by the
-// withheld class, because the two defects it guards are both the kind that
-// pass unnoticed: a materialised secret in the script source, and a script
-// nesting another script host. Naming it here means the slice that registers
-// the tool inherits both rather than rediscovering them — and a constant one
-// `grep` finds beats a string literal in three files.
-//
-// No tool answers to it yet. CM-1b is driven by tests, which is why nothing
-// model-facing opens with it.
-const ScriptHostToolName = "codemode"
+// It is honoured by [keepsPlaceholders] and by the withheld class, because the
+// two defects it guards are both the kind that pass unnoticed: a materialised
+// secret in the script source, and a script nesting another script host. It
+// IS the compiler's ir.CodemodeToolName, so the tool the C358 warning asks the
+// permission gate about is the one the dispatcher gates.
+const ScriptHostToolName = ir.CodemodeToolName
 
 // scriptToolServer answers a script's tool call by dispatching it through the
 // NODE'S OWN DOOR.
