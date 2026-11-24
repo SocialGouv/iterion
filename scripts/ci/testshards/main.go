@@ -176,10 +176,16 @@ func warnUnknownWeights(table map[string]float64, pkgs []string) {
 }
 
 // listPackages runs `go list -mod=vendor ./...` in the working directory, the
-// exact list the CI jobs test. go list output is sorted and stable for a given
+// exact list the CI jobs test.
+func listPackages() ([]string, error) { return listPackagesAt("") }
+
+// listPackagesAt runs `go list -mod=vendor ./...` in dir, or the working
+// directory when dir is empty. go list output is sorted and stable for a given
 // tree and toolchain; the sort here is belt and braces.
-func listPackages() ([]string, error) {
-	out, err := exec.Command("go", "list", "-mod=vendor", "./...").Output()
+func listPackagesAt(dir string) ([]string, error) {
+	cmd := exec.Command("go", "list", "-mod=vendor", "./...")
+	cmd.Dir = dir
+	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -226,6 +232,25 @@ func shardByHash(pkgs []string, n int) [][]string {
 	return shards
 }
 
+// weightOf returns a package's table weight, 1 when unlisted — the single rule
+// by which the packing, the dump and the committed-table guard read the table,
+// so an unlisted package can never mean two different weights.
+func weightOf(path string, table map[string]float64) float64 {
+	if w, ok := table[path]; ok {
+		return w
+	}
+	return 1
+}
+
+// shardWeight sums weightOf over a shard's packages.
+func shardWeight(pkgs []string, table map[string]float64) float64 {
+	var w float64
+	for _, p := range pkgs {
+		w += weightOf(p, table)
+	}
+	return w
+}
+
 // shardByWeights is LPT bin-packing in the total order (weight desc, path
 // asc): each package in turn lands on the least-loaded shard, ties to the
 // lowest index. Unlisted packages weigh 1 so a stale table degrades to
@@ -237,11 +262,7 @@ func shardByWeights(pkgs []string, n int, table map[string]float64) [][]string {
 	}
 	items := make([]item, 0, len(pkgs))
 	for _, p := range pkgs {
-		w := 1.0
-		if v, ok := table[p]; ok {
-			w = v
-		}
-		items = append(items, item{path: p, weight: w})
+		items = append(items, item{path: p, weight: weightOf(p, table)})
 	}
 	sort.Slice(items, func(a, b int) bool {
 		if items[a].weight != items[b].weight {
@@ -312,14 +333,7 @@ func loadWeights(path string) (map[string]float64, error) {
 
 func dump(shards [][]string, table map[string]float64, out io.Writer) error {
 	for i, pkgs := range shards {
-		var w float64
-		for _, p := range pkgs {
-			if v, ok := table[p]; ok {
-				w += v
-			} else {
-				w++
-			}
-		}
+		w := shardWeight(pkgs, table)
 		if _, err := fmt.Fprintf(out, "# shard %d: %d packages, weight %.0f\n%s\n", i, len(pkgs), w, strings.Join(pkgs, " ")); err != nil {
 			return err
 		}
