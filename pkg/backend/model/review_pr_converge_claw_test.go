@@ -31,20 +31,23 @@ import (
 // the grant inert: it answers as if the grant were absent, which is exactly
 // the silent shape review-pr's merge shipped as on its gateway route (F4:
 // tool-less `converge` on claw, no report, no board issue). The refusal
-// reads the surface the dispatch would serve, never the nilness of the
-// declaration (toolcatalog.ToolsDeclared) — the two disagree exactly on
-// `tools: []`. Refused by type at the claw backend, one route's failure, so
-// the node's fallbacks can serve it like any other ErrCapabilityUnsupported
-// here. `interaction:` is exempt: its ask_user append fires before the
-// grant gate, so its union is never empty and the board append serves for
-// real.
+// reads the surface claw's wire serves — ToolDefs, through
+// clawServesToolDefs — never AllowedTools (the CLI backends' allowlist) nor
+// the nilness of the declaration (toolcatalog.ToolsDeclared), which
+// disagrees with the surface exactly on `tools: []`. Refused by type at the
+// claw backend, one route's failure, so the node's fallbacks can serve it
+// like any other ErrCapabilityUnsupported here. The served arms assert the
+// first model request carries the task's ToolDefs; an `interaction:` node
+// is served because its ask_user rides those ToolDefs.
 //
 // Mutations that redden it: drop the inert-grant refusal from
 // ClawBackend.Execute (refused arms run the loop instead); gate it back on
 // the declaration's nilness instead of the empty surface (the
-// declared-but-empty arm reddens — the HIGH of the round-1 review); drop
-// the interaction exemption (that arm reddens); read AllowedTools alone
-// (an appends-inflated union would hide a listless declaration).
+// declared-but-empty arm reddens); add `len(task.AllowedTools) == 0` back
+// to the gate (the list-the-wire-never-serves arm reddens); make
+// clawServesToolDefs answer false (the served arms redden); add
+// `!task.InteractionEnabled` back to the gate (the
+// interaction-without-ToolDefs arm reddens).
 func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
@@ -147,40 +150,115 @@ func TestClawRefusesAnInertCapabilityGrant(t *testing.T) {
 		}
 	})
 
-	t.Run("a declared surface is served", func(t *testing.T) {
+	t.Run("a list the wire never serves is refused", func(t *testing.T) {
 		t.Parallel()
-		served := NewClawBackend(servedRegistry(t, textEvents("merged", 100, 20)), EventHooks{}, RetryPolicy{})
-		_, err := served.Execute(context.Background(), delegate.Task{
+		// AllowedTools is the CLI backends' allowlist; claw's wire builds
+		// the request's tools from ToolDefs alone, so a grant riding a list
+		// without ToolDefs reaches the model tool-less. Refused before any
+		// model request is spent.
+		mock := newMockClient(textEvents("merged", 100, 20))
+		reg := NewRegistry()
+		reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+		_, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{}).Execute(context.Background(), delegate.Task{
 			NodeID: "merge", Model: "test/m", UserPrompt: "x",
 			Capabilities:  []string{"board.read", "board.create", "board.label"},
-			AllowedTools:  []string{"read_file", "write_file", "glob", "todo_write"},
+			AllowedTools:  []string{"read_file", "write_file", "glob", "todo_write", "mcp__iterion_board__list_issues"},
 			ToolsDeclared: true, HasTools: true, ToolMaxSteps: 3,
 		})
 		var typed *delegate.ErrCapabilityUnsupported
-		if errors.As(err, &typed) {
-			t.Fatalf("a declared surface was refused: %v", typed)
+		if !errors.As(err, &typed) {
+			t.Fatalf("err = %v, want an ErrCapabilityUnsupported: the grant rides a list claw's wire never serves", err)
 		}
-		if err != nil {
-			t.Fatalf("the served arm errored otherwise: %v", err)
+		if calls := mock.getCalls(); len(calls) != 0 {
+			t.Fatalf("the refused task spent %d model request(s), want none", len(calls))
 		}
 	})
 
-	t.Run("interaction grants are served too", func(t *testing.T) {
+	t.Run("a declared surface is served", func(t *testing.T) {
 		t.Parallel()
-		served := NewClawBackend(servedRegistry(t, textEvents("asked", 100, 20)), EventHooks{}, RetryPolicy{})
-		_, err := served.Execute(context.Background(), delegate.Task{
+		defs := []delegate.ToolDef{servedToolDef("read_file"), servedToolDef("mcp_iterion_board_list_issues")}
+		offered := servedSurface(t, delegate.Task{
+			NodeID: "merge", Model: "test/m", UserPrompt: "x",
+			Capabilities:  []string{"board.read", "board.create", "board.label"},
+			ToolDefs:      defs,
+			ToolsDeclared: true, HasTools: true, ToolMaxSteps: 3,
+		})
+		if !slices.Equal(offered, []string{"read_file", "mcp_iterion_board_list_issues"}) {
+			t.Fatalf("the first model request offered %v, want the task's ToolDefs [read_file mcp_iterion_board_list_issues]", offered)
+		}
+	})
+
+	t.Run("an interaction node with no ToolDefs is refused", func(t *testing.T) {
+		t.Parallel()
+		// An interaction node passes the gate through the ask_user tool its
+		// ToolDefs carry, never through the interaction flag: with no
+		// ToolDefs the grant is as inert as on any listless node.
+		mock := newMockClient(textEvents("asked", 100, 20))
+		reg := NewRegistry()
+		reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+		_, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{}).Execute(context.Background(), delegate.Task{
 			NodeID: "asker", Model: "test/m", UserPrompt: "x",
 			Capabilities:       []string{"board.read"},
 			InteractionEnabled: true, HasTools: true, ToolMaxSteps: 3,
 		})
 		var typed *delegate.ErrCapabilityUnsupported
-		if errors.As(err, &typed) {
-			t.Fatalf("an interaction node's grant was refused: %v — its ask_user append fires before the grant gate", typed)
+		if !errors.As(err, &typed) {
+			t.Fatalf("err = %v, want an ErrCapabilityUnsupported: the interaction flag serves no grant without ToolDefs", err)
 		}
-		if err != nil {
-			t.Fatalf("the interaction arm errored otherwise: %v", err)
+		if calls := mock.getCalls(); len(calls) != 0 {
+			t.Fatalf("the refused task spent %d model request(s), want none", len(calls))
 		}
 	})
+
+	t.Run("interaction grants are served too", func(t *testing.T) {
+		t.Parallel()
+		offered := servedSurface(t, delegate.Task{
+			NodeID: "asker", Model: "test/m", UserPrompt: "x",
+			Capabilities:       []string{"board.read"},
+			ToolDefs:           []delegate.ToolDef{servedToolDef(askUserToolName)},
+			InteractionEnabled: true, HasTools: true, ToolMaxSteps: 3,
+		})
+		if !slices.Equal(offered, []string{askUserToolName}) {
+			t.Fatalf("the first model request offered %v, want the interaction node's ToolDefs [%s]", offered, askUserToolName)
+		}
+	})
+}
+
+// servedToolDef is a no-op tool the served arms hand claw by name.
+func servedToolDef(name string) delegate.ToolDef {
+	return delegate.ToolDef{
+		Name:        name,
+		Description: name,
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute:     func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+	}
+}
+
+// servedSurface runs task on claw against a scripted text answer and
+// returns the tool names its first model request offered. A refusal or any
+// other error fails the test: the arms calling it expect the grant served.
+func servedSurface(t *testing.T, task delegate.Task) []string {
+	t.Helper()
+	mock := newMockClient(textEvents("done", 100, 20), textEvents("done", 100, 20), textEvents("done", 100, 20))
+	reg := NewRegistry()
+	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+	_, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{}).Execute(context.Background(), task)
+	var typed *delegate.ErrCapabilityUnsupported
+	if errors.As(err, &typed) {
+		t.Fatalf("a served surface was refused: %v", typed)
+	}
+	if err != nil {
+		t.Fatalf("the served arm errored otherwise: %v", err)
+	}
+	calls := mock.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("the served arm sent no model request")
+	}
+	names := make([]string, 0, len(calls[0].Tools))
+	for _, tl := range calls[0].Tools {
+		names = append(names, tl.Name)
+	}
+	return names
 }
 
 // servedRegistry is a Registry serving one text answer on "test/m": enough
