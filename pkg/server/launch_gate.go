@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -49,13 +50,16 @@ type OrgLimitDefaults struct {
 // launchDenial is one launch-gate refusal: an HTTP status, a stable
 // machine-readable reason token (the SPA and API clients switch on
 // it), and a human detail. Quota denials carry the month-reset time;
-// throttle denials carry a Retry-After hint.
+// throttle denials carry a Retry-After hint. fenceArmed marks the
+// maintenance denial of the operator's armed fence, as opposed to a fence
+// record that could not be read.
 type launchDenial struct {
 	status     int
 	reason     string
 	detail     string
 	retryAfter time.Duration
 	resetAt    time.Time
+	fenceArmed bool
 }
 
 // launchDeniedError is a gate denial as an error, for the launch surfaces
@@ -63,11 +67,13 @@ type launchDenial struct {
 // (the board dispatcher, whose card keeps the rule that refused it).
 // Reason is the stable denial token below; Detail the sentence the HTTP
 // envelope carries; RetryAfter / ResetAt the hints it would have sent.
+// FenceArmed marks the maintenance denial of the operator's armed fence.
 type launchDeniedError struct {
 	Reason     string
 	Detail     string
 	RetryAfter time.Duration
 	ResetAt    time.Time
+	FenceArmed bool
 }
 
 func (e *launchDeniedError) Error() string {
@@ -79,8 +85,13 @@ func (e *launchDeniedError) Error() string {
 
 // Preserve the HTTP denial details while giving durable consumers a typed
 // postponement, distinct from a launch failure with a bounded retry budget.
+// The armed fence's hold is the narrower schedgate.ErrMaintenanceFenceArmed,
+// which still wraps the hold.
 func (e *launchDeniedError) Unwrap() error {
 	if e.Reason == denyMaintenanceFence {
+		if e.FenceArmed {
+			return schedgate.ErrMaintenanceFenceArmed
+		}
 		return trigger.ErrMaintenanceHold
 	}
 	return nil
@@ -112,7 +123,7 @@ func (d *launchDenial) err() error {
 	if d == nil {
 		return nil
 	}
-	return &launchDeniedError{Reason: d.reason, Detail: d.detail, RetryAfter: d.retryAfter, ResetAt: d.resetAt}
+	return &launchDeniedError{Reason: d.reason, Detail: d.detail, RetryAfter: d.retryAfter, ResetAt: d.resetAt, FenceArmed: d.fenceArmed}
 }
 
 // Stable denial reason tokens (API contract — documented in

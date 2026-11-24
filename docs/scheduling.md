@@ -740,8 +740,10 @@ producing successful runs:
   resumed after a long pause carries a stale slot the ticker catches up on
   its next tick, so the grace runs from the resume;
 - **launch refused** — `last_error` is set: the last tick launched no run.
-  A slot held by the maintenance fence is postponed, not refused: it
-  leaves `last_error` as it was and raises nothing;
+  A slot held by the operator's armed maintenance fence is postponed, not
+  refused: it leaves `last_error` as it was and raises nothing. A fence
+  record that cannot be read, or a run that cannot be persisted, holds
+  the slot too but writes `last_error` and alerts;
 - **run failed** — `last_run_status` is `failed` or `failed_resumable`.
 
 The causes are checked in that order, so an older failed run does not hide

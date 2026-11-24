@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 )
 
@@ -212,6 +213,36 @@ func TestScheduleOutcomeWatchResumeAfterLongPause(t *testing.T) {
 // An armed maintenance fence holds every due slot: a postponement the
 // operator chose, not a stalled schedule.
 func TestScheduleOutcomeWatchMaintenanceFenceIsSilent(t *testing.T) {
+	fence := platformcfg.NewMemoryStore[platformcfg.Maintenance]()
+	if err := fence.Put(context.Background(), platformcfg.Maintenance{FenceLaunches: true, Reason: "deploy v7.35"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := sweepBehindMaintenance(t, fence); len(got) != 0 {
+		t.Fatalf("an armed maintenance fence raised %d schedule_stalled alerts, want 0: %+v", len(got), got)
+	}
+}
+
+// A maintenance store that cannot be read holds every due slot too, but no
+// operator chose it and it lasts as long as the outage: each schedule raises
+// one launch_refused alert.
+func TestScheduleOutcomeWatchUnreadableFenceAlerts(t *testing.T) {
+	got := sweepBehindMaintenance(t, brokenMaintenanceStore{})
+	if len(got) != 3 {
+		t.Fatalf("an unreadable maintenance fence raised %d schedule_stalled alerts, want 3: %+v", len(got), got)
+	}
+	for _, a := range got {
+		if a.Kind != alert.KindScheduleStalled || !strings.Contains(a.Reason, "launches no run since") ||
+			!strings.Contains(a.Reason, "maintenance.fence_launches could not be read") {
+			t.Fatalf("alert = %+v, want a launch_refused schedule_stalled alert naming the unreadable fence", a)
+		}
+	}
+}
+
+// sweepBehindMaintenance creates three due schedules, ticks them through the
+// server's maintenance gate backed by store, and returns the alerts of one
+// sweep a minute later.
+func sweepBehindMaintenance(t *testing.T, store platformcfg.Store[platformcfg.Maintenance]) []alert.Alert {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
 	st := cloudsched.NewMemoryStore()
@@ -221,19 +252,18 @@ func TestScheduleOutcomeWatchMaintenanceFenceIsSilent(t *testing.T) {
 			t.Fatalf("Create %s: %v", id, err)
 		}
 	}
-	fence := (&launchDenial{status: http.StatusServiceUnavailable, reason: denyMaintenanceFence,
-		detail: "maintenance.fence_launches is armed since 2026-11-24T08:59:00Z: deploy v7.35"}).err()
+	sink := &advSink{}
+	s := watchReplica(st, usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = store
 	tk := &cloudsched.Ticker{Store: st, Now: func() time.Time { return now },
-		Launch: func(context.Context, cloudsched.ScheduledBot) error { return fence }}
+		Launch: func(ctx context.Context, _ cloudsched.ScheduledBot) error {
+			return s.gateMaintenance(ctx, launchSubject{}).err()
+		}}
 	if _, err := tk.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	sink := &advSink{}
-	s := watchReplica(st, usernotify.NewMemSentStore(), sink)
 	s.scheduleOutcomeSweep(ctx, now.Add(time.Minute), scheduleStallGraceFor(time.Minute))
-	if got := sink.snapshot(); len(got) != 0 {
-		t.Fatalf("an armed maintenance fence raised %d schedule_stalled alerts, want 0: %+v", len(got), got)
-	}
+	return sink.snapshot()
 }
 
 // Schedules stalled in the same way at the same instant share an episode;

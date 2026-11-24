@@ -176,10 +176,12 @@ func (t *Ticker) fireIntent(ctx context.Context, intent LaunchIntent, now time.T
 	if lerr != nil {
 		t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
 	}
-	// A held slot is not consumed, so it is no verdict on the schedule's
-	// health: the row keeps its previous verdict, the audit record carries
-	// the hold.
-	if !hold {
+	// The operator's armed fence is a postponement they chose, not a verdict
+	// on the schedule's health: the row keeps its previous verdict, the audit
+	// record carries the hold. Every other hold — an unreadable fence record,
+	// a run that could not be persisted — can last across ticks while nothing
+	// launches, so it is recorded like a refusal and the watch sees it.
+	if ctx.Err() == nil && !errors.Is(lerr, schedgate.ErrMaintenanceFenceArmed) {
 		t.recordLaunchVerdict(ctx, current, lerr, now)
 	}
 	if t.Audit != nil {

@@ -44,7 +44,7 @@ func (s *Server) gateMaintenance(ctx context.Context, subj launchSubject) *launc
 	if !rec.FenceLaunches {
 		return nil
 	}
-	return &launchDenial{status: http.StatusServiceUnavailable, reason: denyMaintenanceFence,
+	return &launchDenial{status: http.StatusServiceUnavailable, reason: denyMaintenanceFence, fenceArmed: true,
 		detail: fmt.Sprintf("maintenance.fence_launches is armed since %s: %s", rec.UpdatedAt.UTC().Format(time.RFC3339Nano), rec.Reason)}
 }
 
