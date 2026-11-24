@@ -403,7 +403,7 @@ func executeOneToolWithApproval(
 			return api.ContentBlock{}, &approvedDispatchInterrupted{cause: err}
 		}
 	}
-	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err)
+	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err, gt.imageResult)
 }
 
 // lookupGenerationTool resolves a tool_use name against the tool map. A
@@ -616,7 +616,12 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 // intentionally NOT fired — this isn't a tool failure, it's a suspension
 // request. The pending tool_use ID is stamped so the backend can craft a
 // tool_result block on resume.
-func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error) (api.ContentBlock, error) {
+//
+// imageResult (the tool's GenerationTool.imageResult) has a successful
+// output decoded into the description and image blocks it encodes, so the
+// model receives the image itself; an output that does not decode is the
+// producer's defect and shapes into an is_error result naming it.
+func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error, imageResult bool) (api.ContentBlock, error) {
 	if err != nil {
 		var askErr *delegate.ErrAskUser
 		if errors.As(err, &askErr) {
@@ -656,6 +661,17 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 		ToolInput:  hookInput,
 		ToolResult: output,
 	})
+	if imageResult {
+		content, decodeErr := tool.ImageResultContent(output)
+		if decodeErr != nil {
+			return api.ToolResult{
+				ToolUseID: tu.ID,
+				Content:   fmt.Sprintf("tool error: %s returned an unreadable image result: %v", tu.Name, decodeErr),
+				IsError:   true,
+			}.ToContentBlock(), nil
+		}
+		return api.ContentBlock{Type: "tool_result", ToolUseID: tu.ID, Content: content}, nil
+	}
 	return api.ToolResult{
 		ToolUseID: tu.ID,
 		Content:   output,

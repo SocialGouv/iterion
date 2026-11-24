@@ -44,6 +44,12 @@ type ToolDef struct {
 
 	// concurrentSafe is set only by audited native registration sites.
 	concurrentSafe bool
+
+	// imageResult marks a tool whose Execute output is a claw image result
+	// (ImageResultContent's input), set only by the registrations of the
+	// tools that produce one. The tool loop reads it to hand the model the
+	// image blocks instead of their JSON text.
+	imageResult bool
 }
 
 // Origin describes the provenance of a tool.
@@ -96,10 +102,17 @@ func NewRegistry() *Registry {
 // RegisterBuiltin adds a built-in tool. The name must not contain dots.
 // Returns an error if the name collides with an existing registration.
 func (r *Registry) RegisterBuiltin(name string, desc string, schema json.RawMessage, exec func(ctx context.Context, input json.RawMessage) (string, error)) error {
-	return r.registerBuiltin(name, desc, schema, exec, false)
+	return r.registerBuiltin(name, desc, schema, exec, builtinTraits{})
 }
 
-func (r *Registry) registerBuiltin(name string, desc string, schema json.RawMessage, exec func(context.Context, json.RawMessage) (string, error), concurrentSafe bool) error {
+// builtinTraits are the facts a native registration site attests about its
+// implementation.
+type builtinTraits struct {
+	concurrentSafe bool
+	imageResult    bool
+}
+
+func (r *Registry) registerBuiltin(name string, desc string, schema json.RawMessage, exec func(context.Context, json.RawMessage) (string, error), traits builtinTraits) error {
 	if strings.Contains(name, ".") {
 		return fmt.Errorf("tool: builtin name %q must not contain dots", name)
 	}
@@ -113,7 +126,8 @@ func (r *Registry) registerBuiltin(name string, desc string, schema json.RawMess
 		InputSchema:    schema,
 		Execute:        exec,
 		Origin:         Origin{Kind: OriginBuiltin},
-		concurrentSafe: concurrentSafe,
+		concurrentSafe: traits.concurrentSafe,
+		imageResult:    traits.imageResult,
 	}
 	return r.register(td)
 }

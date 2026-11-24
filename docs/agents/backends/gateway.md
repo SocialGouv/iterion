@@ -76,3 +76,23 @@ an older runner sends its text alone, which stays `EXECUTION_FAILED`. The
 [gateway and correction contracts](../../backends.md#the-openai-compatible-gateway-openai_compatible)
 list the values, deployment example and Claude Code's untyped-error
 limitation.
+
+## Images
+
+A claw node reaches a vision model on the gateway through two channels: an
+image block in the user prompt (`{{attachments.<name>}}`), and the image a
+tool returns (`read_image`; `screenshot` and `computer_use` where a display
+exists). The chat wire (`openaiwire.ConvertMessages`, shared with foundry;
+the Responses API mirrors it) sends both as `image_url` parts, a base64
+source as a data URL, and refuses an image block it cannot encode. A tool
+message is text only, so a tool's images ride in the next user message,
+announced by the tool text. The Mistral family's chat template refuses a
+user message right after a tool message (`Unexpected role 'user' after role
+'tool'`, text-only too), so an assistant message bridges them: tool →
+assistant → user is the one sequence every vision model measured on PLIAGE
+accepted (pixtral-12b, mistral-small-3.2, mistral-medium-3.5, gemma-4,
+qwen3.5, qwen3.6, deepseek-v4.1-flash, 24/11/2026). `glm-5.3` is not
+multimodal: an image turn fails `400 … is not a multimodal model`. A tool
+emits images only when its registration attests `imageResult`
+(`tool.ImageResultContent` decodes its output); every other tool output
+stays text.

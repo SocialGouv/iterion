@@ -81,15 +81,26 @@ func estimateBlockTokens(cb *api.ContentBlock) int {
 		// tool_name is not stored directly; use ToolUseID as proxy.
 		// Output is the nested text content.
 		outputLen := 0
+		images := 0
 		for _, inner := range cb.Content {
 			outputLen += len(inner.Text)
+			if inner.Type == "image" {
+				images++
+			}
 		}
-		return (len(cb.ToolUseID)+outputLen)/charsPerToken + 1
+		return (len(cb.ToolUseID)+outputLen)/charsPerToken + 1 + images*imageTokenEstimate
+	case "image":
+		return imageTokenEstimate
 	default:
 		// Text blocks and others
 		return len(cb.Text)/charsPerToken + 1
 	}
 }
+
+// imageTokenEstimate is the cost an image block counts for: a vision model
+// bills an image by its pixels, not its base64 length, and a full-size
+// image lands near this figure on the providers that publish theirs.
+const imageTokenEstimate = 1600
 
 // CountRealUserTurns counts messages with role "user" that are not injected.
 // This is used for turn accounting that should exclude programmatically-injected

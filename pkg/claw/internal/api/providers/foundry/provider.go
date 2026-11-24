@@ -221,9 +221,13 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	messages, err := openaiwire.ConvertMessages(req.System, req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("foundry: %w", err)
+	}
 
 	r := oaiRequest{
-		Messages:         openaiwire.ConvertMessages(req.System, req.Messages),
+		Messages:         messages,
 		Tools:            tools,
 		ResponseFormat:   format,
 		Stream:           true,

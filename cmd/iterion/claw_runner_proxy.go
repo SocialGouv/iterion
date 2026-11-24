@@ -601,8 +601,10 @@ func buildHybridToolDefs(
 						"proxying it would run it on the launcher's host", name, reason)
 			}
 			localExec := local.Execute
+			localDef := local.ToDelegateDef()
 			out[i] = delegate.ToolDef{
-				ConcurrentSafe: local.ToDelegateDef().ConcurrentSafe,
+				ConcurrentSafe: localDef.ConcurrentSafe,
+				ImageResult:    localDef.ImageResult,
 				Name:           name,
 				Description:    td.Description, // keep launcher's description verbatim — it carries any per-recipe wording
 				InputSchema:    td.InputSchema, // and the launcher's schema is the contract the LLM was prompted against
