@@ -291,6 +291,44 @@
         }
       }
     },
+    "govulncheck@latest": {
+      "last_modified": "2026-11-22T18:15:35Z",
+      "resolved": "github:NixOS/nixpkgs/619c39f6eac5d1ed6b8f073a9414baf7034b2356#govulncheck",
+      "source": "devbox-search",
+      "version": "1.10.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/l3qk2nsarm7ylcvijzza2zq973hvw9d0-govulncheck-1.10.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/l3qk2nsarm7ylcvijzza2zq973hvw9d0-govulncheck-1.10.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/7yfhdaijigq8ga1mnnw1ik4rk1cgqql0-govulncheck-1.10.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/7yfhdaijigq8ga1mnnw1ik4rk1cgqql0-govulncheck-1.10.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/j08ymfdr91fxdpmy57iaja8hiwi8w49x-govulncheck-1.10.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/j08ymfdr91fxdpmy57iaja8hiwi8w49x-govulncheck-1.10.0"
+        }
+      }
+    },
     "gtk3@latest": {
       "last_modified": "2026-04-29T01:19:07Z",
       "resolved": "github:NixOS/nixpkgs/ebc08544afa77957cc348ba72dc490ec73b87f68#gtk3",
