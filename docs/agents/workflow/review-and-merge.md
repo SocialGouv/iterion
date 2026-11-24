@@ -4,9 +4,9 @@ Every change lands through a pull request whose `revi/review` gate is green.
 The documented exceptions are the admin bypass below — which allows a direct
 push to `main`, not just a queue skip — the **operator direct-landing lane**
 (§ below, decided 2026-10-22), the **admin merge a parked gate opens**
-(§ [A parked gate is a rerouting signal](#a-parked-gate-is-a-rerouting-signal-not-a-wait),
-decided 2026-11-10), and the release bot, whose
-`chore: release` commits land on `main` with no PR and no gate.
+(§ [A parked gate](#a-parked-gate-is-a-rerouting-signal-not-a-wait), decided
+2026-11-10), and the release bot, whose `chore: release` commits land on
+`main` with no PR and no gate.
 The loop is:
 
 **local adversarial round → fix → re-attack the fix → push → `/revi` → green**
@@ -41,8 +41,8 @@ For operator-led chantiers where the queue's wall clock is the bottleneck, the
 operator (admin) may land a change **without a PR**, by push to `main`. This
 amends the sentence above for that lane only — every existing PR keeps
 `revi/review` as its blocking gate, save where a parked gate opens the admin
-merge (§ below), and the queue keeps serialising the PRs
-that exist. The lane's blocking proof replaces the PR's:
+merge (§ below), and the queue keeps serialising
+the PRs that exist. The lane's blocking proof replaces the PR's:
 
 1. **The gate, locally reproduced.** The full required-check set a workflow
    job can express — everything but `revi/review`, which item 2 replaces —
@@ -52,7 +52,7 @@ that exist. The lane's blocking proof replaces the PR's:
    `internal/ciguard`'s `TestTheCIGateMapIsTotalAndHonest`. Exit codes are read
    per member, never piped, and the runner prints `ran N of N` against its own
    plan — two members of three cannot read as three.
-   **Every required and staged context is now COVERED** — by a member, or,
+   **Every required and staged context is COVERED** — by a member, or,
    for the two pure aggregators, by every leg's — so **exit 3**, green
    members over incomplete coverage, is no longer the standing answer. What a
    0 does NOT claim: the verdict NAMES the reached rows that are `partial`
@@ -87,6 +87,12 @@ Courtesies that are duties: warn the sessions with PRs in flight before the
 first push of a wave (a direct push invalidates their merge groups), and warn
 sessions with unpushed branches (each `main` advance costs them a rebase).
 
+**One lane per burst** (decided 2026-11-24): a burst of PRs picks ONE lane up
+front — the queue alone, or this lane end to end (dequeue all, train the
+exact set on current `main`, land; its proof replaces their `revi/review`).
+Never admin-merge beside its queued entries
+([why](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24)).
+
 ## The merge queue
 
 **`main` is protected by a merge queue** (ruleset "main protected — merge
@@ -94,36 +100,34 @@ queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
 rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
-push / `--squash` without `--auto`). Required checks: `test`, `race`,
+push / dequeue + `--admin`). Required checks: `test`, `race`,
 `vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`
 (`test` and `race` are aggregator contexts — the work runs in the gated legs
-behind them; see docs/merge-policy.md).
+behind them).
 `nats-conformance` remains advisory until an admin adds it to ruleset
 18857412; `fmt-check` reports on the PR and in the queue but is not required
 yet (staged — `internal/ciguard`'s `requiredChecks`). A pull request titled
-`chore(brew): update tap to …` skips the heavy ones (in the queue: an entry
-whose squash message starts so — the commit subject of a single-commit pull
-request, its title otherwise) and `brand` verifies it moves nothing but the
-Homebrew tap's `version` and `sha256` values — any other diff under that
-title is refused
+`chore(brew): update tap to …` (in the queue: its squash message) skips the
+heavy ones, and `brand` refuses it unless it moves only the tap's `version`
+and `sha256` values
 ([the one verified skip](../../merge-policy.md#the-one-verified-skip-the-homebrew-tap-update)).
-Full details + revert command:
+Details + revert command:
 [../merge-policy.md](../../merge-policy.md). How long merges take, what they cost
 and what fails the queue: `task ci:queue-stats`
 ([measuring the queue](../../merge-policy.md#measuring-the-queue)).
 
 ## The Revi merge gate
 
-**Revi merge gate.** Revi (`bots/review-pr`) posts a
+Revi (`bots/review-pr`) posts a
 deterministic `revi/review` commit status on a PR head — `success` when 0
 findings meet `gate_severity` (default `high`), else `failure`. Add that
 context to another repository's required checks to make its verdict block the
 merge; it is already required here by ruleset 18857412. The verdict is a COUNT
 computed in the bot, never an LLM judgment; the review comments stay
 non-blocking advice. Pairs with the webhook
-`review_on_sync` opt-in (re-review each push so the status tracks the fixed
-head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
-never gate). The forge-agnostic write path is `forge.CommitStatusClient`
+`review_on_sync` opt-in (each push re-reviewed, so the status tracks the fixed
+head: `/revi` becomes a loop; on here) and Revi's `questions` channel
+(non-blocking assumptions, never gate). The forge-agnostic write path is `forge.CommitStatusClient`
 ([../../pkg/forge/status.go](../../../pkg/forge/status.go)); the endpoint posts it after the
 review ([../../pkg/server/forge_publish.go](../../../pkg/server/forge_publish.go)). See
 [../merge-gate.md](../../merge-gate.md) — which also covers the two bots
@@ -132,10 +136,6 @@ sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
 head sha, off by default so the developer keeps the choice.
 
 **GitHub workflow delivery preflight** — Billy checks the runtime token’s actual `workflows:write` proof before analyzing a workflow-changing diff; Vetty checks it before pushing an ALIGNMENT that touches that path, and holds `hold_delivery_permission` rather than attempting the push. The hold needs an ANSWERED refusal: `FORGE_PERMISSION_DENIED` is a credential configuration plus a new launch (approve the App's delivery permissions, or reissue a classic token with the `workflow` scope), while a preflight that did not answer ends the run `FORGE_PREFLIGHT_UNAVAILABLE` publishing no comment and no verdict — the cure is the one the run's reason names (a relaunch where the service went silent, the configuration gap where it names one), and what the PR carries is the server's reconciler closing the launch's own gate claim. Installation grants alone are not proof. See [../../revi-billy-loop.md](../../revi-billy-loop.md).
-
-`review_on_sync` is what makes `/revi` a *loop* rather than a one-shot: each
-push re-reviews the new head, so the status tracks the code you actually fixed.
-It stays on.
 
 ## A parked gate is a rerouting signal, not a wait
 
@@ -174,7 +174,6 @@ request is fine — the credential is not. Waiting for the window to reset is th
    in [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
    Steps 1 and 2 stay the first moves; this is for when they are unavailable
    or refused.
-
 
 ## Billy, and the release path
 
