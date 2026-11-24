@@ -37,7 +37,8 @@ import (
 // Concurrency. `go test ./...` runs sibling packages against this same
 // repository, so an entry that appeared during m.Run() may be another
 // package's LIVE worktree. The guard therefore gives the process its own
-// temp root — the shape internal/hometest.Isolate uses for HOME: TMPDIR
+// temp root — the shape internal/hometest.IsolateUserHome uses for HOME:
+// TMPDIR
 // (plus TMP/TEMP for Windows, and GOTMPDIR, which t.TempDir honours before
 // TMPDIR) points at a directory this process alone sees, so every
 // t.TempDir() of the suite lands under it. A registration pointing under
@@ -111,12 +112,18 @@ func noWorktreeLeaks(root string, run func() int, report io.Writer) int {
 	// declines flaky tests over pinning a race.
 	for _, line := range reclaimLeaked(root, before, processTmp, inheritedTmp) {
 		path, _, _ := strings.Cut(line, " -> ")
-		if !slices.ContainsFunc(leaked, func(prev string) bool {
+		if i := slices.IndexFunc(leaked, func(prev string) bool {
 			prevPath, _, _ := strings.Cut(prev, " -> ")
 			return prevPath == path
-		}) {
-			leaked = append(leaked, line)
+		}); i >= 0 {
+			// The pass-2 retry reclaimed what pass 1 could not: replace the
+			// stale failure line — the registry no longer holds the entry.
+			if !strings.Contains(line, " (reclaim failed: ") {
+				leaked[i] = line
+			}
+			continue
 		}
+		leaked = append(leaked, line)
 	}
 
 	if len(leaked) > 0 {
@@ -244,6 +251,10 @@ func adminEntries(root string) map[string]bool {
 	return set
 }
 
+// removeAdminEntry removes one administrative entry directory. It is a
+// variable so a test can inject a reclaim failure deterministically.
+var removeAdminEntry = os.RemoveAll
+
 // reclaimLeaked removes the administrative entries that appeared since
 // `before` and are this process's to judge. Two zones, per the guard's
 // doc comment: under processTmp (this process's own temp root) every entry
@@ -304,7 +315,7 @@ func reclaimLeaked(root string, before map[string]bool, processTmp, inheritedTmp
 			}
 			remainder = strings.TrimPrefix(wt, shared)
 		}
-		if err := os.RemoveAll(admin); err != nil {
+		if err := removeAdminEntry(admin); err != nil {
 			leaked = append(leaked, fmt.Sprintf("%s -> %s (reclaim failed: %v)", wt, ownerTest(remainder), err))
 			continue
 		}
