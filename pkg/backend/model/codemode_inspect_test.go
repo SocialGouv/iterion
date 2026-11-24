@@ -73,7 +73,7 @@ func newInspectRig(t *testing.T, s inspectSetup) *inspectRig {
 		host = *s.host
 	}
 	want := s.want
-	if err := installCodemodeOn(&r.opts, host, false, &want); err != nil {
+	if err := installCodemodeOn(&r.opts, host, false, &want, nil); err != nil {
 		t.Fatal(err)
 	}
 	return r
@@ -635,7 +635,7 @@ func TestRelayCarriesCodemodeLineageAndReport(t *testing.T) {
 		opts := GenerationOptions{Tools: []GenerationTool{echoGenTool()}}
 		applyHooks("campaign", 0, relay, &opts)
 		want := scripthost.Limits{Memory: 1 << 30, ToolCalls: 99999}
-		if err := installCodemodeOn(&opts, childHost(), false, &want); err != nil {
+		if err := installCodemodeOn(&opts, childHost(), false, &want, nil); err != nil {
 			runErr = err
 			return
 		}

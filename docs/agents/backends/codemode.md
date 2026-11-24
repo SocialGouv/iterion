@@ -73,7 +73,7 @@ and `call.search` in the program — [codemode-discovery](codemode-discovery.md)
   `mcp.iterion.ask_user`. Withheld: the pause family (a script cannot wait for
   an operator), `send_user_message` (permission-exempt, so the call budget
   would be its only bound), `structured_output` (it answers for the node), the
-  `mcp_iterion` control surface, `agent` (a sub-agent needs its own reserve) and
+  `mcp_iterion` control surface, `agent` (a sub-agent needs its own reserve — see CM-13 below) and
   the script host itself.
 - **Discovery answers with the set the script will be served.** `dispatch`
   applies a narrowing the caller declared, so `tool_search` cannot offer a

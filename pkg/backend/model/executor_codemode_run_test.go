@@ -38,7 +38,7 @@ func TestARunOverrideDecidesTheExecutorPolicy(t *testing.T) {
 	}
 	for _, c := range cases {
 		e := &ClawExecutor{wfCodemode: c.workflow, codemodeOverride: c.run}
-		got, _, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Claw)
+		got, _, _, err := e.codemodePolicy(backendFields{id: "n", codemode: c.node}, backendcaps.Claw)
 		if err != nil {
 			t.Fatalf("%s: codemodePolicy returned %v", c.name, err)
 		}
@@ -74,7 +74,7 @@ func TestARunBoundsOverrideBeatsTheAuthoredRungsFieldByField(t *testing.T) {
 		codemodeBoundsOverride: run,
 		wfCodemodeBounds:       &ir.CodemodeBounds{ToolCalls: 128, CPU: 40 * time.Second},
 	}
-	_, bounds, err := e.codemodePolicy(backendFields{id: "n", codemode: "on", codemodeBounds: node}, backendcaps.Claw)
+	_, bounds, _, err := e.codemodePolicy(backendFields{id: "n", codemode: "on", codemodeBounds: node}, backendcaps.Claw)
 	if err != nil {
 		t.Fatalf("codemodePolicy returned %v", err)
 	}
@@ -111,7 +111,7 @@ func TestARunOffOverrideCarriesNoBounds(t *testing.T) {
 		codemodeOverride:       "off",
 		codemodeBoundsOverride: &ir.CodemodeBounds{ToolCalls: 4096},
 	}
-	policy, bounds, err := e.codemodePolicy(backendFields{id: "n"}, backendcaps.Claw)
+	policy, bounds, _, err := e.codemodePolicy(backendFields{id: "n"}, backendcaps.Claw)
 	if err != nil {
 		t.Fatalf("codemodePolicy returned %v", err)
 	}

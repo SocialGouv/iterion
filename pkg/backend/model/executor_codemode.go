@@ -45,7 +45,7 @@ import (
 // policy returns before the bounds ladder is walked, because a node that runs
 // no program has no bound to carry, and a non-nil bound set beside a
 // Codemode:false task would read as a budget nobody can spend.
-func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.CodemodePolicy, *ir.CodemodeBounds, error) {
+func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.CodemodePolicy, *ir.CodemodeBounds, *ir.CodemodeSubagents, error) {
 	// ONE guard. `policy.Declared()` stood here too and could never fire:
 	// the only rung answering "not declared" is the default, and the default
 	// is OFF. The compiler's half carries the same single guard and
@@ -54,18 +54,24 @@ func (e *ClawExecutor) codemodePolicy(f backendFields, backendName string) (ir.C
 	// source wrote, in both directions.
 	policy := ir.ResolveCodemode(e.codemodeOverride, f.codemode, e.wfCodemode)
 	if !policy.On {
-		return policy, nil, nil
+		return policy, nil, nil, nil
 	}
 	bounds := ir.ResolveCodemodeBounds(e.codemodeBoundsOverride, f.codemodeBounds, e.wfCodemodeBounds)
+	// The reserve resolves on the same ladder — the run rung stays unfilled
+	// for the reason the deferral's stays: no launch surface carries the
+	// value yet. nil after the ladder means nobody declared subagents
+	// tokens anywhere, and the agent tool stays withheld from this node's
+	// programs.
+	subagents := ir.ResolveCodemodeSubagents(nil, f.codemodeSubagents, e.wfCodemodeSubagents)
 	// The POSITIVE question, not the compiler's. Here the backend name is
 	// RESOLVED, and the only loop that installs the tool is the one whose
 	// cell says shipped — so a name the registry does not carry (a custom
 	// backend in an operator's own registry) is refused out loud rather than
 	// handed a Codemode the loop it reaches will never read.
 	if ir.CodemodeServedBy(backendName) {
-		return policy, bounds, nil
+		return policy, bounds, subagents, nil
 	}
-	return policy, nil, &delegate.ErrCapabilityUnsupported{
+	return policy, nil, nil, &delegate.ErrCapabilityUnsupported{
 		NodeID:     f.id,
 		Backend:    backendName,
 		Capability: policy.String(),

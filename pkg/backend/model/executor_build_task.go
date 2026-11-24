@@ -33,36 +33,37 @@ import (
 // backendFields holds the common fields extracted from AgentNode or JudgeNode
 // for the executeBackend unified path.
 type backendFields struct {
-	id               string
-	kind             string // what the id names in an error subject: "" = "node", "llm router" for the router path
-	inChain          bool   // the correction runs inside the chain, before the attempt's own delegate event
-	model            string
-	backend          string
-	provider         string
-	command          string // node-level `command:` CLI binary override (honored by claude_code)
-	systemPrompt     string
-	userPrompt       string
-	reasoningEffort  string
-	outputSchema     string
-	tools            []string
-	toolMaxSteps     int
-	maxTokens        int
-	session          ir.SessionMode
-	sessionSlot      string
-	interaction      ir.InteractionMode
-	activeMCPServers []string
-	compaction       *ir.Compaction
-	memory           *ir.Memory
-	capabilities     []string
-	skills           []string
-	cursors          *ir.CursorInvocation
-	compress         string             // node-level `compress:` value ("" = unset)
-	autoMemory       string             // node-level `auto_memory:` value ("" = inherit workflow)
-	ambientContext   string             // node-level `ambient_context:` value ("" = inherit workflow)
-	codemode         string             // node-level `codemode:` value ("" = inherit workflow)
-	codemodeDefer    string             // node-level `codemode:` defer value ("" = inherit workflow)
-	codemodeBounds   *ir.CodemodeBounds // node-level `codemode:` bounds (nil = inherit workflow, field by field)
-	permission       string             // node-level `permission:` mode override ("" = inherit)
+	id                string
+	kind              string // what the id names in an error subject: "" = "node", "llm router" for the router path
+	inChain           bool   // the correction runs inside the chain, before the attempt's own delegate event
+	model             string
+	backend           string
+	provider          string
+	command           string // node-level `command:` CLI binary override (honored by claude_code)
+	systemPrompt      string
+	userPrompt        string
+	reasoningEffort   string
+	outputSchema      string
+	tools             []string
+	toolMaxSteps      int
+	maxTokens         int
+	session           ir.SessionMode
+	sessionSlot       string
+	interaction       ir.InteractionMode
+	activeMCPServers  []string
+	compaction        *ir.Compaction
+	memory            *ir.Memory
+	capabilities      []string
+	skills            []string
+	cursors           *ir.CursorInvocation
+	compress          string                // node-level `compress:` value ("" = unset)
+	autoMemory        string                // node-level `auto_memory:` value ("" = inherit workflow)
+	ambientContext    string                // node-level `ambient_context:` value ("" = inherit workflow)
+	codemode          string                // node-level `codemode:` value ("" = inherit workflow)
+	codemodeDefer     string                // node-level `codemode:` defer value ("" = inherit workflow)
+	codemodeBounds    *ir.CodemodeBounds    // node-level `codemode:` bounds (nil = inherit workflow, field by field)
+	codemodeSubagents *ir.CodemodeSubagents // node-level `codemode:` subagents reserve (nil = inherit workflow, field by field)
+	permission        string                // node-level `permission:` mode override ("" = inherit)
 	// node-level `allow:`/`ask:`/`deny:` rule lists. A non-empty list
 	// REPLACES the workflow list of the same kind; see
 	// ir.EffectivePermissionRules, the single implementation of that rule.
@@ -100,30 +101,31 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			maxTokens:        n.MaxTokens,
-			session:          n.Session,
-			sessionSlot:      n.SessionSlot,
-			interaction:      n.Interaction,
-			activeMCPServers: n.ActiveMCPServers,
-			compaction:       n.Compaction,
-			memory:           n.Memory,
-			capabilities:     n.Capabilities,
-			skills:           n.Skills,
-			cursors:          n.Cursors,
-			compress:         n.Compress,
-			autoMemory:       n.AutoMemory,
-			ambientContext:   n.AmbientContext,
-			codemode:         n.Codemode,
-			codemodeDefer:    n.CodemodeDefer,
-			codemodeBounds:   n.CodemodeBounds,
-			permission:       n.Permission,
-			permAllow:        n.PermissionAllow,
-			permAsk:          n.PermissionAsk,
-			permDeny:         n.PermissionDeny,
-			timeout:          n.Timeout,
-			readonly:         n.Readonly,
-			fullAccess:       n.FullAccess,
-			images:           n.Images,
+			maxTokens:         n.MaxTokens,
+			session:           n.Session,
+			sessionSlot:       n.SessionSlot,
+			interaction:       n.Interaction,
+			activeMCPServers:  n.ActiveMCPServers,
+			compaction:        n.Compaction,
+			memory:            n.Memory,
+			capabilities:      n.Capabilities,
+			skills:            n.Skills,
+			cursors:           n.Cursors,
+			compress:          n.Compress,
+			autoMemory:        n.AutoMemory,
+			ambientContext:    n.AmbientContext,
+			codemode:          n.Codemode,
+			codemodeDefer:     n.CodemodeDefer,
+			codemodeBounds:    n.CodemodeBounds,
+			codemodeSubagents: n.CodemodeSubagents,
+			permission:        n.Permission,
+			permAllow:         n.PermissionAllow,
+			permAsk:           n.PermissionAsk,
+			permDeny:          n.PermissionDeny,
+			timeout:           n.Timeout,
+			readonly:          n.Readonly,
+			fullAccess:        n.FullAccess,
+			images:            n.Images,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
@@ -132,30 +134,31 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			maxTokens:        n.MaxTokens,
-			session:          n.Session,
-			sessionSlot:      n.SessionSlot,
-			interaction:      n.Interaction,
-			activeMCPServers: n.ActiveMCPServers,
-			compaction:       n.Compaction,
-			memory:           n.Memory,
-			capabilities:     n.Capabilities,
-			skills:           n.Skills,
-			cursors:          n.Cursors,
-			compress:         n.Compress,
-			autoMemory:       n.AutoMemory,
-			ambientContext:   n.AmbientContext,
-			codemode:         n.Codemode,
-			codemodeDefer:    n.CodemodeDefer,
-			codemodeBounds:   n.CodemodeBounds,
-			permission:       n.Permission,
-			permAllow:        n.PermissionAllow,
-			permAsk:          n.PermissionAsk,
-			permDeny:         n.PermissionDeny,
-			timeout:          n.Timeout,
-			readonly:         n.Readonly,
-			fullAccess:       n.FullAccess,
-			images:           n.Images,
+			maxTokens:         n.MaxTokens,
+			session:           n.Session,
+			sessionSlot:       n.SessionSlot,
+			interaction:       n.Interaction,
+			activeMCPServers:  n.ActiveMCPServers,
+			compaction:        n.Compaction,
+			memory:            n.Memory,
+			capabilities:      n.Capabilities,
+			skills:            n.Skills,
+			cursors:           n.Cursors,
+			compress:          n.Compress,
+			autoMemory:        n.AutoMemory,
+			ambientContext:    n.AmbientContext,
+			codemode:          n.Codemode,
+			codemodeDefer:     n.CodemodeDefer,
+			codemodeBounds:    n.CodemodeBounds,
+			codemodeSubagents: n.CodemodeSubagents,
+			permission:        n.Permission,
+			permAllow:         n.PermissionAllow,
+			permAsk:           n.PermissionAsk,
+			permDeny:          n.PermissionDeny,
+			timeout:           n.Timeout,
+			readonly:          n.Readonly,
+			fullAccess:        n.FullAccess,
+			images:            n.Images,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -1451,7 +1454,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if err != nil {
 		return delegate.Task{}, err
 	}
-	codemodePolicy, codemodeBounds, err := e.codemodePolicy(f, backendName)
+	codemodePolicy, codemodeBounds, subagentReserve, err := e.codemodePolicy(f, backendName)
 	if err != nil {
 		return delegate.Task{}, err
 	}
@@ -1524,6 +1527,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Codemode:              codemodePolicy.On,
 		CodemodeDefer:         codemodeDefer,
 		CodemodeBounds:        codemodeBounds,
+		SubagentReserve:       subagentReserve,
 		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,

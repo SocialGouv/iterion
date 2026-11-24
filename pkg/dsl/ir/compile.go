@@ -773,7 +773,7 @@ func (c *compiler) compile() *Workflow {
 		interaction = &im
 	}
 
-	wfCodemode, wfCodemodeDefer, wfCodemodeBounds := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
+	wfCodemode, wfCodemodeDefer, wfCodemodeBounds, wfCodemodeSubagents := c.compileCodemode(wf.Codemode, "workflow", wf.Name)
 
 	w := &Workflow{
 		Name:                wf.Name,
@@ -811,6 +811,7 @@ func (c *compiler) compile() *Workflow {
 		Codemode:            wfCodemode,
 		CodemodeDefer:       wfCodemodeDefer,
 		CodemodeBounds:      wfCodemodeBounds,
+		CodemodeSubagents:   wfCodemodeSubagents,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
 		RepoDevbox:          wf.RepoDevbox,
 		WorkspaceCheckpoint: wf.WorkspaceCheckpoint,
@@ -1180,7 +1181,7 @@ func (c *compiler) compileAgents() {
 		if !ok {
 			continue
 		}
-		agentCodemode, agentCodemodeDefer, agentCodemodeBounds := c.compileCodemode(a.Codemode, "agent", a.Name)
+		agentCodemode, agentCodemodeDefer, agentCodemodeBounds, agentCodemodeSubagents := c.compileCodemode(a.Codemode, "agent", a.Name)
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
@@ -1209,6 +1210,7 @@ func (c *compiler) compileAgents() {
 			Codemode:          agentCodemode,
 			CodemodeDefer:     agentCodemodeDefer,
 			CodemodeBounds:    agentCodemodeBounds,
+			CodemodeSubagents: agentCodemodeSubagents,
 			Permission:        a.Permission,
 			PermissionAllow:   a.Allow,
 			PermissionAsk:     a.Ask,
@@ -1228,7 +1230,7 @@ func (c *compiler) compileJudges() {
 		if !ok {
 			continue
 		}
-		judgeCodemode, judgeCodemodeDefer, judgeCodemodeBounds := c.compileCodemode(j.Codemode, "judge", j.Name)
+		judgeCodemode, judgeCodemodeDefer, judgeCodemodeBounds, judgeCodemodeSubagents := c.compileCodemode(j.Codemode, "judge", j.Name)
 		c.nodes[j.Name] = &JudgeNode{
 			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
@@ -1256,6 +1258,7 @@ func (c *compiler) compileJudges() {
 			Codemode:          judgeCodemode,
 			CodemodeDefer:     judgeCodemodeDefer,
 			CodemodeBounds:    judgeCodemodeBounds,
+			CodemodeSubagents: judgeCodemodeSubagents,
 			Permission:        j.Permission,
 			PermissionAllow:   j.Allow,
 			PermissionAsk:     j.Ask,
