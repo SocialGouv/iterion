@@ -450,6 +450,9 @@ gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{id:$id}){ 
 gh pr merge <n> --repo <owner>/<repo> --squash --admin
 ```
 
+Not for one pull request of a burst whose other entries sit queued:
+[one lane per burst](#one-lane-per-burst-decided-2026-11-24).
+
 Before using it, the same proofs the queue would have demanded must already be
 green **on the PR head**: every required check (`test`, `vendor-check`,
 `golangci`, `brand`), the held `race` and `mongo-conformance`, and
@@ -725,6 +728,29 @@ with queued PRs or unpushed branches — lives in
 [the review-and-merge page](agents/workflow/review-and-merge.md#the-operator-direct-landing-lane-decided-2026-10-22).
 Every existing PR keeps the queue and its `revi/review` blocking gate — save
 where [a parked gate](#a-parked-gate-decided-2026-11-10) opens the narrower
-admin merge; the
-lane is the admin bypass generalised from hotfixes to reviewed chantier work,
-and its bypass is greppable in the trailers by design.
+admin merge, or a burst
+[lands end to end](#one-lane-per-burst-decided-2026-11-24); the lane is the
+admin bypass generalised from hotfixes to reviewed chantier work, and its bypass is greppable in the trailers by design.
+
+### One lane per burst (decided 2026-11-24)
+
+A burst — several pull requests landing in the same stretch — takes **one
+lane, chosen up front**, and keeps it to the end:
+
+- **the merge queue alone**: every pull request goes through the queue
+  (`gh pr merge <n> --auto --squash`), and none of its entries is
+  admin-merged while the burst lasts; or
+- **the direct-landing lane end to end**: dequeue every entry of the burst
+  first, run one train of the exact set on the current `main`, then land
+  that set; the lane's full proof (the converged adversarial loop and the
+  train) replaces their `revi/review`.
+
+Never admin-merge one pull request while other entries of the same burst sit
+in the queue. Each direct merge moves `main`, the base of every queued group,
+so GitHub rebuilds those groups and their in-flight `merge_group` runs become
+verdicts nobody reads ([the rebuild](#a-rebuilt-groups-older-runs-are-cancelled)).
+Measured on 2026-11-24: `task ci:queue-stats` counts 22 in-flight
+`merge_group` builds discarded by direct merges that day, 18 of them from the
+burst's 17 direct merges (it counts only the first group of each rebuilt
+chain, so the real cost is higher), on top of the queue's own timeout
+evictions.
