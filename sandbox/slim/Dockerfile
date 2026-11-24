@@ -17,7 +17,7 @@
 # node, and those need to be available system-wide regardless of
 # what the user's devbox.json declares.
 
-FROM jetpackio/devbox:latest@sha256:3446246d7fbadd0fb0fa53f434593d01b5711148e7608accee74ac448137169e
+FROM jetpackio/devbox:latest@sha256:0ce877daf8f83ce37163e94bae7a12af0a6eaf3e660117c696703a2fa9cece89
 
 USER root
 
