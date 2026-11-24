@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.34.0](https://github.com/SocialGouv/iterion/compare/v7.33.0...v7.34.0) (2026-11-23)
+
+### Features
+
+* **codemode:** let call.parallel overlap on the sandbox relay and dispatched runs ([#3591](https://github.com/SocialGouv/iterion/issues/3591)) ([96c7c94](https://github.com/SocialGouv/iterion/commit/96c7c9451965756a6053d9a169ae7e0da8205092))
+
+    <details><summary>why</summary>
+
+    Two production routes kept every call.parallel batch serial because the event hooks they install never carried the concurrency attestation the dispatcher's gate reads (toolObserversAudited):
+
+    </details>
+
 ## [7.33.0](https://github.com/SocialGouv/iterion/compare/v7.32.0...v7.33.0) (2026-11-23)
 
 ### Features

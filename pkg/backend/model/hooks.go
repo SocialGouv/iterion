@@ -1789,10 +1789,29 @@ func NewStoreEventHooksWithBroker(ctx context.Context, emitter EventEmitter, run
 }
 
 func newStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, publish func(store.Event), observers []func(store.Event)) EventHooks {
-	audited := len(observers) == 0
-	if publish != nil {
-		observers = append(append([]func(store.Event){}, observers...), publish)
+	// Every attached observer is invoked under one mutex, so a launch may
+	// attach any runtime-owned callback — the dispatcher's atomic stall
+	// watermark, the broker's publish — and the concurrency attestation the
+	// tool loop reads below holds by construction, not by each observer's
+	// own discipline. The store every event crosses (AppendEvent) already
+	// serves concurrent writers: parallel branches run today.
+	observersMu := &sync.Mutex{}
+	serialised := make([]func(store.Event), 0, len(observers)+1)
+	for _, obs := range observers {
+		serialised = append(serialised, func(event store.Event) {
+			observersMu.Lock()
+			defer observersMu.Unlock()
+			obs(event)
+		})
 	}
+	if publish != nil {
+		serialised = append(serialised, func(event store.Event) {
+			observersMu.Lock()
+			defer observersMu.Unlock()
+			publish(event)
+		})
+	}
+	observers = serialised
 
 	// Capability detection must happen on the ORIGINAL emitter — the
 	// wrappers below only implement AppendEvent.
@@ -1845,7 +1864,9 @@ func newStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnBackgroundWork:     h.onBackgroundWork,
 		OnLLMTurnCapture:     h.onLLMTurnCapture,
 		OnLLMCompacted:       h.onLLMCompacted,
-		toolObserversAudited: audited,
+		// The tool observers are attested concurrent-safe: the event path is
+		// serialized above and the store is already concurrency-proven.
+		toolObserversAudited: true,
 		OnToolStarted:        h.onToolStarted,
 		OnToolCall:           h.onToolCall,
 		OnDelegateStarted:    h.onDelegateStarted,

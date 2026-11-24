@@ -32,8 +32,9 @@ var ErrPhaseTimeout = errors.New("sandbox: setup phase timeout")
 //
 // The classification is EVIDENCE-BASED, never a catch-all for "something
 // went wrong at sandbox start": a driver returns it only when the cluster
-// says the pod was unscheduled or still being created. A broken image
-// reference, an invalid spec or a crash-looping container re-fails
+// says the pod was unscheduled, still being created, or refused at
+// admission because the namespace ResourceQuota had no room. A broken
+// image reference, an invalid spec or a crash-looping container re-fails
 // identically on every pod and stays a terminal failure.
 //
 // Consumers, mirroring ErrPhaseTimeout's:

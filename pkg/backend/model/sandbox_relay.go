@@ -317,6 +317,14 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 		}
 	}
 	return EventHooks{
+		// The tool observers are attested concurrent-safe: send is a pure
+		// marshal of already-clamped payloads into write, and the runner's
+		// IPC writer (delegate.EnvelopeWriter) holds its own mutex, so every
+		// event crosses as one whole NDJSON line however call.parallel
+		// interleaves the nested calls. The closures hold no state across
+		// calls (parallel_observer_routes_test.go fires them concurrently in
+		// both completion orders as its witness).
+		toolObserversAudited: true,
 		OnLLMRequest: func(_ string, info LLMRequestInfo) {
 			send(string(store.EventLLMRequest), relayedLLMRequest(info))
 		},

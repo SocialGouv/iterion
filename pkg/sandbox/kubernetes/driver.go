@@ -590,6 +590,15 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 // image is built with.
 const defaultPodUser = "1000:1000"
 
+// applyAtStart applies one of Start's per-run manifests through
+// quotaRefusal: Start's applies run before the first node, so a refusal
+// for lack of room is a placement failure the run may retry.
+// RefreshSecretFile runs mid-run and keeps the raw applyManifest — a
+// quota refusal there is not a placement.
+func (d *Driver) applyAtStart(ctx context.Context, phase string, manifest []byte) error {
+	return quotaRefusal(d.kubectl.applyManifest(ctx, d.logger, d.namespace, phase, manifest))
+}
+
 // Start applies the pod manifest, waits for Ready, optionally runs
 // post-create, and returns a live [Run] handle.
 func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
@@ -635,7 +644,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
+		if err := d.applyAtStart(ctx, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -653,7 +662,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
+		if err := d.applyAtStart(ctx, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
 				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
@@ -699,7 +708,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// unbounded one hangs the run before the first bounded phase.
 	_ = d.kubectl.deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
+	if err := d.applyAtStart(ctx, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
 			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
@@ -756,7 +765,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
+		if err := d.applyAtStart(ctx, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}

@@ -2950,7 +2950,12 @@ guarantee that no container was created: unscheduled (`Unschedulable`,
 everything else. A placement failure carries `sandbox.ErrCapacity`, so the run parks
 `failed_resumable` + `SANDBOX_CAPACITY` and the cloud runner re-offers
 the delivery after a delay long enough for an autoscaler cycle, instead
-of dying terminal and silently losing an hourly sentinel's tick. A broken
+of dying terminal and silently losing an hourly sentinel's tick. The same
+classification covers an admission refusal: a per-run resource the
+namespace `ResourceQuota` refuses because it had no room (`exceeded
+quota: …`) parks the same way, kubectl's message (quota name, requested,
+used, limited) kept intact — any other Forbidden (RBAC, `failed quota: …
+must specify`) stays terminal. A broken
 image reference, an invalid spec, a crash-looping container or a pod the
 driver could not read stay terminal `failed`: a redelivery re-hits them
 identically and spends a pod for it. The full table is in
