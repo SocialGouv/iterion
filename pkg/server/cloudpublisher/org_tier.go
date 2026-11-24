@@ -294,11 +294,7 @@ func OrgCredentialAudienceOf(o identity.Org) identity.CredentialAudience { retur
 // that silently receives no credential fails at its first LLM call with a
 // provider error, and nothing downstream would say the audience was why.
 func (p *Publisher) platformAudienceAllows(ctx context.Context, runID, orgID, tenantID string) bool {
-	if p.platformAudience == nil {
-		return true
-	}
-	rec := p.platformAudience.Get(ctx)
-	if rec.Allows(orgID, tenantID) {
+	if p.platformAudienceAdmits(ctx, orgID, tenantID) {
 		return true
 	}
 	if p.logger != nil {

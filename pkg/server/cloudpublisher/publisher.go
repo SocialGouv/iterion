@@ -920,7 +920,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
 			}
-			if runnerPool != "" || sovereign {
+			if blocksSharedTiers(runnerPool != "", sovereign) {
 				switch tier {
 				case credentialTierOrg, credentialTierPool, credentialTierPlatform:
 					// D13 (a pool team) and llm_fallback=none (the sovereign
@@ -1568,7 +1568,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, trust, apiKeyFPs, apiKeyIDs, wants, policy.sealableSlot, teamGateway)
+	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, blocksSharedTiers(runnerPool != "", sovereign), trust, apiKeyFPs, apiKeyIDs, wants, policy.sealableSlot, teamGateway)
 	if doorReleased != nil {
 		res.releasedGrants = append(res.releasedGrants, doorReleased)
 	}

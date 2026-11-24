@@ -20,9 +20,11 @@ import (
 // Local studio evaluates the host process (the same cached detect.Report
 // that backs /api/backends/detect). Cloud evaluates the authenticated
 // tenant's launch tiers — BYOK, user/org OAuth-forfait, platform — never
-// the control-plane env. A control-plane key the run will not get must
-// not make a model look reachable; a tenant key absent from that env
-// must not make it look unreachable.
+// the control-plane env. The platform tier counts only for a team the
+// launch walk lends it to (the publisher's PlatformTierConsulted). A
+// control-plane or platform key the run will not get must not make a model
+// look reachable; a tenant key absent from that env must not make it look
+// unreachable.
 //
 // Query params:
 //
