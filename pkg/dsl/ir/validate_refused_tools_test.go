@@ -327,3 +327,47 @@ func TestRefusedToolNameIsReportedTrimmed(t *testing.T) {
 		t.Errorf("the message quotes the author's padding instead of the tool name: %s", got[0])
 	}
 }
+
+// TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend: a tool node's
+// bare `command:` names a tool in the registry RegisterClawAll builds, and
+// ClawExecutor runs every tool node whatever the workflow's backend, so
+// `command: cron_create` is refused on every run. A tool node has no model to
+// read the refusal: the node fails. Only the registry recipe is read — a
+// shell command that merely mentions the name runs through sh, and a served
+// name says nothing.
+func TestARefusedRegistryCommandOnAToolNodeWarnsOnEveryBackend(t *testing.T) {
+	for _, backend := range []string{"claw", "claude_code"} {
+		t.Run(backend, func(t *testing.T) {
+			src := `tool arm:
+  command: cron_create
+
+tool shell:
+  command: "echo cron_create"
+
+tool reader:
+  command: read_file
+
+workflow w:
+  default_backend: "` + backend + `"
+  entry: arm
+  arm -> shell
+  shell -> reader
+  reader -> done
+`
+			cr := compileToolsSrc(t, src)
+			got := diagsFor(cr, refusedCode)
+			if len(got) != 1 {
+				t.Fatalf("want exactly one C159, for the registry command cron_create, got %v", got)
+			}
+			r, _ := toolcatalog.ClawRefusesBuiltin("cron_create")
+			for _, want := range []string{`"arm"`, "command:", `"cron_create"`, r.Reason, r.Remedy} {
+				if !strings.Contains(got[0], want) {
+					t.Errorf("the C159 message does not carry %q: %s", want, got[0])
+				}
+			}
+			if cr.HasErrors() {
+				t.Errorf("C159 stays a warning on a tool node: %v", cr.Diagnostics)
+			}
+		})
+	}
+}
