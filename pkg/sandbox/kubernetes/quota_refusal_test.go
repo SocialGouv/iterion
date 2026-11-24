@@ -99,6 +99,15 @@ func TestStart_ForbiddenPodWithoutQuotaEvidenceStaysTerminal(t *testing.T) {
 	cases := []struct{ name, refusal string }{
 		{"rbac", `Error from server (Forbidden): error when creating "STDIN": pods "iterion-run-01a0-run" is forbidden: User "system:serviceaccount:iterion:iterion-runner" cannot create resource "pods" in API group "" in the namespace "iterion"`},
 		{"scoped quota", `Error from server (Forbidden): error when creating "STDIN": pods "iterion-run-01a0-run" is forbidden: failed quota: iterion-quota: must specify requests.cpu,requests.memory`},
+		// An admission webhook echoing the plugin's marker anywhere in its
+		// own denial is not the plugin's refusal: without the requested
+		// amounts tail it carries no evidence of lack of room.
+		{"webhook echo", `Error from server (Forbidden): error when creating "STDIN": admission webhook "policy.example.com" denied the request: pod violates quota policy: exceeded quota: iterion-quota`},
+		// A policy engine can also quote the plugin's FULL canonical line,
+		// amounts included: the apiserver wraps any webhook denial in its
+		// "admission webhook … denied the request" phrasing, which the
+		// built-in plugin's own refusal never carries.
+		{"webhook full-line echo", `Error from server (Forbidden): error when creating "STDIN": admission webhook "quota-emulator.example.com" denied the request: pod violates namespace quota policy: exceeded quota: policy-quota, requested: requests.memory=4Gi, used: requests.memory=126992Mi, limited: requests.memory=128Gi`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
