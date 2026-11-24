@@ -57,34 +57,54 @@ func (s *MongoConfigStore) Get(ctx context.Context, docID string) (*ConfigRecord
 	return &rec, nil
 }
 
-// Put writes one config document, stamping UpdatedAt.
+// Put writes one config document unconditionally. It still goes through
+// the CAS so the stored token advances past whatever it replaces.
 func (s *MongoConfigStore) Put(ctx context.Context, docID string, rec *ConfigRecord) error {
-	rec.UpdatedAt = time.Now().UTC()
-	doc, err := configToDoc(docID, *rec)
-	if err != nil {
-		return err
+	// An unconditional replacement still needs a new token. Retry the CAS
+	// if another writer advanced it after our read; an unguarded ReplaceOne
+	// would let two Put callers publish the same successor stamp.
+	for {
+		previous, err := s.Get(ctx, docID)
+		if err != nil {
+			return err
+		}
+		var stamp time.Time
+		if previous != nil {
+			stamp = previous.UpdatedAt
+		}
+		ok, err := s.PutIfUnchanged(ctx, docID, rec, stamp)
+		if err != nil || ok {
+			return err
+		}
 	}
-	if _, err := s.col.ReplaceOne(ctx, bson.M{"_id": docID}, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("pricefeed: put %s: %w", docID, err)
+}
+
+// configCASFilter: a zero stamp matches the shapes this store reads as
+// time.Time{} and the zero-stamp CAS accepts: field missing, null, or the
+// zero DateTime. A nonzero stamp must match the stored DateTime exactly.
+// The _id index arbitrates first inserts.
+func configCASFilter(docID string, stamp time.Time) bson.M {
+	if stamp.IsZero() {
+		return bson.M{"_id": docID, "$or": bson.A{
+			bson.M{"updated_at": nil}, // null also matches an absent field
+			bson.M{"updated_at": stamp},
+		}}
 	}
-	return nil
+	return bson.M{"_id": docID, "updated_at": stamp}
 }
 
 // PutIfUnchanged writes rec only when the stored updated_at still equals
-// prevUpdatedAt (zero = no document existed).
+// prevUpdatedAt (zero = no document, or one whose updated_at is missing,
+// null or the zero date). The stamp lands on a copy: the caller's record
+// stays unwritten, the way the memory twin keeps it.
 func (s *MongoConfigStore) PutIfUnchanged(ctx context.Context, docID string, rec *ConfigRecord, prevUpdatedAt time.Time) (bool, error) {
-	rec.UpdatedAt = time.Now().UTC()
-	doc, err := configToDoc(docID, *rec)
+	stamped := *rec
+	stamped.UpdatedAt = nextConfigStamp(prevUpdatedAt, time.Now(), time.Millisecond)
+	doc, err := configToDoc(docID, stamped)
 	if err != nil {
 		return false, err
 	}
-	filter := bson.M{"_id": docID, "updated_at": prevUpdatedAt}
-	upsert := false
-	if prevUpdatedAt.IsZero() {
-		filter = bson.M{"_id": docID, "updated_at": bson.M{"$exists": false}}
-		upsert = true
-	}
-	res, err := s.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(upsert))
+	res, err := s.col.ReplaceOne(ctx, configCASFilter(docID, prevUpdatedAt), doc, options.Replace().SetUpsert(prevUpdatedAt.IsZero()))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return false, nil
@@ -96,11 +116,7 @@ func (s *MongoConfigStore) PutIfUnchanged(ctx context.Context, docID string, rec
 
 // DeleteIfUnchanged removes the document when the stamp still matches.
 func (s *MongoConfigStore) DeleteIfUnchanged(ctx context.Context, docID string, prevUpdatedAt time.Time) (bool, error) {
-	filter := bson.M{"_id": docID, "updated_at": prevUpdatedAt}
-	if prevUpdatedAt.IsZero() {
-		filter = bson.M{"_id": docID, "updated_at": bson.M{"$exists": false}}
-	}
-	res, err := s.col.DeleteOne(ctx, filter)
+	res, err := s.col.DeleteOne(ctx, configCASFilter(docID, prevUpdatedAt))
 	if err != nil {
 		return false, fmt.Errorf("pricefeed: delete %s: %w", docID, err)
 	}
@@ -171,10 +187,12 @@ func stateToDoc(docID string, rec StateRecord) (bson.M, error) {
 	return doc, nil
 }
 
-// Put writes one state document, stamping UpdatedAt.
+// Put writes one state document, stamping UpdatedAt on a copy: the
+// caller's record stays unwritten, the way the memory twin keeps it.
 func (s *MongoStateStore) Put(ctx context.Context, docID string, rec *StateRecord) error {
-	rec.UpdatedAt = time.Now().UTC()
-	doc, err := stateToDoc(docID, *rec)
+	stamped := *rec
+	stamped.UpdatedAt = time.Now().UTC()
+	doc, err := stateToDoc(docID, stamped)
 	if err != nil {
 		return err
 	}
