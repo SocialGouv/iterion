@@ -102,6 +102,7 @@ func (c *RemoteClient) Status(ctx context.Context) (RemoteStatus, error) {
 			return RemoteStatus{}, ctx.Err()
 		}
 		st.ServerInfoError = err.Error()
+		c.gate.seed("")
 	} else {
 		st.Server = &build
 		c.gate.seed(build.Version)

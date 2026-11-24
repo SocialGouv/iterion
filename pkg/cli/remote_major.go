@@ -153,8 +153,8 @@ func (g *majorGate) invalidate() {
 	g.mu.Unlock()
 }
 
-// seed records a version the client read itself (Status), so the next
-// gated request does not read it again.
+// seed records a version the client read itself (Status), or none after a
+// failed read, so the next gated request does not read it again.
 func (g *majorGate) seed(server string) {
 	g.mu.Lock()
 	g.probed = true

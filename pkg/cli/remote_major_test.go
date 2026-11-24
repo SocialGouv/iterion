@@ -412,3 +412,19 @@ func TestStatusReadsServerInfoOnce(t *testing.T) {
 		t.Errorf("probes=%d apiHits=%d, want 1 and 1: the status reads the server's info once", probes, apiHits)
 	}
 }
+
+func TestStatusAnswersUnderMalformedProbeTimeout(t *testing.T) {
+	setClientVersion(t, "v7.34.0")
+	gs, c := newMajorGateClient(t, "v7.40.0")
+	t.Setenv(serverInfoTimeoutEnv, "bogus")
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status err = %v, want the status to answer with the failed read in server_info_error", err)
+	}
+	if st.Server != nil || !strings.Contains(st.ServerInfoError, serverInfoTimeoutEnv) {
+		t.Errorf("server = %+v server_info_error = %q, want no server and an error naming %s", st.Server, st.ServerInfoError, serverInfoTimeoutEnv)
+	}
+	if _, apiHits, _ := gs.counts(); apiHits != 1 {
+		t.Errorf("API saw %d requests, want 1: the account is read once", apiHits)
+	}
+}
