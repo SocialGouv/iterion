@@ -653,7 +653,7 @@ tasks:
       - golangci-lint run
 
   vuln:
-    desc: Scan the Go module for vulnerabilities reachable from this code (needs the network for the vuln DB — advisory, not a `task check` member)
+    desc: Scan the Go module for vulnerabilities reachable from this code (needs the network for the vuln DB — advisory, run by hand; never a member of `task check` or `task ci:gate`)
     cmds:
       - govulncheck ./...
 
