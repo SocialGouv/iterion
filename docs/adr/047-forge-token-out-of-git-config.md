@@ -204,3 +204,25 @@ The `preprod k8s runner` of Validation step 1 is the runner deployed on the
 ovh-dev development cluster: Iterion runs no preproduction (operator ruling,
 2026-11-03). The step keeps its wording; whether it was ever walked remains
 unrecorded, as the amended Consequences say.
+
+## Amendment (2026-11-24) — the clone authenticates through git's environment
+
+The clone no longer carries the token in its URL, which put it in git's argv
+(world-readable in `/proc/<pid>/cmdline` for the length of the clone) and, until
+`installGitCredentialStore` ran, in `remote.origin.url`. The clone authenticates
+with an extraHeader (`AUTHORIZATION: Basic` of `oauth2:<token>`) carried in
+`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
+([`git.AuthEnv`](../../pkg/git/authenv.go)), appended after any `GIT_CONFIG_*`
+entries the runner's environment already holds. The key is bound to the forge
+origin (`http.<scheme>://<host>/.extraHeader`): git and git-lfs send the header
+to the forge only, never to an LFS storage host or a host an `lfs.url` names,
+and a non-http(s) remote (ssh) gets no header at all. The clone URL is the bare
+repository URL, so `remote.origin.url` never holds a credential and
+`installGitCredentialStore` no longer rewrites it. The credential store is
+installed right after the clone, so every git and git-lfs operation after the
+clone reads it — the checkout of the run's ref and the restored chain's
+checkout and merge smudge LFS objects through it. The fetches the preparation
+makes still carry the header, redundant with the store; the header dies with
+each process, so no frozen copy of the token reaches a late push. The
+server-side merge clone (`pkg/runview/merge_remote.go`) moves its header from a
+`-c` argument to the same environment carrier, bound to the same origin.

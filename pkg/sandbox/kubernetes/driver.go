@@ -1695,7 +1695,9 @@ func readArchiveTail(archive io.Reader) error {
 //     For a worktree run the pod workspace lives at the WORKTREE path
 //     while the copied content is the clone — so the recorded absolute
 //     path doesn't exist in the pod and every authenticated push would
-//     fail credential-less. Re-point it at the pod-local file.
+//     fail credential-less. Re-point it at the pod-local file,
+//     single-quoted because git runs the helper value through `sh -c`;
+//     a workspace path holding a single quote is refused.
 //   - .git/worktrees/: the engine's per-run worktree registration.
 //     Inside the pod the workspace is a standalone clone; the stale
 //     registration claims the storage branch is checked out elsewhere
@@ -1709,7 +1711,10 @@ ws=$1
 if [ -d "$ws/.git" ]; then
   cred="$ws/.git/iterion-credentials"
   if [ -f "$cred" ]; then
-    git -C "$ws" config credential.helper "store --file=$cred"
+    case $ws in
+      *\'*) echo "fixup: workspace path $ws holds a single quote, which the quoted credential.helper cannot carry" >&2; exit 1 ;;
+    esac
+    git -C "$ws" config credential.helper "store --file='$cred'"
   fi
   rm -rf "$ws/.git/worktrees"
 fi`

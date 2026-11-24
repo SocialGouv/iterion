@@ -389,7 +389,7 @@ const cloneGateRunID = "run-clone-gate"
 // The gate sits BEFORE the clone, on every transport: a run whose forge
 // secret withholds the `file` sink is refused with nothing spent on it — no
 // clone attempt, no workspace directory, so the token reaches neither the
-// clone URL git persists in .git/config nor the credential store. Driven
+// forge nor the credential store. Driven
 // through prepareRepoWorkspace itself; each granted control proves the
 // stand-in forge sees a clone when one happens on that transport, so the
 // refused case's zero is a measurement, not a blind spot.

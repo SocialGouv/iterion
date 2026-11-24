@@ -10,11 +10,9 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
-// The regression: the clone URL carries the token so the initial fetch can
-// authenticate, and git persists remote.origin.url verbatim — freezing a
-// credential that lives ONE HOUR into .git/config. An app-building run takes
-// several hours and pushes at the very end, so the run's last and most
-// valuable action failed 403 with a dead token.
+// A GitHub App installation token lives ONE HOUR, an app-building run takes
+// several and pushes at the very end: the push must read the token from a
+// file the refresher rewrites, never from a copy frozen into .git/config.
 func TestInstallGitCredentialStore(t *testing.T) {
 	const tok = "ghs_installation_token"
 	const repoURL = "https://github.com/iterion-sandbox/appy-demo.git"
@@ -24,9 +22,10 @@ func TestInstallGitCredentialStore(t *testing.T) {
 	if err := r.runGit(ctx, dir, "", "init", "-q"); err != nil {
 		t.Fatalf("git init: %v", err)
 	}
-	// Reproduce the clone: an origin whose URL embeds the token.
-	if err := r.runGit(ctx, dir, "", "remote", "add", "origin", injectGitToken(repoURL, tok)); err != nil {
-		t.Fatalf("add tokenized remote: %v", err)
+	// Reproduce the clone: its origin is the bare repo URL (the token
+	// authenticated the clone through git's environment).
+	if err := r.runGit(ctx, dir, "", "remote", "add", "origin", repoURL); err != nil {
+		t.Fatalf("add remote: %v", err)
 	}
 
 	if err := r.installGitCredentialStore(ctx, dir, repoURL, tok); err != nil {
@@ -39,7 +38,7 @@ func TestInstallGitCredentialStore(t *testing.T) {
 		t.Fatalf("read .git/config: %v", err)
 	}
 	if strings.Contains(string(cfg), tok) {
-		t.Error("the token is still in .git/config — a later push would use this frozen copy")
+		t.Error("the token is in .git/config — a later push would use this frozen copy")
 	}
 
 	// 2. The credential file carries it instead, readable only by the owner.
@@ -60,7 +59,7 @@ func TestInstallGitCredentialStore(t *testing.T) {
 	}
 
 	// 3. git must actually be pointed at that file.
-	if !strings.Contains(string(cfg), "store --file="+path) {
+	if !strings.Contains(string(cfg), "store --file='"+path+"'") {
 		t.Errorf(".git/config does not wire the credential helper to %s:\n%s", path, cfg)
 	}
 }
