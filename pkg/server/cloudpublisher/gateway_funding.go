@@ -171,7 +171,7 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 	undecidedOnPool := pooled && (!walk.NarrowSafe || walk.EnvDeferred)
 	var hold gatewayHold
 	if routed {
-		hold = p.gatewayKeyHold(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled, probe)
+		hold = p.gatewayKeyHold(ctx, tenantID, orgID, ownerID, audienceBotID, blocksSharedTiers(pooled, sovereign), probe)
 	}
 	attributed := routed && ((sovereign && !pooled) || hold.funds)
 	sealable, mayRide := attributed || undecidedOnPool, routed || undecidedOnPool
@@ -377,7 +377,7 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 		} else if repoOnly == nil {
 			repoOnly = hold.repoOnly
 		}
-		if p.platformAudience == nil || p.platformAudience.Get(ctx).Allows(orgID, tenantID) {
+		if p.platformAudienceAdmits(ctx, orgID, tenantID) {
 			if hold, decided := visit("platform", secrets.PlatformTenantID, ""); decided {
 				return hold
 			}

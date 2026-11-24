@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -14,6 +15,12 @@ import (
 // this identity would receive: tenant BYOK, user/org OAuth-forfait, then
 // platform. Presence only — it never opens a sealed blob, never returns a
 // value, and never consults the server process environment.
+//
+// The platform tier counts only when the launch walk would consult it for
+// this team (platformTierConsulted): a team outside an enforced platform
+// credential audience, a sovereign team (llm_fallback=none) and a team
+// mapped to a runner pool never receive a platform credential, so it proves
+// nothing for them.
 //
 // The mutualised pool is not probed: a grant is opportunistic and proving
 // it would mean acquiring one. Unproven providers stay reachability
@@ -28,8 +35,36 @@ func (s *Server) probeCloudRunPresence(ctx context.Context, id auth.Identity) mo
 	now := time.Now().UTC()
 	s.collectBYOKPresence(ctx, id.TeamID, id.UserID, now, out.ProviderSources)
 	s.collectOAuthPresence(ctx, id.TeamID, id.UserID, &out)
-	s.collectPlatformPresence(ctx, now, &out)
+	if s.platformTierConsulted(ctx, id.TeamID) {
+		s.collectPlatformPresence(ctx, now, &out)
+	}
 	return out
+}
+
+// platformTierConsulted asks the launch publisher — the walk's own gate,
+// through runview.Service.PlatformTierConsulted — whether a trusted launch
+// of teamID consults the platform credential tier. A question nobody can
+// answer (no run service, a publisher that does not judge it, a team read
+// that failed) reads as not consulted, with a warning: the platform's
+// credentials are then left uncounted and the models only they fund read
+// "unknown", never a proven row the launch might refuse.
+func (s *Server) platformTierConsulted(ctx context.Context, teamID string) bool {
+	if s.runs == nil {
+		s.warnPlatformTierUnjudged(teamID, runview.ErrPlatformTierUnjudged)
+		return false
+	}
+	consulted, err := s.runs.PlatformTierConsulted(ctx, teamID)
+	if err != nil {
+		s.warnPlatformTierUnjudged(teamID, err)
+		return false
+	}
+	return consulted
+}
+
+func (s *Server) warnPlatformTierUnjudged(teamID string, err error) {
+	if s.logger != nil {
+		s.logger.Warn("models: platform tier gate for team %s: %v — platform credentials are not counted, the models only they fund read unknown", teamID, err)
+	}
 }
 
 func (s *Server) collectBYOKPresence(ctx context.Context, teamID, userID string, now time.Time, into map[string]string) {
