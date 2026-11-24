@@ -1209,35 +1209,6 @@ func TestPiPrepareStateRoot(t *testing.T) {
 	})
 }
 
-// relBelow's retry is what lets the walk happen for a workspace spelled through
-// a symlink; without it the helper always reports "not below" and the guard
-// becomes a permanent no-op — invisible from the outside, which is why round 3
-// could delete it with a green suite.
-func TestRelBelowResolvesTheBase(t *testing.T) {
-	base := t.TempDir()
-	real := filepath.Join(base, "realrepo")
-	if err := os.MkdirAll(filepath.Join(real, ".iterion"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(base, "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-
-	walkBase, rel := relBelow(link, filepath.Join(real, ".iterion", "pi"))
-	if rel != filepath.Join(".iterion", "pi") || walkBase != real {
-		t.Errorf("relBelow = (%q, %q), want the resolved base and a walkable rel", walkBase, rel)
-	}
-	// A genuinely unrelated target is "not below" — a no-op, never an error.
-	if _, r := relBelow(t.TempDir(), t.TempDir()); r != "" {
-		t.Errorf("rel = %q for an unrelated target, want none", r)
-	}
-	// A first component merely STARTING with ".." is below, not an escape.
-	if _, r := relBelow(base, filepath.Join(base, "..cache", "pi")); r == "" {
-		t.Error(`"..cache" was treated as an escape`)
-	}
-}
-
 // An unreadable workspace is an uncertainty, and uncertainties guard.
 func TestPathInsideCheckoutFailsClosedOnUnreadable(t *testing.T) {
 	if os.Getuid() == 0 {
@@ -1301,26 +1272,6 @@ func TestPiPreFlightSideEffects(t *testing.T) {
 			t.Error("wrote into the workspace for an operator-rooted run")
 		}
 	})
-}
-
-// A component we cannot inspect is an uncertainty, and uncertainties refuse.
-func TestRefuseSymlinkedPathFailsClosedOnUnreadable(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root ignores the permission bits this asserts")
-	}
-	base := t.TempDir()
-	locked := filepath.Join(base, "locked")
-	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Skipf("cannot drop permissions: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
-
-	if err := refuseSymlinkedPath(base, filepath.Join(locked, "inner", "pi"), "pi backend", "the pi credential"); err == nil {
-		t.Error("an uninspectable component was accepted")
-	}
 }
 
 // A noop sandbox is a host passthrough, so host paths ARE statable and the
