@@ -183,7 +183,14 @@ func (s modelsDevSource) Fetch(ctx context.Context, params map[string]string) (m
 // liteLLMSource reads a LiteLLM proxy's model-info listing
 // (`{"data": [{"model_name": …, "model_info": {…}}]}`) — the shape a
 // LiteLLM gateway publishes its OWN served models and costs through.
-// Per-token costs arrive in USD and are scaled to per-mtok here, once.
+// Per-token costs (input, output, cache read) arrive in USD and are
+// scaled to per-mtok here, once. The context window is max_input_tokens;
+// LiteLLM fills max_tokens with the output cap whenever a non-zero one is
+// known (else the input window), so that legacy field stands in for the
+// window only on a listing that states neither max_input_tokens nor
+// max_output_tokens. Otherwise the window stays 0 (unknown). Deployments
+// of one load-balanced group share a model_name; their limits fold by
+// foldLimit, independent of listing order. Prices keep the last listed.
 type liteLLMSource struct{}
 
 func (liteLLMSource) ValidateParams(params map[string]string) error {
@@ -204,9 +211,11 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 			ModelName string `json:"model_name"`
 			ModelInfo *struct {
 				MaxTokens         *int64  `json:"max_tokens"`
+				MaxInputTokens    *int64  `json:"max_input_tokens"`
 				MaxOutputTokens   *int64  `json:"max_output_tokens"`
 				InputCostPerToken float64 `json:"input_cost_per_token"`
 				OutputCostPerTok  float64 `json:"output_cost_per_token"`
+				CacheReadPerToken float64 `json:"cache_read_input_token_cost"`
 			} `json:"model_info"`
 		} `json:"data"`
 	}
@@ -220,14 +229,24 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 			continue
 		}
 		spec := modelspecs.Spec{
-			InputCostPerM:  m.ModelInfo.InputCostPerToken * 1e6,
-			OutputCostPerM: m.ModelInfo.OutputCostPerTok * 1e6,
+			InputCostPerM:     m.ModelInfo.InputCostPerToken * 1e6,
+			OutputCostPerM:    m.ModelInfo.OutputCostPerTok * 1e6,
+			CacheReadCostPerM: m.ModelInfo.CacheReadPerToken * 1e6,
 		}
-		if m.ModelInfo.MaxTokens != nil {
+		if m.ModelInfo.MaxInputTokens != nil {
+			spec.ContextWindow = int(*m.ModelInfo.MaxInputTokens)
+		} else if m.ModelInfo.MaxOutputTokens == nil && m.ModelInfo.MaxTokens != nil {
+			// A stated output limit means max_tokens is LiteLLM's derived
+			// field (the output cap, or the input window when the cap is
+			// 0), never an independent window.
 			spec.ContextWindow = int(*m.ModelInfo.MaxTokens)
 		}
 		if m.ModelInfo.MaxOutputTokens != nil {
 			spec.MaxOutputTokens = int(*m.ModelInfo.MaxOutputTokens)
+		}
+		if prev, ok := table[id]; ok {
+			spec.ContextWindow = foldLimit(prev.ContextWindow, spec.ContextWindow)
+			spec.MaxOutputTokens = foldLimit(prev.MaxOutputTokens, spec.MaxOutputTokens)
 		}
 		table[id] = spec
 	}
@@ -235,6 +254,19 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 		return nil, fmt.Errorf("pricefeed: %s lists no model_info entries", url)
 	}
 	return table, nil
+}
+
+// foldLimit merges one limit stated by two deployments of a model: a known
+// (positive) limit beats an unknown one, and two known limits keep the
+// smaller, the one every deployment of the group honours.
+func foldLimit(a, b int) int {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
 }
 
 // execSource runs an operator-supplied command and reads a feed's entry

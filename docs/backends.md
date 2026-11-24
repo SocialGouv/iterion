@@ -1921,7 +1921,8 @@ run to the runner** — the operator table stays the floor.
   catalog entry with an unpriced one; a declared one answers unpriced
   only where nothing prices the id (below). When a fresh
   feed and the operator table disagree on price, the sync says so: one
-  line per drifting id per refresh, naming both values. A fetched
+  line per drifting id per refresh, naming both values; the cache-read
+  price drifts only when both sides state one. A fetched
   price that is not a finite number — a `litellm` per-token cost
   scaled past what a number holds — fails its refresh, naming the id
   and the field; one a state already holds is left out of the fold,
@@ -1931,7 +1932,15 @@ run to the runner** — the operator table stays the floor.
   `modelsdev` (the aggregator's shape, `provider` qualifier, optional
   `url`), `scaleway` (that adapter with its qualifier pinned; every
   entry keyed both `scaleway/<id>` and `<id>`), `litellm` (a proxy's
-  `model_info` listing, per-token costs scaled to per-mtok), `exec` — a
+  `model_info` listing: input, output and `cache_read_input_token_cost`
+  per-token costs scaled to per-mtok once; `max_input_tokens` is the
+  window and `max_output_tokens` the output cap; the legacy
+  `max_tokens` stands in for the window only when both are absent or
+  null — LiteLLM derives it from the output cap, or from the input
+  window when the cap is 0 — else the window stays unknown; deployments
+  sharing a `model_name` fold their limits (a stated limit beats an
+  absent one, two stated limits keep the smaller); an absent cache price
+  stays unknown, so cached input meters at the input rate), `exec` — a
   command printing the feed-entry JSON on stdout (the operator-table
   shape plus `reasoning_efforts`; no shell; `args` splits on spaces;
   stdout bounded; a descendant holding the pipe cannot stall the
