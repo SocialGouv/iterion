@@ -367,6 +367,9 @@ var operatorInfraNames = map[string]bool{
 	// escape hatch on the GitLab quick-action guard (pkg/forge).
 	"ITERION_FORGE_READBACK_BUDGET":      true,
 	"ITERION_FORGE_GITLAB_QUICK_ACTIONS": true,
+	// The server-wide default routing of the forge lanes (ADR-172): a
+	// process knob that decides which router a forge delivery takes.
+	"ITERION_FORGE_ROUTING_DEFAULT": true,
 	// Identities presented to forges and providers.
 	"ITERION_FORGE_BRAND_AVATAR": true,
 	"ITERION_GIT_AUTHOR_NAME":    true,
