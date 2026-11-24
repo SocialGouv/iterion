@@ -794,26 +794,6 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	for k, v := range spec.Vars {
 		inputs[k] = v
 	}
-	// The tenant's providers lock holds on this lane too (#2665 item 7):
-	// the publisher's gate, read before it seals, is read here before the
-	// executor is built — on the merged inputs the run stores, so a preset
-	// that routes a node outside the list refuses here rather than at the
-	// resume that reads those inputs back. A preset's values are the bot
-	// author's text and narrow as trusted; a key the launch also sets keeps
-	// the launch's own trust.
-	gateTrusted := spec.TrustedVarNames
-	if spec.Preset != "" {
-		gateTrusted = append([]string(nil), spec.TrustedVarNames...)
-		for k := range wf.Presets[spec.Preset].Values {
-			if _, launched := spec.Vars[k]; !launched {
-				gateTrusted = append(gateTrusted, k)
-			}
-		}
-	}
-	if err := refuseOutsideAllowlistOn(wf, &spec, inputs, gateTrusted); err != nil {
-		return nil, err
-	}
-
 	// An input that names no var of the workflow is refused, not dropped:
 	// the run would execute on defaults while the operator believes it was
 	// parameterised (#1757) — the verdict, the report and the journal would
@@ -849,6 +829,25 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// --var review_mode; both win over auto.
 	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
 		s.logger.Info("%s", inj.Summary())
+	}
+
+	// The tenant's providers lock holds on this lane too (#2665 item 7):
+	// the publisher's gate, read before it seals, is read here before the
+	// executor is built — on the inputs the run stores, after the preset
+	// merge and the topology injection, so the launch walks exactly the
+	// vars the resume gate later reads back and a run the launch admits is
+	// never refused at the resume of its unchanged document. A value the
+	// launch did not set — a preset's, written by the bot author, or one the
+	// engine injected — narrows as trusted; a key the launch also sets keeps
+	// the launch's own trust.
+	gateTrusted := append([]string(nil), spec.TrustedVarNames...)
+	for k := range inputs {
+		if _, launched := spec.Vars[k]; !launched {
+			gateTrusted = append(gateTrusted, k)
+		}
+	}
+	if err := refuseOutsideAllowlistOn(wf, &spec, inputs, gateTrusted); err != nil {
+		return nil, err
 	}
 
 	// The var constraints, on the values the engine will start with, before

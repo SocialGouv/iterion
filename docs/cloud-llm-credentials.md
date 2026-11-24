@@ -1126,7 +1126,7 @@ cloud runner on the queue message (`RunMessage.LLMProviders` →
 `ExecutorSpec.LLMProviders`, `loop.go`) and an in-process run through its
 launch spec (`startInProcess` refuses on it with the publisher's own gate,
 `model.AllowlistRefusal`, over the inputs the run stores — a preset's values
-included — threads it to its executor and stamps the policy on
+and the topology vars the engine injects included — threads it to its executor and stamps the policy on
 the run document for a local resume to replay), and this lane sends none —
 the local-parity limit ADR-129 §8 states. A local resume (in-process or
 detached spawn) repeats the same gate on the run document's frozen list

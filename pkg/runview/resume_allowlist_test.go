@@ -574,3 +574,68 @@ func TestPreflightResumeRefusesOutsideTheListOnAPublisher(t *testing.T) {
 		t.Fatalf("refusal = site %q provider %q level %q, want work/openai/team", outside.Site, outside.Provider, outside.Level)
 	}
 }
+
+// injectedVarAllowlistBot gates a rescue route on plan_review, a var the
+// topology injection writes (ITERION_PLAN_REVIEW) after the launch merged its
+// own vars. The rescue's model carries no provider prefix, so a gate that
+// reads plan_review=on refuses it as unreadable.
+const injectedVarAllowlistBot = `schema gate_out:
+  approved: bool
+
+prompt gate_prompt:
+  Approve?
+
+prompt p:
+  Do the work.
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+vars:
+  plan_review: string = "off"
+
+agent work:
+  backend: "claw"
+  model: "anthropic/claude-opus-5"
+  system: p
+  fallbacks:
+    peer:
+      backend: "claw"
+      model: "gpt-5"
+      when: "vars.plan_review == 'on'"
+
+workflow resume_allowlist:
+  entry: gate
+  gate -> work when approved
+  work -> done
+  gate -> fail when not approved
+`
+
+// TestLaunchGateReadsTheInjectedTopologyVars: the launch gate walks the
+// inputs the run stores, after the topology injection, so a route gated on an
+// injected var is judged at launch exactly as the resume gate later judges
+// it. Without that, the launch admits the run and every resume of the
+// unchanged, human-paused run is refused: the run can never be answered.
+// Mutant: the gate moved back before reviewtopology.InjectAll → the launch is
+// admitted and this test goes red.
+func TestLaunchGateReadsTheInjectedTopologyVars(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "parent", "main.bot")
+	writeFile(t, filepath.Join(dir, "parent"), "main.bot", injectedVarAllowlistBot)
+	svc := newAllowlistService(t, dir)
+	t.Setenv(envDetached, "0")
+	t.Setenv("ITERION_PLAN_REVIEW", "on")
+	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: botPath, LLMRoutePolicy: teamProviders("anthropic")})
+	var unreadable *model.RouteUnreadableError
+	if !errors.As(err, &unreadable) {
+		if res != nil {
+			awaitRunCompletion(t, res.Done, "injected var")
+		}
+		t.Fatalf("launch err = %v, want the rescue gated on the injected plan_review refused as unreadable at launch", err)
+	}
+	if unreadable.Site != "work#peer" || unreadable.Field != "model" {
+		t.Fatalf("unreadable refusal = site %q field %q, want work#peer/model", unreadable.Site, unreadable.Field)
+	}
+}

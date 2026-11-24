@@ -18,10 +18,11 @@ func refuseOutsideAllowlist(wf *ir.Workflow, spec *LaunchSpec) error {
 }
 
 // refuseOutsideAllowlistOn is refuseOutsideAllowlist over the vars the run
-// actually stores: the in-process launch passes its merged inputs (a
-// preset's values under the launch's own) and the trusted names that go
-// with them, so the launch walks the same vars the resume gate later reads
-// from the run document.
+// actually stores: the in-process launch passes its inputs after the preset
+// merge and the topology injection (a preset's values and the injected ones
+// under the launch's own) and the trusted names that go with them, so the
+// launch walks the same vars the resume gate later reads from the run
+// document.
 func refuseOutsideAllowlistOn[V any](wf *ir.Workflow, spec *LaunchSpec, vars map[string]V, trusted []string) error {
 	// The run-level chain on the model's twin shape — field-identical to the
 	// launch entry, a tiny adapter per site (override_fold.go's doctrine).
