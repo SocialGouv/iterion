@@ -336,15 +336,18 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_WORKTREE_POOL_MAX":        true,
 	"ITERION_SCRATCH_RETENTION":        true,
 	// Rollout levers. RELIABILITY_MODE is authoritative over
-	// EXECUTION_CONTEXT_POLICY, the emergency lever it generalises.
-	"ITERION_EXECUTION_CONTEXT_POLICY": true,
-	"ITERION_RELIABILITY_MODE":         true,
-	"ITERION_OUTCOME_ROUTER":           true,
-	"ITERION_DISPATCH_VIA_SERVICE":     true,
-	"ITERION_RUNS_DETACHED":            true,
-	"ITERION_MODE":                     true,
-	"ITERION_DESKTOP":                  true,
-	"ITERION_DESKTOP_ATTACH_DAEMON":    true,
+	// EXECUTION_CONTEXT_POLICY, the emergency lever it generalises;
+	// LEGACY_TENANTS is its tenant-scoped cap — which tenants still read
+	// legacy while the rest of the deployment applies the resolved mode.
+	"ITERION_EXECUTION_CONTEXT_POLICY":   true,
+	"ITERION_RELIABILITY_MODE":           true,
+	"ITERION_RELIABILITY_LEGACY_TENANTS": true,
+	"ITERION_OUTCOME_ROUTER":             true,
+	"ITERION_DISPATCH_VIA_SERVICE":       true,
+	"ITERION_RUNS_DETACHED":              true,
+	"ITERION_MODE":                       true,
+	"ITERION_DESKTOP":                    true,
+	"ITERION_DESKTOP_ATTACH_DAEMON":      true,
 	// Sessions, run ownership and the process itself.
 	"ITERION_REFRESH_TTL":               true,
 	"ITERION_LOCK_TTL":                  true,

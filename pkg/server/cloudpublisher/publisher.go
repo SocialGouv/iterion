@@ -54,6 +54,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/reliability"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -4151,9 +4152,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		r.CreatedAt = prior.run.CreatedAt
 	}
 	// Resolve the same versioned context the local launch authority stamps.
+	// The default policy is THIS process's rollout mode — the process floor,
+	// capped per tenant by the legacy exemption list — the same resolution
+	// every other launch surface applies; a policy declared on the launch
+	// spec keeps winning (ResolveExecutionContext fills only an empty one).
 	// It is persisted before the queued row is published so admission on the
 	// runner and diagnostics on the server read one contract.
-	resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	resolvedContext, contextErr := runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, reliability.ContextPolicyForTenant(tenantID), "")
 	if contextErr != nil {
 		return sub, contextErr
 	}
