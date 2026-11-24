@@ -438,11 +438,14 @@ func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.
 }
 
 // sweep runs one pass and reports what it was worth, for the handover
-// (#2685). The pass's far side is the run store it reads — the watches, their
-// targets, the trees — so the verdict is the store's answers: a replica whose
-// node cannot reach it attempted work and reached nothing, while a store that
-// answers "no such run" has ANSWERED, and a fleet with no armed watch is an
-// idle pass rather than a sick one.
+// (#2685). The pass's items are its DELIVERIES — the episodes it resumes an
+// assistant with (attempt, through recordWatchDelivery) — never its scan: a
+// holder whose store reads succeed while its resume path reaches nothing
+// would otherwise read progressed on every pass and keep the net for ever.
+// A store read that fails (the upper bound, a page, a target, the due
+// episodes) is still a failure the verdict classifies, while a store that
+// answers "no such run" has ANSWERED. A pass over armed watches with nothing
+// due, like a fleet with no armed watch, delivers nothing and is idle.
 func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict {
 	var pass lease.Pass
 	if err := ctx.Err(); err != nil {
@@ -450,6 +453,7 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 	}
 	c = c.snapshot()
 	ctx = c.withBotPaths(ctx)
+	ctx = withWatchPass(ctx, &pass)
 	started := c.now()
 	c.markSweepStarted(started)
 	ws := c.currentStore()
@@ -470,13 +474,8 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 			pass.FailedUnlessDone(ctx, err)
 			return pass.Verdict()
 		}
-		if len(watches) > 0 {
-			// The store answered with the page: this replica reaches it.
-			// UnlessDone because the answer could have landed as the term
-			// ended — a progressed verdict overwrites the run of unreachable
-			// passes on a page this holder is no longer serving.
-			pass.SucceededUnlessDone(ctx)
-		}
+		// The page's answer is not an item of the pass: reading the watches
+		// proves the store, not that anything they owe reaches an assistant.
 		if len(watches) == 0 {
 			break
 		}
@@ -549,6 +548,52 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 	}
 	c.markSweepCompleted(c.now(), c.now().Sub(started))
 	return pass.Verdict()
+}
+
+// watchPassKey carries the pass a sweep is accounting into down to the
+// deliveries it reaches (attempt), which several observers call from inside
+// the pass with their own signatures. It is distinct from gatePassKey so a
+// gate pass and a watch pass can never account into each other.
+type watchPassKey struct{}
+
+// withWatchPass installs the pass the deliveries under ctx report into.
+func withWatchPass(ctx context.Context, pass *lease.Pass) context.Context {
+	return context.WithValue(ctx, watchPassKey{}, pass)
+}
+
+// watchPassOf reads it back; nil when no pass is accounting — a delivery
+// reached outside an elected sweep (an observer called on another path, a
+// test calling attempt directly) — and recording into a nil pass is a no-op.
+func watchPassOf(ctx context.Context) *lease.Pass {
+	pass, _ := ctx.Value(watchPassKey{}).(*lease.Pass)
+	return pass
+}
+
+// recordWatchDelivery records what ONE delivery learned about this replica's
+// delivery path, into the pass the term is accounting into. The far side is
+// the delivery path itself — the episode's create and claim, the resume that
+// hands it to the assistant, then the write that marks it delivered — so nil
+// is a delivery that completed and a transport-class error
+// (lease.TransportFailure: a network or queue that accepted nothing) is one
+// that reached nothing, which reads unreachable.
+//
+// Any other failure records nothing. The delivery path cannot attribute it
+// to the far side answering: a resume cloudpublisher refuses locally before
+// any publish (a credential at capacity, a validation) never left this node,
+// and a bare cancellation is a call cut off, evidence about nothing.
+// Recorded, either would read refused — the verdict that clears the run of
+// unreachable passes a handover counts, so one such episode anywhere in the
+// fleet would keep a holder whose every publish times out for ever. The
+// classification is lease.TransportFailure's, cause by cause, so a
+// cancellation joined to a reach failure still reads unreachable. The
+// UnlessDone recorders refuse the term's own end (pkg/lease/health.go).
+func recordWatchDelivery(ctx context.Context, err error) {
+	switch {
+	case err == nil:
+		watchPassOf(ctx).SucceededUnlessDone(ctx)
+	case lease.TransportFailure(err):
+		watchPassOf(ctx).FailedUnlessDone(ctx, err)
+	}
 }
 
 type assistantWatchTree struct {
@@ -699,6 +744,7 @@ func (c *assistantWatchCoordinator) observePausedHumanGate(ctx context.Context, 
 	created, err := c.currentStore().CreateEpisode(ctx, ep)
 	if err != nil {
 		c.server.logWarn("assistant run watch: create paused-gate episode target=%s gate=%s: %v", w.TargetRunID, gate.ID, err)
+		recordWatchDelivery(ctx, err)
 		return
 	}
 	if created {
@@ -792,6 +838,7 @@ func (c *assistantWatchCoordinator) observeRunHealthInTree(ctx context.Context, 
 		created, createErr := c.currentStore().CreateEpisode(ctx, ep)
 		if createErr != nil {
 			c.server.logWarn("assistant run watch: create stall episode target=%s seq=%d: %v", target.ID, evt.Seq, createErr)
+			recordWatchDelivery(ctx, createErr)
 			advanceTo = evt.Seq - 1
 			break
 		}
@@ -944,6 +991,7 @@ func (c *assistantWatchCoordinator) observeFailureForWatch(ctx context.Context, 
 	}
 	created, err := c.currentStore().CreateEpisode(ctx, ep)
 	if err != nil {
+		recordWatchDelivery(ctx, err)
 		return err
 	}
 	if created {
@@ -1053,6 +1101,7 @@ func (c *assistantWatchCoordinator) observeTerminalForWatch(ctx context.Context,
 	}
 	created, err := c.currentStore().CreateEpisode(ctx, ep)
 	if err != nil {
+		recordWatchDelivery(ctx, err)
 		return err
 	}
 	if created {
@@ -1092,6 +1141,7 @@ func (c *assistantWatchCoordinator) deliverDue(ctx context.Context, limit int) {
 	episodes, err := ws.ListDueEpisodes(ctx, time.Now().UTC(), limit)
 	if err != nil {
 		c.server.logWarn("assistant run watch: list episodes: %v", err)
+		watchPassOf(ctx).FailedUnlessDone(ctx, err)
 		return
 	}
 	for _, ep := range episodes {
@@ -1111,6 +1161,9 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 	ws := c.currentStore()
 	now := time.Now().UTC()
 	ep, won, err := ws.ClaimEpisode(ctx, episodeID, c.worker, now, assistantWatchLease)
+	if err != nil {
+		recordWatchDelivery(ctx, err)
+	}
 	if err != nil || !won {
 		return
 	}
@@ -1265,6 +1318,11 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 		// the assistant would silently stop watching the target.
 		Force: true,
 	}); err != nil {
+		// Accounted before the cancellation guard below: that guard also
+		// returns on a DeadlineExceeded under a live ctx, which is how a
+		// bounded call to an unreachable queue ends, and the recorder itself
+		// refuses the term's own end.
+		recordWatchDelivery(ctx, err)
 		if assistantWatchCanceled(ctx, err) {
 			return
 		}
@@ -1273,10 +1331,12 @@ func (c *assistantWatchCoordinator) attempt(ctx context.Context, episodeID strin
 	}
 	if err := ws.CompleteEpisode(ctx, ep.ID, c.worker, time.Now().UTC()); err != nil {
 		c.server.logWarn("assistant run watch: mark episode %s delivered: %v", ep.ID, err)
+		recordWatchDelivery(ctx, err)
 		// Keep the watch active so a rolled-back completion can be retried
 		// after its lease expires, including a finished target's last episode.
 		return
 	}
+	recordWatchDelivery(ctx, nil)
 	if eventKind == trigger.KindRunFinished && observedID == w.TargetRunID {
 		_ = c.stopWatch(ctx, w, runwatch.WatchResolved, "target_"+eventKind, time.Now().UTC())
 	}

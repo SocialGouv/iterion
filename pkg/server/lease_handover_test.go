@@ -543,14 +543,12 @@ func TestForgeCredentialSweep_aCancelledTermAccountsIntoNothing(t *testing.T) {
 
 // steppingDownWatchStore is the holder's own step-down arriving inside the
 // watch sweep's store reads, at the stage the test selects: the upper-bound
-// read, the page read, or the page read whose answer was already on the wire
-// when the term ended.
+// read or the page read.
 type steppingDownWatchStore struct {
 	runwatch.Store
 	cancel func()
-	stage  int // 1: upper bound; 2: page read; 3: page read that answers anyway
+	stage  int // 1: upper bound; 2: page read
 	calls  atomic.Int64
-	page   []runwatch.Watch
 }
 
 func (s *steppingDownWatchStore) ActiveWatchUpperBound(ctx context.Context) (*runwatch.WatchCursor, error) {
@@ -568,27 +566,21 @@ func (s *steppingDownWatchStore) ListActivePage(ctx context.Context, after *runw
 	}
 	s.calls.Add(1)
 	s.cancel()
-	if s.stage == 3 {
-		// The answer was in flight when the term ended; it lands anyway.
-		return s.page, nil
-	}
 	return nil, fmt.Errorf("watch store: list active page: %w", ctx.Err())
 }
 
-// The term-end rule at the assistant run watch's recording sites, through
-// the production sweep loop: a term cancelled inside its query — or one whose
-// page answered as the term ended — records nothing, and the Health keeps the
-// run of unreachable passes the term had accumulated. The pass's far side is
-// the run store, so the sites are its reads (assistant_run_watch.go sweep).
+// The term-end rule at the assistant run watch's store-read recording sites,
+// through the production sweep loop: a term cancelled inside its query
+// records nothing, and the Health keeps the run of unreachable passes the
+// term had accumulated. The delivery-path sites carry the same rule
+// (TestAssistantWatchSweep_aTermEndingInsideADeliveryAccountsIntoNothing).
 func TestAssistantWatchSweep_aCancelledTermAccountsIntoNothing(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		stage int
-		page  []runwatch.Watch
 	}{
 		{name: "the upper-bound read cut off", stage: 1},
 		{name: "the page read cut off", stage: 2},
-		{name: "the page answered as the term ended", stage: 3, page: []runwatch.Watch{{ID: "w-armed", State: runwatch.WatchActive}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newArmFixture(t, true)
@@ -602,7 +594,7 @@ func TestAssistantWatchSweep_aCancelledTermAccountsIntoNothing(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			ws := &steppingDownWatchStore{Store: f.ws, cancel: cancel, stage: c.stage, page: c.page}
+			ws := &steppingDownWatchStore{Store: f.ws, cancel: cancel, stage: c.stage}
 			health := &lease.Health{Passes: 3}
 			// Where this holder stands: two passes of its term reached no store.
 			health.Observe(lease.VerdictUnreachable)
