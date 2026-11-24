@@ -26,8 +26,9 @@ interactive sessions).
 - Tooling comes from devbox, never the host: `devbox run -- task <name>`
   (direnv works); `task` lists every command ([development](docs/development.md)).
   CLI map: [cli-reference](docs/cli-reference.md), [cloud-cli](docs/cloud-cli.md).
-- `task check` — lint and the free deterministic layer (tests, goldens, studio,
-  pi extension, brand, DSL and map checks) — is owed by every session; CI also
+- `task check` — lint and the free deterministic layer (bot format, tests,
+  goldens, studio, pi extension, brand, DSL and map checks) — is owed by every
+  session; CI also
   runs `race`, `vendor-check` and `mongo-conformance`. The `live` layer costs
   real LLM money and no CI job runs it: only when a real model alone can prove
   the change — and say which target and what it cost ([proof discipline](docs/agents/testing/testing.md#the-proof-discipline)).
