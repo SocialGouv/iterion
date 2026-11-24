@@ -325,7 +325,21 @@ fail: attention `sweep_handover_circuit_open`), and the `last_pass_verdict` it
 classified (`idle`, `progressed`, `unreachable`, `refused`). It is the
 replica's, like `elected` and unlike `holder`: `elected: true` next to a run of
 failing passes is the sick-but-alive leader the field exists to make visible.
-Shutdown cancels that worker and
+A pass is worth its deliveries, never its scan (#2986): a resume that hands an
+episode to the assistant and the write that marks it delivered are its items,
+so a pass over armed watches with nothing due reads `idle`, and a holder whose
+store reads answer while its resumes reach nothing hands the watch over after
+K=3 unreachable passes. A cause that fails fast and releases the episode
+(per-node DNS, a refused connection, a NetworkPolicy) hands over in about
+60 to 80 s at the 20 s sweep. A queue that accepted nothing ends in a publish
+timeout, which leaves the episode claimed for its 45 s delivery lease, so it
+is retried every third pass and the watch hands over after about 2 to 2.5
+min: an idle pass in between neither counts nor clears the run. A resume
+refused locally before any publish (a credential at capacity) reaches no far
+side and reads idle too, so it cannot keep such a holder. During
+that handover an episode the old holder still claims stays claimed for up to
+45 s (its delivery lease) with nobody delivering it; `ITERION_LEASE_HANDOVER=off`
+disarms the handover. Shutdown cancels that worker and
 bounds its final join after HTTP draining. On a local project switch, an active
 sweep keeps its original project; queued work belongs to the selected project,
 and the old project's persisted watches resume when that project is selected
