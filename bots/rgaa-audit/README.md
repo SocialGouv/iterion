@@ -163,8 +163,8 @@ ultra11y no longer ships a GitHub Action or a GitLab template (6.0.0): a CI
 audit runs this bot. The job installs a pinned iterion release, installs
 the bot from that same tag (the engine pin travels with it), and runs it on
 the checkout; `prepare` installs the pinned engine itself (an `npm install`
-into the run directory, fingerprint-checked), so the job needs only Node
-and the `claude` CLI the agents delegate to.
+into the run directory, fingerprint-checked), so the job needs Node with
+`npm` and the `claude` CLI the agents delegate to.
 
 - **Secret**: `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) — the
   `claude_code` backend's credential. Another provider is a backend/model
@@ -194,6 +194,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
       - run: |
+          mkdir -p "$HOME/.local/bin"   # install.sh falls back to sudo mv when the directory is missing
           curl -fsSL https://socialgouv.github.io/iterion/install.sh | INSTALL_DIR="$HOME/.local/bin" sh -s -- "$ITERION_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           npm install -g @anthropic-ai/claude-code
@@ -208,21 +209,23 @@ jobs:
         with: { name: rgaa-report, path: rgaa-report/ }
 ```
 
-GitLab CI — the published image already carries `iterion`, Node 24 and the
-`claude` CLI:
+GitLab CI — a Node image, because `prepare` installs the engine with `npm`.
+The published `ghcr.io/socialgouv/iterion` image carries the `node` binary
+but no `npm`, so the engine resolves nowhere there and the run stops at
+`ENGINE_UNRESOLVED`:
 
 ```yaml
 rgaa-audit:
-  image:
-    name: ghcr.io/socialgouv/iterion:v7.33.0
-    entrypoint: [""]
+  image: node:24
   timeout: 3h
   variables:
-    ITERION_VERSION: v7.33.0
+    ITERION_VERSION: v7.33.0   # pin a release; the bot is installed from the same tag
   script:
-    # ANTHROPIC_API_KEY: a masked CI/CD variable. The image runs as its own
-    # user, so the clone needs a safe.directory for git to open it.
+    # ANTHROPIC_API_KEY: a masked CI/CD variable. git refuses a clone owned by
+    # another uid than the job's, which depends on the runner.
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh -s -- "$ITERION_VERSION"
+    - npm install -g @anthropic-ai/claude-code
     - iterion bots install https://github.com/SocialGouv/iterion --path bots/rgaa-audit --ref "$ITERION_VERSION"
     - >-
       iterion run .botz/rgaa-audit --sandbox none --no-interactive
