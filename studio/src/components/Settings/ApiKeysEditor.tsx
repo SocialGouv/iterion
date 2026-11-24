@@ -80,6 +80,9 @@ export default function ApiKeysEditor() {
           <Input
             type="password"
             placeholder={s.stored ? "•••••••• (stored)" : "Enter value"}
+            // Without a hint a password input receives the saved login's
+            // password; "off" is ignored on this input type.
+            autoComplete="new-password"
             value={drafts[s.key] ?? ""}
             onChange={(e) =>
               setDrafts((d) => ({ ...d, [s.key]: e.target.value }))

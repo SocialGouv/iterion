@@ -102,7 +102,7 @@ func TestReportAttempt_aLateTeardownReportStaysOnItsOwnLease(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 2}); err != nil {
 		t.Fatalf("successor report: %v", err)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestReportAttempt_anInterimReportStaysOnItsOwnLease(t *testing.T) {
 	if stamped.Outcome != OutcomeSupersededReported || stamped.CostUSD != 3.5 {
 		t.Fatalf("A's lease after its final report: %+v, want %q with $3.50", stamped, OutcomeSupersededReported)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestReportAttempt_anInterimLeavesTheSupersedeUndoable(t *testing.T) {
 	if !got.Closed || got.Outcome != "ok" || got.CostUSD != 3.5 {
 		t.Fatalf("A's lease after its final report: %+v, want closed ok with $3.50", got)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestReportAttempt_aRefusedResumeCannotReopenAReportedLease(t *testing.T) {
 	if open := leaseOfRun(t, h, "run-1"); open != nil {
 		t.Fatalf("%s is open after the rollback with no reporter coming (A's was %s, the resume's %s)", open.ID, L.ID, L2.ID)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,14 +375,14 @@ func TestReportAttempt_aGrantlessTakeoverReportsNothingAtTheProductionOrder(t *t
 	if err := h.broker.ReportAttempt(ctx, "run-1", T_B, Outcome{CostUSD: 4, Condition: ConditionAuthFailed}); err != nil {
 		t.Fatalf("the takeover's report: %v", err)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if day.CostUSD != 0 {
 		t.Fatalf("the donor was charged $%.2f for an attempt that held no lease", day.CostUSD)
 	}
-	pledge, err := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code"))
+	pledge, err := h.pledges.Get(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestReportAttempt_aGrantlessTakeoverReportsNothingAtTheProductionOrder(t *t
 	if !stamped.Closed || stamped.Outcome != OutcomeSupersededReported || stamped.CostUSD != 3 {
 		t.Fatalf("A's lease after its report: closed=%v outcome=%q cost=%.2f closedAt=%v, want closed %q with $3", stamped.Closed, stamped.Outcome, stamped.CostUSD, stamped.ClosedAt, OutcomeSupersededReported)
 	}
-	day, _, err = h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err = h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,7 +851,7 @@ func TestReportAttemptID_aPublicationFlooredPastTheNextAcquisition(t *testing.T)
 	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != gB.releaseGuard.lease.ID {
 		t.Fatalf("a report of an unknown attempt moved the resume's lease: %+v", open)
 	}
-	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code", ""), h.now)
 	if err != nil {
 		t.Fatal(err)
 	}

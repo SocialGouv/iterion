@@ -1,5 +1,5 @@
-import { hasOrgRole, useAuth } from "@/auth/AuthContext";
-import { findTeamGrant } from "@/hooks/useTenantSubject";
+import { useAuth } from "@/auth/AuthContext";
+import { managesTeam } from "@/hooks/useTenantSubject";
 
 // useCanManageTeam centralises the "can administer this team's resources" rule
 // so the team-scoped settings pages share one definition instead of
@@ -27,14 +27,10 @@ import { findTeamGrant } from "@/hooks/useTenantSubject";
 // a different team whenever a page was reached by URL. Making the subject
 // implicit is what let that spread to six sites, so the parameter is not
 // optional — every caller already holds the id.
+//
+// The rule itself is managesTeam (useTenantSubject), which a reader that may
+// hold no session — or already holds the identity — applies directly.
 export function useCanManageTeam(teamID: string): boolean {
   const { orgs, user } = useAuth();
-  if (user?.is_super_admin) return true;
-  // findTeamGrant is the one lookup useTeamSubject uses too: "may I see it"
-  // and "may I manage it" must not answer from two pictures of the caller. It
-  // returns the owning ORG as well, which is what makes the third arm free.
-  const grant = findTeamGrant(orgs, teamID);
-  if (!grant) return false;
-  if (grant.team.role === "admin" || grant.team.role === "owner") return true;
-  return hasOrgRole(grant.org.org_role || null, "admin");
+  return managesTeam(orgs, !!user?.is_super_admin, teamID);
 }

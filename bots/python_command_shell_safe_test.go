@@ -206,26 +206,36 @@ func TestReviewPRPublishReceivesTheReviewEvidence(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("publish evidence is missing or miswired: %v", want)
 	}
-	for _, family := range []string{"claude", "gpt"} {
-		for _, suffix := range []string{"", "_glance"} {
-			found := false
-			for _, e := range wf.Nodes["merge_reviews"].(*ir.ComputeNode).Exprs {
-				if e.Key != family+"_summary" {
-					continue
-				}
-				found = true
-				got, err := e.AST.Eval(&expr.Context{Outputs: func(path []string) any {
-					if len(path) == 2 && path[0] == "reviewer_"+family+suffix && path[1] == "summary" {
-						return "placeholder"
-					}
-					return nil
-				}})
-				if err != nil || got != "placeholder" {
-					t.Errorf("%s%s summary disappears before publish: %v, %v", family, suffix, got, err)
-				}
+	// The collector folds whichever reviewer fired into the family summaries
+	// the merge step reads: the alternate for the claude family, the primary
+	// or its glance variant for the other one (a run routes to exactly one
+	// per tier). A summary the collector drops publishes an empty family
+	// section on every run that reviewer served.
+	for _, tc := range []struct {
+		summary string
+		sources []string
+	}{
+		{"claude_summary", []string{"reviewer_alternate"}},
+		{"gpt_summary", []string{"reviewer", "reviewer_glance"}},
+	} {
+		var ce *ir.ComputeExpr
+		for _, e := range wf.Nodes["merge_reviews"].(*ir.ComputeNode).Exprs {
+			if e.Key == tc.summary {
+				ce = e
 			}
-			if !found {
-				t.Fatalf("merge_reviews does not carry %s_summary", family)
+		}
+		if ce == nil {
+			t.Fatalf("merge_reviews does not carry %s", tc.summary)
+		}
+		for _, source := range tc.sources {
+			got, err := ce.AST.Eval(&expr.Context{Outputs: func(path []string) any {
+				if len(path) == 2 && path[0] == source && path[1] == "summary" {
+					return "placeholder"
+				}
+				return nil
+			}})
+			if err != nil || got != "placeholder" {
+				t.Errorf("%s disappears before publish when %s ran: %v, %v", tc.summary, source, got, err)
 			}
 		}
 	}

@@ -65,7 +65,7 @@ func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *p
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Limits: limits,
 	}); err != nil {
@@ -117,7 +117,7 @@ func TestRecordPoolSpend_chargesTheDonorAndClosesTheLease(t *testing.T) {
 
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usageWith(1.5, 900), nil, false)
 
-	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestRecordPoolSpend_chargesTheDonorAndClosesTheLease(t *testing.T) {
 func TestRecordPoolSpend_unleasedRunIsANoOp(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{})
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-elsewhere"}, usageWith(2, 100), nil, false)
-	day, _, _ := h.ledger.Usage(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	day, _, _ := h.ledger.Usage(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC())
 	if day.CostUSD != 0 {
 		t.Errorf("charged %v for a run that holds no lease", day.CostUSD)
 	}
@@ -223,7 +223,7 @@ func TestRecordPoolSpend_usageWindowRestsTheDonor(t *testing.T) {
 		&delegate.ErrRateLimited{Kind: delegate.RateLimitKindUsageWindow, ResetAt: reset},
 		false)
 
-	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("pledge: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	// The attempt ends PAUSED, not on the auth error — the prod shape.
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usage, runtime.ErrRunPaused, false)
 
-	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("pledge: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestRecordPoolSpend_ordinaryFailureLeavesTheDonorAlone(t *testing.T) {
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"},
 		usageWith(1, 10), errors.New("the bot's own logic failed"), false)
 
-	p, err := h.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	p, err := h.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("pledge: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestRecordPoolSpend_aSupersededDeliveryLeavesTheNewerAttemptsLease(t *testi
 	if hist[0].Closed {
 		t.Fatal("a superseded delivery closed the run's lease, which is the newer attempt's")
 	}
-	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow(t *t
 	// The successor's own attempt reports through its lease.
 	msgB := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PublishedAtRFC: time.Now().UTC().Add(2 * time.Millisecond).Format(time.RFC3339Nano)}
 	h.runner.recordPoolSpend(msgB, usageWith(2, 100), nil, false)
-	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestRecordPoolSpend_aGrantlessDeliveryNeverReachesTheBroker(t *testing.T) {
 	T_A := store.PublishAt(time.Now().UTC(), time.Now().UTC())
 	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-1", PoolGrantless: true, PublishedAtRFC: T_A.Format(time.RFC3339Nano)}
 	h.runner.recordPoolSpend(msg, usageWith(4, 400), nil, false)
-	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
+	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestRecordPoolSpend_aDeadDonorBehindAUsageWindowIsStillAnAuthFailure(t *tes
 
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usage, execErr, false)
 
-	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("pledge: %v", err)
 	}

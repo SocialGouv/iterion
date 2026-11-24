@@ -11,7 +11,7 @@ import (
 // RemoteCredentialsPreview asks the server for an observation of the launch
 // chain. Only the server knows the source owner, pins, audience and quotas.
 // This command neither changes the active team nor launches a run.
-func RemoteCredentialsPreview(ctx context.Context, c *RemoteClient, p *Printer, team, bot, webhook string) error {
+func RemoteCredentialsPreview(ctx context.Context, c *RemoteClient, p *Printer, team, bot, webhook, reviewMode string) error {
 	bot, webhook = strings.TrimSpace(bot), strings.TrimSpace(webhook)
 	if bot == "" && webhook == "" {
 		return fmt.Errorf("--bot is required for a personal launch preview")
@@ -25,8 +25,9 @@ func RemoteCredentialsPreview(ctx context.Context, c *RemoteClient, p *Printer, 
 			Kind string `json:"kind"`
 			ID   string `json:"id,omitempty"`
 		} `json:"source"`
-		BotID string `json:"bot_id,omitempty"`
-	}{BotID: bot}
+		BotID      string `json:"bot_id,omitempty"`
+		ReviewMode string `json:"review_mode,omitempty"`
+	}{BotID: bot, ReviewMode: strings.TrimSpace(reviewMode)}
 	request.Source.Kind = "personal"
 	if webhook != "" {
 		request.Source.Kind, request.Source.ID = "webhook", webhook

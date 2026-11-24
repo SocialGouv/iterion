@@ -142,6 +142,60 @@ func TestCheckConsistency(t *testing.T) {
 			codes: []string{"C204"},
 		},
 		{
+			name: "connector vars declared are clean",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Invocations: []bundle.Invocation{
+					{Kind: bundle.InvocationKindConnector, Connector: &bundle.InvocationConnector{
+						Trigger: "linear.issue.created", Vars: map[string]string{"title": "event.title"},
+					}},
+				}},
+				Workflow: wf("b", []string{"title"}, nil, nil),
+			},
+		},
+		{
+			name: "connector var typo trips C214",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Invocations: []bundle.Invocation{
+					{Kind: bundle.InvocationKindConnector, Connector: &bundle.InvocationConnector{
+						Trigger: "linear.issue.created", Vars: map[string]string{"titel": "event.title"},
+					}},
+				}},
+				Workflow: wf("b", []string{"title"}, nil, nil),
+			},
+			codes: []string{"C214"},
+		},
+		{
+			name: "mode deliver trips C215",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Invocations: []bundle.Invocation{
+					{Kind: bundle.InvocationKindCommand, Mode: bundle.ExecutionDeliver},
+				}},
+				Workflow: wf("b", nil, nil, nil),
+			},
+			codes: []string{"C215"},
+		},
+		{
+			name: "mode board on a connector invocation trips C215",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Invocations: []bundle.Invocation{
+					{Kind: bundle.InvocationKindConnector, Mode: bundle.ExecutionBoard, Connector: &bundle.InvocationConnector{Trigger: "linear.issue.created"}},
+				}},
+				Workflow: wf("b", nil, nil, nil),
+			},
+			codes: []string{"C215"},
+		},
+		{
+			name: "modes every path honours are clean",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Invocations: []bundle.Invocation{
+					{Kind: bundle.InvocationKindCommand},
+					{Kind: bundle.InvocationKindCommand, Mode: bundle.ExecutionDirect},
+					{Kind: bundle.InvocationKindBoard, Mode: bundle.ExecutionBoard},
+				}},
+				Workflow: wf("b", nil, nil, nil),
+			},
+		},
+		{
 			name: "forge secret declared as file is clean",
 			in: bundlelint.Input{
 				Manifest: &bundle.Manifest{Name: "b", Forge: &bundle.ForgeRequirements{Events: []string{bundle.ForgeEventPullRequest}}},

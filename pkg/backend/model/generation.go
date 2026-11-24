@@ -1,12 +1,14 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
@@ -144,11 +147,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	// contract in the executor: an announced, malformed or denied call is
 	// not an executed tool. Chain the observer rather than replacing it.
 	requireExecutedTool := opts.ForceInitialToolUse && len(opts.Tools) > 0 && requiresAdaptiveThinking(opts.Model)
-	executedTool := false
+	observerless := opts.OnToolStarted == nil && opts.OnToolCall == nil
+	var executedTool atomic.Bool
 	if requireExecutedTool {
 		observer := opts.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {
-			executedTool = true
+			executedTool.Store(true)
 			if observer != nil {
 				observer(info)
 			}
@@ -230,12 +234,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = append(messages, assistantToolUseMessage(agg.text, agg.toolUses))
 
 		// Execute tools and append tool_result message.
-		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission, opts.toolObserversAudited || (requireExecutedTool && observerless))
 		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
-			stashPauseConversation(ctx, toolErr, messages, opts)
+			if err := stashPauseConversation(ctx, toolErr, messages, opts); err != nil {
+				return result(), err
+			}
 			return result(), toolErr
 		}
 		messages = append(messages, api.Message{
@@ -248,7 +254,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = drainOperatorInbox(ctx, messages, opts)
 	}
 
-	if requireExecutedTool && !executedTool {
+	if requireExecutedTool && !executedTool.Load() {
 		return result(), fmt.Errorf("model %s returned before executing a required initial tool", opts.Model)
 	}
 	return result(), nil
@@ -293,13 +299,14 @@ func requiresAdaptiveThinking(model string) bool {
 // recorded on the step list and delivered to OnStepFinish.
 func buildStepResult(step int, agg *aggregatedResponse) StepResult {
 	return StepResult{
-		Number:       step,
-		Text:         agg.text,
-		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-		FinishReason: mapStopReason(agg.stopReason),
-		Usage:        agg.usage,
-		Thinking:     agg.thinkingText,
-		MaxTokens:    agg.maxTokens,
+		Number:          step,
+		Text:            agg.text,
+		ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+		FinishReason:    mapStopReason(agg.stopReason),
+		Usage:           agg.usage,
+		Thinking:        agg.thinkingText,
+		MaxTokens:       agg.maxTokens,
+		ReasoningEffort: agg.effort,
 	}
 }
 
@@ -355,13 +362,30 @@ func captureToolRoundTurn(opts GenerationOptions, messages []api.Message, step i
 // pending tool_use stays in the preserved-recent window (default 4) so its
 // ID remains addressable at resume time. Non-ask errors (and marshal
 // failures) leave the error untouched.
-func stashPauseConversation(ctx context.Context, toolErr error, messages []api.Message, opts GenerationOptions) {
+func stashPauseConversation(ctx context.Context, toolErr error, messages []api.Message, opts GenerationOptions) error {
 	var askErr *delegate.ErrAskUser
 	if !errors.As(toolErr, &askErr) {
-		return
+		return nil
 	}
 	if convBytes, mErr := json.Marshal(maybeCompactPause(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
+	}
+	if len(askErr.PermissionInput) != 0 {
+		// An inconsistent transcript must not fall back to a legacy approval.
+		pending, err := pendingClawApproval(askErr.Conversation, askErr.PendingToolUseID)
+		toolName, _ := askErr.PermissionMarker["tool"].(string)
+		if err != nil || pending.Name != toolName || !bytes.Equal(pending.Input, askErr.PermissionInput) {
+			return errors.New("claw: cannot request approval for an inconsistent pending tool call")
+		} else if opts.screenModelText()(string(pending.Input)) != string(pending.Input) ||
+			(opts.RedactApprovalText != nil && opts.RedactApprovalText(string(pending.Input)) != string(pending.Input)) {
+			// An approval cannot bind exact arguments that cannot safely be shown.
+			return errors.New("claw: cannot request approval for arguments that cannot safely be displayed")
+		} else {
+			// Keep exact JSON as text through the UI's JSON decoder, which
+			// would otherwise round large numbers before displaying them.
+			askErr.PermissionMarker["exact_input_json"] = string(pending.Input)
+			askErr.Question = fmt.Sprintf("%s approve `%s` with these exact arguments?\n\n%s\n\nReply `allow`, `allow always`, or `deny`.", permission.AskPromptPrefix, pending.Name, pending.Input)
+		}
 	}
 	// The narrowing rides the pause (#1717, review MED-1): the resumed
 	// generation re-pins it, so the bound the interrupted loop held
@@ -370,6 +394,7 @@ func stashPauseConversation(ctx context.Context, toolErr error, messages []api.M
 	if scope := tool.CommandScopeFrom(ctx); scope != nil {
 		askErr.CommandNarrowing = scope.Snapshot()
 	}
+	return nil
 }
 
 // compactBetweenIterations compacts the running history before the next
@@ -534,8 +559,12 @@ func assistantToolUseMessage(text string, toolUses []toolUseBlock) api.Message {
 		// against truncation) so we don't bubble it up — the
 		// corresponding tool_result already carries the failure.
 		inputMap := map[string]any{}
-		if tu.PartialJSON != "" {
-			_ = json.Unmarshal([]byte(tu.PartialJSON), &inputMap)
+		if json.Valid([]byte(tu.PartialJSON)) {
+			decoder := json.NewDecoder(strings.NewReader(tu.PartialJSON))
+			decoder.UseNumber()
+			if err := decoder.Decode(&inputMap); err != nil || inputMap == nil {
+				inputMap = map[string]any{}
+			}
 		}
 		content = append(content, api.ContentBlock{
 			Type:  "tool_use",
@@ -715,13 +744,14 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 			return agg, StepResult{}, used, true, agg.err
 		}
 		step = StepResult{
-			Number:       number,
-			Text:         agg.text,
-			ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-			FinishReason: mapStopReason(agg.stopReason),
-			Usage:        agg.usage,
-			Thinking:     agg.thinkingText,
-			MaxTokens:    agg.maxTokens,
+			Number:          number,
+			Text:            agg.text,
+			ToolCalls:       toolCallsFromBlocks(agg.toolUses),
+			FinishReason:    mapStopReason(agg.stopReason),
+			Usage:           agg.usage,
+			Thinking:        agg.thinkingText,
+			MaxTokens:       agg.maxTokens,
+			ReasoningEffort: agg.effort,
 		}
 		steps = append(steps, step)
 		if o.OnStepFinish != nil {

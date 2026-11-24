@@ -25,7 +25,10 @@ const api = vi.hoisted(() => ({
   unparse: vi.fn(),
   getWorktreeConfig: vi.fn(),
 }));
-vi.mock("@/api/client", () => api);
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
+  ...api,
+}));
 const runsApi = vi.hoisted(() => ({ createRun: vi.fn(), previewRunCost: vi.fn() }));
 vi.mock("@/api/runs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/runs")>()),
@@ -89,7 +92,7 @@ const docNamed = (name: string): IterDocument => ({
 // Confirm closes it then calls launchRun — never onSubmit again.
 function Harness({ filePath }: { filePath: string }) {
   const [error, setError] = useState<string | null>(null);
-  const { doc, currentSource, confirmedDiskPath, fields, values, setValues } = useLaunchDoc(
+  const { doc, currentSource, confirmedDiskPath, fields, values, setValues, reload } = useLaunchDoc(
     filePath,
     setError,
   );
@@ -124,6 +127,7 @@ function Harness({ filePath }: { filePath: string }) {
       <button onClick={onSubmit} disabled={!doc}>
         Launch
       </button>
+      <button onClick={reload}>Read again</button>
       {showNoSandboxConfirm && (
         <button
           onClick={() => {
@@ -225,10 +229,12 @@ describe("the no-sandbox confirmation", () => {
     clickLaunch();
     expect(confirmBtn()).not.toBeNull();
 
-    // The app-level dock elects another editor tab, this path is read again
-    // — and fails. The form is gone (`!!doc`), so the question it answered
-    // is gone too.
+    // This path is read again — and fails. The form is gone (`!!doc`), so
+    // the question it answered is gone too. The hook's `reload` asks here;
+    // the page offers it on the named road alone, and no editor event
+    // re-reads a ?file= launch — this is the hook's own contract.
     useTabsStore.getState().setActive(b);
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
     await waitFor(() => expect(error()).toMatch(/openFile exploded/));
     expect(form()).toBe("LOADING");
 

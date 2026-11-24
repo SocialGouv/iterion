@@ -117,12 +117,26 @@ func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event
 	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
 		return nil, nil
 	}
+	// An event marked observational is never evaluated, whatever it carries;
+	// a connector event is matched from its durable intake by the connector
+	// worker, never from the bus (ADR-168 §8).
+	if v, ok := ev.Payload[PayloadObservational].(bool); ok && v {
+		return nil, nil
+	}
+	if ev.Source == SourceConnector {
+		return nil, nil
+	}
 	cands, err := subs.ListCandidates(ctx, ev)
 	if err != nil {
 		return nil, err
 	}
 	var out []Subscription
 	for _, sub := range cands {
+		// A connector subscription is matched by the connector worker only:
+		// whatever matcher it carries, no bus event fires it.
+		if sub.ConnectorKey != "" || sub.Invocation == bundle.InvocationKindConnector {
+			continue
+		}
 		if sub.Enabled && sub.Match.Match(ev) {
 			out = append(out, sub)
 		}
@@ -199,7 +213,14 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 	if machineCaused(ev) {
 		return errEffectMachineCaused
 	}
-	switch sub.EffectiveMode() {
+	mode, err := sub.EffectiveMode()
+	if err != nil {
+		// A mode no effect honours (deliver until #3136, board on a
+		// connector subscription) launches nothing: refused, warned once,
+		// never retried — a retry cannot make it supported.
+		return err
+	}
+	switch mode {
 	case bundle.ExecutionBoard:
 		if e.board == nil {
 			return fmt.Errorf("board-mode subscription %s but no board effect wired", sub.ID)
@@ -278,7 +299,8 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 	// vars["issue_id"] is the card the bot operates ON (triage-style). The
 	// promote path must NOT get it — it would pollute every promoted card's
 	// BotArgs with a self-reference.
-	if ev.Source == SourceBoard && sub.EffectiveMode() == bundle.ExecutionDirect && ev.Subject.ID != "" {
+	mode, _ := sub.EffectiveMode()
+	if ev.Source == SourceBoard && mode == bundle.ExecutionDirect && ev.Subject.ID != "" {
 		vars["issue_id"] = ev.Subject.ID
 	}
 	for k, v := range sub.Vars {
@@ -293,7 +315,7 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 		BotID:           sub.BotID,
 		TenantID:        sub.TenantID,
 		Repo:            firstNonEmpty(sub.Repo, ev.Repo),
-		Mode:            sub.EffectiveMode(),
+		Mode:            mode,
 		Vars:            vars,
 		KeyOverrides:    sub.KeyOverrides,
 		SecretOverrides: sub.SecretOverrides,

@@ -469,7 +469,7 @@ func botVarNameOK(name string) bool {
 // DSL var to declare it. This is botVarNameOK — the same grammar the
 // bot_vars record validates writes by — read from the launch side: a
 // sovereign pool's provision stamps exactly these onto an integration's
-// launch_vars (the ITERION_VIBE_* routing dials, the model ids), so the
+// launch_vars (env-shaped routing dials, the model ids), so the
 // strict launch check classifies them here (#2416) rather than refuse them
 // as inputs naming no var of the workflow (#1757). An infra or credential
 // name is NOT engine-injected: no ladder level carries it, so a launch

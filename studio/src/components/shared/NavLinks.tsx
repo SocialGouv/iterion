@@ -7,6 +7,7 @@ import {
   ListBulletIcon,
   ViewGridIcon,
   RocketIcon,
+  GlobeIcon,
   LightningBoltIcon,
   PaperPlaneIcon,
   ArchiveIcon,
@@ -68,7 +69,7 @@ export const NAV_REGISTRY_LOCAL: NavRegistryGroup[] = [
   { label: "Dispatcher", hrefs: [{ href: "/dispatcher", label: "Dispatcher" }] },
   { label: "Secrets", hrefs: [{ href: "/secrets", label: "Secrets" }] },
   { label: "Skills", hrefs: [{ href: "/skills", label: "Skills" }] },
-  { label: "Triggers", hrefs: [{ href: "/triggers", label: "Triggers" }] },
+  { label: "Triggers", hrefs: [{ href: "/triggers", label: "Triggers" }, { href: "/sources", label: "Sources" }] },
   { label: "Plugins", hrefs: [{ href: "/plugins", label: "Plugins" }] },
   { label: "Marketplace", hrefs: [{ href: "/marketplace", label: "Marketplace" }] },
   { label: "Integrations", hrefs: [{ href: "/integrations", label: "Integrations" }] },
@@ -150,6 +151,7 @@ export default function NavLinks({ collapsed }: Props) {
   // even with the event-trigger store off.
   if (info?.triggers_enabled || info?.mode === "cloud") {
     operate.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
+    operate.push({ section: "triggers", href: "/sources", label: "Sources", icon: GlobeIcon });
   }
 
   const extend: LinkDef[] = [];

@@ -56,6 +56,13 @@ a marker first.
 | `pat.Store` | `RevokeAllByUser` (existing) | Tokens revoked; rows kept (hash only) for the audit of the mint. |
 | `secrets.OAuthStore`, `credpool.PledgeStore` | `ListByUser` + `Delete` (existing) | The person's own forfaits (owner key = the id, never `org:`/platform) and pool pledges. |
 
+Global note-author reattribution updates legacy and strict collections even with
+admission OFF, without live-parent or tenant selection: retired/orphan rows also
+belong to this administrative operation. It preserves acknowledged modification
+counts with domain errors; independent updates are retryable, not atomic across
+collections. Counts describe this attempt, not previous attempts or unknown writes.
+Unacknowledged write outcomes return an error; no completion or count is inferred.
+
 Memory and Mongo twins of each seam stay in lock-step through the shared
 conformance suites (`runEraseSuite`, `runSessionStoreSuite`,
 `runStoreSuite`'s "scrub", `runDeleteByUserSuite`); the Mongo legs run under

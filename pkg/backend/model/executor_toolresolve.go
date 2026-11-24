@@ -151,12 +151,31 @@ func (e *ClawExecutor) nodeCapabilitiesBoth(node ir.Node, trust store.RunTrust) 
 // instances for a specific node, ensuring that only tools from the node's
 // active MCP servers are exposed. Wildcard entries like "mcp.<server>.*"
 // are expanded to all tools discovered from that server.
-func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, map[string]delegate.MCPLauncherRefusal, error) {
+//
+// authorship, when given (at most one), says which entries the node's own
+// `tools:` list contributed and which the runtime appended. A definition
+// resolved from an author entry (verbatim, or through a wildcard's
+// expansion, read from the registry after expandWildcards ensured the
+// servers) is marked AuthorDeclared — the fact a deferring node reads to
+// decide which tools leave the wire — UNLESS the runtime also asked for it
+// (runtimeAppends, read on the entry and on the qualified name): such a
+// tool serves the runtime's posture. Ambient splices are in neither set and
+// stay declared. Omitted, nothing is marked: a caller that cannot name the
+// author's contribution must not guess it.
+func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string, authorship ...toolAuthorship) ([]delegate.ToolDef, map[string]delegate.MCPLauncherRefusal, error) {
+	if len(authorship) > 1 {
+		return nil, nil, fmt.Errorf("model: resolveToolsForNode takes at most one authorship, got %d", len(authorship))
+	}
+	var who toolAuthorship
+	if len(authorship) == 1 {
+		who = authorship[0]
+	}
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
 	expanded, refused, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
 		return nil, nil, err
 	}
+	author := authorResolvedNames(who.author, e.toolRegistry)
 
 	// Servers this launcher may not start (the run is sandboxed and their
 	// definition is not the operator's) are collected, not raised: the node
@@ -187,6 +206,15 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 			continue
 		}
 		t := definition.ToDelegateDef()
+		// The marker rides the ENTRY, not the qualified name: the author
+		// may have written a bare spelling (`search`) whose definition
+		// carries the qualified identity (`mcp.repo.search`), and the
+		// deferral demotes what the AUTHOR wrote, whatever it resolved to.
+		// A wildcard expansion is marked through its registry identity,
+		// which authorResolvedNames filled in. The runtime's record vetoes
+		// it, by entry and by identity alike.
+		fromRuntime := who.runtime[name] || who.runtime[definition.QualifiedName]
+		t.AuthorDeclared = (author[name] || author[definition.QualifiedName]) && !fromRuntime
 		if prior, exists := seen[t.Name]; exists {
 			if prior != definition.QualifiedName {
 				return nil, nil, fmt.Errorf("model: tools %q and %q have the same model tool name %q", prior, definition.QualifiedName, t.Name)
@@ -234,6 +262,39 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 			"only a tool_policy allowlist, if one is declared, applies to them", node.NodeID(), unclassified)
 	}
 	return tools, refused, nil
+}
+
+// toolAuthorship names, for one resolution, the entries the node's author
+// wrote and the names the runtime appended (assembleEffectiveToolsAndAppends
+// records them). The deferral's marker reads both: author-written and not
+// runtime-appended.
+type toolAuthorship struct {
+	author  []string
+	runtime runtimeAppends
+}
+
+// authorResolvedNames is the set of names a deferring node may demote:
+// the author's entries verbatim, plus what each author wildcard expands to,
+// read from the registry — which by the time this runs has every named
+// server ensured, since expandWildcards ran first over the superset. A bare
+// alias the author wrote stays in the set under its written spelling; the
+// resolution loop marks through the entry.
+func authorResolvedNames(authorNames []string, registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool, len(authorNames))
+	for _, name := range authorNames {
+		out[name] = true
+		if !tool.IsMCPWildcard(name) {
+			continue
+		}
+		server, err := tool.ParseMCPWildcard(name)
+		if err != nil || registry == nil {
+			continue
+		}
+		for _, td := range registry.ListByServer(server) {
+			out[td.QualifiedName] = true
+		}
+	}
+	return out
 }
 
 // resolveTaskMCPServers projects the node's active MCP server names into
@@ -822,6 +883,12 @@ func (e *ClawExecutor) guardTool(executionCtx context.Context, t delegate.ToolDe
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
+	// Only the static, read-only checkers have an audited parallel path.
+	switch policy.(type) {
+	case *tool.Policy, *tool.RulePolicy:
+	default:
+		t.ConcurrentSafe = false
+	}
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		if err := policy.CheckContext(e.toolPolicyContext(ctx, executionCtx, node, name, qualifiedName, input)); err != nil {
 			return "", err

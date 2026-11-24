@@ -74,9 +74,11 @@ type FilesystemRunStore struct {
 	logger *iterlog.Logger
 
 	mu         sync.Mutex
-	seq        map[string]int64 // run_id → next event sequence number
-	seqSeed    map[string]bool  // run_id → seq has been seeded from disk
-	signingKey []byte           // HMAC key for presigned attachment URLs (lazy)
+	seq        map[string]int64       // selected event path → next sequence number
+	seqFormat  map[string]ValueFormat // selected event path → cached format
+	seqSeed    map[string]bool        // selected event path → cache has been seeded
+	seqFile    map[string]os.FileInfo // identity/size/mtime of the cached append-only file
+	signingKey []byte                 // HMAC key for presigned attachment URLs (lazy)
 
 	// credSlotMu guards credSlots, the in-memory half of the credential-slot
 	// ledger (CredSlotStore, credslot_fs.go). Its own lock: the reconcile
@@ -88,17 +90,6 @@ type FilesystemRunStore struct {
 	// hot-path consumer (the agent-loop inbox drainer) can cheap-skip
 	// loading the JSONL when nothing changed. Read+write under `mu`.
 	inboxVersion map[string]uint64
-
-	// eventsUnsynced marks runs whose events.jsonl has appended bytes
-	// that a failed fsync left without a durability guarantee.
-	// AppendEvent treats an fsync failure as non-fatal (advancing Seq
-	// keeps the stream monotonic), but run.json — written atomically
-	// WITH fsync — must not durably reference state whose events never
-	// reached disk: a power loss would then recover a checkpoint ahead
-	// of its event log. writeRun re-syncs a flagged run's events file
-	// first (the write-ahead ordering barrier) and only proceeds when
-	// that succeeds. Guarded by `mu`.
-	eventsUnsynced map[string]bool
 
 	// logPositionFn returns the current per-run log buffer byte total
 	// for stamping Event.LogOffset at AppendEvent time. nil disables
@@ -182,11 +173,12 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 // adopt the path.
 func Open(root string, opts ...StoreOption) *FilesystemRunStore {
 	s := &FilesystemRunStore{
-		root:           root,
-		seq:            make(map[string]int64),
-		seqSeed:        make(map[string]bool),
-		inboxVersion:   make(map[string]uint64),
-		eventsUnsynced: make(map[string]bool),
+		root:         root,
+		seq:          make(map[string]int64),
+		seqSeed:      make(map[string]bool),
+		seqFormat:    make(map[string]ValueFormat),
+		inboxVersion: make(map[string]uint64),
+		seqFile:      make(map[string]os.FileInfo),
 	}
 	for _, opt := range opts {
 		opt(s)

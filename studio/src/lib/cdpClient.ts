@@ -11,6 +11,9 @@
 // chunking: Chromium emits one whole JSON object per pipe write, so
 // one BinaryMessage = one CDP message.
 
+import { isScopeLostClose } from "@/hooks/runWs/policy";
+
+import { assertRunReachable, LostRunError, markRunLost, withExpectedBirth } from "./lostRuns";
 import { isScopedPane, resolveScopedWsUrl } from "./scope";
 
 export type CDPMessage = {
@@ -55,6 +58,10 @@ export class CDPClient {
   private connected = false;
   private closed = false;
   private connectPromise: Promise<void> | null = null;
+  // lost is set when the server closed the pump scope_lost: the run was
+  // replaced or deleted under its ID. Every call from then on rejects with
+  // it — the error the live pane shows.
+  private lost: LostRunError | null = null;
 
   constructor(private opts: CDPClientOptions) {}
 
@@ -67,6 +74,9 @@ export class CDPClient {
     if (this.connectPromise) return this.connectPromise;
     this.connectPromise = (async () => {
       const url = await this.resolveURL();
+      // A run this page lost (scope_lost) is never dialed: the ID may name
+      // another run now. Checked after the URL lookup, right before the open.
+      assertRunReachable(url);
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(url);
         ws.binaryType = "arraybuffer";
@@ -78,12 +88,20 @@ export class CDPClient {
         ws.onerror = () => {
           if (!this.connected) reject(new Error("cdp: ws connect failed"));
         };
-        ws.onclose = () => {
+        ws.onclose = (ev) => {
           this.closed = true;
           this.connected = false;
+          // scope_lost: the server refused the run this pump was opened on
+          // (replaced or deleted, or the caller's standing changed). The
+          // page's registry refuses it from now on.
+          if (isScopeLostClose(typeof ev?.reason === "string" ? ev.reason : "")) {
+            markRunLost("", this.opts.runId);
+            this.lost = new LostRunError(this.opts.runId);
+            reject(this.lost);
+          }
           // Reject all in-flight requests so callers don't hang.
           for (const p of this.pending.values()) {
-            p.reject(new Error("cdp: ws closed"));
+            p.reject(this.lost ?? new Error("cdp: ws closed"));
           }
           this.pending.clear();
         };
@@ -98,13 +116,15 @@ export class CDPClient {
   // to the historical sync buildURL (browser same-origin, or the explicit
   // serverBase the single-connection desktop injected).
   private async resolveURL(): Promise<string> {
+    // The dial carries the run's expected birth: the server closes a pump
+    // whose run was replaced scope_lost instead of opening its browser.
     if (isScopedPane()) {
       const path =
         `/api/runs/${encodeURIComponent(this.opts.runId)}/browser/cdp` +
         `?session=${encodeURIComponent(this.opts.sessionId)}`;
-      return resolveScopedWsUrl(path);
+      return resolveScopedWsUrl(withExpectedBirth(path));
     }
-    return this.buildURL();
+    return withExpectedBirth(this.buildURL());
   }
 
   // send issues a CDP method call and resolves with the `result`
@@ -121,8 +141,9 @@ export class CDPClient {
     params: Record<string, unknown> = {},
     sessionId?: string,
   ): Promise<Record<string, unknown>> {
-    if (this.closed) throw new Error("cdp: client closed");
+    if (this.closed) throw this.lost ?? new Error("cdp: client closed");
     await this.connect();
+    if (this.lost) throw this.lost;
     if (!this.ws) throw new Error("cdp: ws not initialised");
     const id = this.nextId++;
     const env: Record<string, unknown> = { id, method, params };

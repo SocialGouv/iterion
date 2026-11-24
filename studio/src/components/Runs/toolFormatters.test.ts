@@ -63,6 +63,14 @@ describe("formatToolCall — header detail coverage", () => {
     expect(labels).toContain("prompt");
   });
 
+  it("codemode summarizes its program, not its raw JSON", () => {
+    const s = formatToolCall("codemode", { source: "\n  const r = call(\"glob\", {});\nr.text" });
+    expect(s.fields).toEqual([
+      { label: "program", value: "3 lines, 37 chars", mono: true },
+      { label: "first line", value: 'const r = call("glob", {});', mono: true },
+    ]);
+  });
+
   it("Unknown tool falls back to generic fields", () => {
     const r = formatToolCall("ExoticTool", { foo: "bar", count: 3 });
     expect(r.fields.length).toBeGreaterThan(0);

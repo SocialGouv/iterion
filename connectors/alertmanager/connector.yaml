@@ -1,0 +1,40 @@
+schema_version: 1
+id: alertmanager
+display_name: Alertmanager
+description: Prometheus Alertmanager — grouped alerts, fired and resolved.
+version: 0.1.0
+
+# Authored from Alertmanager's published configuration reference; the package
+# declares no operation, because a delivery is all it needs to receive. The
+# mark is drawn for this package — a nominative placeholder, not the
+# Prometheus or Alertmanager logo.
+provenance:
+  spec_url: https://prometheus.io/docs/alerting/latest/configuration/
+  redistributable: true
+  generated_at: "2026-11-17T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # Alertmanager is self-hosted: the connection names the instance's origin.
+  operator_supplied: true
+
+# Alertmanager signs nothing itself: authentication is the receiver's, and an
+# operator configures it on the `http_config` of the webhook receiver
+# (https://prometheus.io/docs/alerting/latest/configuration/#webhook_config).
+# The inbound contract mints a bearer token and setup.md says where it goes.
+auth:
+  - id: bearer
+    kind: bearer
+    display_name: Bearer token
+    description: >-
+      The token the webhook receiver presents, as configured in its
+      `http_config.authorization.credentials`.
+
+maturity: experimental
+category: monitoring
+brand_color: "#E6522C"
+icon: icon.svg
+
+default_security:
+  - terms:
+      - scheme: bearer

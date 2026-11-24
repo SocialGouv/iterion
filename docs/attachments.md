@@ -115,7 +115,16 @@ echo "[iterion] attachment=$PWD/exports/final.mp4 name=final_video mime=video/mp
 The runtime reads the bytes and persists them through the same
 `WriteAttachment` path as an upload, so the result is an ordinary run
 attachment: same storage layout, same serving route, same presigning.
-One line per file; other stdout is left alone.
+One line per file; other stdout is left alone. On a node that declares
+`output:` the directive lines are read out of the node's answer before it
+is judged ([the output contract](dsl.md#tool)): a directive beside the JSON
+object publishes the object's fields — before this rule the pair was
+published as a `{"result": …}` text wrapper, declared fields absent — and
+a directive alone is an empty answer. The runtime scans stderr too, so the
+directive may go there instead — and on a node with a `postcondition:` it
+has to: that node's stdout is not read this way (its answer is the merge of
+its recipe's stdout and its postcondition's, the latter winning), so a
+directive beside the recipe's JSON leaves a text wrapper there.
 
 ### It shows up in the run summary
 

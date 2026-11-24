@@ -28,7 +28,7 @@ commit-status gate. Never edits or commits. See
   `openai/gpt-6-astra` and `openai/gpt-6-luna`. The Iterion integration pins
   `review_mode=mono`, `mono_family=gpt`; its other launch vars were preserved.
   The run reports `credential_tiers=[platform]`.
-- Result: `reviewer_gpt` used **claw / openai/gpt-6-astra**, inspected 17
+- Result: `reviewer` used **claw / openai/gpt-6-astra**, inspected 17
   changed files and ran targeted tests: **591,996 tokens / $6.077320** in
   270 seconds. The repaired `converge_gpt` used **claw / openai/gpt-6-sol**:
   **21,287 tokens / $0.046454**, 21 seconds, 11 tools. These are the engine's
@@ -72,7 +72,7 @@ commit-status gate. Never edits or commits. See
   0 findings, the review prompts rendered with their paragraphs.
 - Versions: bot review-pr 0.9.4 (`dsl: 2` on `main.bot` and the three `lib/`
   fragments, wave 1 of #1344) · iterion `d5b7db09f` (branch build
-  v3.154.1+54527ba05) · claude_code — `reviewer_claude` on claude-opus-5,
+  v3.154.1+54527ba05) · claude_code — `reviewer_alternate` on claude-opus-5,
   `converge` on claude-sonnet-5 — through the host's Anthropic-compatible
   facade (z.ai).
 - Method: CLI `iterion run` from the worktree, `--store-dir` the operator's
@@ -82,7 +82,7 @@ commit-status gate. Never edits or commits. See
   `--max-cost-usd 6 --max-duration 25m`. The bot's own `sandbox: auto` ran it
   in the slim image (`repo_devbox` off).
 - Result: `diff_precheck` resolved base `54527ba05` → reviewed `d5b7db09f`,
-  13 files; `reviewer_claude` 79 408 tokens / $1.14, `converge` $0.28 —
+  13 files; `reviewer_alternate` 79 408 tokens / $1.14, `converge` $0.28 —
   **$1.42, ~9.5 min**, `total_findings: 0`. The reviewer's summary: the nine
   `dsl: 2` headers correctly placed, the `chat -> done` exit matching the C145
   runtime contract, the 3.141.0 floor equal to the profile's release, the
@@ -91,7 +91,7 @@ commit-status gate. Never edits or commits. See
   instead of strings) and it corrected itself on the retry; the pacer's steer
   arrived after the fix and cost nothing.
 - Value: the production reviewer's whole mono topology live on profile 2 —
-  `diff_precheck` → `tier_expand` → `topology` → `reviewer_claude` →
+  `diff_precheck` → `tier_expand` → `topology` → `reviewer_alternate` →
   `merge_reviews` → `converge` → `pr_gate` → `done`; the run's `events.jsonl`
   carries the rendered review_system prompt with `bot's job.\n\nREVIEW SCOPE`,
   the paragraph break the profile-1 lexer used to fold. What Revi did NOT see
@@ -551,7 +551,7 @@ usage, not proof of source access or test coverage.
 2. **The admission pre-flight refused the whole run.** `AnthropicWireReachable`
    exists precisely to spare a run pinned off that wire (#668, a fully pinned
    rite frozen five days) and it does read the launch's overrides — but it is
-   STATIC: the untaken `reviewer_claude*` nodes and `converge` were enough to
+   STATIC: the untaken `reviewer_alternate*` nodes and `converge` were enough to
    make the wire "reachable", whatever `mono_family` would route at run time.
    Covered by two KIND selectors (`judge`, `agent`) rather than by naming
    sites — the routers are `condition`/`fan_out_all`, so those two cover every
@@ -746,7 +746,7 @@ usage, not proof of source access or test coverage.
   (v3.103.0 → v3.104.0). The dataset is homogeneous *because* of the
   override described in the entry below: 0.8.0's tiers never served during
   the window, so no bot-version change straddles these numbers.
-- Method: default guard-shaped run — `reviewer_claude` (opus-5, effort
+- Method: default guard-shaped run — `reviewer_alternate` (opus-5, effort
   high), `converge` on sonnet, `severity_threshold: medium`,
   `max_cost_usd: 12`. Cost read from each run's checkpoint (the run's
   `budget_cost_usd` field reads 0); diff sizes from `gh pr view --json
@@ -836,11 +836,11 @@ disabled and diff the two finding sets.
   2026-09-04 06:52Z for the 0.7.0 cost pass, still held the 0.7.0 bundle —
   and a platform override outranks the baked catalog at every launch
   surface, by design. Measured: prod review graphs on both 09-05 and 09-06
-  ran `diff_precheck → topology → reviewer_claude → merge_reviews →
+  ran `diff_precheck → topology → reviewer_alternate → merge_reviews →
   converge → pr_gate` with **no `tier_expand` node**, and
   `GET /api/admin/bots/review-pr` returned manifest version `0.7.0` whose
   `main.bot` contained `TOKEN FRUGALITY` and `supervisor pacer` but none of
-  `tier_expand` / `review_tier` / `reviewer_claude_glance`. The override was
+  `tier_expand` / `review_tier` / `reviewer_alternate_glance`. The override was
   deleted at 17:00Z after verifying the repo's 0.8.0 is a strict superset
   (it carries all three 0.7.0 markers plus #758 and #816); the effective
   bundle then read `version 0.8.0` from `/opt/iterion/bots/review-pr`. The
@@ -849,7 +849,7 @@ disabled and diff the two finding sets.
   `tier_expand` compute node resolving severity_threshold/max_findings/
   post_to_board/effective_review_mode from sentinel-defaulted vars (any
   explicit `--var` still wins), two new judge nodes
-  (`reviewer_claude_glance` / `reviewer_gpt_glance`) the `topology` router
+  (`reviewer_alternate_glance` / `reviewer_glance`) the `topology` router
   picks for the glance tier, and audit's dual fan-out forced independently
   of `review_mode`. Full design + preset table:
   [docs/merge-gate.md#review-tiers](../merge-gate.md#review-tiers).
@@ -862,12 +862,12 @@ disabled and diff the two finding sets.
   instruction measurably shortens the reviewer's tool-call count without
   degrading finding quality on a PR with a real, catchable bug (reuse the
   live fixture in `e2e/live_bot_review_pr_test.go`); (3) that
-  `reviewer_claude_glance`'s sonnet-level findings don't regress silently
+  `reviewer_alternate_glance`'s sonnet-level findings don't regress silently
   below what a maintainer would want gated (compare against a guard-tier
   review of the SAME diff).
 - Engine finding (worth keeping in view, out of scope for this ticket): a
-  stub e2e test of review-pr's real dual path (`fan` → `reviewer_claude` /
-  `reviewer_gpt` → `merge_reviews` with `await: best_effort`) showed
+  stub e2e test of review-pr's real dual path (`fan` → `reviewer_alternate` /
+  `reviewer` → `merge_reviews` with `await: best_effort`) showed
   `merge_reviews`/`converge`/`pr_gate` firing TWICE in one run when the two
   reviewer branches complete asynchronously — `best_effort` appears to
   trigger once per ARRIVING branch rather than once overall. Pre-existing
@@ -876,11 +876,11 @@ disabled and diff the two finding sets.
   with real LLM latencies serialising the two branches' completion further
   apart. Worth a dedicated look before leaning harder on dual-mode reviews.
   **Root-caused and fixed as #741**: not `best_effort` at all — the collector
-  election counted `topology -> reviewer_claude` (the mono edge) as a second
-  predecessor of the fan-out target, elected `reviewer_claude` itself as the
+  election counted `topology -> reviewer_alternate` (the mono edge) as a second
+  predecessor of the fan-out target, elected `reviewer_alternate` itself as the
   collector, so its branch executed nothing while the gpt branch ran the whole
   `merge_reviews -> converge -> pr_gate` tail inside its branch, and the trunk
-  then ran `reviewer_claude` + the same tail again. Only predecessors inside
+  then ran `reviewer_alternate` + the same tail again. Only predecessors inside
   the fan-out count now (`ir.ExecBranchConvergencePoint`); evolve's
   `review_fanout` had the identical shape. Guarded by
   `e2e/review_pr_convergence_test.go`.
@@ -890,7 +890,7 @@ disabled and diff the two finding sets.
   [ADR-129](../adr/129-per-integration-typed-routing-overrides.md) an
   `overrides` cell's `effort` on the routing policy selects this tier's effort
   per forge integration. The `provider: "zai"` rescue route the four
-  claude-family slots carry (`reviewer_claude`, `reviewer_claude_glance`,
+  claude-family slots carry (`reviewer_alternate`, `reviewer_alternate_glance`,
   `converge`, and revi-converse's `converse_agent`) is governed by the
   TENANT's `providers:` allowlist, not by a bot var: a `when:` knob on that
   route is refused by a committed guard
@@ -911,7 +911,7 @@ disabled and diff the two finding sets.
 - Method: the PR that ships the cost levers was reviewed BY the pre-change bot
   (mono/claude, opus/high) — 4 rounds, webhook-launched on each push, merge
   queue at the end. Baseline measured first on prod (9 finished runs,
-  2026-09-03 morning): reviewer_claude = 85–93% of $1.42–$10.54/run
+  2026-09-03 morning): reviewer_alternate = 85–93% of $1.42–$10.54/run
   (median ~$3.6), ~28 runs/3h, ~18% cancelled "superseded" mid-flight.
 - Result: merged through the queue after rounds of 7 → 2 → 3(medium-only,
   gate green) → 0-blocking findings. Round-1 review cost ~$3.6 (46k tok) on a
@@ -1414,8 +1414,8 @@ way to perform. Mono now says so in as many words.
   with an intentional defect (`subtract` skipping the module's `assertFinite`
   input-validation invariant). The `pull_request` webhook launched Revi on a
   cloud runner (no sandbox).
-- Result: both reviewer families ran (reviewer_claude/claude-code +
-  reviewer_gpt/gpt-5.5), `converge` merged them, `publish_review` posted a GitHub
+- Result: both reviewer families ran (reviewer_alternate/claude-code +
+  reviewer/gpt-5.5), `converge` merged them, `publish_review` posted a GitHub
   review (COMMENTED) — "2 findings (1 medium, 1 low; 1 cross-confirmed)" + 2
   inline comments (src/calc.mjs:26 medium correctness, test/subtract.test.mjs:8
   low tests). Both families independently caught the planted defect;
@@ -1443,9 +1443,9 @@ way to perform. Mono now says so in as many words.
 - Method: `POST /api/runs`, `base_ref=9197bcfd` (review the campaign's own fresh
   commits `9197bcfd..HEAD` — the `scan_shards`/`botregistry` fixes + the bilans),
   `severity_threshold=low`, `post_to_board=true`. Read-only, no sandbox. Backends:
-  `claude_code` (reviewer_claude, emit) + `claw` gpt-5.5 (reviewer_gpt). ~37k tokens,
+  `claude_code` (reviewer_alternate, emit) + `claw` gpt-5.5 (reviewer). ~37k tokens,
   ~$1.18, 151 steps, status `finished`.
-- Result: `diff_precheck` (found changes) → fan-out **reviewer_claude ‖ reviewer_gpt**
+- Result: `diff_precheck` (found changes) → fan-out **reviewer_alternate ‖ reviewer**
   (parallel, confirmed) → `emit` → **1 deduped board issue** (`source:revi`,
   `severity:medium`, `type:correctness`). No commits (read-only, as designed).
 

@@ -48,7 +48,7 @@ func donorClampedPublisher(t *testing.T, maxUSDPerDay float64) (*Publisher, stor
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: maxUSDPerDay},
 	}); err != nil {

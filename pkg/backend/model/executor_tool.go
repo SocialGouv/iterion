@@ -382,7 +382,16 @@ func (e *ClawExecutor) executeToolNodeCommon(
 	if res.deliveryErr != nil {
 		return nil, res.deliveryErr
 	}
-	return res.output, nil
+	// The recipe succeeded and its stdout is not the JSON object its
+	// `output:` declares: publishing the text wrapper would hand every
+	// declared field to the next node as a hole. Only this path asks — a
+	// node with a `postcondition:` publishes a MERGE of its recipe's stdout
+	// and its postcondition's, and is judged by the latter (ADR-044).
+	output, err := declaredAnswer(ctx, node, res)
+	if err != nil {
+		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+	}
+	return output, nil
 }
 
 // recipeResult is the full outcome of running a tool node's recipe (shell
@@ -409,6 +418,12 @@ type recipeResult struct {
 	// so it never feeds the self-repair rungs, which would re-run a
 	// command that did nothing wrong.
 	deliveryErr error
+	// notObject reports that stdout was not a JSON object — output is then
+	// the `result` text wrapper, or nil for a JSON `null` — and drainCut
+	// that the drain bound cut the copy of that stdout short. The two facts
+	// declaredAnswer judges a recipe's answer on.
+	notObject bool
+	drainCut  bool
 }
 
 // toolCommand is a tool node's command as runToolNodeCore runs it: the
@@ -557,6 +572,8 @@ func (e *ClawExecutor) runToolNodeCore(
 		repairData:  tc.repairData,
 		runErr:      runErr,
 		deliveryErr: deliveryErr,
+		notObject:   wrapped || output == nil,
+		drainCut:    drainCut,
 	}, nil
 }
 
@@ -628,6 +645,12 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			return resolved
 		},
 		func(resolved string) (toolCommand, func(), error) {
+			// Before anything runs: an output field its producer declared and
+			// did not supply is refused, not handed to `bash -c` as the
+			// reference's own text.
+			if err := e.owedOutputRefs(ctx, "command", node.CommandRefs); err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
 			// Materialise the author's references into the command actually
 			// executed via env-var indirection, not by inlining the raw
 			// value into the command string: `resolved` (placeholder
@@ -981,6 +1004,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			if renderErr != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, renderErr)
 			}
+			// Before any temp file exists: an output field its producer
+			// declared and did not supply is refused, not rendered as `null`.
+			if err := e.owedOutputRefs(ctx, "script", node.ScriptRefs); err != nil {
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+			}
 			// Before any temp file exists: a {{vars.x}} naming a server-minted
 			// (env-only) credential is refused, not rendered — the value would
 			// sit in the script file in clear.
@@ -1033,7 +1061,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 					return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
 				}
 			}
-			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
+			tmpFile, err := os.CreateTemp(scriptDir, toolScriptTempPrefix+"*"+ext)
 			if err != nil {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}

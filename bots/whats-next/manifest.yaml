@@ -1,7 +1,11 @@
 name: whats-next
 display_name: Nexie
 icon: 🧭
-version: 0.3.11
+version: 0.3.12
+## 0.3.12 — the DSL quickref teaches the tool-node contract as the
+## engine holds it (#3421): a `command:` / `script:` under `output:` prints
+## ONE JSON object and sends the rest to stderr, its commit example
+## included; a fan-in keeps the last branch by id.
 ## 0.3.11 — the declared tools and permission gate admit the subagent
 ## calls the roadmap-study audit asks Nexie to make.
 ## 0.3.10 — the bundle stops selling a durable CONTEXT_BRIEF it has no path

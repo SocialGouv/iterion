@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -16,15 +17,16 @@ func (s *FilesystemRunStore) RecordPreEngineRefusal(ctx context.Context, id stri
 	if err := ctx.Err(); err != nil {
 		return PreEngineRefusalResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.guardNotDeleted(id); err != nil {
-		return PreEngineRefusalResult{}, err
-	}
-	run, err := s.loadRunRaw(id)
+	run, unlock, err := s.lockExistingRunMetadata(ctx, id)
 	if err != nil {
+		// Snapshot admission now detects a corrupt identity before the
+		// recorder sees the row. Preserve its public typed refusal as well.
+		if errors.Is(err, ErrRunDataIdentityChanged) {
+			return PreEngineRefusalResult{}, fmt.Errorf("store: pre-engine refusal binding: %w: %w", ErrInvalidPreEngineRefusal, err)
+		}
 		return PreEngineRefusalResult{}, err
 	}
+	defer unlock()
 	if run.ID != id {
 		return PreEngineRefusalResult{}, fmt.Errorf("store: pre-engine refusal binding: %w", ErrInvalidPreEngineRefusal)
 	}
@@ -33,7 +35,7 @@ func (s *FilesystemRunStore) RecordPreEngineRefusal(ctx context.Context, id stri
 	if tenant, ok := TenantFromContext(ctx); ok && run.TenantID != "" && tenant != run.TenantID {
 		return PreEngineRefusalResult{}, fmt.Errorf("store: pre-engine refusal: %w", ErrRunNotFound)
 	}
-	if !slices.Contains(PreEngineRefusalFromStatuses(q), run.Status) || (run.QueuedAt != nil && (q.PublishedAt.IsZero() || run.QueuedAt.After(q.PublishedAt))) {
+	if !slices.Contains(PreEngineRefusalFromStatuses(q), run.Status) || !MatchesExactQueuedAt(run.QueuedAt, q.ExactQueuedAt) || (q.ExactQueuedAt.IsZero() && run.QueuedAt != nil && (q.PublishedAt.IsZero() || run.QueuedAt.After(q.PublishedAt))) {
 		return PreEngineRefusalResult{}, nil
 	}
 	pending := q.Disposition == PreEngineRetryPending && run.Status.IsQueued()
@@ -50,9 +52,9 @@ func (s *FilesystemRunStore) RecordPreEngineRefusal(ctx context.Context, id stri
 	if err := ctx.Err(); err != nil {
 		return PreEngineRefusalResult{}, err
 	}
-	// writeRun's version CAS, under its cross-instance file lock, rejects a
-	// new publication/claim that won after loadRunRaw. No second fallback.
-	if err := s.writeRun(run); err != nil {
+	// The metadata lock owns this read-modify-write; retain the invocation's
+	// original format binding through the no-relock persistence tail.
+	if err := s.writeRunLockedContext(ctx, run, false, nil); err != nil {
 		return PreEngineRefusalResult{}, err
 	}
 	return PreEngineRefusalResult{Changed: true, Status: run.Status}, nil

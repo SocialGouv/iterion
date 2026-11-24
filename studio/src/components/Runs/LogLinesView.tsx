@@ -13,6 +13,7 @@ import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { formatBytes } from "@/lib/format";
 import { downloadBlob } from "@/lib/download";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
+import { runFetch } from "@/lib/lostRuns";
 import { selectInFlightTools, useRunStore } from "@/store/run";
 import { clampLogBody } from "@/store/run/logBuffer";
 import { useTabsStore } from "@/store/tabs";
@@ -238,7 +239,7 @@ export default function LogLinesView({
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(
+        const res = await runFetch(
           apiURL(`/runs/${encodeURIComponent(runId)}/log?from=0&until=${until}`),
           { credentials: "include" },
         );
@@ -469,7 +470,7 @@ export default function LogLinesView({
                   useUIStore.getState().addToast("Log copied to clipboard", "success");
                   return;
                 }
-                const res = await fetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
+                const res = await runFetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
                   credentials: "include",
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -497,7 +498,7 @@ export default function LogLinesView({
             onClick={() => {
               void (async () => {
                 try {
-                  const res = await fetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
+                  const res = await runFetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
                     credentials: "include",
                   });
                   if (!res.ok) throw new Error(`HTTP ${res.status}`);

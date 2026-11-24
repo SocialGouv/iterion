@@ -10,7 +10,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -20,87 +19,77 @@ type interactionID struct {
 	InteractionID string `bson:"interaction_id"`
 }
 
-type interactionDoc struct {
-	ID                interactionID `bson:"_id"`
-	store.Interaction `bson:",inline"`
-}
-
 // WriteInteraction upserts the interaction document. Two paths:
 // the initial pause writes the questions, and the resume path writes
 // the answers; both go through this single method.
 func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) error {
-	if err := s.guardNotDeleted(ctx, i.RunID); err != nil {
+	format, err := s.valueWriteFormat(ctx, i.RunID)
+	if err != nil {
 		return err
 	}
-	stampTenantOnInteraction(ctx, i)
-	doc := interactionDoc{
-		ID: interactionID{
-			RunID:         i.RunID,
-			InteractionID: i.ID,
-		},
-		Interaction: *i,
-	}
-	_, err := s.interactions.ReplaceOne(
-		ctx,
-		withTenantFilter(ctx, bson.M{"_id": doc.ID}),
-		doc,
-		options.Replace().SetUpsert(true),
-	)
+	copy := *i
+	stampTenantOnInteraction(ctx, &copy)
+	doc, err := valueRecordDocument(ctx, format, store.ExactInteraction, &copy)
 	if err != nil {
-		return fmt.Errorf("store/mongo: write interaction %s/%s: %w", i.RunID, i.ID, err)
+		return err
 	}
-	return nil
+	doc["_id"] = interactionID{RunID: i.RunID, InteractionID: i.ID}
+	return s.withValueRecordWrite(ctx, i.RunID, func(sc context.Context, _ store.ValueFormat, _ *store.Run) error {
+		_, e := s.interactions.ReplaceOne(sc, withTenantFilter(sc, bson.M{"_id": doc["_id"]}), doc, options.Replace().SetUpsert(true))
+		return e
+	})
 }
 
-// LoadInteraction looks up the composite key directly.
 func (s *Store) LoadInteraction(ctx context.Context, runID, interactionID2 string) (*store.Interaction, error) {
-	doc, err := mongoutil.FindOne[interactionDoc](ctx, s.interactions,
-		withTenantFilter(ctx, bson.M{"_id": interactionID{RunID: runID, InteractionID: interactionID2}}),
-		fmt.Errorf("store/mongo: interaction %s/%s not found", runID, interactionID2),
-		fmt.Sprintf("store/mongo: load interaction %s/%s", runID, interactionID2))
+	format, err := s.valueReadFormat(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-	out := doc.Interaction
+	res := s.interactions.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": interactionID2Key(runID, interactionID2)}))
+	raw, err := res.Raw()
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: load interaction %s/%s: %w", runID, interactionID2, err)
+	}
+	var out store.Interaction
+	if err = decodeValueBSON(ctx, format, store.ExactInteraction, raw, &out); err != nil {
+		return nil, err
+	}
 	out.RunID = runID
 	out.ID = interactionID2
 	return &out, nil
 }
 
-// AnswerInteractionCAS implements store.InteractionAnswerCAS with a
-// single filtered update: the answered_at-is-unset condition rides the
-// filter, so of two concurrent answerers exactly one document update
-// applies and the loser maps to ErrInteractionAlreadyAnswered — no
-// load-then-write window. ({"answered_at": nil} matches both a missing
-// field — the omitempty write shape — and an explicit null.)
 func (s *Store) AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*store.Interaction, error) {
+	format, err := s.valueWriteFormat(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := valueRecordDocument(ctx, format, store.ExactInteraction, &store.Interaction{Answers: answers})
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
-	res := s.interactions.FindOneAndUpdate(
-		ctx,
-		withTenantFilter(ctx, bson.M{
-			"_id":         interactionID2Key(runID, interactionID),
-			"answered_at": nil,
-		}),
-		bson.M{"$set": bson.M{"answers": answers, "answered_at": now}},
-		options.FindOneAndUpdate().SetReturnDocument(options.After),
-	)
-	var doc interactionDoc
-	err := res.Decode(&doc)
-	if err == nil {
-		out := doc.Interaction
-		out.RunID = runID
-		out.ID = interactionID
-		return &out, nil
-	}
-	if !errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, fmt.Errorf("store/mongo: answer interaction %s/%s: %w", runID, interactionID, err)
-	}
-	// No unanswered document matched: distinguish already-answered from
-	// genuinely missing.
-	if _, lerr := s.LoadInteraction(ctx, runID, interactionID); lerr != nil {
-		return nil, lerr
-	}
-	return nil, fmt.Errorf("interaction %s/%s: %w", runID, interactionID, store.ErrInteractionAlreadyAnswered)
+	var result *store.Interaction
+	err = s.withValueRecordWrite(ctx, runID, func(sc context.Context, _ store.ValueFormat, _ *store.Run) error {
+		res := s.interactions.FindOneAndUpdate(sc, withTenantFilter(sc, bson.M{"_id": interactionID2Key(runID, interactionID), "answered_at": nil}), bson.M{"$set": bson.M{"answers": encoded["answers"], "answered_at": now}}, options.FindOneAndUpdate().SetReturnDocument(options.After))
+		raw, e := res.Raw()
+		if errors.Is(e, mongo.ErrNoDocuments) {
+			if exists := s.interactions.FindOne(sc, withTenantFilter(sc, bson.M{"_id": interactionID2Key(runID, interactionID)})).Err(); exists != nil {
+				return exists
+			}
+			return store.ErrInteractionAlreadyAnswered
+		}
+		if e != nil {
+			return e
+		}
+		var out store.Interaction
+		if e = decodeValueBSON(sc, format, store.ExactInteraction, raw, &out); e != nil {
+			return e
+		}
+		result = &out
+		return nil
+	})
+	return result, err
 }
 
 func interactionID2Key(runID, iid string) interactionID {
@@ -111,6 +100,9 @@ func interactionID2Key(runID, iid string) interactionID {
 // requested-at order. Mirrors the filesystem store's directory
 // enumeration.
 func (s *Store) ListInteractions(ctx context.Context, runID string) ([]string, error) {
+	if _, err := s.valueReadFormat(ctx, runID); err != nil {
+		return nil, err
+	}
 	cur, err := s.interactions.Find(
 		ctx,
 		withTenantFilter(ctx, bson.M{"run_id": runID}),

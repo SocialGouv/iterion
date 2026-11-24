@@ -55,7 +55,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"ToolNodeDecl", "ComputeDecl", "ComputeExpr", "SubbotDecl", "EmitDecl", "WaitDecl",
 		"AwaitAnswersDecl", "FailDecl", "GroupDecl", "UseDecl", "Edge", "LoopClause",
 		"ForeachClause", "WhenClause", "WithEntry", "BudgetBlock", "ResourcesBlock",
-		"CodemodeBlock",
+		"CodemodeBlock", "BusinessStoreDecl",
 		"SandboxBlock", "SandboxBuildBlock", "SandboxNetworkBlock", "MemoryBlock",
 		"CompactionBlock", "FallbackDecl", "CursorDecl", "CursorEnumValue", "CursorBand",
 		"CursorBlock", "CursorSetting", "SupervisorDecl", "MCPServerDecl", "MCPAuthDecl",

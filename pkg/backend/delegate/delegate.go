@@ -300,6 +300,21 @@ type ToolDef struct {
 	// sanitization (`mcp.<server>.<tool>` for an MCP tool). In-process only:
 	// it never crosses the sandbox IPC.
 	QualifiedName string
+
+	// ConcurrentSafe attests the native implementation, not the tool name.
+	// Zero is exclusive. This field does not cross the sandbox IPC.
+	ConcurrentSafe bool
+
+	// AuthorDeclared reports that this definition resolved from an entry the
+	// node's own `tools:` list contributed — not from a runtime append
+	// (interaction, board, runs, agent, todo_write, memory), not from an
+	// ambient wildcard. It is the first condition a deferring node reads to
+	// decide which tools join the codemode catalogue instead of the wire
+	// (the full rule is model.markCatalogueOnly's); everything else stays
+	// declared.
+	// In-process only: it does not cross the sandbox IPC, where the runner
+	// serves every tool declared.
+	AuthorDeclared bool
 }
 
 // TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
@@ -550,6 +565,14 @@ type Task struct {
 	// are wired separately by each backend and are absent here.
 	MCPServers []TaskMCPServer
 
+	// MCPInheritDisabled says the node opts out of the ambient MCP set
+	// (`mcp: inherit: false`): MCPServers is its whole set. A CLI that loads
+	// MCP servers of its own configuration is held to it — claude_code runs
+	// with --strict-mcp-config whatever ITERION_CLAUDE_CODE_STRICT_MCP says;
+	// codex, which cannot be told to disable them, refuses the node, typed,
+	// when its configuration lists one.
+	MCPInheritDisabled bool
+
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
@@ -681,6 +704,13 @@ type Task struct {
 	// populating this field (see model.wireEffort) and sets Ultracode below.
 	ReasoningEffort string
 
+	// ReasoningEffortSource names who asked for ReasoningEffort: the run's
+	// model overrides, an upstream edge's mapping or the node's own
+	// `reasoning_effort:` (model.EffortSource*). The executor's bookkeeping,
+	// read back at the model boundary to record it on the Result; no backend
+	// reads it, and it does not cross the claw-runner wire.
+	ReasoningEffortSource string
+
 	// Ultracode enables the "Ultracode" mode: xhigh reasoning paired with a
 	// standing-consent prerogative to orchestrate multi-agent workflows.
 	// When set, BuildSystemPrompt appends a "## Workflow Orchestration"
@@ -757,6 +787,23 @@ type Task struct {
 	// it, and the zero value is off, so a task built outside the executor
 	// gets no script host rather than an accidental one.
 	Codemode bool
+
+	// CodemodeDefer says the node's AUTHOR-DECLARED tools are demoted to
+	// catalogue-only: they stay callable through the node's door — the
+	// codemode tool's catalogue, call.search and call.describe read them,
+	// and a program calls one by name — but they are not declared to the
+	// model on the wire. The runtime's own appends (interaction, board,
+	// runs, agent, todo_write, memory) and the withheld classes (the ask
+	// channel, the iterion control surface, sub-agents, the script host
+	// itself) stay declared whatever this says.
+	//
+	// It is the RESOLVED decision, like Codemode, and it only means anything
+	// where Codemode is on: deferral is an optimization over the codemode
+	// catalogue, not a capability of its own. It does NOT cross the sandbox
+	// envelope (ToIOTask): a runner built before the field — and a runner
+	// after it, deliberately — serves the node's tools declared, which is
+	// today's behaviour and the safe fallback for an optimization.
+	CodemodeDefer bool
 
 	// CodemodeBounds are the bounds ONE program of this node runs under, as
 	// the author declared them and the executor resolved them (node over
@@ -1693,6 +1740,10 @@ type ErrAskUser struct {
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
 
+	// PermissionInput preserves the validated argument object before the
+	// conversation or display marker decodes numbers into interface values.
+	PermissionInput json.RawMessage
+
 	// AwaitPending is set (non-empty) when this suspension is an
 	// await_answers escalation (ADR-081): the agent asked to sync while
 	// async questions were still unanswered. It carries the pending
@@ -1903,6 +1954,18 @@ func (e *ErrTransient) Error() string {
 // {{input.ask_user_response}} in their prompts if they want explicit
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
+
+// CheckApprovalAnswer binds an approval reply to the current exact pause.
+// An untagged denial can close the pause but cannot authorize an action.
+func CheckApprovalAnswer(answers map[string]any, exactPause bool, interactionID string) error {
+	answer, _ := answers[AskUserQuestionKey].(string)
+	id, _ := answers[permission.ApprovalInteractionKey].(string)
+	allow, _ := permission.ParseExactApprovalAnswer(answer)
+	if (id != "" && (!exactPause || id != interactionID)) || (exactPause && allow && id == "") {
+		return fmt.Errorf("approval does not match the pending interaction; refresh the question before answering")
+	}
+	return nil
+}
 
 // Presentation keys stamped alongside AskUserQuestionKey when the LLM
 // called ask_user with structured options. Reserved (underscore) keys:
@@ -2144,6 +2207,10 @@ type Result struct {
 	// this nil and rely on the [PRIOR INTERACTION] prompt-side fallback.
 	PendingConversation json.RawMessage
 
+	// PendingPermissionInput is captured by the in-process permission gate.
+	// Sandbox results do not carry this trusted field.
+	PendingPermissionInput json.RawMessage `json:"-"`
+
 	// PendingToolUseID is the ID of the tool_use block awaiting an
 	// answer in PendingConversation. Required when PendingConversation
 	// is non-nil.
@@ -2221,4 +2288,44 @@ type Result struct {
 	// output goes through the way the usage counters do, and is re-stamped
 	// there as `_gateway_spec`. Empty on a non-gateway route.
 	GatewaySpec json.RawMessage
+
+	// WireReasoningEffort is the reasoning effort the backend's FIRST model
+	// request of this call carried, after the backend's own rule below the
+	// model boundary — claw: the model's accepted set (coerceEffortForModel),
+	// then the client's (an Anthropic Messages client sends no effort for a
+	// model outside its matrix, "" then); claude_code: the level its CLI sends
+	// for the model — the level handed it after the CLI's per-model rule
+	// (claudeCodeWireEffort), "" when the model takes no effort and when the
+	// call never reached the model — a call that fails mid-stream may already
+	// have carried a request the record cannot name. WireReasoningEffortLast is the
+	// effort of the call's LAST request, whose answer the output is: lower
+	// than the first when claw re-asked a cut turn, or ran its recovery pass,
+	// at a reduced effort. WireReasoningEffortReported says the backend filled
+	// both; a backend that does not leaves the record at the level it was
+	// handed (model.recordReasoningEffort). They cross the claw-runner wire.
+	WireReasoningEffort         string
+	WireReasoningEffortLast     string
+	WireReasoningEffortReported bool
+
+	// ReasoningEffort is the reasoning effort the call's model request
+	// carried — what the backend reported (WireReasoningEffort), else the
+	// level the executor handed it after the route's accepted-effort mapping
+	// (ADR-166 §7); "" when the request carried none. ReasoningEffortSource
+	// says who decided it: the request's provenance (Task.
+	// ReasoningEffortSource) when it was sent as asked, the accepted-efforts
+	// list's source (`feed:<name>`, `env:…`) when the route replaced it,
+	// `backend` when the backend sent another level, none, or its own
+	// default. ReasoningEffortRequested is the level asked for, set only
+	// when the route or the backend replaced it; ReasoningEffortLowered is
+	// the lower level the call's last request carried, set only when it
+	// differs (WireReasoningEffortLast). Recorded by the executor at the
+	// model boundary (model.executeDelegate), never by a backend. Stamped on
+	// the node's output as `_reasoning_effort_applied`,
+	// `_reasoning_effort_source`, `_reasoning_effort_requested` and
+	// `_reasoning_effort_lowered` — never `_reasoning_effort`, the input key
+	// an edge raises a node's effort with.
+	ReasoningEffort          string
+	ReasoningEffortSource    string
+	ReasoningEffortRequested string
+	ReasoningEffortLowered   string
 }

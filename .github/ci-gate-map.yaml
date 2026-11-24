@@ -70,11 +70,17 @@ jobs:
   test-unit:
     required: no
     feeds: test
-    checks: 1
+    checks: 3
     disposition: partial
     members: [test, vet, "ci:gofmt", "test:live:compile", "map:check", "dsl:check"]
     residual: >-
-      CI runs `-count=1` under `CGO_ENABLED=0` at `-timeout 1500s` over
+      the job shards with `scripts/ci/testshards -n 3 -i <shard> -skip
+      '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv` and runs
+      its one-time steps (freshness, gofmt, vet, the census, the live compile)
+      on the last shard only; one local `task test` covers the union of the
+      three shards but exercises neither the splitter nor its empty-shard
+      refusal (internal/ciguard's unit_shards_test.go does). CI runs
+      `-count=1` under `CGO_ENABLED=0` at `-timeout 1500s` over
       everything but `./e2e`, while `task test` sets no `-count` and no CGO and
       caps packages at `-timeout 1200s` — a LOWER ceiling — over `./...`; CI
       exports `CI=true`, which turns a skip into a hard failure at fourteen
@@ -146,8 +152,8 @@ jobs:
     members: ["ci:mongo-conformance"]
     equivalence: >-
       the same mongo:8.0 one-member replica set, and the job's `go test` lines
-      READ FROM the job rather than restated — both of them, including the
-      second that `docs/development.md`'s regex cannot see. Needs docker, and
+      READ FROM the job rather than restated — every one of them, including
+      the targeted lines `docs/development.md`'s regex cannot see. Needs docker, and
       refuses with exit 2 where this process cannot reach the published port.
 
   golangci:

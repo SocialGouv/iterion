@@ -34,6 +34,9 @@ type sdkClient struct {
 	startErr      error
 	session       *mcp.ClientSession
 
+	// callSlot serializes tool calls across aliases and users of this client.
+	callSlot chan struct{}
+
 	// gate is consulted before every protocol operation, including on an
 	// already-started session. The manager's start policy can tighten
 	// mid-run (the engine settles the sandbox after the launch surface's
@@ -52,7 +55,7 @@ type sdkClient struct {
 }
 
 func newSDKClient(cfg *ServerConfig, info clientInfo, gate func() error, logger *iterlog.Logger) *sdkClient {
-	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger}
+	return &sdkClient{cfg: cloneServerConfig(cfg), info: info, gate: gate, logger: logger, callSlot: make(chan struct{}, 1)}
 }
 
 // protocolVersion20260728 is the first MCP revision that removed the
@@ -103,6 +106,17 @@ func (c *sdkClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 }
 
 func (c *sdkClient) CallTool(ctx context.Context, toolName string, args map[string]any) (*ToolCallResult, error) {
+	select {
+	case c.callSlot <- struct{}{}:
+		defer func() { <-c.callSlot }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// A cancellation and a released slot can both be ready. Do not call the
+	// SDK in that case, and never release the slot until its call returns.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := c.ensureStarted(ctx); err != nil {
 		return nil, err
 	}

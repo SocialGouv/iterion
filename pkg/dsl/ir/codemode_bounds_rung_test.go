@@ -47,11 +47,11 @@ workflow w:
 	// (executor_codemode.go): the mode from the node, the bounds from
 	// whichever rung set each field.
 	n := r.Workflow.Nodes["a"].(*AgentNode)
-	policy := ResolveCodemode(n.GetCodemode(), r.Workflow.Codemode)
+	policy := ResolveCodemode("", n.GetCodemode(), r.Workflow.Codemode)
 	if !policy.On {
 		t.Fatalf("policy = %s, want on: an explicit node value beats the workflow's", policy)
 	}
-	bounds := ResolveCodemodeBounds(n.CodemodeBounds, r.Workflow.CodemodeBounds)
+	bounds := ResolveCodemodeBounds(nil, n.CodemodeBounds, r.Workflow.CodemodeBounds)
 	if bounds == nil {
 		t.Fatalf("the node resolved no bounds, so the workflow's declaration reached nothing")
 	}
@@ -88,7 +88,7 @@ workflow w:
 	n := r.Workflow.Nodes["a"].(*AgentNode)
 	// The node's explicit off beats the workflow's on — which is what makes
 	// its own bounds unreachable, and the diagnostic true.
-	if policy := ResolveCodemode(n.GetCodemode(), r.Workflow.Codemode); policy.On {
+	if policy := ResolveCodemode("", n.GetCodemode(), r.Workflow.Codemode); policy.On {
 		t.Errorf("policy = %s, want off: an explicit node `off` beats a workflow `on`", policy)
 	}
 }
@@ -142,5 +142,41 @@ workflow w:
 	}
 	if seen != 2 {
 		t.Fatalf("expected one C347 and one C349 on this block, saw %d codemode diagnostics: %+v", seen, r.Diagnostics)
+	}
+}
+
+func TestCodemodeStoreQuotasResolveAtRunScope(t *testing.T) {
+	t.Parallel()
+	assert := func(run, workflow *CodemodeBounds, wantEntries, wantBytes int64) {
+		t.Helper()
+		entries, bytes := ResolveCodemodeStoreLimits(run, workflow)
+		if entries != wantEntries || bytes != wantBytes {
+			t.Fatalf("bank limits = %d, %d; want %d, %d", entries, bytes, wantEntries, wantBytes)
+		}
+	}
+	assert(nil, nil, 32, 128<<10)
+	workflow := &CodemodeBounds{StoreEntries: 48, StoreBytes: 256 << 10}
+	assert(&CodemodeBounds{}, workflow, 48, 256<<10)
+	assert(&CodemodeBounds{StoreEntries: 12}, workflow, 12, 256<<10)
+	assert(&CodemodeBounds{StoreBytes: 640 << 10}, workflow, 48, 512<<10)
+	assert(&CodemodeBounds{StoreEntries: 100}, nil, 64, 128<<10)
+	program := ResolveCodemodeBounds(workflow, workflow, workflow)
+	if program.StoreEntries != 0 || program.StoreBytes != 0 {
+		t.Fatalf("per-program resolver returned run-wide limits: %+v", program)
+	}
+}
+
+func TestCodemodeReplayRetainsOmittedBankQuotas(t *testing.T) {
+	t.Parallel()
+	prior := &CodemodeBounds{ToolCalls: 200, ResultBytes: 1024, StoreEntries: 48, StoreBytes: 256 << 10}
+	for _, row := range []struct{ ask, want *CodemodeBounds }{
+		{nil, prior},
+		{&CodemodeBounds{StoreEntries: 16}, &CodemodeBounds{ToolCalls: 200, ResultBytes: 1024, StoreEntries: 16, StoreBytes: 256 << 10}},
+		{&CodemodeBounds{ToolCalls: 100}, &CodemodeBounds{ToolCalls: 100, StoreEntries: 48, StoreBytes: 256 << 10}},
+		{&CodemodeBounds{ToolCalls: 100, StoreBytes: 512 << 10}, &CodemodeBounds{ToolCalls: 100, StoreEntries: 48, StoreBytes: 512 << 10}},
+	} {
+		if got := ReplayCodemodeBounds(row.ask, prior); *got != *row.want {
+			t.Errorf("restatement %+v resolved %+v, want %+v", row.ask, got, row.want)
+		}
 	}
 }

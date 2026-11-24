@@ -66,6 +66,7 @@ test("disables an unsafe backend only for the gated node and explains why", () =
       }}
       backendOptionsReady
       backendOptionsError={false}
+      routeRefusals={{}}
       onChange={vi.fn()}
     />,
   );
@@ -100,6 +101,7 @@ test("warns when a claw tools restriction becomes inert on a CLI backend", () =>
       }}
       backendOptionsReady
       backendOptionsError={false}
+      routeRefusals={{}}
       onChange={vi.fn()}
     />,
   );
@@ -127,9 +129,43 @@ test("clears a stale selection that becomes unsafe after a run gate change", () 
       }}
       backendOptionsReady
       backendOptionsError={false}
+      routeRefusals={{}}
       onChange={onChange}
     />,
   );
 
   expect(onChange).toHaveBeenCalledWith("gated", { backend: "" });
+});
+
+test("renders the inherit route's refusal on the node row (#3259)", () => {
+  render(
+    <ModelOverridesSection
+      nodes={[gatedNode]}
+      overrides={{}}
+      backendReport={report}
+      backendOptions={{
+        gated: {
+          codex: {
+            unavailable_reason:
+              'cannot serve codemode: on (from node): runs on backend "codex", which registers no codemode tool',
+          },
+        },
+      }}
+      backendOptionsReady
+      backendOptionsError={false}
+      routeRefusals={{
+        gated:
+          'cannot serve codemode: on (from node): runs on backend "codex", which registers no codemode tool',
+      }}
+      onChange={vi.fn()}
+    />,
+  );
+  openPicker();
+
+  // The "inherit" choice cannot be deselected — it IS the node's
+  // declaration — so the refusal renders on the row, naming the route and
+  // the two ways out, instead of a launch the first node kills.
+  const warning = screen.getByText(/inherit — cannot serve codemode/);
+  expect(warning.textContent).toContain("override the backend");
+  expect(warning.textContent).toContain("fix the node's declaration");
 });

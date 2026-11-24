@@ -21,7 +21,7 @@ func TestTheNodesBoundsBeatTheWorkflowsFieldByField(t *testing.T) {
 	wf := &CodemodeBounds{ToolCalls: 256, Wall: 2 * time.Minute, Memory: 1 << 29}
 	node := &CodemodeBounds{Wall: 5 * time.Minute}
 
-	got := ResolveCodemodeBounds(node, wf)
+	got := ResolveCodemodeBounds(nil, node, wf)
 	if got == nil {
 		t.Fatalf("resolution dropped both rungs")
 	}
@@ -49,30 +49,32 @@ func TestTheNodesBoundsBeatTheWorkflowsFieldByField(t *testing.T) {
 
 func TestNeitherRungDeclaringBoundsResolvesToNothing(t *testing.T) {
 	t.Parallel()
-	if got := ResolveCodemodeBounds(nil, nil); got != nil {
-		t.Errorf("ResolveCodemodeBounds(nil, nil) = %+v, want nil — an empty bound set would travel as a declaration", got)
+	if got := ResolveCodemodeBounds(nil, nil, nil); got != nil {
+		t.Errorf("ResolveCodemodeBounds(nil, nil, nil) = %+v, want nil — an empty bound set would travel as a declaration", got)
 	}
 }
 
 func TestTheCeilingCensusNamesEveryFieldAboveIt(t *testing.T) {
 	t.Parallel()
 	ceil := scripthost.Ceiling()
-	// Every one of the seven, one past its ceiling at once: the census has
+	// Every one of the bounds, one past its ceiling at once: the census has
 	// to name them all, not stop at the first. A `return` on the first
-	// finding would leave six fields clamped with nothing said.
+	// finding would leave the remaining fields clamped with nothing said.
 	over := CodemodeBoundsAboveCeiling(&CodemodeBounds{
-		ToolCalls:       ceil.ToolCalls + 1,
-		Wall:            ceil.Wall + time.Second,
-		CPU:             ceil.CPU + time.Second,
-		Memory:          ceil.Memory + 1,
-		ScriptBytes:     ceil.ScriptBytes + 1,
-		ResultBytes:     ceil.ResultBytes + 1,
-		ToolResultBytes: ceil.ToolResultBytes + 1,
+		ToolCalls:           ceil.ToolCalls + 1,
+		Wall:                ceil.Wall + time.Second,
+		CPU:                 ceil.CPU + time.Second,
+		Memory:              ceil.Memory + 1,
+		ScriptBytes:         ceil.ScriptBytes + 1,
+		ResultBytes:         ceil.ResultBytes + 1,
+		ToolResultBytes:     ceil.ToolResultBytes + 1,
+		ConcurrentToolCalls: ceil.ConcurrentToolCalls + 1,
 	})
-	if len(over) != 7 {
-		t.Fatalf("named %d fields above the ceiling, want all 7: %v", len(over), over)
+	wants := []string{"tool_calls", "concurrent_tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
+	if len(over) != len(wants) {
+		t.Fatalf("named %d fields above the ceiling, want %d: %v", len(over), len(wants), over)
 	}
-	for _, want := range []string{"tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"} {
+	for _, want := range wants {
 		found := false
 		for _, phrase := range over {
 			if strings.HasPrefix(phrase, want+" ") {
@@ -110,7 +112,7 @@ func TestTheDefaultsAreUnderTheCeiling(t *testing.T) {
 }
 
 // The one-type decision, asserted at COMPILE time because that is when it can
-// be broken. If CodemodeBounds is ever made a parallel struct, the seven
+// be broken. If CodemodeBounds is ever made a parallel struct, the
 // numbers acquire a second spelling and the `wall_ms` defect the host's own
 // field doc records — a hand-written bound enforced a million times tighter —
 // becomes available again. Two distinct named struct types are not assignable
@@ -118,9 +120,9 @@ func TestTheDefaultsAreUnderTheCeiling(t *testing.T) {
 // the alias is replaced by a copy.
 var _ scripthost.Limits = CodemodeBounds{}
 
-// The seven bounds are seven HAND-WRITTEN entries in four places — the
+// Each bound has HAND-WRITTEN entries in four places — the
 // parser's switch, ast.CodemodeBlock.Bounded, ResolveCodemodeBounds's literal
-// and CodemodeBoundsAboveCeiling's calls. An eighth field added to
+// and CodemodeBoundsAboveCeiling's calls. A new field added to
 // scripthost.Limits would be accepted by none of them, and
 // ResolveCodemodeBounds would ERASE it: it builds its result from a field
 // literal, so a value a node set would come back zero on every codemode node.
@@ -161,7 +163,17 @@ func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
 		// that comes back right cannot have come back right by accident.
 		node.Field(i).SetInt(7)
 		asked := node.Interface().(scripthost.Limits)
-		got := ResolveCodemodeBounds(&asked, nil)
+		if name == "StoreEntries" || name == "StoreBytes" {
+			entries, bytes := ResolveCodemodeStoreLimits(nil, &asked)
+			if (name == "StoreEntries" && entries != 7) || (name == "StoreBytes" && bytes != 7) {
+				t.Errorf("%s: declared 7, bank resolved entries=%d bytes=%d", name, entries, bytes)
+			}
+			if got := ResolveCodemodeBounds(nil, nil, &asked); got != nil && (got.StoreEntries != 0 || got.StoreBytes != 0) {
+				t.Errorf("%s: run bank quotas leaked into the per-program resolver: %+v", name, got)
+			}
+			continue
+		}
+		got := ResolveCodemodeBounds(nil, &asked, nil)
 		if got == nil {
 			t.Fatalf("%s: resolution dropped a declared bound set entirely", name)
 		}
@@ -179,7 +191,7 @@ func TestEveryBoundOfTheHostSurvivesResolution(t *testing.T) {
 // non-nil node and the (nil, nil) test only covers both-absent.
 func TestAWorkflowRungAloneReachesANodeThatDeclaresNothing(t *testing.T) {
 	t.Parallel()
-	got := ResolveCodemodeBounds(nil, &CodemodeBounds{ToolCalls: 256, Wall: 9 * time.Minute})
+	got := ResolveCodemodeBounds(nil, nil, &CodemodeBounds{ToolCalls: 256, Wall: 9 * time.Minute})
 	if got == nil {
 		t.Fatalf("a node declaring nothing resolved to nil: the workflow's declaration reached nothing")
 	}
@@ -189,22 +201,23 @@ func TestAWorkflowRungAloneReachesANodeThatDeclaresNothing(t *testing.T) {
 }
 
 // The census ORDER, which the function's own doc promises ("in the order the
-// DSL block lists them"). Measured as unwitnessed: reversing the seven calls
+// DSL block lists them"). Measured as unwitnessed: reversing the calls
 // survived ./pkg/dsl/..., because the sibling test checks set membership by
 // prefix and never the sequence. A promise a doc makes is an oracle.
 func TestTheCeilingCensusNamesFieldsInTheBlocksOwnOrder(t *testing.T) {
 	t.Parallel()
 	ceil := scripthost.Ceiling()
 	over := CodemodeBoundsAboveCeiling(&CodemodeBounds{
-		ToolCalls:       ceil.ToolCalls + 1,
-		Wall:            ceil.Wall + time.Second,
-		CPU:             ceil.CPU + time.Second,
-		Memory:          ceil.Memory + 1,
-		ScriptBytes:     ceil.ScriptBytes + 1,
-		ResultBytes:     ceil.ResultBytes + 1,
-		ToolResultBytes: ceil.ToolResultBytes + 1,
+		ToolCalls:           ceil.ToolCalls + 1,
+		Wall:                ceil.Wall + time.Second,
+		CPU:                 ceil.CPU + time.Second,
+		Memory:              ceil.Memory + 1,
+		ScriptBytes:         ceil.ScriptBytes + 1,
+		ResultBytes:         ceil.ResultBytes + 1,
+		ToolResultBytes:     ceil.ToolResultBytes + 1,
+		ConcurrentToolCalls: ceil.ConcurrentToolCalls + 1,
 	})
-	want := []string{"tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
+	want := []string{"tool_calls", "concurrent_tool_calls", "wall", "cpu", "memory", "script_bytes", "result_bytes", "tool_result_bytes"}
 	if len(over) != len(want) {
 		t.Fatalf("named %d fields, want %d: %v", len(over), len(want), over)
 	}

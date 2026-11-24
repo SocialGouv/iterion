@@ -7,6 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/server"
 )
 
 // newRemoteStub starts a stub instance and points the env-only remote
@@ -316,5 +321,134 @@ func TestRemoteRunsResumeBodyCarriesTheScratchsConsent(t *testing.T) {
 		if got := gotBody["accept_scratch_loss"] == true; got != tc.accept || gotBody["force"] != true {
 			t.Fatalf("%s: body %v, want accept_scratch_loss %v and force", tc.args, gotBody, tc.accept)
 		}
+	}
+}
+
+// statusMe answers GET /api/auth/me for the remote_status witnesses.
+func statusMe(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Bearer iap_test" {
+		http.Error(w, "no token", http.StatusUnauthorized)
+		return
+	}
+	_, _ = w.Write([]byte(`{"user":{"email":"jo@example.org"},"active_org_id":"org1","active_team_id":"team1"}`))
+}
+
+// remoteStatusAnswer calls remote_status and decodes its answer; the call
+// must succeed.
+func remoteStatusAnswer(t *testing.T) map[string]any {
+	t.Helper()
+	text, isErr := call(t, newTestServer(t), "remote_status", `{}`)
+	if isErr {
+		t.Fatalf("remote_status errored: %s", text)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("decode: %v\n%s", err, text)
+	}
+	if got["email"] != "jo@example.org" || got["active_team_id"] != "team1" {
+		t.Fatalf("the account is missing from the status: %v", got)
+	}
+	if got["client_version"] != cli.RawVersion() {
+		t.Fatalf("client_version = %v, want this binary's %q: %v", got["client_version"], cli.RawVersion(), got)
+	}
+	return got
+}
+
+// TestRemoteStatus_answersTheServerVersionAndCommit: remote_status tells what
+// the instance runs, read from its GET /api/server/info, next to the
+// client's own version.
+func TestRemoteStatus_answersTheServerVersionAndCommit(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", statusMe)
+	mux.HandleFunc("GET /api/server/info", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"mode":"cloud","recovery_passive":false,"version":"v7.21.0","commit":"2ecfc44cf","auth_required":true,"limits":{"upload":{"max_file_size":0,"max_total_size":0,"max_files_per_run":0,"allowed_mime":null}}}`))
+	})
+	newRemoteStub(t, mux)
+
+	got := remoteStatusAnswer(t)
+	srv, ok := got["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("no server block in the status: %v", got)
+	}
+	if srv["version"] != "v7.21.0" || srv["commit"] != "2ecfc44cf" {
+		t.Fatalf("server = %v, want version v7.21.0 commit 2ecfc44cf", srv)
+	}
+	if reason, has := got["server_info_error"]; has {
+		t.Fatalf("a server that told its version carries a reason: %v", reason)
+	}
+}
+
+// TestRemoteStatus_readsTheRealServerInfoHandler drives the real
+// pkg/server GET /api/server/info handler, so the status decodes the shape
+// the server actually emits, not a copy of it.
+func TestRemoteStatus_readsTheRealServerInfoHandler(t *testing.T) {
+	prevVersion, prevCommit := appinfo.Version, appinfo.Commit
+	t.Cleanup(func() { appinfo.Version, appinfo.Commit = prevVersion, prevCommit })
+	appinfo.Version, appinfo.Commit = "v9.8.7", "feedc0de"
+
+	isolateHome(t)
+	real := server.New(server.Config{
+		WorkDir: t.TempDir(), Bind: "127.0.0.1", SkipProjectRegistration: true,
+	}, iterlog.New(iterlog.LevelError, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", statusMe)
+	mux.Handle("GET /api/server/info", real.Handler())
+	newRemoteStub(t, mux)
+
+	got := remoteStatusAnswer(t)
+	srv, ok := got["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("no server block in the status: %v", got)
+	}
+	if srv["version"] != "v9.8.7" || srv["commit"] != "feedc0de" {
+		t.Fatalf("server = %v, want the real handler's version v9.8.7 commit feedc0de", srv)
+	}
+}
+
+// TestRemoteStatus_serverInfoFailureLeavesTheStatusStanding: an instance
+// that does not tell its version leaves the server block absent, with the
+// reason, and the status still answers.
+func TestRemoteStatus_serverInfoFailureLeavesTheStatusStanding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		info    http.HandlerFunc // nil: no route, the mux answers 404
+		timeout string           // ITERION_REMOTE_SERVER_INFO_TIMEOUT
+		reason  string
+	}{
+		{name: "a server older than the route", reason: "HTTP 404 GET /api/server/info"},
+		{name: "a server error", info: func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"error":"store down"}`, http.StatusInternalServerError)
+		}, reason: "HTTP 500 GET /api/server/info: store down"},
+		{name: "an answer that is not JSON", info: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("<html>maintenance</html>"))
+		}, reason: "decode GET /api/server/info response"},
+		{name: "an answer without a version", info: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"mode":"dispatch","auth_required":false,"commit":"abc"}`))
+		}, reason: "GET /api/server/info answered no version"},
+		{name: "a server that hangs", info: func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		}, timeout: "150ms", reason: "GET /api/server/info: no answer within 150ms (ITERION_REMOTE_SERVER_INFO_TIMEOUT raises it)"},
+		{name: "an unparsable timeout", info: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"version":"v7.21.0"}`))
+		}, timeout: "soon", reason: `ITERION_REMOTE_SERVER_INFO_TIMEOUT="soon" is not a positive Go duration`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/auth/me", statusMe)
+			if tc.info != nil {
+				mux.HandleFunc("GET /api/server/info", tc.info)
+			}
+			newRemoteStub(t, mux)
+			t.Setenv("ITERION_REMOTE_SERVER_INFO_TIMEOUT", tc.timeout)
+
+			got := remoteStatusAnswer(t)
+			if srv, has := got["server"]; has {
+				t.Fatalf("server = %v, want it absent", srv)
+			}
+			reason, _ := got["server_info_error"].(string)
+			if !strings.Contains(reason, tc.reason) {
+				t.Fatalf("server_info_error = %q, want it to say %q", reason, tc.reason)
+			}
+		})
 	}
 }

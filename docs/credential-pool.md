@@ -43,6 +43,35 @@ charges the donor's ledger and frees their concurrency slot.
 `CredentialSource.Metered()` is the single predicate every surface reads to
 decide whether to hedge a figure or state it.
 
+## Two keys of one provider
+
+A donor may hold several personal keys of one provider — two Anthropic keys
+bought on two plans, say — and lend both. Each key is **its own pledge**: an
+`api_key` pledge is identified by the key it lends, so its id carries the key
+(`lender|api_key|anthropic|<key id>`) and `PUT /api/me/pool/api_key/anthropic`
+sent twice with two `key_id`s stores two rows instead of the second write
+replacing the first.
+
+The broker then treats them as any other pair of eligible pledges.
+Eligibility matches on source and ref; ranking orders by what the pool's
+strategy says (an attached pool's priority first), then by the fraction of
+what each pledge offered that is spent today, then least-recently served. So
+when the first key cools down, fails authentication or reaches one of its
+ceilings, the second serves the next launch with no manual gesture.
+
+Everything a pledge bounds is bounded **per key**: the spend caps, the daily
+run unit, the concurrency slots and the ledger row are the pledge's, so
+lending two keys at `--max-usd-day 3` each is two $3 budgets, not $3 shared.
+Pausing or withdrawing one leaves the other untouched — `GET /api/me/pool`
+carries each pledge's `id` and `key_id`, `DELETE /api/me/pool/entries/{pledge}`
+addresses exactly one, and `--key-id` names the key on the `share`, `pause`,
+`resume` and `withdraw` commands.
+
+A subscription carries no such key: the OAuth store holds one connection per
+kind (its chain of ranks is the provider-side fallback of that connection,
+and the pool lends the primary), so an `oauth` pledge keeps the three-segment
+identity `lender|oauth|kind`.
+
 ## What this is not
 
 - **Not an invoice, for a subscription.** The CLI bills nothing per call, so
@@ -337,6 +366,42 @@ the one failure mode this feature must not have.
 to lend again. If nobody pledged yet (the pool ships disabled, so this is
 the common case), there is nothing to do.
 
+## Upgrading to the key-carrying pledge id
+
+The pledge id of an `api_key` entry now names the key it lends
+(`lender|api_key|ref|key_id`, four segments), so a donor's two keys of one
+provider are two pledges. An `oauth` pledge keeps `lender|oauth|kind` byte
+for byte: nothing connected as a subscription moves.
+
+**Unlike the rename above, this one IS migrated.** `credpool.EnsureSchema`
+runs a backfill at boot, idempotently:
+
+- every `cred_pledges` document whose source is `api_key` moves to the id
+  its key computes;
+- its `cred_leases.pledge_id` follow, **closed leases included** — they are
+  the donor's history and the source of `HeldPledge`;
+- its `cred_pool_usage` rows (`<pledge>|d|<date>`, `<pledge>|w|<week>`) move
+  with their new id prefix; a row that already exists at the destination is
+  kept rather than merged, since summing the two would charge the lender
+  twice for spend a retry moved again;
+- the pledge document moves **last**: a crash then never leaves a pledge
+  addressable under the new id whose leases and ledger still speak the old
+  one. A self-repair pass replays the reference moves for every canonical
+  pledge, converging what an old replica wrote after the first pass; over a
+  migrated store it matches nothing, so every boot repeats it safely.
+
+A backfill error **aborts the boot**. Without the migration a write would
+miss the old document and insert a SECOND pledge for the same key: the
+broker could lease that key twice, each grant with its own concurrency slot
+and its own ceiling, while the lender's ledger stopped seeing its spend —
+the money cap would stop biting. That is why the identity and the backfill
+ship together.
+
+**Drain the replicas before rolling this release** (or stop-the-world on it;
+the corpus is tiny). An old replica can write an inherited id after the new
+pod's pass, and only the next boot's self-repair converges it — in between,
+the same key is reachable under two ids.
+
 ## Operator cookbook
 
 Admission is handled by the **existing GitHub team-gating**, not by anything
@@ -376,6 +441,11 @@ iterion remote pool history           # every run your quota served
 iterion remote pool pause             # keeps your terms for later
 iterion remote pool withdraw
 
+# Two keys of one provider are two pledges: --key-id names which one.
+iterion remote pool pause    --source api_key --ref anthropic --key-id <key id>
+iterion remote pool resume   --source api_key --ref anthropic --key-id <key id>
+iterion remote pool withdraw --source api_key --ref anthropic --key-id <key id>
+
 # 4. Operator: who is lending, and how they are doing.
 iterion remote pool donors
 ```
@@ -387,9 +457,10 @@ Studio equivalents: **Account settings → Share my quota** for a contributor,
 
 | Endpoint | Who | Purpose |
 |---|---|---|
-| `GET /api/me/pool` | donor | Own pledges + today/this-week consumption |
-| `PUT /api/me/pool/{source}/{ref}` | donor | Create/update terms. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
-| `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw |
+| `GET /api/me/pool` | donor | Own pledges + today/this-week consumption. Each entry carries its `id` and, for an api_key pledge, its `key_id` |
+| `PUT /api/me/pool/{source}/{ref}` | donor | Create/update terms. The body's `key_id` completes an api_key pledge's identity — two keys of one provider are two rows. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
+| `DELETE /api/me/pool/entries/{pledge}` | donor | Withdraw one contribution by its own id — the only address that names one of two keys of one provider. A pledge of somebody else answers 404 |
+| `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw, kept one release as a shim. Exact for an `oauth` pair; an api_key pair takes `?key_id=`, and without it a single match is withdrawn while several answer 400 rather than guess |
 | `GET /api/me/pool/history` | donor | The runs this quota served |
 | `GET /api/teams/{id}/pool` | member | Pool policy. The donor roster is included only for org admins — who lends, and how much, is the contributors' business |
 | `PUT /api/teams/{id}/pool` | **org** admin | Enable/disable + audience. The pool document is org-keyed, so this is an org-level decision and is audited on the org |

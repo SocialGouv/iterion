@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -89,6 +90,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		WebhookDeliveries: webhooks.NewMemoryDeliveryStore(),
 		WebhookCounter:    webhooks.NewMemoryCounter(),
 		ConnectorIntakes:  intake.NewMemoryStore(),
+		ConnectorPollers:  poller.NewMemoryStore(),
 		ForgeConnections:  connection.NewMemoryForgeStore(),
 		// The connector-connection CRUD (#2759) registers on these three;
 		// the memory twin and the baked catalog are its in-memory stand-ins.

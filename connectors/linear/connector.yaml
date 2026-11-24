@@ -1,0 +1,43 @@
+schema_version: 1
+id: linear
+display_name: Linear
+description: Linear — issues and comments, delivered by its webhooks.
+version: 0.1.0
+
+# Authored from Linear's published webhook and API documentation; the package
+# declares no operation, because Linear's API is GraphQL and the executor
+# speaks HTTP/JSON only (ADR-168 §6). The mark is drawn for this package — a
+# nominative placeholder, not Linear's logo.
+provenance:
+  spec_url: https://linear.app/developers/webhooks
+  redistributable: true
+  generated_at: "2026-11-17T00:00:00Z"
+  generated_by: iterion dev
+
+base_url:
+  # Linear is SaaS-only: one origin. The address is recorded for the
+  # connection to point at even where no operation spends it yet — a
+  # GraphQL capability lands in the executor before an operation exists here.
+  default: https://api.linear.app
+
+# A Linear personal API key goes into the `Authorization` header as is:
+# Linear documents no `Bearer` prefix for personal keys
+# (https://linear.app/developers/graphql).
+auth:
+  - id: api_key
+    kind: api_key
+    display_name: Personal API key
+    description: >-
+      A Linear personal API key, sent as the `Authorization` header value
+      itself — Linear documents no `Bearer` prefix for personal keys.
+    in: header
+    name: Authorization
+
+maturity: experimental
+category: issue_tracker
+brand_color: "#5E6AD2"
+icon: icon.svg
+
+default_security:
+  - terms:
+      - scheme: api_key

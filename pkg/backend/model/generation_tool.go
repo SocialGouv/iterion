@@ -25,10 +25,33 @@ type GenerationTool struct {
 
 	// Execute runs the tool with the given JSON input and returns the result text.
 	Execute func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// concurrentSafe follows the actual native Execute closure.
+	concurrentSafe bool
+
+	// authorDeclared follows the ToolDef that resolved this tool: the entry
+	// came from the node's own `tools:` list, not from a runtime append.
+	// Set once at the conversion from ToolDefs, read once at the deferral
+	// marking; it has no reader after that.
+	authorDeclared bool
+
+	// catalogueOnly demotes the tool from the wire: buildRequest's tool loop
+	// skips it, so no request declares it to the model. Everything else —
+	// the tool map a direct call resolves against, the door a program
+	// reaches, the catalogue the description's index and call.search read —
+	// is built from the SAME slice, so the tool stays callable, searchable
+	// and describable; the flag's only reader is that one loop. Set when a
+	// deferring node installs codemode, by markCatalogueOnly — author-declared,
+	// kept whole by the catalogue bound (which also excludes the withheld
+	// classes), and never Ask-able under the node's policy; every other tool
+	// stays declared, and where the node does not defer no tool carries it,
+	// which is what keeps a deferred-off request byte-identical to today's.
+	catalogueOnly bool
 }
 
 // GenerationOptions configures a direct generation call.
 type GenerationOptions struct {
+	codemodeState CodemodeState
 	// Model is the routing spec the client was resolved from
 	// ("anthropic/claude-sonnet-4-6"). buildRequest strips its routing prefix
 	// exactly once: pass the spec, never an id already stripped — a model id
@@ -143,6 +166,9 @@ type GenerationOptions struct {
 	// runner, which carries no guard.
 	ScreenModelText func(string) string
 
+	// RedactApprovalText checks whether exact tool arguments can be displayed.
+	RedactApprovalText func(string) string
+
 	// NamesSecret, when non-nil, reports whether a tool call's input carries
 	// the placeholder of a secret that resolves at some sink — the proxy's
 	// on the wire included — so a workspace reader's output is turned back
@@ -186,7 +212,8 @@ type GenerationOptions struct {
 	OnToolStarted func(ToolCallInfo)
 
 	// OnToolCall is called after each tool execution.
-	OnToolCall func(ToolCallInfo)
+	OnToolCall           func(ToolCallInfo)
+	toolObserversAudited bool
 
 	// OnBeforeCompact fires only when in-loop compaction is about to
 	// shrink the history. The callback may return a modified slice

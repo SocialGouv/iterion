@@ -113,6 +113,11 @@ func runInProcessSubbotFoldUnder(t *testing.T, childDir, childBot string, extra 
 	if err := svc.store.SaveRun(ctx, root); err != nil {
 		t.Fatal(err)
 	}
+	invocation, err := store.PrepareRunInvocation(ctx, svc.store, store.ExistingRunInvocation{ID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = invocation.Context
 	_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), runLogger)(ctx, runtime.SubbotRequest{
 		Source: "../" + childDir + "/main.bot", ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
 	})
@@ -294,6 +299,11 @@ func TestInProcessSubbotChildFoldsForItsBundlesSlugAndManifestName(t *testing.T)
 				if err := svc.store.SaveRun(ctx, root); err != nil {
 					t.Fatal(err)
 				}
+				invocation, err := store.PrepareRunInvocation(ctx, svc.store, store.ExistingRunInvocation{ID: rootID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = invocation.Context
 				_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{
 					Source: lay.source, ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
 				})
@@ -343,6 +353,11 @@ func TestInProcessSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
 	if err := svc.store.SaveRun(ctx, root); err != nil {
 		t.Fatal(err)
 	}
+	invocation, err := store.PrepareRunInvocation(ctx, svc.store, store.ExistingRunInvocation{ID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = invocation.Context
 	if _, err := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{
 		Source: "../child/main.bot", ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
 	}); err == nil {

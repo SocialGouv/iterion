@@ -9,11 +9,160 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+func TestSubmitResume_RefusesAnAnswerForAnotherApproval(t *testing.T) {
+	for _, id := range []string{"", "previous"} {
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := store.WithIdentity(context.Background(), "team", "alice")
+		run := &store.Run{ID: "approval", TenantID: "team", OwnerID: "alice", Status: store.RunStatusPausedWaitingHuman,
+			Checkpoint: &store.Checkpoint{InteractionID: "current", BackendName: delegate.BackendClaw, BackendPermissionInput: []byte(`{"label":"cyan"}`)},
+		}
+		if err := st.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		published := false
+		p := &Publisher{store: st, publishRun: func(context.Context, *queue.RunMessage) error { published = true; return nil }}
+		spec := runview.ResumeSpec{RunID: run.ID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n",
+			Answers: map[string]any{delegate.AskUserQuestionKey: "allow", permission.ApprovalInteractionKey: id},
+		}
+		err = p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "approval does not match the pending interaction") || published {
+			t.Fatalf("approval answer ID %q: error = %v, published = %t; want refusal before publication", id, err, published)
+		}
+		got, err := st.LoadRun(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != run.Status || got.CASVersion != run.CASVersion || got.Checkpoint == nil || got.Checkpoint.InteractionID != "current" {
+			t.Fatal("refusal changed the pending pause")
+		}
+	}
+}
+
+type replaceApprovalOnQueue struct {
+	*store.FilesystemRunStore
+}
+
+func (s replaceApprovalOnQueue) FlipRevisionToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time, version int64) (store.QueuedFlip, bool, error) {
+	run, err := s.LoadRun(ctx, id)
+	if err != nil {
+		return store.QueuedFlip{}, false, err
+	}
+	run.Checkpoint.InteractionID = "replacement"
+	if err := s.SaveRun(ctx, run); err != nil {
+		return store.QueuedFlip{}, false, err
+	}
+	return s.FilesystemRunStore.FlipRevisionToQueued(ctx, id, from, at, version)
+}
+
+func TestSubmitResume_ApprovalFlipBindsTheCheckedRevision(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := store.WithIdentity(context.Background(), "team", "alice")
+		run := &store.Run{ID: "approval", TenantID: "team", OwnerID: "alice", Status: store.RunStatusPausedWaitingHuman,
+			Checkpoint: &store.Checkpoint{InteractionID: "current", BackendName: delegate.BackendClaw, BackendPermissionInput: []byte(`{"label":"cyan"}`)},
+		}
+		if err := st.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		var runs store.RunStore = st
+		if replace {
+			runs = replaceApprovalOnQueue{st}
+		}
+		var published *queue.RunMessage
+		p := &Publisher{store: runs, publishRun: func(_ context.Context, msg *queue.RunMessage) error { published = msg; return nil }}
+		spec := runview.ResumeSpec{RunID: run.ID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n",
+			Answers: map[string]any{delegate.AskUserQuestionKey: "allow", permission.ApprovalInteractionKey: "current"},
+		}
+		err = p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, nil)
+		if !replace {
+			if err != nil || published == nil || published.Resume == nil || published.Resume.Answers[permission.ApprovalInteractionKey] != "current" {
+				t.Fatalf("current answer was not published intact: %v", err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "resume raced") || published != nil {
+			t.Fatalf("replacement won before the flip: error = %v, published = %t", err, published != nil)
+		}
+		got, err := st.LoadRun(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != store.RunStatusPausedWaitingHuman || got.Checkpoint == nil || got.Checkpoint.InteractionID != "replacement" {
+			t.Fatal("refusal changed the replacement pause")
+		}
+	}
+}
+
+// The documented --force recovery must reach the queue in cloud mode: the
+// acknowledged flip is allowed past an unresolved marker, an unforced one is
+// not.
+func TestSubmitResume_ForceQueuesAnUnresolvedApprovalRun(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := store.WithIdentity(context.Background(), "team", "alice")
+		// Build the ambiguous state through the store primitives: SaveRun
+		// normalizes the marker away on direct creation.
+		const runID = "stale-approval"
+		if err := st.SaveRun(ctx, &store.Run{ID: runID, TenantID: "team", OwnerID: "alice", Status: store.RunStatusPausedWaitingHuman}); err != nil {
+			t.Fatal(err)
+		}
+		spender := store.AsToolApprovalSpender(st)
+		if spender == nil {
+			t.Fatal("store does not support tool approvals")
+		}
+		if err := st.PauseRun(ctx, runID, &store.Checkpoint{NodeID: "worker", InteractionID: "choice", BackendPermissionInput: []byte(`{"label":"cyan"}`)}); err != nil {
+			t.Fatal(err)
+		}
+		paused, err := st.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim := store.ToolApprovalClaim{InteractionID: "choice", Token: "tok"}
+		if won, err := spender.ClaimToolApprovalResume(ctx, runID, claim, paused.Status, paused.CASVersion); err != nil || !won {
+			t.Fatalf("claim: won=%v err=%v", won, err)
+		}
+		if won, err := spender.SpendToolApproval(ctx, runID, claim); err != nil || !won {
+			t.Fatalf("spend: won=%v err=%v", won, err)
+		}
+		if code, err := spender.FailOwnedToolApproval(ctx, runID, claim, &store.Checkpoint{NodeID: "worker"}, "interrupted", store.FailureExecutionFailed); err != nil || code != store.FailureAmbiguousEffect {
+			t.Fatalf("fail: code=%q err=%v", code, err)
+		}
+		published := false
+		p := &Publisher{store: st, publishRun: func(context.Context, *queue.RunMessage) error { published = true; return nil }}
+		spec := runview.ResumeSpec{RunID: runID, Force: force, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
+		err = p.SubmitResume(ctx, spec, &ir.Workflow{Name: "wf"}, nil)
+		if !force {
+			if err == nil || published {
+				t.Fatalf("unforced resume of an unresolved run = %v (published %t), want refusal", err, published)
+			}
+			continue
+		}
+		if err != nil || !published {
+			t.Fatalf("forced resume of an unresolved run = %v (published %t), want queued", err, published)
+		}
+		got, err := st.LoadRun(ctx, runID)
+		if err != nil || got.Status != store.RunStatusQueued {
+			t.Fatalf("forced resume left status %s (err %v), want queued", got.Status, err)
+		}
+	}
+}
 
 type resumeLoadBarrierStore struct {
 	store.RunStore

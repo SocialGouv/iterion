@@ -167,6 +167,9 @@ export default function BindingsTab({ teamID, canManage }: Props) {
             <Button
               size="sm"
               variant="primary"
+              // The bot picker beside it takes the row's full width: without
+              // shrink-0 the button gives up width and its label wraps.
+              className="shrink-0"
               onClick={() => setCreating(true)}
               title={noSecrets ? "A secret binding needs a team secret first — a context binding does not" : undefined}
             >

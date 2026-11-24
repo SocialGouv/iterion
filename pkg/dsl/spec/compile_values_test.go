@@ -79,6 +79,11 @@ var hostCompileProbes = map[string]map[string]map[string]string{
 			"agent":    "agent a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    mode: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
 			"judge":    "judge a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    mode: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
 		},
+		"defer": {
+			"workflow": "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  codemode:\n    defer: %s\n    tool_calls: 128\n  a -> done\n",
+			"agent":    "agent a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    defer: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
+			"judge":    "judge a:\n  model: \"m\"\n  backend: \"claw\"\n  codemode:\n    defer: %s\n    tool_calls: 128\nworkflow w:\n  entry: a\n  a -> done\n",
+		},
 	},
 	"sandbox": {
 		"mode": {

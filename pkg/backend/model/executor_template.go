@@ -283,11 +283,8 @@ func outputsTemplateValue(td *TemplateData, segs []string) (any, bool) {
 	}
 	// Prefer declared identity over the currently available output keys.
 	// Legacy hosts without node metadata still resolve their snapshot keys.
-	for n := len(segs); n >= 1; n-- {
-		id := strings.Join(segs[:n], ".")
-		if td.Nodes[id] != nil {
-			return outputTemplatePath(td.Outputs[id], segs[n:])
-		}
+	if id, fields, declared := outputsRefProducer(td, segs); declared {
+		return outputTemplatePath(td.Outputs[id], fields)
 	}
 	for n := len(segs); n >= 1; n-- {
 		if out, ok := td.Outputs[strings.Join(segs[:n], ".")]; ok {
@@ -295,6 +292,24 @@ func outputsTemplateValue(td *TemplateData, segs []string) (any, bool) {
 		}
 	}
 	return nil, false
+}
+
+// outputsRefProducer reads `outputs.<segs>` against the DECLARED nodes: the
+// longest prefix of segs that names one is the producer, the rest the path
+// into its output. One reading for the value (outputsTemplateValue) and for
+// what the producer owes a tool body (outputRefOwed), so the two cannot name
+// different nodes for one reference.
+func outputsRefProducer(td *TemplateData, segs []string) (id string, fields []string, declared bool) {
+	if td == nil {
+		return "", nil, false
+	}
+	for n := len(segs); n >= 1; n-- {
+		id := strings.Join(segs[:n], ".")
+		if td.Nodes[id] != nil {
+			return id, segs[n:], true
+		}
+	}
+	return "", nil, false
 }
 
 func outputTemplatePath(out map[string]any, fields []string) (any, bool) {

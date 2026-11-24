@@ -444,8 +444,11 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `feature_prompt` (issue title + body), `open_mr=true`, and
   `source_issue_ref` (the issue URL), so an implementer bot (featurly)
   implements the issue, opens a PR, and comments the PR URL back onto the
-  issue. Scope which label fires with **`label_allowlist`** (below);
-  re-applying the same label is an idempotent replay.
+  issue. Scope which label fires with **`label_allowlist`** (below).
+  Each (repository, issue, label) is a re-armable
+  [trigger lane](#issue-trigger-lanes): a redelivery of the same event is
+  an idempotent replay, and re-applying the label launches again once the
+  previous run for it has ended.
 - **`issues`** with action `opened` + **`auto_implement_on_open`** → the
   zero-touch lane, now **author-gated**: the issue AUTHOR must be
   trusted — on the static `author_allowlist`, OR
@@ -467,11 +470,14 @@ The label path (GitHub `issues` and GitLab `Issue Hook`) routes through
 the same dispatcher sink as the `/command` path, so when a tenant cloud
 board is wired it also **materialises a one-way tracking card** for the
 issue — a read-only mirror linked back to the source issue via
-`source_issue_ref` (idempotent per issue). GitHub/GitLab stay the source
-of truth; iterion only writes back to them (PR + back-link comment). With
-a board *coordinator* running, the card is the unit of work the dispatcher
-executes; without one, the card is a tracking record and the run launches
-directly ([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
+`source_issue_ref`. GitHub/GitLab stay the source of truth; iterion only
+writes back to them (PR + back-link comment). With a board *coordinator*
+running, the card is the unit of work the dispatcher executes — one card
+per claim of the issue's [trigger lane](#issue-trigger-lanes). Without
+one, the card is a tracking record, not a claim: the run launches directly,
+the lane's delivery rows decide every launch, and the tracking card is
+written once per `cmd:issue:<n>` subject label, as for a comment
+([pkg/server/invocation_dispatch.go:dispatchInvocation](../pkg/server/invocation_dispatch.go)).
 
 ### Forgejo / Gitea (`POST /api/webhooks/forgejo/{id}`)
 
@@ -534,7 +540,7 @@ Every row, what ships and what does not yet:
 | **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **the pool ships (U7 part 1); its sandbox waits on #2965** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool). The chart's `runnerPools[].sandbox.enabled` is the flag that would sandbox that pool alone, but with the chart's defaults (`serviceAccount.create`) and under the prod values (`networkPolicy.enabled`) turning it on FAILS the render until #2965 renders the pool's ServiceAccount, Role and standing policy; until then the operator brings them by hand ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools), at the cost it names), and a pool deployed without its sandbox refuses every fork run at the runner (`untrusted_without_sandbox`) |
 | **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
 | **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
-| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first, AND a fundable `review-pr`: every one of its routes reads an `${ITERION_VIBE_*}` dial, so its fork gesture is refused `fork_run_unfunded` whatever keys the team holds ([below](#fork-lane-funding)) until a run's settings arrive frozen at claim (ADR-132) or its dials give way to literal routes — its supervisors have no routing-override cell; its cost goes in its commit |
+| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first, and a team whose keys fund `review-pr`'s literal routes (ADR-169), or the cells over them ([below](#fork-lane-funding)); its cost goes in its commit |
 
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
@@ -795,14 +801,15 @@ each named by the route sites in the refusal:
 | One that names no provider the server can read: a model with no `provider/` prefix, an `auto`, empty or unknown provider step, a sub-bot node (its child bot's routes are not read), a supervisor with no model | no verdict says the team's keys fund it — the runner resolves what it spends. The cost: a `claude_code` route on a bare model the team's Anthropic key would serve is refused too; pinning its provider (`provider: anthropic`, or a routing override) lifts it |
 | Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient. A providers allowlist that admits none of the route's slots leaves it nothing it may spend, refused the same way |
 
-`review-pr` reads EVERY route through an `${ITERION_VIBE_*}` dial — its
-nodes, its supervisors, its rescue route — so a fork gesture of
-`review-pr` is refused `fork_run_unfunded` until a run's settings arrive
-frozen at claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot
-whose routes are literal, or whose nodes the integration's routing
-overrides pin (provider, model and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md)),
-is judged on those literal routes; a supervisor or an authored rescue
-route has no override cell and reads the bot's own text.
+A bot that reads a route through an `${…}` dial is refused
+`fork_run_unfunded` on that route until a run's settings arrive frozen at
+claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot whose routes
+are literal — every route of `review-pr`, its nodes, its supervisors and its
+rescue route, since [ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)
+— or whose routes the integration's routing overrides pin (provider, model
+and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md);
+a supervisor through `bot/supervisor:<name>`, an authored rescue route
+through `bot/<node>#<route>`), is judged on those routes.
 
 **Refused before anything is metered.** The launch gate asks a funding judge
 for every untrusted subject, after its own refusals and BEFORE its first
@@ -1162,6 +1169,11 @@ a delivery whose issue carries a hold label is filtered, not launched.
 
 ## <a name="connector-ingress"></a>A connector ingress: `POST /api/webhooks/c/{id}`
 
+A connector trigger is delivered through an ingress or read by a poller: a
+polled trigger (an RSS feed, a Jira JQL) needs no ingress and no webhook
+configuration — see [event sources](event-sources.md#running-pollers). This
+section is the delivered half.
+
 A webhook with `provider: connector` is a connector package's **ingress**
 ([ADR-168](adr/168-an-event-source-is-a-connector-package.md) §3, §6): the
 vendor is the bound connection's, and the package's `ingress:` block in
@@ -1374,12 +1386,16 @@ across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 | `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
+| `gh\|issue\|` | `(tenant, webhook, project_path, issue_number, label OR "opened")` | the first claim of a [trigger lane](#issue-trigger-lanes) |
+| `gl\|issue\|` | `(tenant, webhook, project_id, issue_iid, label)` | the first claim of a [trigger lane](#issue-trigger-lanes) |
 
 Rows recorded as terminal without ever being claimed — `invalid`, `filtered`,
 and the `launch_error` rows written as their own audit row rather than a
 claimed delivery — get a **random UUID** as their idempotency key, so they never
 collide with the real dedup key
 ([pkg/server/webhooks_common.go:recordTerminalWebhookDelivery](../pkg/server/webhooks_common.go)).
+The one terminal row keyed otherwise is a trigger lane's absorbed delivery,
+keyed on that delivery's own identity ([below](#issue-trigger-lanes)).
 A claimed launch failure with no run keeps the real key and becomes
 `launch_error`. Its saved target allows a bounded periodic sweep or a
 super-admin `POST /api/webhooks/deliveries/{id}/retry` to claim the same row.
@@ -1388,6 +1404,77 @@ A replay that already produced a run never launches again. Intake now answers
 launch continues on a bounded context detached from the connection.
 See [receipts and retry](webhooks/retry.md) for backoff, attempt limits,
 shutdown behavior and terminal refusals.
+
+### Issue trigger lanes
+
+An issue trigger — a label applied to an issue (GitHub `issues` `labeled`,
+GitLab `Issue Hook` label added) or GitHub's zero-touch `opened` — is a
+request a person can make again, so it is not claimed once for good like a
+comment. Each (repository, issue, trigger) is a **lane** whose claims form a
+sequence, decided before anything is metered
+([pkg/server/webhooks_trigger_lane.go](../pkg/server/webhooks_trigger_lane.go)):
+
+- **A redelivery is a duplicate.** An event is known by the forge's own
+  delivery id, which its redeliveries carry again — GitHub's
+  `X-GitHub-Delivery`, GitLab's `webhook-id` / `Idempotency-Key` (GitLab
+  17.4+, documented as kept across retries and *Resend request*, whose
+  bytes it does not promise; `X-Gitlab-Event-UUID` is not an event id) — and
+  by the SHA-256 of its body,
+  which an exact retransmission repeats and a fresh application of the label
+  never does (the issue's `updated_at` moves). A delivery row records the id
+  as `forge_delivery_id`. A claim made for an event answers its redeliveries
+  for as long as it exists, without touching the quota.
+- **A fresh trigger launches once the lane's latest claim has ended**: on the
+  direct lane, its run is terminal (`finished`, `failed`,
+  `failed_resumable`, `cancelled`) or gone, or its launch was exhausted; on
+  the board lane, its card sits in a terminal column (`done`, `blocked`). A
+  claim whose launch failed before any run existed is retried by the next
+  trigger, as a redelivery would.
+- **A fresh trigger while the latest claim still serves is absorbed** — a
+  `duplicate` (direct) or `carded` (board) answer that starts nothing,
+  recorded as a `duplicate` delivery row under its own identity, so its own
+  redelivery stays a duplicate after the claim has ended. A claim serves while
+  its run is not terminal, while its launch is in flight, when its launch is
+  uncertain or was stranded by a crash (a run may exist that no row names),
+  and while its card sits in any non-terminal column. Under
+  `overlap: supersede` a direct lane's fresh trigger replaces the serving run
+  instead, through the launch tail's supersede pass.
+- **The next claim is atomic.** The direct lane's n-th claim (n ≥ 1) is the
+  row under `sha256(<first key>|gen|n)` (the first is the table's key, so rows
+  written before lanes existed are the lanes' first claims); the board lane's
+  next card takes a `native:<uuid>` id derived from the lane and the cards it
+  already holds. Two fresh triggers racing for a free lane collide on that
+  key, and the loser answers as a duplicate.
+
+A lane card carries the subject label `cmd:issue:<n>`, its lane label
+`cmd:lane:<project>#issue:<n>#<trigger>` and the identity of the event it was
+carded for, `cmd:delivery:delivery:<forge id>` (or `cmd:delivery:sha256:<hash>`
+when the forge sends no id), all under the board-local `cmd:`
+namespace the forge label sync preserves. A card carded before lanes existed
+carries only the subject label: it serves every lane of its subject — of its
+own repository when its launch context names one — until it reaches a
+terminal column. So does a tracking card written without a coordinator: a
+deployment that enables a coordinator later finds it serving until an
+operator closes it.
+
+A board lane is named by the project's path, as the card's launch context
+is: a project renamed while one of its cards still serves starts a second
+lane under the new path (the direct lane, keyed by GitLab's project id, does
+not split).
+
+The cards are the board lane's memory of the events it carded. Deleting a
+lane card forgets its event: a redelivery of that event then cards again,
+and deleting a card still serving frees its lane — the operator's manual
+re-arm gesture, not a leak to guard against.
+
+A lane the server cannot read — the delivery store, the run store or the
+board failing to answer — refuses the delivery with `503` and a
+`launch_error` audit row under a random key, before anything is metered, so
+the forge's own retry or a redelivery can try again.
+
+Comment commands are unchanged: a comment (`comment:<id>`, `note:<id>`) is
+its own unique subject, claimed once by its key and, on the board, by its
+`cmd:<subject>` card.
 
 ## The path a delivery takes
 
@@ -1608,8 +1695,9 @@ walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
 400 at write (`not spendable by this lane`), like the `openai_compatible`
 gateway pin above and like its `secret_overrides` twin, which
 requires an org-scoped secret. The team key list an admin picks from
-includes their own user-scoped keys (`GET /api/teams/{id}/api-keys`), so this
-is the refusal that tells them which ones a webhook can actually spend.
+(`GET /api/teams/{id}/api-keys`) offers the team's own keys only, so a
+personal one never appears there; the refusal is what tells an operator that
+a webhook can never spend one.
 
 ### `launch_vars` — pin run vars from the org config
 

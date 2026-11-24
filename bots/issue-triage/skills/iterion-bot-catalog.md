@@ -366,7 +366,7 @@ instead.
   board.
 - **Triggers**: revi-converse, ask, converse
 - **Tags**: code-review, conversational, read-only
-- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `forge_base_url` (string), `pr_url` (string), `publish_mode` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `forge_base_url` (string), `pr_url` (string), `publish_mode` (string), `replier` (string), `thread_anchor_commit` (string), `thread_anchor_line` (string), `thread_anchor_old_line` (string), `thread_anchor_old_path` (string), `thread_anchor_path` (string), `thread_anchor_side` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
 - **Path**: `bots/revi-converse/main.bot`
 
 ### `review-pr` — Revi

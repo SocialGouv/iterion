@@ -241,12 +241,22 @@ export const iterDslPropertiesByKind = {
     "on_exceeded",
     "warn_tokens"
   ],
+  "business_store": [
+    "kind",
+    "namespace",
+    "required"
+  ],
+  "business_stores": [],
   "codemode": [
+    "concurrent_tool_calls",
     "cpu",
+    "defer",
     "memory",
     "mode",
     "result_bytes",
     "script_bytes",
+    "store_bytes",
+    "store_entries",
     "tool_calls",
     "tool_result_bytes",
     "wall"
@@ -545,6 +555,7 @@ export const iterDslPropertiesByKind = {
     "attachments",
     "auto_memory",
     "budget",
+    "business_stores",
     "capabilities",
     "codemode",
     "compaction",

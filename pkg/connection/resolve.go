@@ -59,7 +59,31 @@ type Resolver struct {
 // because every one of them surfaces to an operator as "the node failed"
 // otherwise.
 func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
-	return r.resolve(ctx, actionID, alias, CapAction)
+	return r.resolve(ctx, actionID, connRef{alias: alias}, CapAction)
+}
+
+// ResolveActionByConnection is the same resolution for a caller that holds
+// the connection's id rather than an alias a workflow wrote: a poller, whose
+// record names the connection it reads (ADR-168 §7). Polling spends the
+// connection's credential, so it asks the `action` grant like an action node,
+// through the one path every other check runs on. The connection must be one
+// of the operation's connector: an id is not a name a package can widen.
+func (r *Resolver) ResolveActionByConnection(ctx context.Context, actionID, connectionID string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, connRef{id: connectionID}, CapAction)
+}
+
+// connRef names the connection a resolution uses: by alias, as a workflow
+// writes it, or by id, as a record that already chose it holds it.
+type connRef struct {
+	alias, id string
+}
+
+// label is how a refusal names the connection.
+func (c connRef) label() string {
+	if c.id != "" {
+		return c.id
+	}
+	return c.alias
 }
 
 // ResolveAgent is the MCP facade's half of the same chokepoint (#2758): the
@@ -69,11 +93,12 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 // code path so the facade cannot drift from the node on anything but the
 // grant it asks for.
 func (r *Resolver) ResolveAgent(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
-	return r.resolve(ctx, actionID, alias, CapAgent)
+	return r.resolve(ctx, actionID, connRef{alias: alias}, CapAgent)
 }
 
 // resolve is the ONE resolution path; `want` is the use being authorised.
-func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Capability) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+func (r *Resolver) resolve(ctx context.Context, actionID string, ref connRef, want Capability) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	alias := ref.label()
 	var zero spec.Operation
 	if r == nil || r.Catalog == nil || r.Store == nil {
 		return nil, zero, exec.Credential{}, "", errors.New("connection: resolver is not wired (catalog or store missing)")
@@ -110,13 +135,9 @@ func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Cap
 		return nil, zero, exec.Credential{}, "", &TrustError{Action: op.ID, Alias: alias, Effect: op.Effect, Trust: r.Trust}
 	}
 
-	conn, err := r.Store.ByAlias(ctx, r.TenantID, connectorID, alias)
+	conn, err := r.lookup(ctx, connectorID, ref)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, zero, exec.Credential{}, "", fmt.Errorf("no %q connection named %q for this tenant%s",
-				connectorID, alias, r.suggestAlias(ctx, connectorID))
-		}
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("resolve connection %q: %w", alias, err)
+		return nil, zero, exec.Credential{}, "", err
 	}
 	if err := r.checkUsable(conn, pkg, tier, op, want); err != nil {
 		return nil, zero, exec.Credential{}, "", err
@@ -172,6 +193,32 @@ func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Cap
 			"connection %q names no instance URL, so there is nothing to say where its credential may be sent; re-create it with --base-url", conn.Alias)
 	}
 	return pkg, op, cred, conn.BaseURL, nil
+}
+
+// lookup reads the connection a resolution names, in the resolver's tenant.
+func (r *Resolver) lookup(ctx context.Context, connectorID string, ref connRef) (Connection, error) {
+	if ref.id != "" {
+		conn, err := r.Store.Get(ctx, r.TenantID, ref.id)
+		if errors.Is(err, ErrNotFound) {
+			return Connection{}, fmt.Errorf("no connection %q for this tenant", ref.id)
+		}
+		if err != nil {
+			return Connection{}, fmt.Errorf("resolve connection %q: %w", ref.id, err)
+		}
+		if conn.Connector != connectorID {
+			return Connection{}, fmt.Errorf("connection %q is a %q connection, and the operation is %q's", ref.id, conn.Connector, connectorID)
+		}
+		return conn, nil
+	}
+	conn, err := r.Store.ByAlias(ctx, r.TenantID, connectorID, ref.alias)
+	if errors.Is(err, ErrNotFound) {
+		return Connection{}, fmt.Errorf("no %q connection named %q for this tenant%s",
+			connectorID, ref.alias, r.suggestAlias(ctx, connectorID))
+	}
+	if err != nil {
+		return Connection{}, fmt.Errorf("resolve connection %q: %w", ref.alias, err)
+	}
+	return conn, nil
 }
 
 // checkUsable refuses a connection that must not serve this call.

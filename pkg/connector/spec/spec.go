@@ -68,6 +68,18 @@ type Connector struct {
 	// contain a qualified operation.
 	Maturity Maturity `yaml:"maturity" json:"maturity"`
 
+	// Category is the catalog's grouping (the pills the studio's source
+	// view filters by). Closed like Maturity, so a typo cannot silently
+	// sort a connector under nothing.
+	Category Category `yaml:"category,omitempty" json:"category,omitempty"`
+	// BrandColor is the package's accent as "#rrggbb" — the monogram's
+	// background on the entries that ship no icon file.
+	BrandColor string `yaml:"brand_color,omitempty" json:"brand_color,omitempty"`
+	// Icon is the path, within the package directory, of an SVG mark. It
+	// is read, sanitized and size-capped at load (icon.go): the bytes a
+	// route serves are the bytes sanitized there, never the file's.
+	Icon string `yaml:"icon,omitempty" json:"icon,omitempty"`
+
 	// Outcome describes an API that signals failure inside a successful HTTP
 	// status. It sits here rather than on each operation because an API that
 	// does this does it everywhere — Slack's entire Web API answers 200 with
@@ -146,6 +158,11 @@ const (
 	// secret, an iterion-managed or operator-registered app) or public
 	// (PKCE). The connection holds the tokens; the package holds the URLs.
 	AuthOAuth2 AuthKind = "oauth2"
+	// AuthNone presents nothing: a public resource — a feed — that an
+	// operator still connects to, so its origin is pinned and its grants are
+	// stated like any connection's. A connection holding it carries no
+	// credential, and a request under it sends none.
+	AuthNone AuthKind = "none"
 )
 
 // AuthScheme is one way to authenticate against the API. A package may
@@ -229,3 +246,25 @@ func (m Maturity) Known() bool {
 	}
 	return false
 }
+
+// Category is the catalog's grouping for a connector: the pills the
+// studio's source view filters by. An OPEN vocabulary (ADR-168 §2): the
+// declared values are the pills this build labels, an unknown value loads
+// and renders raw — a display field never refuses the package that ships
+// it — and the empty value reads as uncategorized.
+type Category string
+
+const (
+	// CategorySourceControl is forge hosting: repositories, reviews, pushes.
+	CategorySourceControl Category = "source_control"
+	// CategoryChat is chat and messaging platforms.
+	CategoryChat Category = "chat"
+	// CategoryIssueTracker is issue and project tracking.
+	CategoryIssueTracker Category = "issue_tracker"
+	// CategoryIncident is incident management and on-call paging.
+	CategoryIncident Category = "incident"
+	// CategoryMonitoring is monitoring, alerting and observability.
+	CategoryMonitoring Category = "monitoring"
+	// CategoryFeeds is syndication feeds: RSS and Atom.
+	CategoryFeeds Category = "feeds"
+)

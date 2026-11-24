@@ -430,7 +430,7 @@ func TestCloudTiers_AListingFailureIsTheListingsError(t *testing.T) {
 	}
 	// The healthy store lists through the same composition.
 	ids, err = connection.NewLayeredCatalog(connection.CloudCatalogs(store, "team-a")...).Connectors()
-	if err != nil || strings.Join(ids, ",") != "forgejo,probe" {
+	if err != nil || strings.Join(ids, ",") != "alertmanager,forgejo,jira,linear,mattermost,probe,rss,sentry,slack" {
 		t.Fatalf("healthy listing = %v, %v", ids, err)
 	}
 }

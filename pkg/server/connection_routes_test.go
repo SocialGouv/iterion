@@ -3,16 +3,20 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The tenant-facing connector-connection CRUD (#2759). The properties pinned
@@ -200,7 +204,10 @@ func TestConnectionRoutesRefuseWhatNoCallCouldUse(t *testing.T) {
 		{"no connector", `{"token":"x"}`, "connector", http.StatusBadRequest},
 		{"unknown connector", `{"connector":"nope","token":"x"}`, "nope", http.StatusBadRequest},
 		{"several schemes and none named", `{"connector":"forgejo","base_url":"https://git.example.com","token":"x"}`, "scheme_id", http.StatusBadRequest},
-		{"basic auth, which this route cannot seal", `{"connector":"forgejo","scheme_id":"basic","base_url":"https://git.example.com","token":"x"}`, "token only", http.StatusBadRequest},
+		{"a token for a basic scheme", `{"connector":"forgejo","scheme_id":"basic","base_url":"https://git.example.com","token":"x"}`, "not a token", http.StatusBadRequest},
+		{"a basic scheme without its username", `{"connector":"forgejo","scheme_id":"basic","base_url":"https://git.example.com","password":"pw"}`, "needs a username", http.StatusBadRequest},
+		{"a basic password that cannot authenticate", `{"connector":"forgejo","scheme_id":"basic","base_url":"https://git.example.com","username":"jo","password":"bad\npw"}`, "newline", http.StatusBadRequest},
+		{"a username for a token scheme", `{"connector":"forgejo","scheme_id":"token","base_url":"https://git.example.com","token":"x","username":"jo"}`, "takes a token", http.StatusBadRequest},
 		{"a credential that cannot authenticate", `{"connector":"forgejo","scheme_id":"token","base_url":"https://git.example.com","token":"bad\ntoken"}`, "newline", http.StatusBadRequest},
 		{"an unknown capability", `{"connector":"forgejo","scheme_id":"token","base_url":"https://git.example.com","token":"x","capabilities":["root"]}`, "unknown capability", http.StatusBadRequest},
 		{"a duplicate alias", `{"connector":"forgejo","scheme_id":"token","base_url":"https://git.example.com","token":"x"}`, "already exists", http.StatusConflict},
@@ -282,5 +289,189 @@ func TestConnectionRoutesRequireMembership(t *testing.T) {
 	s.handleListConnections(w, connReq(connUserCtx("stranger"), "GET", "/api/teams/t1/connections", "", "t1", ""))
 	if w.Code != http.StatusForbidden {
 		t.Errorf("a stranger listing: code=%d, want 403", w.Code)
+	}
+}
+
+// A connection's instance URL is pinned trimmed of its trailing slash — the
+// executor joins each operation's path after it — except for a package that
+// sends a request to the URL itself, where the slash is the operator's:
+// WordPress serves its feed at `/feed/`, and `/feed` answers a redirect the
+// guarded client does not follow.
+func TestAResourceURLKeepsItsTrailingSlashWhenPinned(t *testing.T) {
+	ordinary := &spec.Package{Connector: spec.Connector{ID: "forge"}}
+	feed := &spec.Package{Connector: spec.Connector{ID: "rss"}, Ops: []spec.OpsFile{{Operations: []spec.Operation{
+		{ID: "rss.feed.read", HTTP: spec.HTTPBinding{Method: "GET", AtBaseURL: true}},
+	}}}}
+	for _, tc := range []struct {
+		name string
+		pkg  *spec.Package
+		in   string
+		want string
+	}{
+		{"an API origin", ordinary, " https://git.example.com/ ", "https://git.example.com"},
+		{"a feed URL", feed, " https://blog.example.org/feed/ ", "https://blog.example.org/feed/"},
+		{"a feed URL with a query", feed, "https://example.org/feed.xml?lang=fr", "https://example.org/feed.xml?lang=fr"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveConnectionBaseURL(tc.pkg, tc.in)
+			if err != nil || got != tc.want {
+				t.Fatalf("resolveConnectionBaseURL(%q) = (%q, %v), want %q", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// An HTTP basic connection is created through the route like a token one,
+// and what it seals is what the resolver hands the executor: the username
+// and password the operator typed, never a token-shaped blob.
+func TestABasicConnectionSealsItsUsernameAndPassword(t *testing.T) {
+	s := newConnectionTestServer(t)
+	ctx := connUserCtx("admin1")
+	w := httptest.NewRecorder()
+	body := `{"connector":"forgejo","alias":"basic","base_url":"https://git.example.com","scheme_id":"basic","username":"jo","password":"probe-pw","capabilities":["action"]}`
+	s.handleCreateConnection(w, connReq(ctx, "POST", "/api/teams/t1/connections", body, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "probe-pw") {
+		t.Fatalf("the response carries the password: %s", w.Body.String())
+	}
+	r := &connection.Resolver{Catalog: s.connectorCatalog, Store: s.connectionStore, Sealer: s.sealer,
+		TenantID: "t1", Trust: connection.TrustOfRun(store.RunTrustDefault)}
+	_, _, cred, _, err := r.ResolveAction(context.Background(), "forgejo.package.get_package", "basic")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cred.SchemeID != "basic" || cred.Username != "jo" || cred.Password != "probe-pw" || cred.Value != "" {
+		t.Fatalf("resolved credential = scheme %q user %q (password set %v, token set %v), want basic jo/probe-pw",
+			cred.SchemeID, cred.Username, cred.Password != "", cred.Value != "")
+	}
+
+	// A rotation names both halves; a token is not a basic credential.
+	for _, tc := range []struct{ body, want string }{
+		{`{"password":"pw2"}`, "together"},
+		{`{"token":"x"}`, "together"},
+		{`{"username":"jo","password":"pw2","token":"x"}`, "not a token"},
+	} {
+		var created connectionDTO
+		_ = json.Unmarshal(w.Body.Bytes(), &created)
+		pw := httptest.NewRecorder()
+		s.handlePatchConnection(pw, connReq(ctx, "PATCH", "/api/teams/t1/connections/"+created.ID, tc.body, "t1", created.ID))
+		if pw.Code != http.StatusBadRequest || !strings.Contains(pw.Body.String(), tc.want) {
+			t.Errorf("patch %s: code=%d body=%s, want a 400 naming %q", tc.body, pw.Code, pw.Body.String(), tc.want)
+		}
+	}
+}
+
+// A scheme of kind none presents nothing: its connection seals the empty
+// credential, and any value sent for it is refused rather than sealed and
+// never sent.
+func TestASchemeThatPresentsNothingSealsNothing(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sealConnectionCredential(sealer, "conn_1", spec.AuthNone, "", "", ""); err != nil {
+		t.Fatalf("an empty credential for kind none = %v", err)
+	}
+	for name, v := range map[string][3]string{
+		"a token": {"x", "", ""}, "a username": {"", "jo", ""}, "a password": {"", "", "pw"},
+	} {
+		if _, err := sealConnectionCredential(sealer, "conn_1", spec.AuthNone, v[0], v[1], v[2]); err == nil || !strings.Contains(err.Error(), "presents no credential") {
+			t.Errorf("%s for kind none = %v, want a refusal", name, err)
+		}
+	}
+}
+
+// A credential never rides the URL — it would be stored in the clear on the
+// record every member reads — a basic password may hold spaces, a username
+// no colon, and a sealer that fails is the server's, not the request's.
+func TestAConnectionCredentialGoesWhereItsSchemeSays(t *testing.T) {
+	s := newConnectionTestServer(t)
+	ctx := connUserCtx("admin1")
+	create := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.handleCreateConnection(w, connReq(ctx, "POST", "/api/teams/t1/connections", body, "t1", ""))
+		return w
+	}
+	if w := create(`{"connector":"forgejo","alias":"u","base_url":"https://alice:hunter2@git.example.com","scheme_id":"token","token":"x"}`); w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "hunter2") {
+		t.Fatalf("a URL carrying a user and password = %d %s, want 400 that does not echo it", w.Code, w.Body.String())
+	}
+	if w := create(`{"connector":"forgejo","alias":"b1","base_url":"https://git.example.com","scheme_id":"basic","username":" jo ","password":"correct horse battery staple"}`); w.Code != http.StatusOK {
+		t.Fatalf("a password with spaces = %d %s, want it accepted", w.Code, w.Body.String())
+	}
+	if w := create(`{"connector":"forgejo","alias":"b2","base_url":"https://git.example.com","scheme_id":"basic","username":"jo:x","password":"pw"}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "colon") {
+		t.Fatalf("a username holding a colon = %d %s, want 400 naming it", w.Code, w.Body.String())
+	}
+	s.sealer = failingSealer{}
+	if w := create(`{"connector":"forgejo","alias":"t","base_url":"https://git.example.com","scheme_id":"token","token":"x"}`); w.Code != http.StatusInternalServerError {
+		t.Fatalf("a sealer failure = %d %s, want 500", w.Code, w.Body.String())
+	}
+}
+
+// failingSealer is a sealer whose backend is unreachable.
+type failingSealer struct{ secrets.Sealer }
+
+func (failingSealer) Seal([]byte, []byte) ([]byte, error) { return nil, errors.New("kms unreachable") }
+
+// A connection says the kind of the credential it holds as a token — the
+// kind its placement pinned from the package's scheme at creation — on the
+// create, the read and the listing, so a rotation form picks its fields
+// (none, a username and a password, a token) without parsing Placement.
+func TestAConnectionSaysItsSchemeKind(t *testing.T) {
+	s := newConnectionTestServer(t)
+	ctx := connUserCtx("admin1")
+	for _, tc := range []struct {
+		alias, body string
+		want        spec.AuthKind
+	}{
+		{"api-key", `{"connector":"forgejo","alias":"api-key","base_url":"https://git.example.com","scheme_id":"token","token":"x"}`, spec.AuthAPIKey},
+		{"basic", `{"connector":"forgejo","alias":"basic","base_url":"https://git.example.com","scheme_id":"basic","username":"jo","password":"pw"}`, spec.AuthBasic},
+		{"bearer", `{"connector":"jira","alias":"bearer","base_url":"https://acme.atlassian.net","scheme_id":"bearer","token":"x"}`, spec.AuthBearer},
+		{"none", `{"connector":"rss","alias":"none","base_url":"https://example.org/feed/","scheme_id":"none"}`, spec.AuthNone},
+	} {
+		w := httptest.NewRecorder()
+		s.handleCreateConnection(w, connReq(ctx, "POST", "/api/teams/t1/connections", tc.body, "t1", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: create: code=%d body=%s", tc.alias, w.Code, w.Body.String())
+		}
+		var created connectionDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+			t.Fatalf("%s: decode: %v", tc.alias, err)
+		}
+		if created.SchemeKind != string(tc.want) {
+			t.Errorf("%s: created scheme_kind = %q, want %q (placement %q)", tc.alias, created.SchemeKind, tc.want, created.Placement)
+		}
+		g := httptest.NewRecorder()
+		s.handleGetConnection(g, connReq(connUserCtx("viewer1"), "GET", "/api/teams/t1/connections/"+created.ID, "", "t1", created.ID))
+		var read map[string]any
+		if err := json.Unmarshal(g.Body.Bytes(), &read); err != nil || g.Code != http.StatusOK {
+			t.Fatalf("%s: get: code=%d body=%s (%v)", tc.alias, g.Code, g.Body.String(), err)
+		}
+		if read["scheme_kind"] != string(tc.want) {
+			t.Errorf("%s: read scheme_kind = %v, want %q", tc.alias, read["scheme_kind"], tc.want)
+		}
+	}
+	l := httptest.NewRecorder()
+	s.handleListConnections(l, connReq(connUserCtx("viewer1"), "GET", "/api/teams/t1/connections", "", "t1", ""))
+	var listed struct {
+		Connections []map[string]any `json:"connections"`
+	}
+	if err := json.Unmarshal(l.Body.Bytes(), &listed); err != nil || l.Code != http.StatusOK {
+		t.Fatalf("list: code=%d body=%s (%v)", l.Code, l.Body.String(), err)
+	}
+	kinds := map[any]any{}
+	for _, c := range listed.Connections {
+		kinds[c["alias"]] = c["scheme_kind"]
+	}
+	if want := map[any]any{"api-key": "api_key", "basic": "basic", "bearer": "bearer", "none": "none"}; !reflect.DeepEqual(kinds, want) {
+		t.Errorf("listed scheme kinds = %v, want %v", kinds, want)
+	}
+	// oauth2 is a kind no shipped package declares: the projection carries
+	// it like every other.
+	for _, kind := range []spec.AuthKind{spec.AuthAPIKey, spec.AuthBearer, spec.AuthBasic, spec.AuthOAuth2, spec.AuthNone} {
+		if got := connectionDTOOf(connection.Connection{AuthPlacement: connection.AuthPlacement{Kind: string(kind)}}).SchemeKind; got != string(kind) {
+			t.Errorf("a %s placement projects scheme_kind %q", kind, got)
+		}
 	}
 }

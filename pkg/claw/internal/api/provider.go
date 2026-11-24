@@ -177,6 +177,15 @@ type APIClient interface {
 	StreamResponse(ctx context.Context, req CreateMessageRequest) (<-chan StreamEvent, error)
 }
 
+// EffortWire is an optional client capability: the reasoning effort a
+// request for model carries on the wire when CreateMessageRequest names
+// level — "" when the client sends none. A client answers through the rule
+// its own request builder applies, so a report of it and the request agree.
+// A client without it sends the level as named.
+type EffortWire interface {
+	WireReasoningEffort(model, level string) string
+}
+
 // GeneratedImage is an image returned by a provider's separate image endpoint.
 // Data is bounded by the provider and must be validated before persistence.
 type GeneratedImage struct {

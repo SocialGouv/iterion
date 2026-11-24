@@ -19,8 +19,10 @@
 //   - RLIMIT_AS cannot express a script's heap budget. A Go child dies at
 //     startup ("runtime: out of memory") below roughly 2 GiB of address space,
 //     because the runtime reserves far more virtual memory than it commits.
-//     RLIMIT_DATA is the knob that works: a child starts under 64 MiB and a
-//     400 MiB allocation inside the VM dies.
+//     RLIMIT_DATA is the knob that works, set as ROOM above the data segment
+//     the child already holds (the shipped binary holds ~86 MiB before the
+//     interpreter exists): 64 MiB of room runs real work, and a 400 MiB
+//     allocation inside the VM dies.
 //   - RLIMIT_CPU is the only thing that stops a native regex bomb. goja's
 //     own interrupt does not: measured here, a backreference regex ran past
 //     60 s of wall clock with an interrupt posted at 1 s, while RLIMIT_CPU=2s
@@ -33,7 +35,10 @@ package scripthost
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/scripthost/toolindex"
 )
 
 // Subcommand is the hidden iterion sub-command that IS the child. It follows
@@ -121,8 +126,11 @@ type Limits struct {
 	// seconds and rounding down would silently tighten an operator's choice.
 	CPU time.Duration `json:"cpu_ns"`
 
-	// Memory bounds the child's data segment (RLIMIT_DATA), which is where a
-	// Go heap grows. NOT RLIMIT_AS: see the package comment.
+	// Memory is how far the script may GROW the child's data segment
+	// (RLIMIT_DATA), which is where a Go heap grows: the kernel's limit is
+	// the segment the child holds when it confines itself plus this. Room,
+	// not a total, so the same number means the same thing whatever the
+	// binary weighs (#3383). NOT RLIMIT_AS: see the package comment.
 	Memory int64 `json:"memory_bytes"`
 
 	// ScriptBytes caps the source. Enforced parent-side before the spawn.
@@ -146,6 +154,12 @@ type Limits struct {
 	// what an operator meets as latency and spend long before it is a refusal.
 	ToolCalls int64 `json:"tool_calls"`
 
+	// ConcurrentToolCalls caps the number of tools executing in a script batch.
+	ConcurrentToolCalls int64 `json:"concurrent_tool_calls,omitempty"`
+	// StoreEntries and StoreBytes bound the durable run bank.
+	StoreEntries int64 `json:"store_entries,omitempty"`
+	StoreBytes   int64 `json:"store_bytes,omitempty"`
+
 	// ToolResultBytes caps ONE tool result handed back to a script, cut on a
 	// rune boundary and flagged as cut.
 	//
@@ -157,9 +171,9 @@ type Limits struct {
 }
 
 // DefaultLimits is what a script runs under when nobody chose. The memory
-// floor is deliberate: 64 MiB of RLIMIT_DATA was measured to start a Go child
-// and to kill a 400 MiB allocation, so the default is not a guess about what
-// fits — it is above the floor that was shown to work.
+// floor is deliberate: 64 MiB of room was measured to run real work on the
+// shipped child and to kill a 400 MiB allocation, so the default is not a
+// guess about what fits — it is above the floor that was shown to work.
 func DefaultLimits() Limits {
 	return Limits{
 		Wall:        30 * time.Second,
@@ -170,9 +184,34 @@ func DefaultLimits() Limits {
 		// Sixty-four calls is what a loop over a page of results costs, and
 		// well under where the per-dispatch hook and policy cost becomes the
 		// thing an operator notices.
-		ToolCalls:       64,
-		ToolResultBytes: 64 << 10,
+		ToolCalls:           64,
+		ConcurrentToolCalls: 1,
+		StoreEntries:        DefaultStoreEntries,
+		StoreBytes:          DefaultStoreBytes,
+		ToolResultBytes:     64 << 10,
 	}
+}
+
+// MemoryFloor is the smallest memory ROOM a child RELIABLY works under:
+// 64 MiB above its own data segment, a quarter of the default. Measured, not
+// guessed — the records that name the number:
+//
+//   - #3383: on the shipped binary, 10 000 string pushes complete at 64 MiB
+//     of room (TestTheMemoryFloorIsRoomForTheScript), and a memory bomb there
+//     dies with the runtime's own "out of memory", the typed memory refusal.
+//     The same script died 5 runs out of 5 when the 64 MiB was a TOTAL: the
+//     child already held ~86 MiB, so the bound was spent before it started;
+//   - #3290: a memory BOMB at a 64 MiB total died of SIGSEGV on the shipped
+//     image — the same spent bound, seen from the bomb's side.
+//
+// Below the floor a child may still start (a trivial 1+1 completed at
+// 1 MiB in the same session's probe), but real work cannot: bounds below
+// the floor are raised to it by [Limits.Clamp] and reported through OnClamp,
+// per philosophy 1 — warn rather than silently replace. A bound of zero
+// stays "nobody chose" and takes the default; the floor only raises values
+// an author actually wrote.
+func MemoryFloor() Limits {
+	return Limits{Memory: 64 << 20}
 }
 
 // Ceiling is the platform bound a tenant cannot raise. The precedent is
@@ -180,13 +219,16 @@ func DefaultLimits() Limits {
 // a value only the deployment may set.
 func Ceiling() Limits {
 	return Limits{
-		Wall:            10 * time.Minute,
-		CPU:             5 * time.Minute,
-		Memory:          2 << 30,
-		ScriptBytes:     4 << 20,
-		ResultBytes:     8 << 20,
-		ToolCalls:       4096,
-		ToolResultBytes: 1 << 20,
+		Wall:                10 * time.Minute,
+		CPU:                 5 * time.Minute,
+		Memory:              2 << 30,
+		ScriptBytes:         4 << 20,
+		ResultBytes:         8 << 20,
+		ToolCalls:           4096,
+		ConcurrentToolCalls: MaxParallelBatch,
+		StoreEntries:        MaxStoreEntries,
+		StoreBytes:          MaxStoreBytes,
+		ToolResultBytes:     1 << 20,
 	}
 }
 
@@ -218,16 +260,39 @@ func (l Limits) Clamp() (Limits, bool) {
 		}
 		return v
 	}
+	// Memory ALSO has a FLOOR (#3290): a bound below the measured minimum a
+	// child works under cannot do real work — every program dies of the
+	// typed memory refusal at once — so Clamp raises it to the floor and
+	// REPORTS the raise (philosophy 1: warn rather than silently replace;
+	// the OnClamp seam is the report). Zero stays "nobody chose": the floor
+	// only raises values an author actually wrote.
+	clampMem := func(v int64) int64 {
+		floor := MemoryFloor().Memory
+		switch {
+		case v <= 0:
+			return def.Memory
+		case v < floor:
+			clamped = true
+			return floor
+		case v > ceil.Memory:
+			clamped = true
+			return ceil.Memory
+		}
+		return v
+	}
 
 	return Limits{
 		Wall:        clampDur(l.Wall, def.Wall, ceil.Wall),
 		CPU:         clampDur(l.CPU, def.CPU, ceil.CPU),
-		Memory:      clampInt(l.Memory, def.Memory, ceil.Memory),
+		Memory:      clampMem(l.Memory),
 		ScriptBytes: clampInt(l.ScriptBytes, def.ScriptBytes, ceil.ScriptBytes),
 		ResultBytes: clampInt(l.ResultBytes, def.ResultBytes, ceil.ResultBytes),
 
-		ToolCalls:       clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
-		ToolResultBytes: clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
+		ToolCalls:           clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
+		ConcurrentToolCalls: clampInt(l.ConcurrentToolCalls, def.ConcurrentToolCalls, ceil.ConcurrentToolCalls),
+		StoreEntries:        clampInt(l.StoreEntries, def.StoreEntries, ceil.StoreEntries),
+		StoreBytes:          clampInt(l.StoreBytes, def.StoreBytes, ceil.StoreBytes),
+		ToolResultBytes:     clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
 	}, clamped
 }
 
@@ -250,20 +315,50 @@ func (l Limits) CPUSeconds() uint64 {
 // a stricter bound is the operator's choice and tightening is always safe.
 type Applied struct {
 	// LandlockABI is the ruleset's ABI version, or 0 where the kernel offers
-	// no Landlock — in which case there is no filesystem and no socket bound.
+	// no Landlock — in which case there is no filesystem bound.
 	LandlockABI int `json:"landlock_abi"`
+
+	// SocketsDenied says the child cannot create a socket of any family — the
+	// seccomp filter of socketdeny_linux.go, installed on every thread. It
+	// does not depend on Landlock: it holds where the ABI is 0 as well.
+	SocketsDenied bool `json:"sockets_denied"`
 
 	// AllThreads says the per-thread bounds (no_new_privs and the Landlock
 	// domain) were applied to every OS thread of the process, which is the
 	// only form in which they bound the CHILD rather than one goroutine's
 	// carrier. False means a cgo-linked binary refused the all-threads path:
-	// the filesystem, socket and exec bounds then hold on one thread only,
-	// and that is not what codemode promises.
+	// the filesystem and exec bounds then hold on one thread only, and that is
+	// not what codemode promises. (The socket filter is synchronised by the
+	// kernel itself and holds on every thread either way.)
 	AllThreads bool `json:"all_threads"`
 
 	// MemoryBytes and CPUSeconds are the values the kernel accepted.
+	// MemoryBytes is the RLIMIT_DATA itself: MemoryBaseBytes plus the
+	// script's room (Limits.Memory), clamped by any stricter limit the
+	// environment already set.
 	MemoryBytes uint64 `json:"memory_bytes"`
 	CPUSeconds  uint64 `json:"cpu_seconds"`
+
+	// MemoryBaseBytes is the data segment the child held when it confined
+	// itself — the binary's own footprint, before the interpreter exists. The
+	// memory bound is room ABOVE it, so a reader comparing MemoryBytes with
+	// the bound it asked for needs this number to see the two agree.
+	MemoryBaseBytes uint64 `json:"memory_base_bytes"`
+}
+
+// growthBound is the RLIMIT_DATA that leaves a script memory bytes of room
+// above the base the process already holds. A memory of zero or less is
+// "nobody chose" and stays 0, which setBound reads as no bound; a sum past
+// the uint64 range saturates instead of wrapping to a limit smaller than the
+// base, which would kill the child on its next allocation.
+func growthBound(base uint64, memory int64) uint64 {
+	if memory <= 0 {
+		return 0
+	}
+	if uint64(memory) > math.MaxUint64-base {
+		return math.MaxUint64
+	}
+	return base + uint64(memory)
 }
 
 // Request is the single JSON document the parent writes to the child's stdin.
@@ -282,7 +377,9 @@ type Request struct {
 	Seed string `json:"seed,omitempty"`
 
 	// AllowWithoutLandlock lets a script run on a kernel that offers no
-	// Landlock — no filesystem bound and no socket bound. It travels HERE and
+	// Landlock — no filesystem bound; the socket wall (creating one, or
+	// borrowing one through ptrace, process_vm_* or pidfd_getfd) is seccomp
+	// and holds either way. It travels HERE and
 	// not in the environment because the child's environment is deliberately
 	// empty, so an env-var opt-in could never reach it. This is the greppable
 	// escape hatch philosophy 1 requires of a load-bearing limit.
@@ -306,11 +403,20 @@ type Request struct {
 	// child's environment is empty by construction.
 	ToolChannel bool `json:"tool_channel,omitempty"`
 
-	// Proto is the tool-channel protocol version, meaningful only with
-	// ToolChannel. A child that does not know the number refuses rather than
-	// running a script whose capability it cannot serve: see [Proto] for the
-	// half of the handshake this cannot cover.
+	// Proto is the protocol version, refused by the child on a mismatch only
+	// with ToolChannel: a child that does not know the number refuses rather
+	// than running a script whose capability it cannot serve. See [Proto]
+	// for the half of the handshake this cannot cover. Without the channel
+	// it still tells the child what the parent reads on stdout: from 6, an
+	// early confinement document before the verdict.
 	Proto int `json:"proto,omitempty"`
+
+	// Catalog is what `call.describe` and `call.search` answer from (CM-3),
+	// bounded by the parent with [toolindex.Bound]; CatalogOmitted is how many
+	// callable tools that bound left out, which the child cannot count
+	// itself.
+	Catalog        []toolindex.Tool `json:"catalog,omitempty"`
+	CatalogOmitted int              `json:"catalog_omitted,omitempty"`
 }
 
 // Response is the single JSON document the child writes to its stdout. Exactly
@@ -332,6 +438,14 @@ type Response struct {
 	// bounds covered the process or one thread reads it here; it is absent
 	// only when no child ran.
 	Confinement *Applied `json:"confinement,omitempty"`
+
+	// Calls is the PARENT's account of the program's tool channel, filled by
+	// [Host.Run] after the child is gone and never decoded from the child's
+	// document: the child is what the call budget bounds, so a count it wrote
+	// would be a count it chose. `json:"-"` is what keeps the field off the
+	// wire, which is also why it moves no [Proto] — the document a child
+	// writes is unchanged.
+	Calls CallStats `json:"-"`
 }
 
 // Refuse builds a refusal response.

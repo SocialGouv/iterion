@@ -336,6 +336,7 @@ func TestTheSchemaReaskDropsCodemodeWithTheRestOfTheTools(t *testing.T) {
 		UserPrompt:             "go",
 		OutputSchema:           json.RawMessage(`{"type":"object"}`),
 		Codemode:               true,
+		CodemodeDefer:          true,
 		HasTools:               true,
 		AllowedTools:           []string{"Bash"},
 		ResumeConversation:     []byte(`[{"role":"user","content":[{"type":"text","text":"hi"}]}]`),
@@ -351,6 +352,9 @@ func TestTheSchemaReaskDropsCodemodeWithTheRestOfTheTools(t *testing.T) {
 	}
 	if r.task.Codemode {
 		t.Error("the re-ask kept codemode: the turn is planned tool-less, and a program composing tool calls is the one thing it must not have")
+	}
+	if r.task.CodemodeDefer {
+		t.Error("the re-ask kept the codemode deferral: it describes a catalogue split no loop of this tool-less turn performs")
 	}
 
 	// And on the wire: the planned task must reach the model with no

@@ -10,6 +10,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -41,6 +42,28 @@ import (
 // file branch, whose ask resolves them — which is the swap this window
 // exists to catch.
 func AnswerBindSourceCheck(c BindSourceCheck) error {
+	if c.Identity != nil {
+		return fmt.Errorf("identity-bearing bind source %s requires an operation context", c.Path)
+	}
+	return AnswerBindSourceCheckContext(context.Background(), c)
+}
+
+// AnswerBindSourceCheckContext preserves caller identity and cancellation when
+// validating a retained source. Its strict branch never chmods a replacement.
+func AnswerBindSourceCheckContext(ctx context.Context, c BindSourceCheck) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.Identity != nil {
+		if c.Path != c.Identity.HostPath() {
+			return fmt.Errorf("bind source %s differs from its retained identity", c.Path)
+		}
+		if err := c.Identity.ValidateHostPath(ctx); err != nil {
+			return fmt.Errorf("bind source %s: %w", c.Path, err)
+		}
+		return ctx.Err()
+	}
+
 	if c.MustExist {
 		if err := safepath.RealBindSource(c.Root, c.Path); err != nil {
 			return fmt.Errorf("the bind source %s is not the path the plan verified under %s (%v) — swapped between plan and creation", c.Path, c.Root, err)

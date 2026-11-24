@@ -74,7 +74,11 @@ const (
 	FailureUsageLimitBlocked     FailureCode = "USAGE_LIMIT_BLOCKED"
 	FailureContextLengthExceeded FailureCode = "CONTEXT_LENGTH_EXCEEDED"
 	FailureToolFailedTransient   FailureCode = "TOOL_FAILED_TRANSIENT"
-	FailureToolFailedPermanent   FailureCode = "TOOL_FAILED_PERMANENT"
+	// FailureToolFailedPermanent: a tool's failure that re-running it cannot
+	// change — a host capability the node does not hold, an output a strict
+	// schema refuses, or a tool node's command that failed the same way
+	// several executions in a row (runtime.IdenticalToolFailure).
+	FailureToolFailedPermanent FailureCode = "TOOL_FAILED_PERMANENT"
 	// FailureNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
 	// reaching the upstream model API. Distinct from
 	// FailureExecutionFailed so the recovery dispatcher can apply a
@@ -426,6 +430,18 @@ func (s RunStatus) CarriesPausePointer() bool {
 	return s.IsPaused() || s == RunStatusQueued
 }
 
+// CarriesResumePauseHandoff reports whether a transition into s can retain
+// the durable continuation of a consumed pause.
+func (s RunStatus) CarriesResumePauseHandoff() bool {
+	return s == RunStatusRunning || s.CanReclaimResumePauseHandoff()
+}
+
+// CanReclaimResumePauseHandoff reports whether a run with an unfinished
+// pause handoff can claim it for a new execution attempt.
+func (s RunStatus) CanReclaimResumePauseHandoff() bool {
+	return s == RunStatusQueued || s == RunStatusFailedResumable
+}
+
 // ---------------------------------------------------------------------------
 // Policy predicates — one named question each
 // ---------------------------------------------------------------------------
@@ -460,6 +476,12 @@ func (s RunStatus) IsQueued() bool { return s == RunStatusQueued }
 func (s RunStatus) CanOperatorResume() bool {
 	return s == RunStatusFailedResumable || s == RunStatusCancelled ||
 		s == RunStatusPausedOperator || s == RunStatusPausedWaitingHuman
+}
+
+// CanStartExecution names the precreated local and queued cloud start lanes.
+// Acquiring a durable execution identity does not bypass their caller's lock.
+func (s RunStatus) CanStartExecution() bool {
+	return s == RunStatusRunning || s == RunStatusQueued
 }
 
 // RequiresResumeAnswers: resuming this status needs the pending human

@@ -333,6 +333,22 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/bots/{slug}":    {query: []queryParam{ifMatchVersionParam, botIDParam}},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
 
+		// The program a launch naming a bot runs. Typed because its sha256 is
+		// a token of the launch contract: POST /api/runs takes it back as
+		// expect_source_sha256, and a client that cannot see it launches
+		// unpinned.
+		"GET /api/v1/bots/{name}/launch-source": {
+			response:    botLaunchSourceResponse{},
+			description: "The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.",
+			errors: map[int]string{
+				http.StatusForbidden:           "a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected",
+				http.StatusNotFound:            "the name resolves on no tier",
+				http.StatusUnprocessableEntity: "the bot resolves but not to a launchable program — the refusal a launch of it would draw",
+				http.StatusServiceUnavailable:  "a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry",
+				http.StatusInternalServerError: "the resolution or the reading itself failed",
+			},
+		},
+
 		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
 		// payload, including the shadow fields docs/platform-bots.md promises
 		// on this endpoint. Left untyped, that promise had no spec behind it:
@@ -492,6 +508,7 @@ func routeSchemas() map[string]routeOp {
 			request:  previewCostRequest{},
 			response: previewCostResponse{},
 		},
+		"POST /api/runs/{id}/resume": {request: resumeRunRequest{}},
 
 		// Model registry — known x usable x capabilities x pricing. Typed so
 		// the studio's picker (and every LaunchView node row) reads the same

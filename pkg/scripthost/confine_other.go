@@ -4,7 +4,7 @@ package scripthost
 
 // Confine refuses on every platform but Linux. The bounds codemode promises —
 // RLIMIT_DATA for a real heap cap, RLIMIT_CPU for the native-regex class,
-// Landlock for the filesystem and TCP — have no portable equivalent, and
+// Landlock for the filesystem, seccomp for sockets — have no portable equivalent, and
 // running a model-authored script with a weaker set than the record promises
 // would be a silent downgrade of the whole guarantee.
 //
@@ -15,3 +15,6 @@ func Confine(Limits) (Applied, error) { return Applied{}, ErrConfinementUnsuppor
 
 // LandlockABI is zero off Linux: there is no Landlock to report.
 func LandlockABI() int { return 0 }
+
+// inheritedSocket has nothing to check off Linux: Confine refuses there.
+func inheritedSocket() (int, error) { return -1, nil }

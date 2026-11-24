@@ -29,10 +29,12 @@ function keys(): ApiKeyView[] {
   ];
 }
 
-function setup() {
+type PanelProps = Parameters<typeof ApiKeysPanel>[0];
+
+function setup(props: PanelProps = { team: { id: "team-a", name: "Team A" } }) {
   api.listApiKeys.mockResolvedValue(keys());
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ApiKeysPanel team={{ id: "team-a", name: "Team A" }} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ApiKeysPanel {...props} /></QueryClientProvider>);
 }
 
 it("shows a gateway key's endpoint and repository audience, and survives a row without repos", async () => {
@@ -52,4 +54,29 @@ it("says what a gateway key funds, only for that provider", async () => {
   expect(screen.getByText(/funds the gateway routes/)).toBeTruthy();
   expect(screen.queryByText(/no run spends it yet/)).toBeNull();
   expect(screen.getByPlaceholderText(/Gateway base URL/)).toBeTruthy();
+});
+
+// A text input followed by a password input is what a browser takes for a
+// login form: it fills the saved username and password into them, and the form
+// would seal the operator's password as an API key. The panel is one component
+// mounted at three scopes, so each of them is opened.
+it.each<[string, PanelProps]>([
+  ["a team", { team: { id: "team-a", name: "Team A" } }],
+  ["the current user", {}],
+  ["the platform", { platform: true }],
+])("keeps the browser's saved login out of the add-key form of %s", async (_scope, props) => {
+  setup(props);
+  await screen.findByText("pliage");
+  fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+
+  expect(screen.getByPlaceholderText(/^Name/).getAttribute("autocomplete")).toBe("off");
+  const secret = screen.getByPlaceholderText(/^API key/) as HTMLInputElement;
+  expect(secret.type).toBe("password");
+  // Not "off": a browser ignores it on a password input.
+  expect(secret.getAttribute("autocomplete")).toBe("new-password");
+
+  // A gateway key adds the base URL right above the secret, in the place a
+  // browser reads as the username.
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "openai_compatible" } });
+  expect(screen.getByPlaceholderText(/Gateway base URL/).getAttribute("autocomplete")).toBe("off");
 });

@@ -2,13 +2,25 @@ package spec
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
+
+// brandColorRe is the one shape a package's accent may take: a six-digit
+// hex triple. Anything else renders as nothing on the monogram fallback,
+// so it is refused at load rather than served broken.
+var brandColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// ValidBrandColor reports whether s is the one shape a package's accent
+// takes — the check the monogram fallback re-applies before rendering.
+func ValidBrandColor(s string) bool { return brandColorRe.MatchString(s) }
 
 // OpsFile is one ops/<domain>.yaml: a slice of a connector's operations,
 // grouped by the vendor's own tag so a 500-operation API stays readable and
@@ -48,6 +60,26 @@ type Package struct {
 	Connector Connector
 	Ops       []OpsFile
 	Schemas   map[string]Schema
+	// Setup is the package's setup.md: what an operator does at the
+	// vendor's side to make deliveries arrive (which hook to add, where the
+	// secret goes). Plain text, size-capped at load; nil when the package
+	// ships none. The catalog shows it verbatim where the hook is
+	// configured, so it is read here rather than re-read by a route.
+	Setup []byte `json:"-"`
+	// SetupPoll is the package's setup-poll.md: the setup of its polled
+	// triggers, which read the vendor rather than wait for its hook. Read,
+	// capped and served like Setup; nil when the package ships none, and
+	// the polled flow then shows Setup.
+	SetupPoll []byte `json:"-"`
+	// IconSVG is the package's icon: Connector.Icon's file, read, sanitized
+	// and size-capped at load (icon.go). Nil when the package declares no
+	// icon; never a byte of the unsanitized file — the load is the only
+	// path a package icon takes, so a Package built by hand cannot carry
+	// one the load never judged.
+	IconSVG []byte `json:"-"`
+	// IconDigest is the sha256 of IconSVG (16 hex chars): the ETag the
+	// catalog's icon route serves.
+	IconDigest string `json:"-"`
 	// ResponseSchemas are explicit v2 contracts, read only from responses.json.
 	// The older Schemas projection is never used to validate a response.
 	ResponseSchemas map[string]ResponseSchema
@@ -169,6 +201,23 @@ func (p *Package) Validate() error {
 	if err := p.ValidateGenerated(); err != nil {
 		return err
 	}
+	// The catalog identity fields: an unknown category is the vendor's or
+	// the operator's newer word and renders raw (ADR-168 §2), a malformed
+	// accent is a broken monogram and is refused, and an icon declared but
+	// not loaded means the Package was built by hand rather than loaded,
+	// so no unsanitized byte travels.
+	if c.BrandColor != "" && !brandColorRe.MatchString(c.BrandColor) {
+		return fmt.Errorf("connector %q: brand_color %q is not \"#rrggbb\"", c.ID, c.BrandColor)
+	}
+	if c.Icon != "" {
+		slash := strings.TrimPrefix(filepath.ToSlash(c.Icon), "./")
+		if slash != strings.TrimPrefix(c.Icon, "./") || !fs.ValidPath(slash) || slash == "." {
+			return fmt.Errorf("connector %q: icon %q is not a slash path within the package", c.ID, c.Icon)
+		}
+		if p.IconSVG == nil || p.IconDigest == "" {
+			return fmt.Errorf("connector %q: icon %q is declared but was not loaded (a Package with an icon comes from Load, not from a composite literal)", c.ID, c.Icon)
+		}
+	}
 	if len(c.Auth) == 0 {
 		return fmt.Errorf("connector %q: declares no auth scheme — the vendor description carries none, so the overlay must supply one (an API nobody can authenticate against is not a connector)", c.ID)
 	}
@@ -287,6 +336,9 @@ func (p *Package) ValidateGenerated() error {
 	seen := map[string]string{}
 	for _, f := range p.Ops {
 		for _, op := range f.Operations {
+			if op.HTTP.AtBaseURL && c.BaseURL.PathPrefix != "" {
+				return fmt.Errorf("connector %q: operation %q: at_base_url sends the operator's URL as written, and the package's path_prefix %q would reshape it", c.ID, op.ID, c.BaseURL.PathPrefix)
+			}
 			if err := op.ValidateStandalone(c.ID, p.Schemas); err != nil {
 				return err
 			}
@@ -316,6 +368,10 @@ func (a AuthScheme) validate(connector string) error {
 			return fmt.Errorf("connector %q auth %q: api_key `in` must be header or query, got %q", connector, a.ID, a.In)
 		}
 	case AuthBearer, AuthBasic:
+	case AuthNone:
+		if a.In != "" || a.Name != "" || a.ValuePrefix != "" || a.AuthURL != "" || a.TokenURL != "" || len(a.SupportedScopes) > 0 || len(a.DefaultScopes) > 0 {
+			return fmt.Errorf("connector %q auth %q: kind none presents nothing, so it takes no location, prefix, endpoint or scope", connector, a.ID)
+		}
 	case AuthOAuth2:
 		if a.AuthURL == "" || a.TokenURL == "" {
 			return fmt.Errorf("connector %q auth %q: oauth2 needs auth_url and token_url", connector, a.ID)
@@ -353,8 +409,20 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	if !AddressableOperationID(op.ID) {
 		return fmt.Errorf("operation %q: not addressable from a workflow — an id reads `connector.resource.verb` and every segment must start with a lowercase letter and hold only [a-z0-9_]", op.ID)
 	}
-	if op.HTTP.Method == "" || op.HTTP.Path == "" {
-		return fmt.Errorf("operation %q: missing http method or path", op.ID)
+	switch {
+	case op.HTTP.Method == "":
+		return fmt.Errorf("operation %q: missing http method", op.ID)
+	case op.HTTP.AtBaseURL && op.HTTP.Path != "":
+		return fmt.Errorf("operation %q: at_base_url sends the request to the connection's base URL itself, so it takes no path (got %q)", op.ID, op.HTTP.Path)
+	case !op.HTTP.AtBaseURL && op.HTTP.Path == "":
+		return fmt.Errorf("operation %q: missing http path (at_base_url: true sends the request to the connection's base URL itself)", op.ID)
+	}
+	if op.HTTP.AtBaseURL {
+		for _, prm := range op.Params {
+			if prm.In == InPath || prm.In == InQuery {
+				return fmt.Errorf("operation %q: at_base_url sends the operator's URL as written, and %s parameter %q would reshape it", op.ID, prm.In, prm.Key)
+			}
+		}
 	}
 	if op.Effect == "" {
 		return fmt.Errorf("operation %q: missing effect (read|create|update|delete)", op.ID)
@@ -425,6 +493,21 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	// payload and reports success.
 	if op.HTTP.RequestBody != "" && !ValidBodyEncoding(op.HTTP.RequestBody) {
 		return fmt.Errorf("operation %q: request body encoding %q is not one iterion can build (want json|form|multipart)", op.ID, op.HTTP.RequestBody)
+	}
+	// Prevents: an answer decoded as something it is not — a feed read as
+	// JSON fails every call, and an unknown format would be guessed.
+	switch op.HTTP.ResponseFormat {
+	case "", ResponseJSON:
+	case ResponseFeed:
+		// Prevents: a JSON response contract judging the raw XML of a feed,
+		// which fails every call.
+		for _, r := range op.Results {
+			if r.ResponseSchemaRef != "" {
+				return fmt.Errorf("operation %q: a feed answer is XML, so result %d cannot carry the JSON response contract %q", op.ID, r.Status, r.ResponseSchemaRef)
+			}
+		}
+	default:
+		return fmt.Errorf("operation %q: response_format %q is not json or feed", op.ID, op.HTTP.ResponseFormat)
 	}
 	seenStatus := map[int]bool{}
 	for _, r := range op.Results {

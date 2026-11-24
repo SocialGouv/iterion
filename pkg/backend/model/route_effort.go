@@ -15,11 +15,12 @@ import (
 // (compatgw.AcceptedEfforts: the run's feed table, then the runner's env
 // table). A route with no accepted list keeps the requested effort; a
 // substitution is warned and reported with the source that listed the
-// route's efforts. Equal distances prefer more effort.
-func (e *ClawExecutor) routeReasoningEffort(ctx context.Context, nodeID, spec, requested string) string {
+// route's efforts, which it also answers as mappedBy ("" when the requested
+// effort is sent as asked). Equal distances prefer more effort.
+func (e *ClawExecutor) routeReasoningEffort(ctx context.Context, nodeID, spec, requested string) (applied, mappedBy string) {
 	applied, source := gatewayReasoningEffort(ctx, spec, requested, e.logger.Warn)
 	if applied == requested {
-		return requested
+		return requested, ""
 	}
 	info := ReasoningEffortAdjustment{
 		Model:     spec,
@@ -32,7 +33,7 @@ func (e *ClawExecutor) routeReasoningEffort(ctx context.Context, nodeID, spec, r
 	if e.hooks.OnReasoningEffortAdjusted != nil {
 		e.hooks.OnReasoningEffortAdjusted(nodeID, info)
 	}
-	return applied
+	return applied, source
 }
 
 // gatewayReasoningEffort maps a requested effort onto the gateway route's

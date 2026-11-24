@@ -188,11 +188,12 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 	}
 
 	// claw enforces the gate sandboxed too (the policy crosses the IPC as
-	// a pre-task envelope) — EXCEPT an Ask decision, which has no seam to
-	// pause the parent run from inside the container. A policy that can
-	// ever produce one (mode ask, or any explicit ask rule, which
-	// outranks mode deny) fails a sandboxed claw route at run time; warn
-	// here so the coupling is learned before launch. Same
+	// a pre-task envelope), and since the approval channel (#3513) a
+	// sandboxed claw route SERVES an Ask decision — the launcher pauses
+	// the run and the human answers on resume. The served scope is
+	// launcher-placed tools (MCP, in-memory registries): a node whose
+	// container-executed tools can be asked about still fails at run
+	// time, which is what this warning teaches before launch. Same
 	// warning-not-error rationale as above: --sandbox none and
 	// ITERION_SANDBOX_DEFAULT=none make the run legal without the
 	// workflow saying anything.
@@ -209,7 +210,7 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 		}
 		if len(clawRoutes) > 0 {
 			c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
-				"%s %q: the permission policy can produce an Ask decision (mode %s%s), which a sandboxed claw route cannot pause for — this node will FAIL at run time on %s unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+				"%s %q: the permission policy can produce an Ask decision (mode %s%s). A sandboxed claw route serves the pause for launcher-placed tools (MCP, in-memory registries); if a container-executed tool (bash, the file tools) can be asked about, the node FAILS at run time on %s — scope ask rules to launcher-placed tools, or declare sandbox: none (or run with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
 				kind, id, mode, askRuleSuffix(len(askRules)), strings.Join(dedupeStrings(clawRoutes), ", "))
 		}
 	}

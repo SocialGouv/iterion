@@ -615,6 +615,12 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 		// themselves, consuming pool bookkeeping for nothing and skewing
 		// the fairness ranking against the other donors. Not a "skip"
 		// worth reporting: no operator investigation ever asks that.
+		//
+		// The consequence is easy to miss when operating a personal pool:
+		// its owner can never borrow from it, so previewing that pool from
+		// the owner's own session answers no_eligible_pledge however
+		// healthy the entries are. Preview the lane that will spend it (a
+		// webhook's actor, a teammate's session), never your own.
 		if p.UserID == req.UserID {
 			continue
 		}

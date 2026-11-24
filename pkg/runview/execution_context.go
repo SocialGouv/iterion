@@ -27,7 +27,7 @@ func ExecutionContextPolicyFromEnv() store.ContextPolicy {
 // may provide a declaration, but authority-owned identities and revisions are
 // always filled from the compiled workflow and the run store. This keeps the
 // contract useful in legacy/report mode without changing existing semantics.
-func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID string, spec LaunchSpec, wf *ir.Workflow, workflowHash string, defaultPolicy store.ContextPolicy, defaultWorkDir string) *store.ExecutionContext {
+func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID string, spec LaunchSpec, wf *ir.Workflow, workflowHash string, defaultPolicy store.ContextPolicy, defaultWorkDir string) (*store.ExecutionContext, error) {
 	var out *store.ExecutionContext
 	if spec.ExecutionContext != nil {
 		out = spec.ExecutionContext.Clone()
@@ -38,17 +38,16 @@ func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID
 	// These identities come from the launch authority, never from the caller's
 	// declaration. A stale or forged declaration must not become the value a
 	// later enforce gate compares as authoritative.
-	kind := fmt.Sprintf("%T", runStore)
-	namespace := ""
-	if runStore != nil {
-		namespace = runStore.Root()
+	identity, err := store.ResolveStoreContextRef(ctx, runStore)
+	if err != nil {
+		return nil, fmt.Errorf("runview: resolve run-store identity: %w", err)
 	}
-	out.RunStore = store.ContextRef{
-		ID:        store.StableContextID(kind, namespace),
-		Kind:      kind,
-		Namespace: namespace,
-		Required:  true,
+	// Preserve an explicit requirement only for this exact resolved identity.
+	// Legacy references can opt out too; equality does not certify their store.
+	if store.SameContextRefIdentity(out.RunStore, identity) {
+		identity.Required = out.RunStore.Required
 	}
+	out.RunStore = identity
 	if out.Policy == "" {
 		out.Policy = defaultPolicy
 		if out.Policy == "" {
@@ -72,6 +71,14 @@ func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID
 	out.Lineage.RootRunID = rootRunID(ctx, runStore, spec.ParentRunID, runID)
 	if wf != nil {
 		out.Workspace.DeclaredMode = wf.Worktree
+		declared := make([]store.ContextRef, 0, len(wf.BusinessStores))
+		for _, ref := range wf.BusinessStores {
+			declared = append(declared, store.ContextRef{ID: ref.ID, Kind: ref.Kind, Namespace: ref.Namespace, Required: ref.Required})
+		}
+		out.BusinessStores, err = store.MergeBusinessStores(out.BusinessStores, declared)
+		if err != nil {
+			return nil, fmt.Errorf("runview: invalid business-store declaration: %w", err)
+		}
 	}
 	// Effective mode and identity are runtime-owned and stay unresolved until
 	// worktree setup/adoption has made the real isolation decision.
@@ -86,10 +93,13 @@ func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID
 	if out.LaunchSurface == "" {
 		out.LaunchSurface = "runview"
 	}
-	return out
+	if err := out.Normalize(); err != nil {
+		return nil, fmt.Errorf("runview: invalid execution context: %w", err)
+	}
+	return out, nil
 }
 
-func (s *Service) resolveExecutionContext(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, workflowHash string) *store.ExecutionContext {
+func (s *Service) resolveExecutionContext(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, workflowHash string) (*store.ExecutionContext, error) {
 	return ResolveExecutionContext(ctx, s.store, runID, spec, wf, workflowHash, s.executionContextPolicy, s.workDir)
 }
 

@@ -218,6 +218,10 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 		Vars:             map[string]any{"workflow_var": "v"},
 		ArtifactVersions: map[string]int{"implement": 2},
 		NodeAttempts:     map[string]map[string]int{"verify": {"EXECUTION_FAILED": 2}, "survey": {"TIMEOUT": 1}},
+		NodeFailureStreaks: map[string]store.NodeFailureStreak{
+			"verify": {Fingerprint: "sha256:verify", Count: 2},
+			"survey": {Fingerprint: "sha256:survey", Count: 1},
+		},
 		BudgetTokensUsed: 4321,
 		BudgetCostUSD:    1.25,
 		CostUSDTotal:     1.25,
@@ -304,6 +308,14 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	}
 	if _, ok := got.NodeAttempts["survey"]; !ok {
 		t.Error("NodeAttempts[survey] was dropped; only replayed nodes reset")
+	}
+	// So does the streak of identical failures a replayed node's command
+	// left: the workflow changed, and its next failure is a first one.
+	if streak, ok := got.NodeFailureStreaks["verify"]; ok {
+		t.Errorf("NodeFailureStreaks[verify] survived (%+v); a replayed node's next failure would be read as a repeat of its old command's", streak)
+	}
+	if _, ok := got.NodeFailureStreaks["survey"]; !ok {
+		t.Error("NodeFailureStreaks[survey] was dropped; only replayed nodes reset")
 	}
 	if _, ok := run.OutputCorrections["implement"]; ok {
 		t.Error("the invalidated implement correction episode survived as a live replay guard")

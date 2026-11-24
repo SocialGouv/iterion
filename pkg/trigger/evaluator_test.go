@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
 type fakeLauncher struct{ plans []LaunchPlan }
@@ -196,5 +198,43 @@ func TestListCandidatesScoping(t *testing.T) {
 	}
 	if ids["other"] || ids["offt"] || ids["disabled"] {
 		t.Fatalf("unexpected candidate in %v", ids)
+	}
+}
+
+// No bus event fires a connector subscription — even one whose matcher is
+// empty and so matches everything — and the bus never evaluates a connector
+// event or one marked observational (ADR-168 §8: the connector worker
+// matches from the intake; readers ship before any publisher sets the mark).
+func TestTheBusNeverFiresAConnectorSubscription(t *testing.T) {
+	st := seed(t,
+		Subscription{ID: "conn", TenantID: "", BotID: "chat-bot", Enabled: true, Invocation: bundle.InvocationKindConnector,
+			ConnectionID: "conn-a", TriggerID: "slack.message.posted"},
+		Subscription{ID: "wide", BotID: "wide-bot", Mode: "direct", Enabled: true},
+	)
+	fl := &fakeLauncher{}
+	ev := NewEvaluator(st, WithLauncher(fl))
+	for _, e := range []Event{
+		{Source: SourceBoard, Kind: KindCardMoved, Subject: Subject{Type: "card", ID: "c1"}},
+		{Source: SourceCustom, Kind: "anything"},
+	} {
+		_ = ev.Handle(context.Background(), e)
+	}
+	for _, p := range fl.plans {
+		if p.BotID == "chat-bot" {
+			t.Fatalf("a bus event fired the connector subscription: %+v", p)
+		}
+	}
+	if len(fl.plans) != 2 {
+		t.Fatalf("the control subscription fired %d times, want 2", len(fl.plans))
+	}
+	fl.plans = nil
+	for _, e := range []Event{
+		{Source: SourceConnector, Kind: "slack.message.posted", ConnectionID: "conn-a"},
+		{Source: SourceCustom, Kind: "anything", Payload: map[string]any{PayloadObservational: true}},
+	} {
+		_ = ev.Handle(context.Background(), e)
+	}
+	if len(fl.plans) != 0 {
+		t.Fatalf("a connector or observational event was evaluated: %+v", fl.plans)
 	}
 }

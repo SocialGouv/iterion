@@ -171,13 +171,26 @@ func resolveAssistantReference(ctx context.Context, ref string, runStore store.R
 		return out, nil
 	}
 	out.Kind = kind
+	// A run or node reference may carry the birth the sender expects of
+	// its run: `run/<id>@<birth>`, `node/<id>@<birth>/<node>` (the sentinel
+	// "historical" for a run with no birth). It is compared right after the
+	// run's load; a replaced run resolves to nothing but run_origin_lost.
 	if kind == "node" {
-		runID, nodeID, nodeOK := strings.Cut(id, "/")
-		if !nodeOK || !assistantContextID.MatchString(runID) || !assistantContextID.MatchString(nodeID) {
+		runRef, nodeID, nodeOK := strings.Cut(id, "/")
+		runID, birth, birthOK := cutReferenceBirth(runRef)
+		if !nodeOK || !birthOK || !assistantContextID.MatchString(runID) || !assistantContextID.MatchString(nodeID) {
 			out.Reason = "invalid_reference"
 			return out, nil
 		}
-		return resolveAssistantRun(ctx, out, runID, runStore)
+		return resolveAssistantRun(ctx, out, runID, birth, runStore)
+	}
+	if kind == "run" {
+		runID, birth, birthOK := cutReferenceBirth(id)
+		if !birthOK || !assistantContextID.MatchString(runID) {
+			out.Reason = "invalid_reference"
+			return out, nil
+		}
+		return resolveAssistantRun(ctx, out, runID, birth, runStore)
 	}
 	if !assistantContextID.MatchString(id) {
 		out.Reason = "invalid_reference"
@@ -185,8 +198,6 @@ func resolveAssistantReference(ctx context.Context, ref string, runStore store.R
 	}
 
 	switch kind {
-	case "run":
-		return resolveAssistantRun(ctx, out, id, runStore)
 	case "card":
 		return resolveAssistantCard(ctx, out, id, runStore, boardStore)
 	default:
@@ -231,14 +242,47 @@ func resolveAssistantCard(ctx context.Context, out assistantResolvedReference, i
 	return out, nil
 }
 
-func resolveAssistantRun(ctx context.Context, out assistantResolvedReference, id string, runStore store.RunStore) (assistantResolvedReference, error) {
+// cutReferenceBirth splits a reference's `<id>@<birth>` into the run ID and
+// the raw expected birth ("" when none is carried); ok is false for an
+// expectation that is not a birth.
+func cutReferenceBirth(ref string) (runID, birth string, ok bool) {
+	runID, birth, carried := strings.Cut(ref, "@")
+	if !carried {
+		return runID, "", true
+	}
+	if _, err := parseExpectedBirth(birth); err != nil || birth == "" {
+		return "", "", false
+	}
+	return runID, birth, true
+}
+
+// referenceRunOriginLost is the reason of a checked reference whose run was
+// replaced or deleted: the sender's page lost that run.
+const referenceRunOriginLost = wsErrRunOriginLost
+
+func resolveAssistantRun(ctx context.Context, out assistantResolvedReference, id, birth string, runStore store.RunStore) (assistantResolvedReference, error) {
 	if runStore == nil {
 		out.Reason = "runs_unavailable"
 		return out, nil
 	}
-	run, err := loadAssistantRun(ctx, id, runStore)
+	run, err := loadAssistantRunExpecting(ctx, id, birth, runStore)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		var lost errCarriedRunOriginLost
+		switch {
+		case errors.As(err, &lost):
+			out.Reason = referenceRunOriginLost
+			return out, nil
+		case errors.Is(err, store.ErrRunDeleted):
+			// A deleted run the sender expected by birth is lost to it.
+			out.Reason = "not_found"
+			if birth != "" && !runBirthCheckOff() {
+				out.Reason = referenceRunOriginLost
+			}
+			return out, nil
+		case errors.Is(err, store.ErrRunNotFound):
+			// Not found is no verdict on the sender's run: a tenant-scoped
+			// store answers it for a run of another team the sender can
+			// see elsewhere (a multi-team, org-shared or super-admin viewer).
 			out.Reason = "not_found"
 			return out, nil
 		}
@@ -250,8 +294,18 @@ func resolveAssistantRun(ctx context.Context, out assistantResolvedReference, id
 }
 
 func loadAssistantRun(ctx context.Context, id string, runStore store.RunStore) (*assistantResolvedRun, error) {
+	return loadAssistantRunExpecting(ctx, id, "", runStore)
+}
+
+// loadAssistantRunExpecting is loadAssistantRun comparing birth, the raw
+// expectation a reference carried (checkCarriedBirth; "" is unchecked),
+// right after the run's load.
+func loadAssistantRunExpecting(ctx context.Context, id, birth string, runStore store.RunStore) (*assistantResolvedRun, error) {
 	run, err := runStore.LoadRun(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkCarriedBirth("reference", birth, run); err != nil {
 		return nil, err
 	}
 	resolved := &assistantResolvedRun{

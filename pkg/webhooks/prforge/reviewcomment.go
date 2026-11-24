@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // EventHeaderReviewComment is the X-GitHub-Event value for a comment in a
@@ -26,7 +27,21 @@ type ReviewCommentEvent struct {
 		Body      string `json:"body"`
 		HTMLURL   string `json:"html_url"`
 		Path      string `json:"path"`
-		User      Sender `json:"user"`
+		// The thread's diff position. line/side name the CURRENT line the
+		// comment renders on (side LEFT = the pre-image, a removed line);
+		// an OUTDATED comment keeps original_line — the line it was written
+		// on, never a current one — and line goes null. commit_id is the
+		// commit the anchor was taken on, what a consumer compares against
+		// the revision it actually reads. Forgejo/Gitea payloads of this
+		// event carry the subset Gitea implements (path, when any); the
+		// missing fields simply stay zero and the anchor degrades on them.
+		Line          int64  `json:"line"`
+		OriginalLine  int64  `json:"original_line"`
+		Side          string `json:"side"`
+		OriginalSide  string `json:"original_side"`
+		CommitID      string `json:"commit_id"`
+		OriginalComID string `json:"original_commit_id"`
+		User          Sender `json:"user"`
 	} `json:"comment"`
 	PullRequest struct {
 		Number  int64  `json:"number"`
@@ -68,8 +83,18 @@ type ParsedReviewComment struct {
 	CommentBody  string
 	CommentURL   string
 	CommentPath  string // file the thread anchors to
-	AuthorLogin  string
-	Action       string
+	// The thread's diff position, as the payload gave it (GitHub spellings):
+	// CommentLine/CommentSide name the CURRENT line and its image
+	// ("LEFT"/"RIGHT"), CommentOriginalLine the line the comment was
+	// ORIGINALLY written on — kept when the comment is outdated and its
+	// current line is gone, never a current line — and CommentCommitID the
+	// commit the anchor was taken on. ThreadAnchor() normalizes them.
+	CommentLine         int64
+	CommentOriginalLine int64
+	CommentSide         string
+	CommentCommitID     string
+	AuthorLogin         string
+	Action              string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in —
 	// differs from ProjectPath on a fork PR; empty when the payload omits
 	// head.repo OR the head repo was deleted/blocked. Read by
@@ -99,24 +124,28 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 		return ParsedReviewComment{}, fmt.Errorf("prforge: decode pull_request_review_comment event: %w", err)
 	}
 	p := ParsedReviewComment{
-		RepoID:       e.Repository.ID,
-		ProjectPath:  e.Repository.FullName,
-		CloneURL:     e.Repository.CloneURL,
-		PRNumber:     e.PullRequest.Number,
-		PRState:      e.PullRequest.State,
-		PRTitle:      e.PullRequest.Title,
-		PRBody:       e.PullRequest.Body,
-		PRURL:        e.PullRequest.HTMLURL,
-		HeadSHA:      e.PullRequest.Head.SHA,
-		SourceBranch: e.PullRequest.Head.Ref,
-		TargetBranch: e.PullRequest.Base.Ref,
-		CommentID:    e.Comment.ID,
-		ThreadRootID: e.Comment.InReplyTo,
-		CommentBody:  e.Comment.Body,
-		CommentURL:   e.Comment.HTMLURL,
-		CommentPath:  e.Comment.Path,
-		AuthorLogin:  e.Comment.User.Login,
-		Action:       e.Action,
+		RepoID:              e.Repository.ID,
+		ProjectPath:         e.Repository.FullName,
+		CloneURL:            e.Repository.CloneURL,
+		PRNumber:            e.PullRequest.Number,
+		PRState:             e.PullRequest.State,
+		PRTitle:             e.PullRequest.Title,
+		PRBody:              e.PullRequest.Body,
+		PRURL:               e.PullRequest.HTMLURL,
+		HeadSHA:             e.PullRequest.Head.SHA,
+		SourceBranch:        e.PullRequest.Head.Ref,
+		TargetBranch:        e.PullRequest.Base.Ref,
+		CommentID:           e.Comment.ID,
+		ThreadRootID:        e.Comment.InReplyTo,
+		CommentBody:         e.Comment.Body,
+		CommentURL:          e.Comment.HTMLURL,
+		CommentPath:         e.Comment.Path,
+		CommentLine:         e.Comment.Line,
+		CommentOriginalLine: e.Comment.OriginalLine,
+		CommentSide:         e.Comment.Side,
+		CommentCommitID:     e.Comment.CommitID,
+		AuthorLogin:         e.Comment.User.Login,
+		Action:              e.Action,
 
 		HeadRepoFullName: e.PullRequest.Head.Repo.FullName,
 		HeadRepoDeclared: e.PullRequest.Head.RepoDeclared,
@@ -135,6 +164,17 @@ func ParseReviewComment(body []byte) (ParsedReviewComment, error) {
 // stored beside the comment's own subject id.
 func (p ParsedReviewComment) ParentSubjectID() string {
 	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+}
+
+// ThreadAnchor normalizes the comment's diff position to the launch shape
+// the conversational bots declare. A review-thread REPLY carries the same
+// position its root does — GitHub anchors every comment of a thread to the
+// one diff spot — so the payload's own fields are the thread root's anchor;
+// no second fetch decides it. A Forgejo/Gitea payload that omits the fields
+// (path alone, or none) degrades through the same shape: the anchor names
+// the file, or nothing.
+func (p ParsedReviewComment) ThreadAnchor() webhooks.ThreadAnchor {
+	return webhooks.GitHubReviewAnchor(p.CommentPath, p.CommentSide, p.CommentLine, p.CommentOriginalLine, p.CommentCommitID)
 }
 
 // SubjectID is the stable per-comment id used in delivery records +

@@ -894,9 +894,14 @@ print(json.dumps({
 ## mark_issue_for_review: identical pattern to docs-refresh.
 ## After convergence, transition the tracker issue out of
 ## `ready` so the dispatcher does not re-pick it. No-op when
-## vars.issue_id is empty (manual CLI runs).
+## vars.issue_id is empty (manual CLI runs). Best effort: a
+## dispatcher that is down or refuses (`-f`: an HTTP error status is a
+## failed request) is reported, never failed on.
+## The node declares `output: mark_issue_output`, so its stdout is
+## that ONE JSON object on every path: the dispatcher's own answer
+## goes to stderr, where the run log keeps it.
 tool mark_issue_for_review:
-  command: "if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H \"Content-Type: application/json\" -d '{\"to\":\"review\"}' \"http://localhost:$PORT/api/v1/native/issues/$ID_SHORT/transition\" 2>&1 | head -c 1000 || true; else echo '{\"skipped\":\"no issue_id\"}'; fi"
+  command: "if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; if curl -fsS -X POST -H \"Content-Type: application/json\" -d '{\"to\":\"review\"}' \"http://localhost:$PORT/api/v1/native/issues/$ID_SHORT/transition\" >&2; then printf '{\"text\": \"transition to review requested\"}'; else printf '{\"text\": \"skipped: the transition request failed or the dispatcher is down\"}'; fi; else printf '{\"text\": \"skipped: no issue_id\"}'; fi"
   output: mark_issue_output
 
 ## detect_changes: deterministic guard between converged review

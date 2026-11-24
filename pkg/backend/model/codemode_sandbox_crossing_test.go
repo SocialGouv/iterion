@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 		// them silently re-makes an operator's choice". Measured as
 		// unwitnessed — mutants dropping the field in ToIOTask and in
 		// FromIOTask each survived delegate + model + ir + queue.
-		CodemodeBounds: &scripthost.Limits{ToolCalls: 256, Wall: 2 * time.Minute},
+		CodemodeBounds: &scripthost.Limits{ToolCalls: 256, Wall: 2 * time.Minute, ConcurrentToolCalls: 3},
 		WorkDir:        dir,
 		Sandbox: &scriptedSandbox{
 			script: "IFS= read -r line\nprintf '%s' \"$line\" > \"$1\"\nexit 1\n",
@@ -96,10 +97,77 @@ func TestCodemodeChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
 	if got := bounds["tool_calls"]; got != float64(256) {
 		t.Errorf("codemode_bounds.tool_calls = %v, want 256", got)
 	}
+	if got := bounds["concurrent_tool_calls"]; got != float64(3) {
+		t.Errorf("codemode_bounds.concurrent_tool_calls = %v, want 3", got)
+	}
 	if got := bounds["wall_ns"]; got != float64(2*time.Minute) {
 		t.Errorf("codemode_bounds.wall_ns = %v, want %d", got, 2*time.Minute)
 	}
 	if _, present := task["has_tools"]; present {
 		t.Errorf("has_tools crossed for a node that declared no tools: a runner that cannot read `codemode` gets a tool loop with no tools.\nenvelope task: %v", task)
+	}
+}
+
+// The defer twin, same crossing: the resolved defer does not cross the
+// envelope either (ToIOTask carries no defer field), so the in-container
+// node — a stale runner and a current one alike — serves every tool
+// declared, which is the safe fallback for an optimization.
+func TestDeferChangesNothingOnTheWireToASandboxRunner(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+
+	dir := t.TempDir()
+	captured := filepath.Join(dir, "envelope-defer.json")
+	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{MaxAttempts: 1})
+	_, _ = b.Execute(context.Background(), delegate.Task{
+		NodeID:        "n",
+		Model:         "test/test-model",
+		UserPrompt:    "go",
+		OutputSchema:  json.RawMessage(`{"type":"object"}`),
+		HasTools:      false,
+		Codemode:      true,
+		CodemodeDefer: true,
+		WorkDir:       dir,
+		Sandbox: &scriptedSandbox{
+			script: "IFS= read -r line\nprintf '%s' \"$line\" > \"$1\"\nexit 1\n",
+			args:   []string{captured},
+		},
+	})
+
+	raw, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("the launcher never wrote a task envelope, so this test crossed nothing: %v", err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("the captured envelope is not JSON (%v): %s", err, raw)
+	}
+	var walk func(any) map[string]any
+	walk = func(v any) map[string]any {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		if _, hasNode := m["node_id"]; hasNode {
+			return m
+		}
+		for _, child := range m {
+			if found := walk(child); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	task := walk(envelope)
+	if task == nil {
+		t.Fatalf("no task found in the captured envelope: %s", raw)
+	}
+	if got, present := task["codemode"]; !present || got != true {
+		t.Errorf("the envelope does not carry codemode=true (got %v, present=%v)", got, present)
+	}
+	for key := range task {
+		if strings.Contains(strings.ToLower(key), "defer") {
+			t.Errorf("the envelope gained a defer key %q — the deferral must not cross to the runner, whose node serves every tool declared", key)
+		}
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
@@ -247,39 +246,40 @@ func ResolveRunFileDiff(ctx context.Context, store RunDiffBlobStore, runID strin
 	}
 }
 
-// diffBlobPath validates runID + ref and returns
-// <root>/runs/<runID>/gitdiffs/<ref>.json for the filesystem blob store.
-func (s *FilesystemRunStore) diffBlobPath(runID, ref string) (string, error) {
+// openDiffBlob validates runID and ref, then retains the selected payload root.
+func (s *FilesystemRunStore) openDiffBlob(ctx context.Context, runID, ref string, create bool) (*runPayloadFile, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := sanitizePathComponent("diff ref", ref); err != nil {
-		return "", err
+		return nil, err
 	}
-	return filepath.Join(s.root, "runs", runID, "gitdiffs", ref+".json"), nil
+	return s.openRunPayloadPath(ctx, runID, create, "gitdiffs", ref+".json")
 }
 
 // PutRunDiffBlob implements RunDiffBlobStore over the filesystem store.
-func (s *FilesystemRunStore) PutRunDiffBlob(_ context.Context, runID, ref string, body []byte) error {
-	p, err := s.diffBlobPath(runID, ref)
+func (s *FilesystemRunStore) PutRunDiffBlob(ctx context.Context, runID, ref string, body []byte) error {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(p), dirPerm); err != nil {
-		return fmt.Errorf("store: mkdir gitdiffs dir: %w", err)
+	defer unlock()
+	p, err := s.openDiffBlob(ctx, runID, ref, true)
+	if err != nil {
+		return err
 	}
-	return writeFileAtomic(p, body, filePerm)
+	defer p.Close()
+	return p.WriteAtomic(ctx, body, filePerm)
 }
 
 // GetRunDiffBlob implements RunDiffBlobStore over the filesystem store.
-func (s *FilesystemRunStore) GetRunDiffBlob(_ context.Context, runID, ref string) ([]byte, error) {
-	p, err := s.diffBlobPath(runID, ref)
+func (s *FilesystemRunStore) GetRunDiffBlob(ctx context.Context, runID, ref string) ([]byte, error) {
+	p, err := s.openDiffBlob(ctx, runID, ref, false)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(p)
+	defer p.Close()
+	data, err := p.ReadFile()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("store: diff blob %s/%s: %w", runID, ref, os.ErrNotExist)

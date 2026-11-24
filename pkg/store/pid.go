@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,26 +10,36 @@ import (
 	"strings"
 )
 
-// pidFileName lives under <store>/runs/<runID>/.pid. It records the
-// PID of the iterion-run subprocess managing this run on behalf of an
-// studio server. Presence of the file marks the run as "managed by a
-// detached runner"; absence means in-process or already-cleaned-up.
+// pidFileName records the detached runner PID under the run directory.
 const pidFileName = ".pid"
 
-// PIDFilePath returns the canonical path to the .pid file for runID.
-// The file may or may not exist.
+// PIDFilePath returns the canonical path; the file need not exist.
 func (s *FilesystemRunStore) PIDFilePath(runID string) string {
 	return filepath.Join(s.root, "runs", runID, pidFileName)
 }
 
-// WritePIDFile writes pid to the run's .pid file. The directory is
-// created if it doesn't exist. Writes are atomic via writeFileAtomic
-// (tmp + fsync + rename) so a crashed writer cannot leave a
-// half-written .pid that would confuse the reconciler.
+// WritePIDFile preserves the legacy orphan-sidecar API. Invocations use the
+// contextual capability, which requires their original format and parent.
 func (s *FilesystemRunStore) WritePIDFile(runID string, pid int) error {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
+	_, unlock, err := s.lockRunMetadataMutation(context.Background(), runID)
+	if err != nil {
 		return err
 	}
+	defer unlock()
+	return s.writePIDFileLocked(runID, pid)
+}
+
+// WritePIDFileContext atomically replaces the PID of an existing bound run.
+func (s *FilesystemRunStore) WritePIDFileContext(ctx context.Context, runID string, pid int) error {
+	unlock, err := s.lockInvocationPID(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.writePIDFileLocked(runID, pid)
+}
+
+func (s *FilesystemRunStore) writePIDFileLocked(runID string, pid int) error {
 	dir := filepath.Join(s.root, "runs", runID)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: pid file: mkdir: %w", err)
@@ -36,10 +47,24 @@ func (s *FilesystemRunStore) WritePIDFile(runID string, pid int) error {
 	return writeFileAtomic(filepath.Join(dir, pidFileName), []byte(strconv.Itoa(pid)+"\n"), 0o644)
 }
 
-// ReadPIDFile returns the PID recorded for runID, or 0 + nil if no
-// .pid file exists. A malformed file returns 0 + an error so callers
-// can decide whether to clean it up.
+// ReadPIDFile is the legacy orphan-sidecar reader. A missing PID returns zero;
+// malformed contents return an error. It does not bind a run invocation.
 func (s *FilesystemRunStore) ReadPIDFile(runID string) (int, error) {
+	return s.readPIDFileNoLock(runID)
+}
+
+// ReadPIDFileContext reads under the original run's metadata lock. A missing
+// parent is an error; a missing PID in an existing parent returns zero.
+func (s *FilesystemRunStore) ReadPIDFileContext(ctx context.Context, runID string) (int, error) {
+	unlock, err := s.lockInvocationPID(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	return s.readPIDFileNoLock(runID)
+}
+
+func (s *FilesystemRunStore) readPIDFileNoLock(runID string) (int, error) {
 	data, err := os.ReadFile(s.PIDFilePath(runID))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -61,13 +86,66 @@ func (s *FilesystemRunStore) ReadPIDFile(runID string) (int, error) {
 	return pid, nil
 }
 
-// RemovePIDFile deletes the run's .pid file. Idempotent — missing
-// files are not errors. Called by the runner subprocess on exit and
-// by the reconciler when it detects a dead PID.
+// RemovePIDFile preserves the legacy orphan-sidecar cleanup API.
 func (s *FilesystemRunStore) RemovePIDFile(runID string) error {
-	err := os.Remove(s.PIDFilePath(runID))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("store: pid file: remove: %w", err)
+	_, unlock, err := s.lockRunMetadataMutation(context.Background(), runID)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer unlock()
+	_, err = s.removePIDFileLocked(runID)
+	return err
+}
+
+// RemovePIDFileContext removes a PID under its original run's metadata lock.
+// Delayed owners use RemovePIDFileIfContext to retain a replacement PID.
+func (s *FilesystemRunStore) RemovePIDFileContext(ctx context.Context, runID string) error {
+	unlock, err := s.lockInvocationPID(ctx, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	_, err = s.removePIDFileLocked(runID)
+	return err
+}
+
+// RemovePIDFileIfContext compares and removes under one stable metadata lock.
+// A different or absent PID is a successful no-op. Format and parent refusal
+// remain errors even when no PID file exists.
+func (s *FilesystemRunStore) RemovePIDFileIfContext(ctx context.Context, runID string, expected int) (bool, error) {
+	if expected <= 0 {
+		return false, fmt.Errorf("store: expected PID must be positive")
+	}
+	unlock, err := s.lockInvocationPID(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	current, err := s.readPIDFileNoLock(runID)
+	if err != nil {
+		return false, err
+	}
+	if current == 0 || current != expected {
+		return false, nil
+	}
+	return s.removePIDFileLocked(runID)
+}
+
+func (s *FilesystemRunStore) removePIDFileLocked(runID string) (bool, error) {
+	err := os.Remove(s.PIDFilePath(runID))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: pid file: remove: %w", err)
+	}
+	return true, nil
+}
+
+func (s *FilesystemRunStore) lockInvocationPID(ctx context.Context, runID string) (func(), error) {
+	if err := RequireRunValueFormat(ctx, runID); err != nil {
+		return nil, err
+	}
+	_, unlock, err := s.lockExistingRunMetadata(ctx, runID)
+	return unlock, err
 }

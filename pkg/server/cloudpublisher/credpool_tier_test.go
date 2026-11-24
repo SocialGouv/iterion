@@ -52,7 +52,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Limits: limits,
 	}); err != nil {
@@ -145,7 +145,7 @@ func TestPoolTier_credentiallessRunGetsADonorsSubscription(t *testing.T) {
 func TestPoolTier_runBudgetIsCappedAtTheDonorsAllowance(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	// The donor has already given $3 today.
-	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC(), 3, 0, 0, 0); err != nil {
+	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), time.Now().UTC(), 3, 0, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestPoolTier_skippedWhenTheTenantHasItsOwnCredential(t *testing.T) {
 func TestPoolTier_pausedDonorLeavesTheRunCredentialless(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{})
 	ctx := context.Background()
-	p, err := f.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	p, err := f.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 	if err != nil {
 		t.Fatalf("get pledge: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		f := newPoolFixture(t, credpool.Limits{})
 		f.pub.logger = iterlog.New(iterlog.LevelInfo, buf)
 		// Disable the donor: audience opens, walk finds nothing eligible.
-		pledgeID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+		pledgeID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 		pledge, _ := f.pledges.Get(context.Background(), pledgeID)
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
@@ -482,7 +482,7 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 			f := newPoolFixture(t, credpool.Limits{})
 			f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)
 			// Disable the donor so the pool declines too.
-			pledge, _ := f.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+			pledge, _ := f.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""))
 			pledge.Enabled = false
 			_ = f.pledges.Upsert(context.Background(), pledge)
 

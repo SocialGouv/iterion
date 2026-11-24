@@ -66,8 +66,9 @@ type metricsEmitter struct {
 	// outerSteps holds a node's stepsSeen while one of its schema re-asks
 	// run inside the fallback chain runs (EventDelegateStarted with
 	// "reask_in_chain").
-	outerSteps   map[string]bool
-	priceByModel map[string]modelRate
+	outerSteps     map[string]bool
+	priceByModel   map[string]modelRate
+	extractionSeen map[string]bool
 
 	// declinedRoutes remembers the routes recordCredentialSpend could name
 	// no credential for, so that decline is warned once per route.
@@ -623,6 +624,8 @@ func (m *metricsEmitter) RecordNodeServed(ctx context.Context, runID, nodeID str
 
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
+	case store.EventStructuredExtraction:
+		m.observeStructuredExtraction(evt)
 	case store.EventDelegateStarted:
 		if evt.NodeID == "" {
 			return

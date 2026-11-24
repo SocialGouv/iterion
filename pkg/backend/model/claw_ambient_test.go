@@ -511,15 +511,21 @@ func TestClawAmbientBlockInjectsAgentsMdImportFree(t *testing.T) {
 }
 
 // The section shape parity, down to the leading newline the walk's parser
-// strips: the body starts exactly one blank line under the heading.
+// strips: the body starts exactly one blank line under the heading. The
+// heading's path is the WORKSPACE-RELATIVE spelling (#3283 S3): the repo's
+// AGENTS.md read from repo/sub spells "../AGENTS.md" — two checkouts read
+// the same bytes, which is what the cross-run prefix cache needs.
 func TestClawAmbientBlockStripsAgentsMdFrontmatterLikeTheWalk(t *testing.T) {
 	repo, work := clawAgentsTree(t)
 	path := filepath.Join(repo, "AGENTS.md")
 	clawWrite(t, path, "---\ntitle: x\n---\nMARKER-BODY-R15")
 
 	block := clawAmbientBlockOf(t, work, ambient.Workspace)
-	want := "## AGENTS.md (" + path + ")\n\nMARKER-BODY-R15\n"
+	want := "## AGENTS.md (../AGENTS.md)\n\nMARKER-BODY-R15\n"
 	if !strings.Contains(block, want) {
-		t.Errorf("workspace: frontmatter body not rendered in the walk's shape, want %q in:\n%s", want, block)
+		t.Errorf("workspace: frontmatter body not rendered in the walk's shape (relative header), want %q in:\n%s", want, block)
+	}
+	if strings.Contains(block, "## AGENTS.md ("+path) {
+		t.Errorf("workspace: the header still spells the absolute path — two checkouts would diverge byte for byte:\n%s", block)
 	}
 }

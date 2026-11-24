@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/url"
@@ -1601,11 +1602,18 @@ const maxEnvExpansionDepth = 32
 // duration ratio would say the same thing and flake on a shared runner
 // (#1393); this is a count.
 func expandWithDefault(s string, lookup func(string) string, policy expandPolicy) (string, int) {
+	out, visited, _ := expandWithDefaultContext(context.Background(), s, lookup, policy)
+	return out, visited
+}
+func expandWithDefaultContext(ctx context.Context, s string, lookup func(string) string, policy expandPolicy) (string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	if lookup == nil {
 		lookup = lookupEnv
 	}
 	if !strings.ContainsRune(s, '$') {
-		return s, 0
+		return s, 0, ctx.Err()
 	}
 	visited := 0
 	var stack [][]byte
@@ -1614,6 +1622,9 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 	// copied out with them instead of closing a segment that is still live.
 	suppressed := 0
 	for i := 0; i < len(s); {
+		if err := ctx.Err(); err != nil {
+			return "", visited, err
+		}
 		visited++
 		opens := i+1 < len(s) && s[i] == '$' && s[i+1] == '{'
 		if suppressed > 0 {
@@ -1648,17 +1659,28 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 			inner := cur
 			cur = stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			cur = append(cur, resolveBracedSegment(string(inner), lookup, policy)...)
+			resolved := resolveBracedSegment(string(inner), lookup, policy)
+			if err := ctx.Err(); err != nil {
+				return "", visited, err
+			}
+			cur = append(cur, resolved...)
 			i++
 			continue
 		}
 		if !policy.bracedOnly && s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
 			end := i + 1
 			for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
+				if err := ctx.Err(); err != nil {
+					return "", visited, err
+				}
 				end++
 			}
 			if end > i+1 {
-				if v := lookup(s[i+1 : end]); v != "" || !policy.keepUnresolved {
+				v := lookup(s[i+1 : end])
+				if err := ctx.Err(); err != nil {
+					return "", visited, err
+				}
+				if v != "" || !policy.keepUnresolved {
 					cur = append(cur, v...)
 				} else {
 					cur = append(cur, s[i:end]...)
@@ -1679,7 +1701,7 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 		cur = append(cur, '$', '{')
 		cur = append(cur, inner...)
 	}
-	return string(cur), visited
+	return string(cur), visited, ctx.Err()
 }
 
 // resolveBracedSegment applies the `${NAME}` / `${NAME:-default}` rule to

@@ -497,6 +497,141 @@ func buildToolCalls(events []*store.Event) []toolCallReport {
 	return out
 }
 
+// toolCallRows lays a node's tool calls out for the text table: a codemode
+// program's nested calls indented under the program that made them, keyed by
+// the parent_tool_use_id their events carry and nothing else, and one
+// summary line per program (its calls against the budget, its refusal, the
+// bounds the clamp moved).
+//
+// No call is ever left out. A call sits at the top when it names no parent —
+// a call the model made, or an event older than the field — when its parent
+// is not in this execution, when the parent's id names more than one call
+// here (a provider that reuses ids across steps; a call is never assigned to
+// a guess), or when its chain of parents loops (a forged stream). The
+// launcher's own refusal of a forwarded call (`emitted_by`) names an id and
+// a parent the runner claimed: it is shown, marked, under the parent it
+// names when that resolves, and is never a parent itself.
+func toolCallRows(tools []toolCallReport) [][]string {
+	launcher := func(t toolCallReport) bool { return stringField(t.Raw, "emitted_by") != "" }
+	byID := make(map[string][]int, len(tools))
+	for i, t := range tools {
+		if id := stringField(t.Raw, "tool_use_id"); id != "" && !launcher(t) {
+			byID[id] = append(byID[id], i)
+		}
+	}
+	parentOf := func(i int) int {
+		candidates := byID[stringField(tools[i].Raw, "parent_tool_use_id")]
+		if len(candidates) != 1 || candidates[0] == i {
+			return -1
+		}
+		return candidates[0]
+	}
+	rooted := func(i int) bool {
+		seen := map[int]bool{}
+		for at := i; at >= 0; at = parentOf(at) {
+			if seen[at] {
+				return false
+			}
+			seen[at] = true
+		}
+		return true
+	}
+	children := map[int][]int{}
+	var top []int
+	for i := range tools {
+		if p := parentOf(i); p >= 0 && rooted(i) {
+			children[p] = append(children[p], i)
+			continue
+		}
+		top = append(top, i)
+	}
+	rows := make([][]string, 0, len(tools))
+	var render func(i, depth int)
+	render = func(i, depth int) {
+		t := tools[i]
+		status := "ok"
+		if t.IsError {
+			status = "error"
+		}
+		indent := ""
+		if depth > 0 {
+			indent = strings.Repeat("  ", depth) + "└ "
+		}
+		name := t.ToolName
+		if by := stringField(t.Raw, "emitted_by"); by != "" {
+			name += " [" + by + "]"
+		}
+		rows = append(rows, []string{
+			strconv.FormatInt(t.Seq, 10),
+			indent + name,
+			status,
+			formatMs(t.DurationMs),
+			truncate(oneLine(t.Input), 80),
+		})
+		if summary := codemodeSummary(t.Raw); summary != "" {
+			rows = append(rows, []string{"", strings.Repeat("  ", depth+1) + "program", "", "", summary})
+		}
+		nested := children[i]
+		sort.SliceStable(nested, func(a, b int) bool { return tools[nested[a]].Seq < tools[nested[b]].Seq })
+		for _, c := range nested {
+			render(c, depth+1)
+		}
+	}
+	for _, i := range top {
+		render(i, 0)
+	}
+	return rows
+}
+
+// codemodeSummary is a program's report as one line: the calls it was served
+// against its budget, its refusal code, and each bound the clamp moved as
+// requested→applied. Empty when the event carries no report.
+func codemodeSummary(data map[string]any) string {
+	report, ok := data["codemode"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("calls %d", wholeNumber(report["calls"]))}
+	if limits, ok := report["limits"].(map[string]any); ok {
+		if limit, ok := limits["tool_calls"]; ok {
+			parts[0] += fmt.Sprintf("/%d", wholeNumber(limit))
+		}
+	}
+	if n := wholeNumber(report["budget_refused"]); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d refused on budget", n))
+	}
+	if refusal, _ := report["refusal"].(string); refusal != "" {
+		parts = append(parts, "refused: "+refusal)
+	}
+	if adjusted, ok := report["adjusted"].([]any); ok && len(adjusted) > 0 {
+		moved := make([]string, 0, len(adjusted))
+		for _, a := range adjusted {
+			if m, ok := a.(map[string]any); ok {
+				moved = append(moved, fmt.Sprintf("%s %d→%d", stringField(m, "field"), wholeNumber(m["requested"]), wholeNumber(m["applied"])))
+			}
+		}
+		parts = append(parts, "adjusted: "+strings.Join(moved, ", "))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// wholeNumber reads an event number in any of the shapes a store hands back:
+// float64 from JSON, an integer from an in-memory event, json.Number.
+func wholeNumber(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	}
+	return 0
+}
+
 // buildArtifactList enumerates only artifact versions written by the
 // selected execution. Persisted artifact files are keyed by run/node/version,
 // so directory enumeration alone cannot distinguish loop iterations or
@@ -654,21 +789,7 @@ func renderNodeReport(r *nodeReport, p *Printer) {
 	if len(r.Tools) > 0 {
 		p.Blank()
 		p.Header(fmt.Sprintf("Tool calls (%d)", len(r.Tools)))
-		rows := make([][]string, 0, len(r.Tools))
-		for _, t := range r.Tools {
-			status := "ok"
-			if t.IsError {
-				status = "error"
-			}
-			rows = append(rows, []string{
-				strconv.FormatInt(t.Seq, 10),
-				t.ToolName,
-				status,
-				formatMs(t.DurationMs),
-				truncate(oneLine(t.Input), 80),
-			})
-		}
-		p.Table([]string{"SEQ", "TOOL", "STATUS", "DURATION", "INPUT"}, rows)
+		p.Table([]string{"SEQ", "TOOL", "STATUS", "DURATION", "INPUT"}, toolCallRows(r.Tools))
 	}
 
 	if len(r.Artifacts) > 0 {

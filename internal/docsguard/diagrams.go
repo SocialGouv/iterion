@@ -154,7 +154,7 @@ func IterionSpec() Spec {
 				"teamScopedCollections and orgScopedCollections, plus secrets.OAuthCollectionName, " +
 				"platformcfg.ColRoutingPolicies, \"api_keys\" and \"org_usage\" directly.",
 			Names: []string{
-				"runs", "run_seq", "events", "interactions", "user_messages",
+				"runs", "run_seq", "events", "interactions", "user_messages", "run_data_v1_user_messages",
 				"memory_docs", "memory_spaces", "memory_tenant_usage",
 				"forge_connections", "forge_oauth_apps", "repo_integrations",
 				"api_keys", "generic_secrets", "run_secrets", "bot_secret_bindings",

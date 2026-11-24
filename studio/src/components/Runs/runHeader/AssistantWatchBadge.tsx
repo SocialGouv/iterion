@@ -5,14 +5,18 @@ import {
   stopAssistantRunWatch,
 } from "@/api/runs";
 import { Tooltip } from "@/components/ui";
+import { useRunStore } from "@/store/run";
 
 export default function AssistantWatchBadge({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
   const queryKey = ["assistant-run-watches", runId] as const;
+  // A lost run (scope_lost) is not polled: its ID may name a successor.
+  const lost = useRunStore((s) => s.wsState === "lost");
   const watches = useQuery({
     queryKey,
     queryFn: () => listAssistantRunWatches(runId),
-    refetchInterval: 20_000,
+    enabled: !lost,
+    refetchInterval: lost ? false : 20_000,
   });
   const stop = useMutation({
     // The badge's watches all target THIS run: stop them through the

@@ -115,6 +115,11 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 	if !slices.Equal(spec.LLMProviders, msg.LLMProviders) {
 		t.Fatalf("ExecutorSpec.LLMProviders = %v, want the run's frozen list — the pod's filter rides this seam", spec.LLMProviders)
 	}
+	inv, err := store.PrepareRunInvocation(t.Context(), r.cfg.Store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: msg.RunID, WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Ctx = inv.Context
 	ex, err := runview.BuildExecutor(spec)
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
@@ -130,6 +135,11 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executorSpec (no list): %v", err)
 	}
+	inv2, err := store.PrepareRunInvocation(t.Context(), r.cfg.Store, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: msg2.RunID, WorkflowName: wf.Name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec2.Ctx = inv2.Context
 	ex2, err := runview.BuildExecutor(spec2)
 	if err != nil {
 		t.Fatalf("BuildExecutor (no list): %v", err)

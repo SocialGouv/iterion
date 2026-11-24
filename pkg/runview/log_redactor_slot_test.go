@@ -62,7 +62,7 @@ func TestBuildExecutorSetsTheRunsMatcherOnTheLoggerItIsGiven(t *testing.T) {
 	process := iterlog.New(iterlog.LevelInfo, &procBuf)
 	runLogger := process.WithWriter(&runBuf)
 
-	if _, err := BuildExecutor(ExecutorSpec{
+	if _, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Ctx:      context.Background(),
 		Store:    st,
 		RunID:    "run-slot",
@@ -71,7 +71,7 @@ func TestBuildExecutorSetsTheRunsMatcherOnTheLoggerItIsGiven(t *testing.T) {
 		Logger:   runLogger,
 		WorkDir:  t.TempDir(),
 		StoreDir: t.TempDir(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 
@@ -114,9 +114,9 @@ func TestTwoConcurrentRunsKeepTheirOwnMatcher(t *testing.T) {
 	}
 	runs := []*run{{id: "run-a", value: valueA}, {id: "run-b", value: valueB}}
 	for _, r := range runs {
-		_, logger := svc.prepareRunLog(r.id)
+		_, logger := svc.prepareRunLog(t.Context(), r.id)
 		r.logger = logger
-		if _, err := BuildExecutor(ExecutorSpec{
+		if _, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 			Ctx:      context.Background(),
 			Store:    st,
 			RunID:    r.id,
@@ -125,7 +125,7 @@ func TestTwoConcurrentRunsKeepTheirOwnMatcher(t *testing.T) {
 			Logger:   logger,
 			WorkDir:  t.TempDir(),
 			StoreDir: t.TempDir(),
-		}); err != nil {
+		})); err != nil {
 			t.Fatalf("BuildExecutor(%s): %v", r.id, err)
 		}
 	}
@@ -175,7 +175,7 @@ func TestRunLoggerForNeverHandsOutTheServiceLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	_, live := svc.prepareRunLog("run-live")
+	liveBuf, live := svc.prepareRunLog(t.Context(), "run-live")
 	if got := svc.runLoggerFor("run-live"); got != live {
 		t.Error("a run this process holds must get the per-run logger prepareRunLog built — the handle carrying its matcher")
 	}
@@ -193,7 +193,7 @@ func TestRunLoggerForNeverHandsOutTheServiceLogger(t *testing.T) {
 		t.Errorf("the pass installed on the foreign-run handle reached the service logger: %q", got)
 	}
 
-	svc.dropRunLog("run-live")
+	svc.dropRunLog("run-live", liveBuf)
 	if got := svc.runLoggerFor("run-live"); got == live {
 		t.Error("a dropped run must not keep handing out its closed per-run logger")
 	}

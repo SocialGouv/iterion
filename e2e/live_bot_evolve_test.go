@@ -18,7 +18,7 @@ import (
 // produces a non-empty created_issues with no hallucinated bot assignees.
 // Then the quality panel grades the vision/backlog + value.
 //
-// Requires: claude CLI (review_claude) + OpenAI (survey/synthesize/emit).
+// Requires: claude CLI (reviewer_alternate) + OpenAI (survey/synthesize/emit).
 // Expected: ~20-40 min. (Evoly has previously hit gpt context limits — a
 // failure here is a real reliability signal, not a test bug.)
 func TestLive_Bot_Evolve(t *testing.T) {

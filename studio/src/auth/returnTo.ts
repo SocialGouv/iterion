@@ -2,8 +2,12 @@ import { studioBase } from "@/lib/scope";
 
 type BrowserLocation = Pick<Location, "pathname" | "search" | "hash">;
 
-// Keep the same-origin boundary through browser URL normalization too.
-function isLocalPath(value: string | null): value is string {
+// isLocalPath admits an in-app path only, and keeps the same-origin boundary
+// through browser URL normalization: a path that does not start with "/" (a
+// scheme, a bare host), "//host", an encoded slash or backslash right after
+// the first slash, and any backslash (a browser reads "/\host" as "//host")
+// or control character are refused.
+export function isLocalPath(value: string | null): value is string {
   return !!value && value.startsWith("/") &&
     !/^\/(\/|%2f|%5c)/i.test(value) &&
     !/[\\\p{Cc}]/u.test(value);

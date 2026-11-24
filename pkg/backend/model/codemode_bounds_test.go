@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
@@ -38,7 +39,7 @@ func runBounded(t *testing.T, want scripthost.Limits, toolMap map[string]*Genera
 	if err != nil {
 		t.Fatal(err)
 	}
-	return codemodeTool(childHost(), want).Execute(ctx, in)
+	return codemodeTool(childHost(), want, codemodeDescription).Execute(ctx, in)
 }
 
 func TestADeclaredToolCallBoundRefusesTheCallPastIt(t *testing.T) {
@@ -90,6 +91,34 @@ func TestADeclaredToolCallBoundAllowsTheCallsUnderIt(t *testing.T) {
 	}
 }
 
+// TestOnClampReportsAFloorRaise pins the report half of #3290's floor: a
+// bound the child cannot work under is RAISED by Clamp and the raise travels
+// OnClamp — the operator's warning — exactly as a ceiling reduction does.
+// Without this row, a floor raise was silent: the operator wrote 8 MiB and
+// the child ran with 64 MiB, and nothing in the run said why.
+func TestOnClampReportsAFloorRaise(t *testing.T) {
+	t.Parallel()
+	var onClampReq, onClampApplied *scripthost.Limits
+	h := childHost()
+	h.OnClamp = func(requested, applied scripthost.Limits) {
+		onClampReq, onClampApplied = &requested, &applied
+	}
+	// The run's OUTCOME is irrelevant to this witness — in CI there is no
+	// installed iterion for a production-path child to resolve (the first
+	// CI attempt failed exactly there: "exec: no command"), so the assertion
+	// is the CAPTURE: Clamp fires OnClamp BEFORE any spawn attempt
+	// (host.go: clamped → OnClamp → exec), and the report says the 8 MiB
+	// the witness wrote became the floor.
+	_, _ = h.Run(context.Background(), `1+1`, scripthost.Limits{Memory: 8 << 20, Wall: 20 * time.Second, CPU: 15 * time.Second})
+	if onClampReq == nil || onClampApplied == nil {
+		t.Fatalf("OnClamp never fired on a floor raise: the operator wrote 8 MiB and nothing said the child ran with more")
+	}
+	floor := scripthost.MemoryFloor().Memory
+	if onClampReq.Memory != 8<<20 || onClampApplied.Memory != floor {
+		t.Errorf("OnClamp (requested %+v, applied %+v), want 8 MiB raised to the floor %d", *onClampReq, *onClampApplied, floor)
+	}
+}
+
 // TestInstallCodemodePassesTheDeclaredBounds is the ONE line this slice adds
 // to the runtime: installCodemode used to hand the host a zero Limits, so a
 // declared bound could reach the task and stop there.
@@ -107,7 +136,9 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	}
 
 	var opts GenerationOptions
-	installCodemode(&opts, &scripthost.Limits{ScriptBytes: 10}, nil)
+	if err := installCodemode(&opts, false, &scripthost.Limits{ScriptBytes: 10}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	if len(opts.Tools) != 1 {
 		t.Fatalf("installCodemode appended %d tool(s), want 1", len(opts.Tools))
 	}
@@ -131,7 +162,9 @@ func TestInstallCodemodePassesTheDeclaredBounds(t *testing.T) {
 	// the spawn, so what this arm asserts is that it is not refused FOR ITS
 	// SIZE — the error, if any, comes from somewhere else.
 	var plain GenerationOptions
-	installCodemode(&plain, nil, nil)
+	if err := installCodemode(&plain, false, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	_, err = plain.Tools[0].Execute(ctx, in)
 	if err != nil && strings.Contains(err.Error(), scripthost.RefusalScriptBytes) {
 		t.Errorf("nil bounds refused a 200-byte program for its size: %v", err)

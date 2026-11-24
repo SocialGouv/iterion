@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/scripthost"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,8 @@ type LLMRequestInfo struct {
 	// line; without it every claw line stuck at #0 (the hook closures
 	// captured a base context, not the live per-iteration one).
 	Iteration int
+	// CatalogueOnlyCount is RequestInfo's: the tools held off the wire.
+	CatalogueOnlyCount int
 }
 
 // LLMResponseInfo describes an LLM response, passed to the OnLLMResponse hook.
@@ -156,6 +159,11 @@ type LLMToolCallInfo struct {
 	// falls through and the card renders with whatever data the
 	// tool_called event alone carries.
 	ToolUseID string
+	// ParentToolUseID and Batch place a codemode program's nested call
+	// under the program's own call (ToolCallInfo); empty on a call the
+	// model made itself.
+	ParentToolUseID string
+	Batch           *scripthost.BatchSlot
 	// Output is the string the tool returned to the LLM. The hooks layer
 	// truncates and persists it on the tool_called event so the studio's
 	// per-node Tools tab can render in+out the way Claude Code does.
@@ -164,7 +172,22 @@ type LLMToolCallInfo struct {
 	Output   string
 	Duration time.Duration
 	Error    error
+	// Codemode is a codemode program's report, set on its call's
+	// completion only (ToolCallInfo).
+	Codemode *CodemodeReport
+	// EmittedBy names who emitted the event when it is not the loop that
+	// ran the call: ToolEventEmittedByLauncher on the launcher's own refusal
+	// of a call a sandboxed runner forwarded. Its ToolUseID and
+	// ParentToolUseID are what the RUNNER claimed, so a reader keeps the
+	// event apart from the runner's own instead of merging the two. A
+	// relayed event never carries it: ApplyRelayedEvent builds its info
+	// field by field from relayedToolFinished, which has no such field.
+	EmittedBy string
 }
+
+// ToolEventEmittedByLauncher marks the launcher's own event about a
+// forwarded call (LLMToolCallInfo.EmittedBy, the event's `emitted_by`).
+const ToolEventEmittedByLauncher = "launcher"
 
 // LLMToolStartedInfo describes a tool call about to execute, passed to the
 // OnToolStarted hook. Emitted immediately before the tool runs so observers
@@ -178,6 +201,9 @@ type LLMToolStartedInfo struct {
 	// with several tool_use blocks). Empty when the path can't provide
 	// one (direct tool nodes, claw single tool loop).
 	ToolUseID string
+	// ParentToolUseID and Batch, as on LLMToolCallInfo.
+	ParentToolUseID string
+	Batch           *scripthost.BatchSlot
 	// Input is the raw JSON arguments the LLM produced for this call.
 	// May be empty when the backend cannot surface it. The hooks layer
 	// persists it (truncated) on the tool_started event so the studio's
@@ -284,12 +310,13 @@ func (i LLMTurnCaptureInfo) MarshalConversation() json.RawMessage {
 
 func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
-		Model:           info.Model,
-		WireModel:       info.WireModel,
-		MessageCount:    info.MessageCount,
-		ToolCount:       info.ToolCount,
-		ReasoningEffort: info.ReasoningEffort,
-		Timestamp:       info.Timestamp,
+		Model:              info.Model,
+		WireModel:          info.WireModel,
+		MessageCount:       info.MessageCount,
+		ToolCount:          info.ToolCount,
+		CatalogueOnlyCount: info.CatalogueOnlyCount,
+		ReasoningEffort:    info.ReasoningEffort,
+		Timestamp:          info.Timestamp,
 	}
 }
 
@@ -332,21 +359,26 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 
 func toLLMToolCallInfo(info ToolCallInfo) LLMToolCallInfo {
 	return LLMToolCallInfo{
-		ToolName:  info.ToolName,
-		InputSize: info.InputSize,
-		ToolUseID: info.ToolUseID,
-		Output:    info.Output,
-		Duration:  info.Duration,
-		Error:     info.Error,
+		ToolName:        info.ToolName,
+		InputSize:       info.InputSize,
+		ToolUseID:       info.ToolUseID,
+		ParentToolUseID: info.ParentToolUseID,
+		Batch:           info.Batch,
+		Output:          info.Output,
+		Duration:        info.Duration,
+		Error:           info.Error,
+		Codemode:        info.Codemode,
 	}
 }
 
 func toLLMToolStartedInfo(info ToolCallInfo) LLMToolStartedInfo {
 	return LLMToolStartedInfo{
-		ToolName:  info.ToolName,
-		InputSize: info.InputSize,
-		ToolUseID: info.ToolUseID,
-		Input:     info.Input,
+		ToolName:        info.ToolName,
+		InputSize:       info.InputSize,
+		ToolUseID:       info.ToolUseID,
+		ParentToolUseID: info.ParentToolUseID,
+		Batch:           info.Batch,
+		Input:           info.Input,
 	}
 }
 
@@ -425,6 +457,7 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 			fn(nodeID, li)
 		}
 	}
+	opts.toolObserversAudited = h.toolObserversAudited
 	if h.OnToolStarted != nil {
 		fn := h.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {

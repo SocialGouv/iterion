@@ -142,7 +142,7 @@ func (s *MemoryPledgeStore) Upsert(_ context.Context, p Pledge) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p.ID == "" {
-		p.ID = PledgeID(p.UserID, p.Source, p.Ref)
+		p.ID = PledgeID(p.UserID, p.Source, p.Ref, p.KeyID)
 	}
 	now := time.Now().UTC()
 	if existing, ok := s.m[p.ID]; ok {

@@ -52,6 +52,8 @@ check can no longer silently neuter the mutants that prove it.
 | `--user 10001:0` | `runAsGroup` / `fsGroup` | exit 4, refused before any leg |
 | no Landlock + `-allow-without-landlock` | the domain | exit 5, *it is not a pass* |
 | `applyParentDeathSignal` becomes a no-op | the backstop | **assumed survivor**: leg 7 stays green |
+| the image's child predates the socket wall (`sockets_denied=false`) | the wall in the SHIPPED binary | leg 1 red, exit 1 — the image of 2026-11-13; the same image carrying this branch's binary holds 7/7 |
+| `Confine` skips the socket filter, `sockets_denied` still true | the network wall | leg 5 red: *a UDP send SUCCEEDED* — the only attempt that shows it on an ABI 4 host, where Landlock still refuses `connect` and docker's profile `io_uring` |
 
 Most rows exist because a guard this bench shipped was green on the class it
 was written for: leg 5 asked only *whether* an attempt failed; leg 6 compared

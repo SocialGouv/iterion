@@ -1,6 +1,12 @@
 # ADR-052 — Mono/dual review topology for bi-model review-loop bots
 
-Status: **accepted → implemented** (2026-07-01). Pilot
+Status: **accepted → implemented** (2026-07-01); **amended by ADR-169** (2026-11-18).
+
+[ADR-169](169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md)
+renames the modes to `single | paired` and retires the
+`mono_family` var: a role's family is a routing choice, not a launch var. The
+bots that declare the topology today are `review-pr` and `evolve` — the
+campaign bots this record piloted on no longer carry the vars. Pilot
 (branch-improve-loop) + rollout to whole-improve-loop, feature-dev,
 docs-refresh, secured-renovacy; resolution wired on the CLI, studio/API,
 and dispatcher launch surfaces. Live `iterion bench asymptote` +
@@ -10,8 +16,8 @@ mono asymptote as production-proven (needs provider-credential headroom).
 ## Context
 
 Five catalog bots run a **bi-model review loop**: a router alternates
-`reviewer_claude` (backend `claude_code`, a "claude"-family model) and
-`reviewer_gpt` (backend `claw`, a "gpt"-family model), each feeding its
+`reviewer_alternate` (backend `claude_code`, a "claude"-family model) and
+`reviewer` (backend `claw`, a "gpt"-family model), each feeding its
 same-family fixer, until a `streak_check` compute signals convergence.
 Two model *families* are the point — the loop's robustness comes from a
 second family catching the first's blind spots, and (in 4 of the 5 bots)

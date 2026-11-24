@@ -18,8 +18,8 @@ neither (Nexie, Evoly) stay out of the picker.
 
 ```yaml
 invocations:
-  - kind: forge | command | schedule | board | keepalive   # required, closed set
-    mode: direct | board                        # optional, default direct
+  - kind: forge | command | schedule | board | keepalive | connector   # required, closed set
+    mode: direct | board | deliver              # optional, default direct (see Execution mode)
     args_var: <workflow var>                    # optional: where the trigger payload lands
     context_vars: { k: v }                       # optional: vars stamped on every run from this path
     # exactly one payload block, selected by kind:
@@ -30,13 +30,18 @@ invocations:
     board:    { on: [card.moved], to_states: [ready], all_labels: [triage:auto],
                 consume_labels: false }          # optional; empty = plain dispatcher target
     keepalive:{ interval: 5m, stale_after: 15m, default_vars: { k: v } }
+    connector:{ trigger: slack.message.posted,  # a package trigger id
+                filters: { channel: [C123] },    # suggested values per declared filter
+                vars: { prompt: event.text } }   # bot var -> expression over `event`
 ```
 
 Validation runs at manifest parse time (`bundle.validateInvocations`): unknown
 kind/mode, unknown forge event, malformed command name (`^[a-z][a-z0-9_-]*$`),
 bad scope/disambiguator, and intra-bot duplicate command names all fail fast.
 `botregistry.ListWithSchema` additionally warns (soft) when an `args_var` names
-a var the bot's workflow does not declare.
+a var the bot's workflow does not declare. `iterion validate` warns on a
+`connector.vars` key the workflow does not declare (C214) and on a mode no
+effect honours (C215, below).
 
 ## Trigger surfaces
 
@@ -61,6 +66,22 @@ a var the bot's workflow does not declare.
   `stale_after` is reaped, not stacked). Sub-minute cadence needs the resident
   in-process scheduler (host crontab floors at 1m).
 
+- **`connector`** — an event a connector package declares (ADR-168): a Slack
+  message, a Jira issue, a Sentry alert. The manifest only suggests the
+  binding: an operator enables it onto one of the team's connections
+  (`POST …/bots/{name}/triggers/from-invocation` with `connection_id`), and
+  the subscription is judged at save against that connection, the package's
+  trigger and the bot's declared vars. A delivery is stored before it is
+  acknowledged, then matched by the connector worker against the
+  connection's own subscriptions — never through the bus — and each matched
+  pair launches once, as an idempotent submission. The dead-letter view and
+  replays live under `/api/v1/intakes` and `/api/v1/pairs`. A **polled**
+  trigger (an RSS feed, a Jira JQL) is read by a poller instead of delivered:
+  its subscription names the trigger's `poll_query` and the connection needs
+  the `action` grant beside `trigger` ([event sources](event-sources.md#running-pollers)).
+  The studio plugs either kind from the Sources catalogue, and shows a bot's
+  sources on its start node in the editor.
+
 ## Execution mode
 
 - **`direct`** — launch the run immediately (the Revi path: webhook → publisher
@@ -73,6 +94,18 @@ a var the bot's workflow does not declare.
   With a cloud board but no dispatcher it creates a tracking card **and**
   launches directly; with no cloud board at all it falls back to a plain
   direct launch.
+- **`deliver`** — hand the event to the bot's parked run. It parses, and
+  every builder, dispatcher and route refuses it, typed, until #3136 ships
+  it: no path reads an unknown or unsupported mode as a launch
+  (`bundle.ResolveMode`). `board` is refused on a `connector` invocation —
+  the board effect promotes an existing native card.
+
+Locally, the subscriptions derived from the manifests persist in
+`<store>/dispatcher/trigger-subscriptions.json` under ids their invocation
+derives (`trigger.DerivedSubscriptionID`): each start refreshes what the
+manifest owns and keeps the operator's choices (enabled, pins, guard), and a
+derived row an operator deletes leaves a tombstone no later start crosses
+until the invocation is enabled again.
 
 ## Slash-command routing
 

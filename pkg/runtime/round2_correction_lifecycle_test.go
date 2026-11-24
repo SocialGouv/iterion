@@ -118,3 +118,68 @@ func TestR2ExecutorCorrectionAfterAndResumeRaise(t *testing.T) {
 	}
 	assertPhase("succeeded")
 }
+
+func TestExecutorCorrectionUnchangedCanResumeWithHigherBudget(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	wf := validationWorkflow()
+	n := wf.Nodes["my_agent"].(*ir.AgentNode)
+	n.Backend = delegate.BackendClaudeCode
+	wf.Schemas["MySchema"].Fields[0].EnumValues = []string{"pass"}
+	calls := 0
+	backend := adverseBackendFunc(func(context.Context, delegate.Task) (delegate.Result, error) {
+		calls++
+		summary := fmt.Sprint("invalid-", calls)
+		if calls <= 2 {
+			summary = "unchanged"
+		}
+		if calls == 4 {
+			summary = "pass"
+		}
+		return delegate.Result{Output: map[string]any{"summary": summary, "score": 1}, Tokens: 1}, nil
+	})
+	registry := delegate.NewRegistry()
+	registry.Register(delegate.BackendClaudeCode, backend)
+	st := tmpStore(t)
+	exec := model.NewClawExecutor(model.NewRegistry(), wf, model.WithBackendRegistry(registry))
+	ctx := context.Background()
+	eng := New(wf, st, exec, WithOutputCorrectionBudget(1))
+	if err := eng.Run(ctx, "raise", nil); err == nil {
+		t.Fatal("invalid output accepted")
+	}
+	run, err := st.LoadRun(ctx, "raise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := run.OutputCorrections["my_agent"]
+	if ep.Attempts != 1 || ep.Status != "unchanged" {
+		t.Fatalf("After did not persist exhaustion: %+v", ep)
+	}
+	assertPhase := func(want string) {
+		t.Helper()
+		events, err := st.LoadEvents(ctx, "raise")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Type == store.EventNodeRecovery && event.Data["phase"] == want {
+				return
+			}
+		}
+		t.Errorf("missing lifecycle event %s", want)
+	}
+	assertPhase("unchanged")
+	eng = New(wf, st, exec, WithOutputCorrectionBudget(2))
+	if err := eng.Resume(ctx, "raise", nil); err != nil {
+		t.Fatalf("raised allowance rejected: calls=%d err=%v", calls, err)
+	}
+	run, err = st.LoadRun(ctx, "raise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep = run.OutputCorrections["my_agent"]
+	if calls != 4 || ep.Attempts != 2 || ep.Budget != 2 || ep.Status != "succeeded" {
+		t.Fatalf("raised/settled ledger: calls=%d episode=%+v", calls, ep)
+	}
+	assertPhase("succeeded")
+}

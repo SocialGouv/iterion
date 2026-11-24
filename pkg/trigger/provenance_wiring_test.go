@@ -348,7 +348,7 @@ func TestColumnRenameFiresNoEffect(t *testing.T) {
 			}
 			matched++
 			if err := eval.applyEffect(context.Background(), sub, ev, effectOpts{}); !errors.Is(err, errEffectMachineCaused) {
-				t.Fatalf("applyEffect on a %s subscription = %v, want errEffectMachineCaused", sub.EffectiveMode(), err)
+				t.Fatalf("applyEffect on a %s subscription = %v, want errEffectMachineCaused", sub.Mode, err)
 			}
 		}
 		return true

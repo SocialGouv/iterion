@@ -205,30 +205,26 @@ concurrency:
 # pinned against each other by TestSelfHostedRoutingExpressionsAgree in
 # internal/ciguard: one copy edited alone turns it red.
 
-# These runners' kernels offer Landlock ABI 1, which has no network rights —
-# they arrive at ABI 4 (kernel 6.7). So codemode's escape suite CANNOT prove
-# that a confined script host is unable to open a TCP connection here, and it
-# refuses to skip a bound silently: the lane has to say out loud what it does
-# not test. Measured 2026-11-11 on arc-runners: the filesystem, exec and
-# every-thread bounds ARE proven, the network one is not, and the connect a
-# confined child made succeeded.
-#
-# Workflow-level rather than per-step because four jobs run the Go suite and a
-# record on one of them is a record on none — `race-shard` found that the hard
-# way. It takes effect only BELOW the ABI an arm needs, so when the runners
-# move to a 6.7+ kernel the arm proves itself and this block can go.
-env:
-  ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET: "1"
-
 jobs:
   # ---- gated legs: the real work, one side each, aggregated by `test` ----
 
   test-unit:
     # The Go unit half of what `test` ran as one mega-job. Split so the wall
     # clock stops stacking studio, e2e and unit on one pod (2026-10-04: the
-    # mega-job was 24-26 min; unit alone is ~10, dominated by the single
+    # mega-job was 24-26 min; unit alone was ~10, dominated by the single
     # `bots` package). Runs in the merge queue behind the required `test`
     # aggregator; carries the tap skip and nothing else — see the header.
+    #
+    # SHARDED three ways, like race-shard (#3402). Unsharded, the suite grew
+    # to a 24.5-min `go test` step under a 30-min job ceiling: a slow runner
+    # cut the next step and a suite whose every package passed read red in the
+    # merge queue. Every package still runs: `./...` minus e2e, partitioned by
+    # scripts/ci/testshards with the UNIT weights table, a pure function of the
+    # commit, so the three legs of one entry pick complementary sets. LPT seats
+    # the heaviest row (`bots`) on shard 0; the one-time steps — the freshness
+    # gate, gofmt, vet, the census and the live compile, ~5 min together — run
+    # on the LAST shard, away from it. Should the weights ever put them
+    # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     # Nested read-only mount witnesses need a namespace-capable runner.
@@ -238,6 +234,10 @@ jobs:
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -270,6 +270,7 @@ jobs:
           fi
 
       - name: Generated artefacts are fresh (fail fast)
+        if: matrix.shard == 2
         # Two pull requests that each regenerate the same committed artefact
         # can merge clean and stale together — the queue's most frequent
         # failure. The freshness tests that catch it take seconds, but the
@@ -347,6 +348,7 @@ jobs:
           node "$ULTRA11Y_BIN" --version
 
       - name: gofmt (check)
+        if: matrix.shard == 2
         shell: bash
         run: |
           set -euo pipefail
@@ -361,10 +363,11 @@ jobs:
           fi
 
       - name: go vet
+        if: matrix.shard == 2
         run: go vet -mod=vendor ./...
 
       - name: Test capability census
-        if: always()
+        if: always() && matrix.shard == 2
         # Static inventory is identical locally; runner observations contain
         # boolean prerequisite presence only, never credential values.
         run: |
@@ -372,7 +375,7 @@ jobs:
           cat .iterion/test-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish test capabilities
-        if: always()
+        if: always() && matrix.shard == 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-capabilities-unit
@@ -414,9 +417,19 @@ jobs:
         # while a test had run for only 9s (#2745). Allow 25m per package,
         # still bounded by the job's 30m including setup and live compilation.
         # Individual test deadlines and all assertions remain in force.
-        run: go test -mod=vendor -count=1 -timeout 1500s $(go list -mod=vendor ./... | grep -v '/e2e$')
+        #
+        # The partition goes through an ASSIGNMENT, never inline `$( )`:
+        # inline substitution loses the splitter's exit code, and an
+        # empty-shard refusal would degrade into `go test` with no package.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
+          go test -mod=vendor -count=1 -timeout 1500s $pkgs
 
       - name: Live e2e compile check
+        if: matrix.shard == 2
         # Builds every -tags=live test in the repo and runs NONE of them
         # (`-run '^$'`). No credentials, no model call, no network — pure
         # compilation. The paid live layer would otherwise bit-rot green
@@ -787,7 +800,12 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 15
+    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
+    # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
+    # check_response_timeout: a hang is named by go test's own timeout, and
+    # this ceiling only backstops the steps around it. At 15 it cut a green
+    # 11-14 min suite whenever two runs shared the runners (#3390).
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -799,8 +817,8 @@ jobs:
           # No Go cache (#1839, like fmt-check): -mod=vendor needs no module
           # cache, the build cache it restores is another job's, and on the
           # scale set a slow restore of that ~400 MB archive has taken eleven
-          # minutes of this fifteen-minute budget (nats-conformance, the same
-          # setup, cancelled twice on 2026-09-29).
+          # minutes of a fifteen-minute job (nats-conformance, the same setup,
+          # cancelled twice on 2026-09-29).
           cache: false
 
       - name: Start mongo as a replica set
@@ -814,7 +832,7 @@ jobs:
           docker run -d --name mongo-rs \
             -p 127.0.0.1:27017:27017 \
             mongo:8.0 \
-            --replSet rs0 --bind_ip_all
+            --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
           for i in $(seq 1 30); do
             if docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; then
               break
@@ -859,9 +877,10 @@ jobs:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
           # This includes the complete server suite, which already exceeds
-          # five minutes without Mongo. Keep its package budget below the
-          # job's fifteen-minute limit without shortening any test coverage.
-          go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
+          # five minutes without Mongo and reached the old 10m package budget
+          # with it under queue load (600.6s, #3390). The budget stays below
+          # the job's ceiling without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 20m \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
@@ -871,11 +890,49 @@ jobs:
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... ./pkg/usernotify/... ./pkg/configshare/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/... \
-            ./pkg/connector/intake/...
+            ./pkg/connector/intake/... ./pkg/connector/poller/...
+          # The store harness runs alone on the replica set: its transactions
+          # and change streams saturate a shared mongod, which starves the
+          # suites beside it, so it carries its own budget.
+          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/store/mongo/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
-          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
+          # BuildSnapshot's run-origin matrix and the merge doors' expected
+          # birth against the native Mongo store. The `/...` form keeps
+          # pkg/runview visible to pkg/store/mongo's gated-package guard;
+          # -run leaves the rest of it to `test`.
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
+            -run '^(TestSnapshotOriginNativeMongo|TestMergeExpectedBirthNativeMongo)$'
+
+      - name: Subbot lease Mongo and NATS witness
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+          ITERION_TEST_NATS_URI: nats://localhost:4222
+        run: |
+          set -euo pipefail
+          test -n "$ITERION_TEST_MONGO_URI"
+          test -n "$ITERION_TEST_NATS_URI"
+          trap 'docker rm -f nats-child-lease >/dev/null 2>&1 || true' EXIT
+          docker run -d --name nats-child-lease \
+            -p 127.0.0.1:4222:4222 nats:2.14-alpine -js
+          ready=0
+          for i in $(seq 1 30); do
+            logs="$(docker logs nats-child-lease 2>&1)"
+            if grep -Fq 'Server is ready' <<<"$logs" && grep -Fq 'JetStream' <<<"$logs"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-child-lease
+            echo 'Owned NATS fixture failed to start' >&2
+            exit 1
+          fi
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo \
+            -run '^TestSubbotLeaseMongoNATS$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
@@ -1107,7 +1164,9 @@ jobs:
         # DSL shape (see docs/grammar/iterion_v1.ebnf + examples/*.bot):
         #   - top-level node decls, schemas, then `workflow` block
         #   - tool nodes use `output: <schema>` (singular) referencing a
-        #     declared schema, not an inline `outputs:` map
+        #     declared schema, not an inline `outputs:` map — and a node
+        #     that declares one prints that schema's fields as ONE JSON
+        #     object: plain text there fails the node (ADR-171)
         #   - edges live INSIDE the workflow block as `src -> dst`,
         #     not in a separate `edges:` list
         #   - entry point is `entry:`, not `start:`
@@ -1117,7 +1176,7 @@ jobs:
         timeout-minutes: 3 # the 90 s poll and its requests
         run: |
           set -euo pipefail
-          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
+          SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: `printf \'{"stdout": "hello cloud"}\'`\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
           BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
           RUN_ID=$(curl -sf \
             -H "Content-Type: application/json" \

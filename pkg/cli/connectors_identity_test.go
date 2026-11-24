@@ -215,3 +215,75 @@ func connectorFiles(t *testing.T, root string) map[string]string {
 	}
 	return files
 }
+
+// TestConnectorRegenerationPreservesCatalogIdentity: the catalog
+// identity fields are authored presentation — the generator never
+// produces them, and a regen that dropped them would silently demote
+// the entry to a monogram (ADR-168 §2).
+func TestConnectorRegenerationPreservesCatalogIdentity(t *testing.T) {
+	root := t.TempDir()
+	source, dest := filepath.Join(root, "spec.json"), filepath.Join(root, "probe")
+	options := cli.ConnectorsGenOptions{Spec: source, Out: dest, ID: "probe", KeepOverlay: true}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(genFixture), &doc); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.ConnectorsGen(options, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	conn := filepath.Join(dest, spec.ConnectorFile)
+	body, err = os.ReadFile(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "icon.svg"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared := string(body) +
+		"category: source_control\nbrand_color: \"#ff9e1b\"\nicon: icon.svg\n"
+	if err := os.WriteFile(conn, []byte(declared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A different description (the regen has something to do).
+	paths := doc["paths"].(map[string]any)
+	paths["/aaa"] = map[string]any{"get": map[string]any{
+		"tags": []string{"issue"}, "operationId": "issueListIssues",
+		"responses": map[string]any{"200": map[string]any{"description": "ok"}},
+	}}
+	body, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.ConnectorsGen(options, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"category: source_control", "icon: icon.svg"} {
+		if !strings.Contains(string(body), field) {
+			t.Fatalf("the regen dropped %q (yaml:\n%s)", field, body)
+		}
+	}
+	// The accent's value survives whatever quoting the marshaller picks.
+	var brandLine string
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "brand_color:") {
+			brandLine = line
+		}
+	}
+	if !strings.Contains(brandLine, "ff9e1b") {
+		t.Fatalf("the regen dropped brand_color (yaml:\n%s)", body)
+	}
+}
