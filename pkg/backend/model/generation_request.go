@@ -521,10 +521,9 @@ func callAndAggregate(
 	if err == nil && coldTimeout > 0 {
 		coldRemaining = time.Until(start.Add(coldTimeout))
 		if coldRemaining <= 0 {
-			// On a cancelled run the expired window is the teardown's, and
-			// the cancellation is the verdict, as in the watchdog's timer arm.
-			err = ctx.Err()
-			if err == nil {
+			// On a cancelled run the opened stream goes to aggregation, which
+			// reports the cancellation and books the call's unknown bill.
+			if ctx.Err() == nil {
 				err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
 			}
 		}
