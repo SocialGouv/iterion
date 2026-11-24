@@ -8,6 +8,14 @@ import (
 	clawtools "github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools"
 )
 
+// MaxImageBase64Bytes bounds one image a tool hands the model: Anthropic
+// refuses an image over 5 MiB of base64 with a 400 the conversation cannot
+// recover from — the image stays in the history and every retry fails the
+// same way. Refused here, the tool result is an error the model reads and
+// recovers from by downscaling. read_image itself accepts up to 5 MB raw,
+// which is ~6.7 MB of base64.
+const MaxImageBase64Bytes = 5 << 20
+
 // ImageResultContent decodes the output of a tool registered with an image
 // result (read_image, screenshot, computer_use: clawImageResultAdapter's
 // JSON) into the content of its tool_result — the description as a text
@@ -17,7 +25,8 @@ import (
 // A computer_use action other than a capture returns its description alone.
 // The output is the tool's own encoding, so a decode failure, a block that
 // is neither text nor image, or an empty result is a defect of the
-// producer, reported as an error rather than passed on as text.
+// producer, reported as an error rather than passed on as text; so is an
+// image over MaxImageBase64Bytes.
 func ImageResultContent(output string) ([]api.ContentBlock, error) {
 	var res clawtools.ReadImageResult
 	if err := json.Unmarshal([]byte(output), &res); err != nil {
@@ -36,6 +45,9 @@ func ImageResultContent(output string) ([]api.ContentBlock, error) {
 		case "image":
 			if b.Source == nil {
 				return nil, fmt.Errorf("image result block %d has no source", i)
+			}
+			if n := len(b.Source.Data); n > MaxImageBase64Bytes {
+				return nil, fmt.Errorf("image result block %d is %d bytes of base64, over the %d a vision request accepts per image — downscale the image and read the smaller file", i, n, MaxImageBase64Bytes)
 			}
 			content = append(content, api.ContentBlock{Type: "image", Source: b.Source})
 		default:

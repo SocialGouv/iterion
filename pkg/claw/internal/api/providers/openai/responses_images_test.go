@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -48,7 +49,8 @@ func TestConvertMessagesToResponsesInput_CarriesImages(t *testing.T) {
 
 func TestConvertMessagesToResponsesInput_RefusesAnImageWithoutData(t *testing.T) {
 	_, err := convertMessagesToResponsesInput([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "image"}}}})
-	if err == nil {
-		t.Fatal("want an error for an image block with no source")
+	var invalid *api.RequestValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want *api.RequestValidationError for an image block with no source", err, err)
 	}
 }

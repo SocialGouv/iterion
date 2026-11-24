@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,21 @@ func TestImageResultTrait_OnlyTheImageToolsCarryIt(t *testing.T) {
 	}
 	if seen < 6 {
 		t.Fatalf("only %d tools registered — the check saw too little to mean anything", seen)
+	}
+}
+
+// One image over the per-image cap a vision request accepts is refused, so
+// the model reads an error it recovers from instead of a 400 that poisons
+// the conversation; an image at the cap passes.
+func TestImageResultContent_RefusesAnImageOverThePerImageCap(t *testing.T) {
+	result := func(n int) string {
+		return `{"description":"big.png","blocks":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + strings.Repeat("A", n) + `"}}]}`
+	}
+	if _, err := ImageResultContent(result(MaxImageBase64Bytes)); err != nil {
+		t.Fatalf("an image at the cap was refused: %v", err)
+	}
+	_, err := ImageResultContent(result(MaxImageBase64Bytes + 1))
+	if err == nil || !strings.Contains(err.Error(), "downscale") {
+		t.Fatalf("err = %v, want a refusal telling the model to downscale", err)
 	}
 }

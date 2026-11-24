@@ -2,6 +2,7 @@ package openaiwire
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -65,18 +66,19 @@ func TestConvertMessages_UserImageBecomesImageURLPart(t *testing.T) {
 }
 
 func TestConvertMessages_TextOnlyWireIsUnchanged(t *testing.T) {
-	msgs, err := ConvertMessages("sys", []api.Message{
-		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "a"}, {Type: "text", Text: "b"}}},
+	msgs, err := ConvertMessages("sys <rules> & more", []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "a<b"}, {Type: "text", Text: "x && y > z"}}},
 		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "c1", Name: "bash", Input: map[string]any{}}}},
 	})
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	body, err := json.Marshal(msgs)
+	// The request marshaller, not json.Marshal: the body a provider receives.
+	body, err := MarshalJSON(msgs)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	want := `[{"role":"system","content":"sys"},{"role":"user","content":"a\nb"},{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]}]`
+	want := `[{"role":"system","content":"sys <rules> & more"},{"role":"user","content":"a<b\nx && y > z"},{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]}]`
 	if string(body) != want {
 		t.Errorf("wire =\n%s\nwant\n%s", body, want)
 	}
@@ -171,5 +173,63 @@ func TestConvertMessages_RefusesAnImageWithoutData(t *testing.T) {
 				t.Error("tool image: want an error, got none")
 			}
 		})
+	}
+}
+
+// A message injected after a tool image (a runtime reminder, an operator
+// message) joins the image carrier: two user messages in a row break
+// templates that require strict role alternation.
+func TestConvertMessages_InjectedUserMessageJoinsTheToolImageCarrier(t *testing.T) {
+	msgs, err := ConvertMessages("", []api.Message{
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "c1", Name: "read_image", Input: map[string]any{}}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: []api.ContentBlock{pngBlock("QUJD")}}}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "operator note"}}},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got := wireJSON(t, msgs)
+	if r := roles(got); r != "assistant,tool,assistant,user" {
+		t.Fatalf("roles = %s, want assistant,tool,assistant,user", r)
+	}
+	parts := got[3]["content"].([]any)
+	if len(parts) != 3 || parts[1].(map[string]any)["type"] != "image_url" || parts[2].(map[string]any)["text"] != "operator note" {
+		t.Errorf("carrier = %v, want caption, image, then the injected text", parts)
+	}
+}
+
+// Tool results of one assistant turn spread over several input messages stay
+// contiguous on the wire: the image carrier waits for the end of the run, so
+// no tool message is cut off from its tool_calls.
+func TestConvertMessages_ToolResultsSplitAcrossMessagesStayContiguous(t *testing.T) {
+	msgs, err := ConvertMessages("", []api.Message{
+		{Role: "assistant", Content: []api.ContentBlock{
+			{Type: "tool_use", ID: "c1", Name: "read_image", Input: map[string]any{}},
+			{Type: "tool_use", ID: "c2", Name: "bash", Input: map[string]any{}},
+		}},
+		{Role: "user", Content: []api.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: []api.ContentBlock{pngBlock("QUJD")}}}},
+		{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: "c2", Content: "ok"}.ToContentBlock()}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "done"}}},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got := wireJSON(t, msgs)
+	if r := roles(got); r != "assistant,tool,tool,assistant,user,assistant" {
+		t.Fatalf("roles = %s, want assistant,tool,tool,assistant,user,assistant", r)
+	}
+	if got[1]["tool_call_id"] != "c1" || got[2]["tool_call_id"] != "c2" {
+		t.Errorf("tool messages = %v, %v", got[1], got[2])
+	}
+}
+
+func TestConvertMessages_AnUnencodableImageIsARequestValidationError(t *testing.T) {
+	_, err := ConvertMessages("", []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "image"}}}})
+	var invalid *api.RequestValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want *api.RequestValidationError", err, err)
+	}
+	if invalid.IsRetryable() {
+		t.Error("a request that cannot be encoded must not be retried")
 	}
 }

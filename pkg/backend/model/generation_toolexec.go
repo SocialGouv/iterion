@@ -619,8 +619,8 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 //
 // imageResult (the tool's GenerationTool.imageResult) has a successful
 // output decoded into the description and image blocks it encodes, so the
-// model receives the image itself; an output that does not decode is the
-// producer's defect and shapes into an is_error result naming it.
+// model receives the image itself; an output that does not decode, or an
+// image too large to send, shapes into an is_error result naming it.
 func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error, imageResult bool) (api.ContentBlock, error) {
 	if err != nil {
 		var askErr *delegate.ErrAskUser
@@ -666,7 +666,7 @@ func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock
 		if decodeErr != nil {
 			return api.ToolResult{
 				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("tool error: %s returned an unreadable image result: %v", tu.Name, decodeErr),
+				Content:   fmt.Sprintf("tool error: %s returned an image result the model cannot receive: %v", tu.Name, decodeErr),
 				IsError:   true,
 			}.ToContentBlock(), nil
 		}

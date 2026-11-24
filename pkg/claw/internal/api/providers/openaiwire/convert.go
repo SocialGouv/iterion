@@ -21,14 +21,15 @@ import (
 //   - User image blocks → `image_url` parts (a base64 source as a data URL),
 //     the user message's content becoming a parts array.
 //   - Images inside a tool_result → the tool message keeps the text and
-//     announces the images, which travel in the user message that follows.
+//     announces the images, which travel in the user message that follows
+//     the run of tool messages.
 //   - A user message right after a tool message is preceded by a bridging
 //     assistant message (see toolResultsBridge).
 //
 // When system is non-empty it is emitted as the first message; passing ""
 // is the supported way to skip it. An image block with neither base64 data
-// nor a URL is refused: dropping it would send the model a turn without the
-// image it was handed.
+// nor a URL is refused (*api.RequestValidationError): dropping it would send
+// the model a turn without the image it was handed.
 func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 	var result []Message
 
@@ -36,14 +37,39 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 		result = append(result, Message{Role: "system", Content: StrPtr(system)})
 	}
 
+	// toolImages holds the captioned images of the tool results emitted since
+	// the last user or assistant message. They wait for the end of the run of
+	// tool messages — which may span several input messages, and which a user
+	// message in between would break — then ride in the next user message,
+	// merged with its text, or alone before the next assistant turn or at the
+	// end of the conversation.
+	var toolImages []ContentPart
+	emitUser := func(parts []ContentPart) {
+		parts = append(toolImages, parts...)
+		toolImages = nil
+		if len(parts) == 0 {
+			return
+		}
+		if n := len(result); n > 0 && result[n-1].Role == "tool" {
+			result = append(result, Message{Role: "assistant", Content: StrPtr(toolResultsBridge)})
+		}
+		texts := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p.Type != "text" {
+				result = append(result, Message{Role: "user", Parts: parts})
+				return
+			}
+			texts = append(texts, p.Text)
+		}
+		result = append(result, Message{Role: "user", Content: StrPtr(strings.Join(texts, "\n"))})
+	}
+
 	for i, msg := range messages {
 		switch msg.Role {
 		case "user":
 			// Tool results become role "tool" messages; text and images
-			// stay in the user message that follows them.
+			// go to the user message that follows them.
 			var parts []ContentPart
-			var toolImages []ContentPart
-			hasImage := false
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "text":
@@ -53,15 +79,14 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 				case "image":
 					part, err := ImagePart(block)
 					if err != nil {
-						return nil, fmt.Errorf("message %d: %w", i, err)
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: err.Error()}
 					}
 					parts = append(parts, part)
-					hasImage = true
 				case "tool_result":
 					content := httputil.ExtractText(block.Content)
 					images, err := toolResultImages(block)
 					if err != nil {
-						return nil, fmt.Errorf("message %d: tool result %s: %w", i, block.ToolUseID, err)
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: fmt.Sprintf("tool result %s: %v", block.ToolUseID, err)}
 					}
 					if len(images) > 0 {
 						content = strings.TrimSpace(content + "\n" + fmt.Sprintf(ToolImageNotice, len(images)))
@@ -75,30 +100,12 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 					})
 				}
 			}
-			if len(toolImages) > 0 {
-				parts = append(toolImages, parts...)
-				hasImage = true
+			if len(parts) > 0 {
+				emitUser(parts)
 			}
-			if len(parts) == 0 {
-				continue
-			}
-			if n := len(result); n > 0 && result[n-1].Role == "tool" {
-				result = append(result, Message{Role: "assistant", Content: StrPtr(toolResultsBridge)})
-			}
-			if hasImage {
-				result = append(result, Message{Role: "user", Parts: parts})
-				continue
-			}
-			texts := make([]string, len(parts))
-			for j, p := range parts {
-				texts[j] = p.Text
-			}
-			result = append(result, Message{
-				Role:    "user",
-				Content: StrPtr(strings.Join(texts, "\n")),
-			})
 
 		case "assistant":
+			emitUser(nil)
 			var texts []string
 			var toolCalls []ToolCall
 			for _, block := range msg.Content {
@@ -130,6 +137,7 @@ func ConvertMessages(system string, messages []api.Message) ([]Message, error) {
 			})
 		}
 	}
+	emitUser(nil)
 
 	return result, nil
 }

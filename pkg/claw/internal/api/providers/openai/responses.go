@@ -416,7 +416,7 @@ func convertMessagesToResponsesInput(messages []api.Message) ([]oaiResponsesMess
 				case "image":
 					url, err := openaiwire.ImageURLOf(block)
 					if err != nil {
-						return nil, fmt.Errorf("message %d: %w", i, err)
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: err.Error()}
 					}
 					parts = append(parts, oaiResponsesContentPart{Type: "input_image", ImageURL: url})
 				case "tool_result":
@@ -428,7 +428,7 @@ func convertMessagesToResponsesInput(messages []api.Message) ([]oaiResponsesMess
 						}
 						url, err := openaiwire.ImageURLOf(c)
 						if err != nil {
-							return nil, fmt.Errorf("message %d: tool result %s: %w", i, block.ToolUseID, err)
+							return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: fmt.Sprintf("tool result %s: %v", block.ToolUseID, err)}
 						}
 						images = append(images, oaiResponsesContentPart{Type: "input_image", ImageURL: url})
 					}

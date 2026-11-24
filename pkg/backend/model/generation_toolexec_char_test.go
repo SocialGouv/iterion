@@ -831,3 +831,25 @@ func TestBuildSubagentTools_KeepsTheImageResultTrait(t *testing.T) {
 	}
 	t.Fatalf("read_image missing from the subagent tool set: %d tools", len(tools))
 }
+
+// A program calling an image tool receives text only: the image becomes an
+// explicit marker, never a bare success that reads as "seen".
+func TestToolResultText_MarksAnImageAProgramCannotCarry(t *testing.T) {
+	t.Parallel()
+	img := api.ContentBlock{Type: "image", Source: &api.ImageSource{Type: "base64", MediaType: "image/png", Data: "QUJD"}}
+	for name, content := range map[string][]api.ContentBlock{
+		"description and image": {{Type: "text", Text: "schema.png"}, img},
+		"image alone":           {img},
+	} {
+		got := toolResultText(api.ContentBlock{Type: "tool_result", Content: content})
+		if !strings.Contains(got, scriptImageOmitted) {
+			t.Errorf("%s: program text = %q, want the image-omitted marker", name, got)
+		}
+		if strings.Contains(got, "QUJD") {
+			t.Errorf("%s: program text carries the image bytes: %q", name, got)
+		}
+	}
+	if got := toolResultText(api.ToolResult{Content: "plain"}.ToContentBlock()); got != "plain" {
+		t.Errorf("a text result = %q, want it unchanged", got)
+	}
+}

@@ -89,17 +89,18 @@ func estimateBlockTokens(cb *api.ContentBlock) int {
 			}
 		}
 		return (len(cb.ToolUseID)+outputLen)/charsPerToken + 1 + images*imageTokenEstimate
-	case "image":
-		return imageTokenEstimate
 	default:
 		// Text blocks and others
 		return len(cb.Text)/charsPerToken + 1
 	}
 }
 
-// imageTokenEstimate is the cost an image block counts for: a vision model
-// bills an image by its pixels, not its base64 length, and a full-size
-// image lands near this figure on the providers that publish theirs.
+// imageTokenEstimate is the cost an image a tool returned counts for: a
+// vision model bills an image by its pixels, not its base64 length, and a
+// full-size image lands near this figure on the providers that publish
+// theirs. A prompt's own image blocks (attachments) keep their historical
+// near-zero weight: on a model claw has no window for, the 10k default
+// threshold would otherwise compact the task and its images away.
 const imageTokenEstimate = 1600
 
 // CountRealUserTurns counts messages with role "user" that are not injected.

@@ -48,8 +48,9 @@ type Message struct {
 }
 
 // MarshalJSON emits `content` as a string, or as the parts array when the
-// message carries parts. Field order and omission match the plain struct
-// encoding, so a text-only message serialises byte for byte as it always has.
+// message carries parts. Field order, omission and the package's unescaped
+// encoding (MarshalJSON) match the plain struct's, so a text-only message
+// serialises byte for byte as it always has.
 func (m Message) MarshalJSON() ([]byte, error) {
 	type wire struct {
 		Role       string     `json:"role"`
@@ -64,7 +65,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	case m.Content != nil:
 		w.Content = *m.Content
 	}
-	return json.Marshal(w)
+	return MarshalJSON(w)
 }
 
 // ContentPart is one typed element of a multimodal message content array.

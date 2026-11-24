@@ -580,3 +580,20 @@ func TestSummarizeMessagesTimelineJoinsBlocks(t *testing.T) {
 		t.Errorf("timeline should join blocks with ' | ', got:\n%s", summary)
 	}
 }
+
+// An image a tool returned weighs what a vision model bills for it; a
+// prompt's own image (an attachment) keeps its near-zero weight, or a model
+// with the 10k default threshold compacts the task and its images away.
+func TestEstimateTokensImageWeights(t *testing.T) {
+	img := api.ContentBlock{Type: "image", Source: &api.ImageSource{Type: "base64", MediaType: "image/png", Data: "QUJD"}}
+	prompt := EstimateTokens([]api.Message{{Role: "user", Content: []api.ContentBlock{img, img, img}}})
+	if prompt > 10 {
+		t.Errorf("three prompt images estimate %d tokens, want their historical near-zero weight", prompt)
+	}
+	tool := EstimateTokens([]api.Message{{Role: "user", Content: []api.ContentBlock{
+		{Type: "tool_result", ToolUseID: "c1", Content: []api.ContentBlock{{Type: "text", Text: "s.png"}, img}},
+	}}})
+	if tool < imageTokenEstimate {
+		t.Errorf("a tool image estimates %d tokens, want at least %d", tool, imageTokenEstimate)
+	}
+}
