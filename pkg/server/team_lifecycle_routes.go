@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // Team lifecycle: rename, suspend, delete, and place an existing member.
@@ -272,9 +274,17 @@ func (s *Server) handleSetTeamRunVisibility(w http.ResponseWriter, r *http.Reque
 // store exposes an ACTIVE-run count and no total, so blocking on history
 // would mean inventing a seam for a case the org purge already serves —
 // delete the org, not the team, when a team has a past worth removing.
-func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
+//
+// One exception to the refusal list, returned apart as tombstones: the
+// webhook config a forge Deprovision keeps as its admission fence (disabled,
+// or frozen by a legacy-hook migration), once its integration is retired and cleaned up (retiredHookTombstone). It
+// can never fire again, yet no route removes it, so counting it would make
+// every team that ever had a forge integration undeletable. It still holds
+// its hook credential (a token hash, or a sealed HMAC secret), as its retired
+// integration row holds a sealed secret, so the caller deletes both with the
+// team (purgeRetiredHookTombstones) instead of leaving them behind.
+func (s *Server) teamResidue(ctx context.Context, teamID string) (out []string, tombstones []webhooks.Config) {
 	tctx := store.WithTenant(ctx, teamID)
-	var out []string
 	if s.forgeIntegrations != nil {
 		if items, err := s.forgeIntegrations.ListByTenant(tctx, teamID); err != nil {
 			out = append(out, fmt.Sprintf("repo integrations (unreadable: %v)", err))
@@ -316,8 +326,22 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 	if s.webhookConfigs != nil {
 		if hooks, err := s.webhookConfigs.ListByTenant(tctx, teamID); err != nil {
 			out = append(out, fmt.Sprintf("webhooks (unreadable: %v)", err))
-		} else if len(hooks) > 0 {
-			out = append(out, fmt.Sprintf("%d inbound webhook(s)", len(hooks)))
+		} else {
+			live := 0
+			for _, cfg := range hooks {
+				dead, err := s.retiredHookTombstone(tctx, teamID, cfg)
+				switch {
+				case err != nil:
+					out = append(out, fmt.Sprintf("webhooks (unreadable: integration of webhook %s: %v)", cfg.ID, err))
+				case dead:
+					tombstones = append(tombstones, cfg)
+				default:
+					live++
+				}
+			}
+			if live > 0 {
+				out = append(out, fmt.Sprintf("%d inbound webhook(s)", live))
+			}
 		}
 	}
 	// Anything that still holds a CREDENTIAL. Left behind, these are sealed
@@ -357,7 +381,66 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 			out = append(out, fmt.Sprintf("%d team-authored bot(s)", len(bots)))
 		}
 	}
-	return out
+	return out, tombstones
+}
+
+// retiredHookTombstone reports whether cfg is the fence a forge
+// Deprovision leaves behind, dead for good, rather than a hook that may
+// still fire or be brought back:
+//
+//   - an enabled config is live, except one frozen by a legacy-hook
+//     migration (ProvisionFrozen): that one is a superseded epoch, which
+//     webhookLive already refuses with 410, and Deprovision leaves it
+//     enabled, so it is judged by its row like a disabled one;
+//   - a disabled config with no ProvisionIntegrationID is a standalone hook
+//     an operator re-enables at will;
+//   - without the integration store the binding cannot be judged, so the
+//     config counts;
+//   - a bound config whose integration row is missing is dead: the intake
+//     answers 410 for it (webhookLive), and no path creates a row under an
+//     id already handed out;
+//   - otherwise the row must belong to the team, be retired AND have
+//     finished its retirement cleanup. A retired row whose cleanup has not
+//     completed still owns a forge hook or a project bot to revoke, and a
+//     row that is not retired is live and reuses its id on the next enable.
+//     RetireCleanupComplete does not guarantee the forge-side hook is gone:
+//     Deprovision skips that deletion when the connection or its admin
+//     client is unavailable. Once the tombstone is deleted, such a hook's
+//     deliveries get 401 instead of 410, and still launch nothing.
+//
+// Any other read error is returned: the caller fails closed on it.
+func (s *Server) retiredHookTombstone(ctx context.Context, teamID string, cfg webhooks.Config) (bool, error) {
+	if cfg.Enabled && !cfg.ProvisionFrozen || cfg.ProvisionIntegrationID == "" || s.forgeIntegrations == nil {
+		return false, nil
+	}
+	ri, err := s.forgeIntegrations.GetProvision(ctx, cfg.ProvisionIntegrationID)
+	if errors.Is(err, forge.ErrIntegrationNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return ri.TenantID == teamID && ri.Retired && ri.RetireCleanupComplete, nil
+}
+
+// purgeRetiredHookTombstones deletes each tombstone teamResidue set apart,
+// with the retired integration row it is bound to. The row goes FIRST: an
+// interrupted purge then leaves a disabled config bound to a missing row,
+// which retiredHookTombstone still classifies as a tombstone, so the retried
+// delete converges and never strands a retired row with its sealed secret.
+// Not-found is success on both deletes: two configs of successive epochs
+// share one row, and a retry finds what the failed attempt already removed.
+func (s *Server) purgeRetiredHookTombstones(ctx context.Context, teamID string, tombstones []webhooks.Config) error {
+	tctx := store.WithTenant(ctx, teamID)
+	for _, cfg := range tombstones {
+		if err := s.forgeIntegrations.Delete(tctx, cfg.ProvisionIntegrationID); err != nil && !errors.Is(err, forge.ErrIntegrationNotFound) {
+			return fmt.Errorf("delete retired integration %s of webhook %s: %w", cfg.ProvisionIntegrationID, cfg.ID, err)
+		}
+		if err := s.webhookConfigs.Delete(tctx, cfg.ID); err != nil && !errors.Is(err, webhooks.ErrNotFound) {
+			return fmt.Errorf("delete disabled webhook %s: %w", cfg.ID, err)
+		}
+	}
+	return nil
 }
 
 // handleDeleteTeam removes an EMPTY team. The reorg case it exists for is a
@@ -372,7 +455,8 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 // (personal team), 409 (the author's active team, the residue), the 500 of
 // the members read the rule itself reuses — and the rank rule answers before
 // the first revoke, so a refused deletion leaves the team and its grants
-// untouched.
+// untouched. Past every refusal, the retired forge tombstones teamResidue
+// set apart are deleted, still before the first revoke.
 func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
@@ -394,7 +478,8 @@ func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "cannot delete your active team — switch to another team first")
 		return
 	}
-	if residue := s.teamResidue(r.Context(), teamID); len(residue) > 0 {
+	residue, tombstones := s.teamResidue(r.Context(), teamID)
+	if len(residue) > 0 {
 		httpError(w, http.StatusConflict,
 			"team is not empty: %v — deleting it would strand this data under a tenant nothing can reach", residue)
 		return
@@ -412,6 +497,13 @@ func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRankOverTeamMembers(w, r, id, t.OrgID, members) {
 		return
 	}
+	// The retired forge tombstones go before the first revoke: a failed
+	// purge answers with the team and its grants untouched, and the retry
+	// finds what is left.
+	if err := s.purgeRetiredHookTombstones(r.Context(), teamID, tombstones); err != nil {
+		httpError(w, http.StatusInternalServerError, "purge retired integration tombstones: %v", err)
+		return
+	}
 	for _, m := range members {
 		if err := s.authStore().DeleteMembership(r.Context(), m.UserID, teamID); err != nil {
 			httpError(w, http.StatusInternalServerError, "revoke membership %s: %v", m.UserID, err)
@@ -422,7 +514,11 @@ func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	s.auditOrg(r, t.OrgID, "team.deleted", "team", teamID, map[string]any{"name": t.Name, "slug": t.Slug})
+	meta := map[string]any{"name": t.Name, "slug": t.Slug}
+	if len(tombstones) > 0 {
+		meta["purged_webhook_tombstones"] = len(tombstones)
+	}
+	s.auditOrg(r, t.OrgID, "team.deleted", "team", teamID, meta)
 	w.WriteHeader(http.StatusNoContent)
 }
 
