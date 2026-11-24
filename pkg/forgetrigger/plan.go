@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -126,7 +127,7 @@ func PlanIntegration(in forge.SubscriptionInput, roles RoleBots, now time.Time) 
 	ri := in.Integration
 	bots := sortedBots(in.Bots)
 	plan := Plan{Report: forge.SubscriptionReport{
-		Digest:     ManifestDigest(bots, in.InvByBot, in.FrByBot, roles),
+		Digest:     ManifestDigest(DigestBots(ri), in.InvByBot, in.FrByBot, roles),
 		HandPinned: handPinnedLaunchVars(in.Config.LaunchVars, bots, in.FrByBot),
 	}}
 	warn := func(format string, args ...any) {
@@ -258,8 +259,13 @@ func PlanIntegration(in forge.SubscriptionInput, roles RoleBots, now time.Time) 
 		case c.enabled:
 			exclude = c.exclude
 		}
+		vars, dropped := routeLaunchVars(in.FrByBot[c.bot], c.route)
+		if len(dropped) > 0 {
+			warn("bot %s: route %q: launch vars %s are server launch context, never a manifest's: dropped from its subscription",
+				c.bot, c.route.Key, strings.Join(dropped, ", "))
+		}
 		row, ok := trigger.FromForgeIssueInvocation(c.id, target, c.bot, c.route, labels, exclude,
-			routeLaunchVars(in.FrByBot[c.bot], c.route), c.enabled, c.reason, plan.Report.Digest, now)
+			vars, c.enabled, c.reason, plan.Report.Digest, now)
 		if !ok {
 			plan.Rows = nil
 			plan.Err = &ProjectionError{Code: ProjectionUnbuildableRow, Bot: c.bot, Rows: []string{c.id},
@@ -454,15 +460,25 @@ func labelKey(pattern string) string {
 
 // routeLaunchVars are the launch vars a row stamps on its run: the bot's
 // manifest launch vars, under the context vars of the invocation the route
-// comes from.
-func routeLaunchVars(fr *bundle.ForgeRequirements, route bundle.ForgeRoutingInvocation) map[string]string {
-	vars := map[string]string{}
-	maps.Copy(vars, manifestLaunchVars(fr))
-	maps.Copy(vars, route.Inv.ContextVars)
-	if len(vars) == 0 {
-		return nil
+// comes from. A manifest never writes what the server stamps or mints — the
+// reserved launch context (native.ReservedLaunchArgs: the repo to clone, the
+// webhook's key and secret overrides, …) and the minted publish grant — so
+// those keys are dropped here and named in dropped, for the plan to report.
+func routeLaunchVars(fr *bundle.ForgeRequirements, route bundle.ForgeRoutingInvocation) (vars map[string]string, dropped []string) {
+	all := map[string]string{}
+	maps.Copy(all, manifestLaunchVars(fr))
+	maps.Copy(all, route.Inv.ContextVars)
+	vars = native.DropServerMintedLaunchVars(all)
+	for k := range all {
+		if _, kept := vars[k]; !kept {
+			dropped = append(dropped, k)
+		}
 	}
-	return vars
+	slices.Sort(dropped)
+	if len(vars) == 0 {
+		return nil, dropped
+	}
+	return vars, dropped
 }
 
 // manifestLaunchVars are the launch vars a bot's manifest declares for the
@@ -506,4 +522,138 @@ func sortedBots(bots []string) []string {
 	out := slices.Clone(bots)
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+// Widenings compares two plans of one integration — before and after a
+// change of its bots or bot_triggers — and names, sorted, every row of the
+// after plan that may start its bot on a label the before plan did not
+// start it on: a row enabled that was not (or did not exist), a residual
+// row that excludes a pattern less, a row that claims any label where it
+// claimed a set, or an explicit set that gains a pattern. Patterns compare
+// as webhooks.MatchLabel reads them (trimmed, case-insensitive); a pattern
+// not literally held counts as new, so the comparison errs toward naming a
+// widening. The residual couples the bots: narrowing, disabling or removing
+// one bot widens the residual winner, which shows here as the winner's
+// exclusions shrinking.
+func Widenings(before, after Plan) []string {
+	prev := map[string]trigger.Subscription{}
+	for _, row := range before.Rows {
+		prev[row.ID] = row
+	}
+	var out []string
+	for _, row := range after.Rows {
+		if !row.Enabled {
+			continue
+		}
+		old, found := prev[row.ID]
+		if !found || !old.Enabled {
+			out = append(out, fmt.Sprintf("bot %s: row %s starts on %s", row.BotID, row.ID, describeClaim(row.Match)))
+			continue
+		}
+		if gained := claimGains(old.Match, row.Match); len(gained) > 0 {
+			out = append(out, fmt.Sprintf("bot %s: row %s now also claims %s", row.BotID, row.ID, strings.Join(gained, ", ")))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// claimGains names what next's added-label dimension may claim that prev's
+// did not. An empty AddedLabels claims any label not excluded.
+func claimGains(prev, next trigger.Matcher) []string {
+	prevAny, nextAny := len(prev.AddedLabels) == 0, len(next.AddedLabels) == 0
+	prevExcl := keySet(prev.ExcludeAddedLabels)
+	switch {
+	case nextAny && !prevAny:
+		return []string{describeClaim(next)}
+	case nextAny && prevAny:
+		nextExcl := keySet(next.ExcludeAddedLabels)
+		var gained []string
+		for _, p := range slices.Sorted(maps.Keys(prevExcl)) {
+			if !nextExcl[p] {
+				gained = append(gained, p)
+			}
+		}
+		return gained
+	case !nextAny && prevAny:
+		var gained []string
+		for _, p := range next.AddedLabels {
+			if k := labelKey(p); prevExcl[k] || (k == "*" && len(prevExcl) > 0) {
+				gained = append(gained, k)
+			}
+		}
+		return gained
+	}
+	held := keySet(prev.AddedLabels)
+	if held["*"] {
+		return nil
+	}
+	var gained []string
+	for _, p := range next.AddedLabels {
+		if k := labelKey(p); k != "" && !held[k] {
+			gained = append(gained, k)
+		}
+	}
+	return gained
+}
+
+// describeClaim renders a row's added-label claim for a widening's message.
+func describeClaim(m trigger.Matcher) string {
+	if len(m.AddedLabels) > 0 {
+		return "[" + strings.Join(m.AddedLabels, ", ") + "]"
+	}
+	if len(m.ExcludeAddedLabels) > 0 {
+		return "any label except [" + strings.Join(m.ExcludeAddedLabels, ", ") + "]"
+	}
+	return "any label"
+}
+
+// keySet is the set of patterns as labelKey reads them, blanks dropped.
+func keySet(patterns []string) map[string]bool {
+	out := make(map[string]bool, len(patterns))
+	for _, p := range patterns {
+		if k := labelKey(p); k != "" {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// ResidualTransfers names, sorted, every label a plan takes from a residual
+// row of the stored projection and hands to a bot that declares it: the
+// residual row stays enabled and excludes the label now, and an enabled row
+// of another bot claims it by its own pattern. One warning per label and
+// pair of bots, naming the three.
+func ResidualTransfers(stored []trigger.Subscription, plan Plan) []string {
+	prev := map[string]trigger.Subscription{}
+	for _, row := range stored {
+		prev[row.ID] = row
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, row := range plan.Rows {
+		old, found := prev[row.ID]
+		if !found || !old.Enabled || !row.Enabled || len(old.Match.AddedLabels) > 0 || len(row.Match.AddedLabels) > 0 {
+			continue
+		}
+		before := keySet(old.Match.ExcludeAddedLabels)
+		for _, label := range slices.Sorted(maps.Keys(keySet(row.Match.ExcludeAddedLabels))) {
+			if before[label] {
+				continue
+			}
+			for _, to := range plan.Rows {
+				if to.BotID == row.BotID || !to.Enabled || !keySet(to.Match.AddedLabels)[label] {
+					continue
+				}
+				msg := fmt.Sprintf("label %q moves from bot %s (the residual) to bot %s, whose manifest now declares it: a label a bot declares goes to that bot — set %s's labels (bot_triggers) to give it back",
+					label, row.BotID, to.BotID, to.BotID)
+				if !seen[msg] {
+					seen[msg] = true
+					out = append(out, msg)
+				}
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }

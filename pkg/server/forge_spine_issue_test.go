@@ -159,18 +159,20 @@ func seedSpineIntegration(t *testing.T, s *Server, cfg webhooks.Config, bots ...
 		}
 	}
 	roles := forgetrigger.RoleBots{Implementer: featureDevBotID, Reviewer: defaultWebhookBotReviewPR}
+	ri := forge.RepoIntegration{
+		ID:           spineIntegrationID,
+		TenantID:     cfg.TenantID,
+		RepoFullName: spineRepo,
+		WebhookID:    cfg.ID,
+		BotIDs:       names,
+	}
+	spineStoreIntegration(t, s, ri)
 	plan := forgetrigger.PlanIntegration(forge.SubscriptionInput{
-		Integration: forge.RepoIntegration{
-			ID:           spineIntegrationID,
-			TenantID:     cfg.TenantID,
-			RepoFullName: spineRepo,
-			WebhookID:    cfg.ID,
-			BotIDs:       names,
-		},
-		Config:   cfg,
-		Bots:     names,
-		InvByBot: invByBot,
-		FrByBot:  frByBot,
+		Integration: ri,
+		Config:      cfg,
+		Bots:        names,
+		InvByBot:    invByBot,
+		FrByBot:     frByBot,
 	}, roles, time.Now().UTC())
 	if plan.Err != nil {
 		t.Fatalf("plan the spine fixture's rows: %v", plan.Err)
@@ -187,6 +189,27 @@ func seedSpineIntegration(t *testing.T, s *Server, cfg webhooks.Config, bots ...
 	cfg.SpineSince = &now
 	cfg.ProvisionIntegrationID = spineIntegrationID
 	return cfg
+}
+
+// spineStoreIntegration writes ri into the server's integration store — the
+// record the router reads the digest's bot set from — creating a memory store
+// when none is wired, and replacing a record of the same id.
+func spineStoreIntegration(t *testing.T, s *Server, ri forge.RepoIntegration) {
+	t.Helper()
+	if s.forgeIntegrations == nil {
+		s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	}
+	ctx := context.Background()
+	if cur, err := s.forgeIntegrations.Get(ctx, ri.ID); err == nil {
+		ri.Version = cur.Version
+		if err := s.forgeIntegrations.Update(ctx, ri); err != nil {
+			t.Fatalf("update integration %s: %v", ri.ID, err)
+		}
+		return
+	}
+	if err := s.forgeIntegrations.Create(ctx, ri); err != nil {
+		t.Fatalf("store integration %s: %v", ri.ID, err)
+	}
 }
 
 // ghIssueLabelBody is the GitHub issues payload applying one label.

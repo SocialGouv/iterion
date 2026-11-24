@@ -127,6 +127,7 @@ type fakeProjector struct {
 	mu          sync.Mutex
 	rows        map[string]map[string][]string // integration id → bot → the labels its row claims
 	syncs       []SubscriptionInput
+	checks      []SubscriptionInput
 	syncInFence []bool
 	drops       []string
 	dropInFence []bool
@@ -137,6 +138,17 @@ type fakeProjector struct {
 
 func newFakeProjector(probe *fenceProbe) *fakeProjector {
 	return &fakeProjector{probe: probe, rows: map[string]map[string][]string{}}
+}
+
+// Check judges like SyncIntegration's refusal hook and writes nothing.
+func (f *fakeProjector) Check(_ context.Context, in SubscriptionInput) (SubscriptionReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks = append(f.checks, in)
+	if f.refuse != nil {
+		return f.refuse(in)
+	}
+	return SubscriptionReport{}, nil
 }
 
 func (f *fakeProjector) SyncIntegration(_ context.Context, in SubscriptionInput) (SubscriptionReport, error) {
@@ -641,16 +653,17 @@ func TestProvision_RefusedProjection_OnSpineFailsTheProvision(t *testing.T) {
 			if !errors.Is(err, ErrSubscriptionProjection) || !errors.Is(err, errRowsOverlap) {
 				t.Fatalf("a refused projection on a spine-routed integration: err = %v, want ErrSubscriptionProjection wrapping the projector's refusal", err)
 			}
-			fences := s.probe.take()
-			if len(fences) != 1 || fences[0].err == nil {
-				t.Fatalf("fences %+v, want the one fence, failed", fences)
+			// The refusal is judged before anything is written: no fence
+			// opens, the version and the sync stamp stay as they were.
+			if fences := s.probe.take(); len(fences) != 0 {
+				t.Fatalf("fences %+v, want none — the projection is checked before any write", fences)
 			}
 			after, _ := s.stored(t, res)
-			if after.Version != fences[0].version {
-				t.Fatalf("the failed fence left the version at %d, opened at %d", after.Version, fences[0].version)
+			if after.Version != before.Version {
+				t.Fatalf("the refused provision moved the version from %d to %d", before.Version, after.Version)
 			}
 			if after.SubscriptionsSyncError != "" || !sameInstantPtr(after.SubscriptionsSyncedAt, *before.SubscriptionsSyncedAt) {
-				t.Fatalf("the failed fence kept a stamp: error %q, synced %v (was %v)", after.SubscriptionsSyncError, after.SubscriptionsSyncedAt, before.SubscriptionsSyncedAt)
+				t.Fatalf("the refused provision kept a stamp: error %q, synced %v (was %v)", after.SubscriptionsSyncError, after.SubscriptionsSyncedAt, before.SubscriptionsSyncedAt)
 			}
 		})
 	}

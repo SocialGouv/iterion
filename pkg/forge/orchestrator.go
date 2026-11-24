@@ -624,8 +624,24 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// has none, so the board-launch path can't authenticate until a
 	// re-provision backfills them. Cheap and idempotent (ensureBotBinding
 	// no-ops when the binding already matches).
-	if hasExisting && !existing.ProvisionPending && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
-		existing.HookURL == desiredHookURL {
+	shortCircuit := hasExisting && !existing.ProvisionPending && equalStringSet(existing.BotIDs, desiredBots) &&
+		equalStringSet(existing.EventsNormalized, eventsNormalized) && existing.HookURL == desiredHookURL
+
+	// On an integration that routes a lane by the spine, a refused
+	// projection fails the provision. It is judged here, on the input the
+	// provision will project, before anything — config, integration, hook,
+	// binding, minted credential — is written: a refusal after those writes
+	// would leave the integration holding a bot set and bot_triggers its
+	// rows do not route.
+	if hasExisting && o.Subscriptions != nil && AnyLaneRoutesSpine(existing.ForgeRouting) {
+		in := o.provisionProjectionInput(existing, prevCfg, shortCircuit, desiredBots, desiredTriggers, frByBot, invByBot,
+			operatorVars, operatorOverlap, operatorHold, operatorLabels)
+		if _, err := o.Subscriptions.Check(ctx, in); err != nil {
+			return ProvisionResult{}, fmt.Errorf("%w: integration %s: %w", ErrSubscriptionProjection, existing.ID, err)
+		}
+	}
+
+	if shortCircuit {
 		// A project-bot repo has no team binding to backfill: its token is
 		// its own (see the binding step of the rebuild path).
 		if !conn.MintsProjectBots() {
@@ -1511,6 +1527,37 @@ func (o *Orchestrator) syncProvisionProjections(ctx context.Context, ri RepoInte
 		return ri.Version, err
 	}
 	return ri.Version + 1, nil
+}
+
+// provisionProjectionInput is the subscription input a provision of
+// existing will project, built before the provision writes anything: the
+// integration with the desired bots and bot_triggers, and the webhook config
+// as the provision leaves it — the stored one with the operator settings
+// laid over it on the short-circuit path, the rebuilt bot scope (the desired
+// bots, the single-bot default) otherwise. It reads only what the projection
+// reads of a config: the bot scope the legacy election runs on and the
+// launch vars the hand-pinned report compares.
+func (o *Orchestrator) provisionProjectionInput(existing RepoIntegration, prevCfg webhooks.Config, shortCircuit bool,
+	bots []string, triggers map[string]BotTrigger, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation,
+	operatorVars map[string]string, overlap string, hold, labels []string) SubscriptionInput {
+	ri := existing
+	ri.BotIDs = bots
+	ri.BotTriggers = triggers
+	cfg := prevCfg
+	if cfg.ID == "" {
+		cfg.ID = existing.WebhookID
+	}
+	cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(bots, frByBot))
+	cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+	cfg.Overlap = overlap
+	cfg.HoldLabels = hold
+	cfg.LabelAllowlist = labels
+	if !shortCircuit {
+		cfg.BotIDs = bots
+		cfg.DefaultBotID = singleBotDefault(bots)
+		cfg.WildcardBots = false
+	}
+	return SubscriptionInput{Integration: ri, Config: cfg, Bots: bots, InvByBot: invByBot, FrByBot: frByBot}
 }
 
 // configForProjection reads the webhook config a subscription projection

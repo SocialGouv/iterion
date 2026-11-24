@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -266,22 +270,56 @@ func TestForgeIssueDelivery_LegacyString(t *testing.T) {
 	})
 }
 
-// The stub route answers before anything routes: the witnesses never reach
-// it while the handler branches are absent, and when they exist the router
-// lot has replaced it.
-func TestForgeRoutingDefaultReader(t *testing.T) {
-	t.Setenv("ITERION_FORGE_ROUTING_DEFAULT", "issues=spine,pull_requests=legacy")
-	if got := forgeRoutingDefaultFor(webhooks.LaneIssues); got != webhooks.RoutingSpine {
-		t.Fatalf("issues default = %q, want %q", got, webhooks.RoutingSpine)
+// R-F3/R-F5/RT-F3: ITERION_FORGE_ROUTING_DEFAULT accepts legacy alone. A
+// spine default would route every unflipped config without the SpineSince
+// and the stored switch the routing guards read; shadow is not shipped; a
+// misspelt lane or mode, or a lane named twice, is refused instead of being
+// read as no default.
+//
+// Mutation: parseForgeRoutingDefault accepts webhooks.RoutingSpine → red on
+// "issues=spine".
+func TestForgeRoutingDefault_LegacyAloneIsAServerDefault(t *testing.T) {
+	got, err := parseForgeRoutingDefault("issues=legacy, pull_requests=legacy")
+	if err != nil || got[webhooks.LaneIssues] != webhooks.RoutingLegacy || got[webhooks.LanePullRequests] != webhooks.RoutingLegacy || got[webhooks.LaneComments] != "" {
+		t.Fatalf("issues=legacy,pull_requests=legacy = %v (%v), want both lanes legacy and comments unset", got, err)
 	}
-	if got := forgeRoutingDefaultFor(webhooks.LanePullRequests); got != webhooks.RoutingLegacy {
-		t.Fatalf("pull_requests default = %q, want %q", got, webhooks.RoutingLegacy)
+	if got, err := parseForgeRoutingDefault("  "); err != nil || len(got) != 0 {
+		t.Fatalf("a blank value = %v (%v), want no default", got, err)
 	}
-	if got := forgeRoutingDefaultFor(webhooks.LaneComments); got != "" {
-		t.Fatalf("comments default = %q, want empty — the env names no mode for it", got)
+	for _, raw := range []string{
+		"issues=spine", "issues=shadow", "issues=Spine", "issues=spin", "Issues=legacy",
+		"issues", "issues=legacy,issues=legacy", "issues=legacy,issues=spine", "labels=legacy",
+	} {
+		if got, err := parseForgeRoutingDefault(raw); !errors.Is(err, ErrForgeRoutingDefault) {
+			t.Errorf("%q = %v (%v), want refused with ErrForgeRoutingDefault", raw, got, err)
+		}
 	}
-	t.Setenv("ITERION_FORGE_ROUTING_DEFAULT", "")
-	if got := forgeRoutingDefaultFor(webhooks.LaneIssues); got != "" {
-		t.Fatalf("unset env = %q, want empty", got)
+}
+
+// A refused routing default fails the server's start, before the bind and
+// before any embedded worker; nothing routes by it.
+//
+// Mutation: ListenAndServe skips the forgeRoutingDefaultErr check → red on
+// "ListenAndServe".
+func TestForgeRoutingDefault_ARefusedValueFailsTheStart(t *testing.T) {
+	t.Setenv("ITERION_FORGE_ROUTING_DEFAULT", "issues=spine")
+	s := New(Config{DisableAuth: true, Port: 0}, iterlog.New(iterlog.LevelError, nil))
+	if s.forgeRoutingFor(webhooks.Config{}, webhooks.LaneIssues) != "" {
+		t.Fatalf("a refused default routes the issues lane by %q, want nothing", s.forgeRoutingFor(webhooks.Config{}, webhooks.LaneIssues))
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.ListenAndServe() }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrForgeRoutingDefault) {
+			t.Fatalf("ListenAndServe = %v, want the routing default's refusal", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = s.Shutdown(context.Background())
+		t.Fatal("ListenAndServe started serving with a refused routing default")
+	}
+	s2 := New(Config{DisableAuth: true}, iterlog.New(iterlog.LevelError, nil))
+	if err := s2.StartEmbedded(); !errors.Is(err, ErrForgeRoutingDefault) {
+		t.Fatalf("StartEmbedded = %v, want the routing default's refusal", err)
 	}
 }

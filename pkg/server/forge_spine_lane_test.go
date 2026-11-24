@@ -165,12 +165,14 @@ func spineProjectCatalogueRows(t *testing.T, s *Server, cfg webhooks.Config, bot
 		}
 	}
 	roles := forgetrigger.RoleBots{Implementer: featureDevBotID, Reviewer: defaultWebhookBotReviewPR}
+	ri := forge.RepoIntegration{
+		ID: spineIntegrationID, TenantID: cfg.TenantID,
+		RepoFullName: spineRepo, WebhookID: cfg.ID, BotIDs: scope,
+	}
+	spineStoreIntegration(t, s, ri)
 	plan := forgetrigger.PlanIntegration(forge.SubscriptionInput{
-		Integration: forge.RepoIntegration{
-			ID: spineIntegrationID, TenantID: cfg.TenantID,
-			RepoFullName: spineRepo, WebhookID: cfg.ID, BotIDs: scope,
-		},
-		Config: cfg, Bots: scope, InvByBot: invByBot, FrByBot: frByBot,
+		Integration: ri,
+		Config:      cfg, Bots: scope, InvByBot: invByBot, FrByBot: frByBot,
 	}, roles, time.Now().UTC())
 	if plan.Err != nil {
 		t.Fatalf("plan the spine rows: %v", plan.Err)
@@ -653,6 +655,8 @@ func TestLegacyAfterRollback_SeesSpineClaims(t *testing.T) {
 // the trigger store; the same spine-routed delivery hits both concurrently,
 // in both arrival orders. Exactly one run for the direct bot and one card for
 // the board bot: the claims collide on the lane's unique keys, not on luck.
+// A record of the event answers its own bot only, so the replicas may split
+// the bots between them — both then answer 202, each for the bot it claimed.
 //
 // RED today: both replicas run the legacy path and answer the two-label-bot
 // 403.
@@ -697,11 +701,13 @@ func TestSpineIssueLabel_ReplicaRace(t *testing.T) {
 			// replica's.
 			spineProjectCatalogueRows(t, replicas[0].s, replicas[0].cfg, bots...)
 			shared := replicas[0].s.cfg.TriggerStore
+			integrations := replicas[0].s.forgeIntegrations
 			barrier := &barrierDeliveries{DeliveryStore: deliveries, key: nestorBase, armed: 2}
 			barrier.arrived.Add(2)
 			for _, f := range replicas {
 				f.s.webhookDeliveries = barrier
 				f.s.cfg.TriggerStore = shared
+				f.s.forgeIntegrations = integrations
 			}
 
 			var wg sync.WaitGroup
@@ -715,9 +721,21 @@ func TestSpineIssueLabel_ReplicaRace(t *testing.T) {
 			}
 			wg.Wait()
 
-			got := []int{codes[0], codes[1]}
-			if sorted := slices.Sorted(slices.Values(got)); !slices.Equal(sorted, []int{http.StatusOK, http.StatusAccepted}) {
-				t.Fatalf("codes = %v, want one 202 and one 200 duplicate", got)
+			// Each bot is claimed by one replica; which replica claims which
+			// bot is the race's. A replica that claimed a bot answers 202, one
+			// whose every bot was claimed by its twin a 200 duplicate.
+			accepted := 0
+			for _, code := range codes {
+				switch code {
+				case http.StatusAccepted:
+					accepted++
+				case http.StatusOK:
+				default:
+					t.Fatalf("codes = %v, want each a 202 (claimed a bot) or a 200 duplicate", codes)
+				}
+			}
+			if accepted == 0 {
+				t.Fatalf("codes = %v, want at least one 202: some replica claims each bot", codes)
 			}
 			// One run for the direct bot across BOTH replicas, one card for
 			// the board bot.

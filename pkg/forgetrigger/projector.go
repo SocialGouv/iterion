@@ -28,6 +28,29 @@ type Projector struct {
 
 var _ forge.SubscriptionProjector = Projector{}
 
+// Check plans the integration the way SyncIntegration does and returns the
+// same report and refusal, writing nothing.
+func (p Projector) Check(ctx context.Context, in forge.SubscriptionInput) (forge.SubscriptionReport, error) {
+	plan, err := p.plan(ctx, in)
+	return plan.Report, err
+}
+
+// plan is the judgement SyncIntegration and Check share: the projector's
+// wiring, the integration's id, then PlanIntegration's refusal.
+func (p Projector) plan(ctx context.Context, in forge.SubscriptionInput) (Plan, error) {
+	if p.Store == nil {
+		return Plan{}, errors.New("forgetrigger: the projector has no subscription store")
+	}
+	if p.Roles == nil {
+		return Plan{}, errors.New("forgetrigger: the projector has no role-bot resolver: the legacy winner and the digest of its rows depend on the roles")
+	}
+	if in.Integration.ID == "" {
+		return Plan{}, errors.New("forgetrigger: the integration to project carries no id")
+	}
+	plan := PlanIntegration(in, p.Roles(ctx), p.now())
+	return plan, plan.Err
+}
+
 // SyncIntegration makes the stored rows of the integration's origin match
 // its plan (PlanIntegration): it creates the rows the store lacks, rewrites
 // the projected fields of the ones that differ, and deletes the ones the
@@ -40,20 +63,11 @@ var _ forge.SubscriptionProjector = Projector{}
 // whose projected fields already match is left alone, and a row created or
 // rewritten by a concurrent sync of the same plan is found equal.
 func (p Projector) SyncIntegration(ctx context.Context, in forge.SubscriptionInput) (forge.SubscriptionReport, error) {
-	if p.Store == nil {
-		return forge.SubscriptionReport{}, errors.New("forgetrigger: the projector has no subscription store")
-	}
-	if p.Roles == nil {
-		return forge.SubscriptionReport{}, errors.New("forgetrigger: the projector has no role-bot resolver: the legacy winner and the digest of its rows depend on the roles")
+	plan, err := p.plan(ctx, in)
+	if err != nil {
+		return plan.Report, err
 	}
 	ri := in.Integration
-	if ri.ID == "" {
-		return forge.SubscriptionReport{}, errors.New("forgetrigger: the integration to project carries no id")
-	}
-	plan := PlanIntegration(in, p.Roles(ctx), p.now())
-	if plan.Err != nil {
-		return plan.Report, plan.Err
-	}
 	origin := trigger.ForgeOrigin(ri.ID)
 	stored, err := p.Store.ListByOrigin(ctx, ri.TenantID, origin)
 	if err != nil {
@@ -63,6 +77,10 @@ func (p Projector) SyncIntegration(ctx context.Context, in forge.SubscriptionInp
 	for _, row := range stored {
 		storedByID[row.ID] = row
 	}
+	// A label a bot declares goes to that bot, so a manifest that gains a
+	// label takes it from the residual winner with no operator gesture: the
+	// report names every such transfer.
+	plan.Report.Warnings = append(plan.Report.Warnings, ResidualTransfers(stored, plan)...)
 	wanted := make(map[string]bool, len(plan.Rows))
 	for _, want := range plan.Rows {
 		wanted[want.ID] = true

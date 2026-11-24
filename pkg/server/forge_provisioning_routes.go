@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/forgetrigger"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -159,6 +163,26 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	if perr != nil {
 		httpError(w, http.StatusBadRequest, "%s", perr.Error())
 		return
+	}
+	// bot_triggers validate at the edge too, against the bots the
+	// integration holds once this enable lands: the request's, beside the
+	// ones an existing integration of the repo already carries.
+	if len(req.BotTriggers) > 0 {
+		scope := slices.Clone(req.BotIDs)
+		if s.forgeIntegrations != nil {
+			existing, xerr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, strings.TrimSpace(req.Repo))
+			switch {
+			case xerr == nil:
+				scope = append(scope, existing.BotIDs...)
+			case !errors.Is(xerr, forge.ErrIntegrationNotFound):
+				httpError(w, http.StatusServiceUnavailable, "read the integration the bot_triggers apply to: %v", xerr)
+				return
+			}
+		}
+		if err := validateBotTriggers(req.BotTriggers, scope); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
 	}
 	// Assert the connection belongs to this team before we provision.
 	conn, ok := s.forgeConnForTenant(w, r, teamID, req.ConnectionID)
@@ -353,6 +377,10 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusBadRequest, "%s", perr.Error())
 		return
 	}
+	if err := validateBotTriggers(req.BotTriggers, req.BotIDs); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	// Org ex-ante validation: only an update EXPANDING the automated
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
@@ -368,7 +396,15 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ugerr)
 		return
 	}
-	if orgID := uOrgID; orgID != "" && expandsProvisionSurface(ri, req) {
+	expands := false
+	if uOrgID != "" {
+		var xerr error
+		if expands, xerr = s.updateExpandsSurface(r.Context(), ri, req); xerr != nil {
+			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", xerr)
+			return
+		}
+	}
+	if orgID := uOrgID; orgID != "" && expands {
 		s.parkProvisionRequest(w, r, id, orgID, teamID, forgeEnableReq{
 			ConnectionID:         ri.ConnectionID,
 			Repo:                 ri.RepoFullName,
@@ -852,6 +888,77 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 		return true
 	}
 	return false
+}
+
+// validateBotTriggers refuses, before anything is provisioned or parked, a
+// bot_triggers block the projection could not honour as written: an entry
+// for a bot the integration does not hold, a blank label pattern, a launch
+// var with a blank name, under the server's reserved launch context
+// (`__iterion_*`, any case — native.ReservedLaunchArgs and what a later
+// build adds under the prefix), a server-minted var (the publish grant and
+// its endpoints), or an `ITERION_*` platform knob.
+func validateBotTriggers(triggers map[string]forge.BotTrigger, bots []string) error {
+	for _, bot := range slices.Sorted(maps.Keys(triggers)) {
+		if !slices.Contains(bots, bot) {
+			return fmt.Errorf("bot_triggers names bot %q, which the integration does not hold (bots %v)", bot, bots)
+		}
+		t := triggers[bot]
+		for _, pattern := range t.Labels {
+			if strings.TrimSpace(pattern) == "" {
+				return fmt.Errorf("bot_triggers.%s.labels carries a blank pattern", bot)
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(t.LaunchVars)) {
+			switch {
+			case strings.TrimSpace(k) == "":
+				return fmt.Errorf("bot_triggers.%s.launch_vars carries a var with a blank name", bot)
+			case strings.HasPrefix(strings.ToLower(k), "__iterion_"):
+				return fmt.Errorf("bot_triggers.%s.launch_vars: %q is the server's reserved launch context, never an operator var", bot, k)
+			case slices.Contains(store.ServerMintedLaunchVars[:], k):
+				return fmt.Errorf("bot_triggers.%s.launch_vars: %q is minted by the server for each run, never an operator var", bot, k)
+			case strings.HasPrefix(strings.ToUpper(k), "ITERION_"):
+				return fmt.Errorf("bot_triggers.%s.launch_vars: %q is a platform setting (ITERION_*), never a launch var", bot, k)
+			}
+		}
+	}
+	return nil
+}
+
+// updateExpandsSurface is the org-approval gate's judgement of an update:
+// expandsProvisionSurface's per-switch reading, then — when the update moves
+// the bots or their bot_triggers — the PLANS themselves. The residual couples
+// the bots: dropping a residual pin, narrowing, disabling or removing one bot
+// hands labels to another, which no per-entry reading sees. Both the stored
+// and the updated integration are planned (forgetrigger.PlanIntegration over
+// the inputs the projector reads) and any row that starts its bot on a label
+// it did not start on before parks the update. A read error is returned —
+// the gate never fails open; a plan the stored state cannot make (refused)
+// parks, a refused updated plan starts nothing and goes on to the provision,
+// which refuses it on its own.
+func (s *Server) updateExpandsSurface(ctx context.Context, ri forge.RepoIntegration, req forgeUpdateReq) (bool, error) {
+	if expandsProvisionSurface(ri, req) {
+		return true, nil
+	}
+	if len(req.BotTriggers) == 0 && !addsBots(req.BotIDs, ri.BotIDs) {
+		return false, nil
+	}
+	if s.forgeOrchestrator == nil {
+		return false, errors.New("no forge orchestrator is wired to plan the update's subscriptions")
+	}
+	before, after, err := s.forgeOrchestrator.UpdateProjectionInputs(ctx, ri.ID, req.BotIDs, req.BotTriggers)
+	if err != nil {
+		return false, fmt.Errorf("plan the update's subscriptions: %w", err)
+	}
+	roles, now := s.forgeRoleBots(), time.Now().UTC()
+	beforePlan := forgetrigger.PlanIntegration(before, roles, now)
+	afterPlan := forgetrigger.PlanIntegration(after, roles, now)
+	switch {
+	case beforePlan.Err != nil:
+		return true, nil
+	case afterPlan.Err != nil:
+		return false, nil
+	}
+	return len(forgetrigger.Widenings(beforePlan, afterPlan)) > 0, nil
 }
 
 // webhookPatchExpandsSurface is expandsProvisionSurface's twin for the

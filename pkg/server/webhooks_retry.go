@@ -190,6 +190,15 @@ func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWr
 	var launches []pendingLaunch
 	var firstID string
 	var claimFailed []webhookLaunchResult
+	for _, res := range pre {
+		// A claim the router could not decide (a board target whose card
+		// write failed): the same per-bot claim failure as a tail claim row
+		// that could not be written, minus the parked row — no card exists,
+		// so the redelivery claims it afresh.
+		if res.denial == nil && res.httpStatus >= http.StatusInternalServerError {
+			claimFailed = append(claimFailed, res)
+		}
+	}
 	for i, t := range targets {
 		t.durableRetry = true
 		result, launch := s.prepareWebhookTarget(ctx, r, cfg, meta, t, hash, ip)
@@ -280,7 +289,9 @@ func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWr
 			return
 		}
 		denials := slices.Clone(results)
-		sortLaunchResults(denials)
+		if !legacyBodies {
+			sortLaunchResults(denials)
+		}
 		for _, res := range denials {
 			if res.denial != nil {
 				s.writeLaunchDenial(w, r, res.denial)
@@ -299,8 +310,12 @@ func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWr
 		writeJSONStatus(w, code, map[string]any{"status": status, "launches": results})
 		return
 	}
+	// The spine's array reads in bot order; the legacy lanes keep their
+	// targets' order, the bytes they have always answered.
 	body := slices.Clone(results)
-	sortLaunchResults(body)
+	if !legacyBodies {
+		sortLaunchResults(body)
+	}
 	response := map[string]any{"status": webhooks.StatusAccepted, "delivery_id": firstID}
 	if !legacyBodies || len(targets) > 1 {
 		response["launches"] = body

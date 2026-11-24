@@ -1,8 +1,8 @@
 package server
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -15,7 +15,8 @@ import (
 )
 
 // envForgeRoutingDefault is the server-wide routing default ("issues=legacy"
-// form), read once per delivery through forgeRoutingDefaultFor.
+// form), parsed once when the server is built (parseForgeRoutingDefault); a
+// value it refuses fails the server's start.
 const envForgeRoutingDefault = "ITERION_FORGE_ROUTING_DEFAULT"
 
 // forgeIssueDelivery is the provider-normalized issue event the spine router
@@ -148,18 +149,47 @@ func (d forgeIssueDelivery) legacyString(cfg webhooks.Config, trigger string) st
 	return knowledge.ChecksumHex([]byte(d.legacyBaseString(cfg, trigger)))
 }
 
-// forgeRoutingDefaultFor reads the server-wide default routing mode of lane
-// from ITERION_FORGE_ROUTING_DEFAULT ("issues=legacy" form, comma-separated
-// lane=mode pairs). "" when unset or the lane names none. The reader decides
-// nothing on its own; forgeRoutingFor wires it in.
-func forgeRoutingDefaultFor(lane string) string {
-	raw := strings.TrimSpace(os.Getenv(envForgeRoutingDefault))
-	for _, pair := range strings.Split(raw, ",") {
-		name, mode, found := strings.Cut(pair, "=")
-		if !found || strings.TrimSpace(name) != lane {
-			continue
-		}
-		return strings.TrimSpace(mode)
+// ErrForgeRoutingDefault is the refusal of an ITERION_FORGE_ROUTING_DEFAULT
+// value the server does not start with.
+var ErrForgeRoutingDefault = errors.New("server: invalid " + envForgeRoutingDefault)
+
+// parseForgeRoutingDefault parses ITERION_FORGE_ROUTING_DEFAULT: comma-
+// separated lane=mode pairs ("issues=legacy"), each lane at most once, lane
+// and mode spelled exactly. Only legacy is a server default in this release:
+// shadow parses and is refused as not shipped, and spine is refused because
+// a lane routed by the spine needs what only a per-integration flip writes —
+// the projected rows' SpineSince and the switch the routing guards read
+// (PUT /api/teams/{id}/forge/repo-bots/{integration_id}/routing). Blank is
+// no default at all. Every refusal wraps ErrForgeRoutingDefault.
+func parseForgeRoutingDefault(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
 	}
-	return ""
+	for _, pair := range strings.Split(raw, ",") {
+		name, mode, found := strings.Cut(strings.TrimSpace(pair), "=")
+		if !found {
+			return nil, fmt.Errorf("%w: %q is not a lane=mode pair", ErrForgeRoutingDefault, pair)
+		}
+		switch name {
+		case webhooks.LaneIssues, webhooks.LanePullRequests, webhooks.LaneComments:
+		default:
+			return nil, fmt.Errorf("%w: unknown lane %q (want %s, %s or %s)", ErrForgeRoutingDefault, name,
+				webhooks.LaneIssues, webhooks.LanePullRequests, webhooks.LaneComments)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("%w: lane %q is named twice", ErrForgeRoutingDefault, name)
+		}
+		switch mode {
+		case webhooks.RoutingLegacy:
+		case webhooks.RoutingShadow:
+			return nil, fmt.Errorf("%w: %s=%s: shadow routing is not shipped in this release", ErrForgeRoutingDefault, name, mode)
+		case webhooks.RoutingSpine:
+			return nil, fmt.Errorf("%w: %s=%s: spine is not a server default — flip each integration with PUT /api/teams/{id}/forge/repo-bots/{integration_id}/routing", ErrForgeRoutingDefault, name, mode)
+		default:
+			return nil, fmt.Errorf("%w: lane %q: unknown mode %q (want %s)", ErrForgeRoutingDefault, name, mode, webhooks.RoutingLegacy)
+		}
+		out[name] = mode
+	}
+	return out, nil
 }

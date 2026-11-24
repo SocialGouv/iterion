@@ -60,6 +60,10 @@ type SubscriptionProjector interface {
 	// whatever the report already names (Overlaps), and leaves the stored
 	// rows as they were.
 	SyncIntegration(ctx context.Context, in SubscriptionInput) (SubscriptionReport, error)
+	// Check judges in the way SyncIntegration would — the same report, the
+	// same refusal — and writes nothing. A caller that must not write
+	// anything else on a refusal checks first.
+	Check(ctx context.Context, in SubscriptionInput) (SubscriptionReport, error)
 	// DropIntegration deletes every row the integration derived.
 	DropIntegration(ctx context.Context, tenantID, integrationID string) error
 }
@@ -298,15 +302,15 @@ func (o *Orchestrator) projectSubscriptions(ctx context.Context, in Subscription
 // (SubscriptionsSyncError); on one that does, the fence rolls back and the
 // stored rows stand.
 func (o *Orchestrator) SyncSubscriptions(ctx context.Context, tenantID, integrationID string) (SubscriptionReport, error) {
-	if o.Subscriptions == nil {
-		return SubscriptionReport{}, fmt.Errorf("%w: no subscription projector is wired on this server", ErrSubscriptionProjection)
-	}
 	ri, err := o.Integrations.Get(ctx, integrationID)
 	if err != nil {
 		return SubscriptionReport{}, err
 	}
 	if ri.TenantID != tenantID {
 		return SubscriptionReport{}, ErrIntegrationNotFound
+	}
+	if o.Subscriptions == nil {
+		return SubscriptionReport{}, fmt.Errorf("%w: no subscription projector is wired on this server", ErrSubscriptionProjection)
 	}
 	ctx, release, err := o.provisionLease(ctx, ri.TenantID, ri.ConnectionID, ri.RepoFullName)
 	if err != nil {
@@ -328,6 +332,30 @@ func (o *Orchestrator) SyncSubscriptions(ctx context.Context, tenantID, integrat
 		return report, err
 	}
 	return report, refused
+}
+
+// UpdateProjectionInputs reads what a projection of one stored integration
+// needs, before and after an update of its bots and bot_triggers: before is
+// the integration as stored, after the one the update would provision — the
+// desired bots, the request's bot_triggers laid over the stored ones, the
+// config's bot scope rebuilt when the bot set changes (provisionProjectionInput,
+// the input a provision checks). It writes nothing and takes no lease: the
+// org-approval gate plans both to see which bots a label starts.
+func (o *Orchestrator) UpdateProjectionInputs(ctx context.Context, integrationID string, bots []string, triggers map[string]BotTrigger) (before, after SubscriptionInput, err error) {
+	before, err = o.subscriptionInput(ctx, integrationID)
+	if err != nil {
+		return SubscriptionInput{}, SubscriptionInput{}, err
+	}
+	ri, cfg := before.Integration, before.Config
+	desired := dedupSorted(bots)
+	frByBot, invByBot, err := o.resolveBotManifests(ctx, ri.TenantID, desired)
+	if err != nil {
+		return SubscriptionInput{}, SubscriptionInput{}, err
+	}
+	after = o.provisionProjectionInput(ri, cfg, equalStringSet(ri.BotIDs, desired), desired,
+		applyBotTriggers(ri.BotTriggers, triggers), frByBot, invByBot,
+		cfg.OperatorLaunchVars, cfg.Overlap, cfg.HoldLabels, cfg.LabelAllowlist)
+	return before, after, nil
 }
 
 // subscriptionInput reads, under the provision lease, what a projection of

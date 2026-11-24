@@ -204,7 +204,7 @@ func TestPlan_StampsTheManifestDigestAndIgnoresBotTriggers(t *testing.T) {
 	f := newDigestFixture()
 	input := func(triggers map[string]forge.BotTrigger) forge.SubscriptionInput {
 		in := forge.SubscriptionInput{
-			Integration: forge.RepoIntegration{ID: testIntegration, TenantID: testTenant, RepoFullName: testRepo, BotTriggers: triggers},
+			Integration: forge.RepoIntegration{ID: testIntegration, TenantID: testTenant, RepoFullName: testRepo, BotIDs: slices.Clone(f.bots), BotTriggers: triggers},
 			Config:      botScope(f.bots...),
 			Bots:        slices.Clone(f.bots),
 			InvByBot:    f.inv,

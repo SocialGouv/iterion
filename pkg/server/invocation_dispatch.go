@@ -266,7 +266,7 @@ func (s *Server) dispatchInvocation(
 			// back at once; keeping it would charge one command two runs.
 			adm.rollback(s.logger)
 			seed()
-			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef, lane)
+			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
 			writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "carded", "bot": route.BotID})
 			return
@@ -329,7 +329,7 @@ func (s *Server) dispatchInvocation(
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		// No dispatcher: a tracking card (default inbox state) + direct launch.
 		seed()
-		s.ensureBoardCard(ctx, cfg, route, vars, meta, "", repoURL, repoRef, lane)
+		s.ensureBoardCard(ctx, cfg, route, vars, meta, "", repoURL, repoRef)
 	}
 	s.acceptWebhookTargets(ctx, w, r, cfg, meta, []forgeLaunchTarget{{
 		BotID: route.BotID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
@@ -574,9 +574,6 @@ func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route 
 	// a spine carded run runs the invocation it was routed by, not a bare
 	// default.
 	mergeVarsInto(botArgs, extras.ContextVars)
-	if extras.OwnVars {
-		botArgs[boardOwnVarsKey] = "1"
-	}
 	// PR/MR-context vars stamped by the command handlers (resolved PR head/
 	// base, push-back routing, the PR to comment the verdict on). They must
 	// ride BotArgs for the same reason as the opens_mr stamp below: cloud's
@@ -607,6 +604,16 @@ func (s *Server) buildBoardCard(ctx context.Context, cfg webhooks.Config, route 
 	if route.OpensMR && meta.SubjectURL != "" {
 		botArgs["open_mr"] = "true"
 		botArgs["source_issue_ref"] = meta.SubjectURL
+	}
+	// Everything above comes from the event, the route or a manifest (args
+	// var, context_vars, hand-off names); everything below is the server's
+	// own stamp. The reserved launch context and the minted grants are
+	// dropped between the two, so no manifest can plant what only the server
+	// writes — the repo the run clones, the key and secret overrides it
+	// resolves, the own-vars marker.
+	botArgs = native.DropServerMintedLaunchVars(botArgs)
+	if extras.OwnVars {
+		botArgs[boardOwnVarsKey] = "1"
 	}
 	// Repo-bound webhook command (issue-comment → MR): the cloud board
 	// coordinator launches from the card with no RepoURL of its own, so stamp

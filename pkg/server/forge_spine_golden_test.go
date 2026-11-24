@@ -22,8 +22,9 @@ import (
 // here, so the spine cut cannot disturb an integration that never left
 // legacy. The goldens are green by construction — they were recorded on the
 // legacy path — and only their mutation proves them: routing the issues lane
-// by spine BY DEFAULT (ITERION_FORGE_ROUTING_DEFAULT=issues=spine) must red
-// this test, because a never-flipped config would then route differently.
+// by spine BY DEFAULT (forgeRoutingFor answering spine for a lane the config
+// leaves unset) must red this test, because a never-flipped config would
+// then route differently.
 //
 // The recorded contract carries no wall clock: the bodies are status maps,
 // the keys are content checksums over fixed inputs (tenant t1, webhook,

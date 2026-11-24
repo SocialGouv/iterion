@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -415,6 +416,11 @@ type Server struct {
 	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
+	// forgeRoutingDefault is ITERION_FORGE_ROUTING_DEFAULT parsed once in
+	// New (lane → mode); forgeRoutingDefaultErr is its refusal, which fails
+	// the server's start (ListenAndServe, StartEmbedded).
+	forgeRoutingDefault    map[string]string
+	forgeRoutingDefaultErr error
 	// forgeGatesMemo holds the merge-gate posture of a (tenant, bot) pair for
 	// a short window, for the repo listing every open studio tab polls
 	// (gatesMergesMemo). Zero value ready.
@@ -1065,6 +1071,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		priceFeedStates:      cfg.PriceFeedStates,
 		priceFeedTransitions: map[string]string{},
 	}
+	s.forgeRoutingDefault, s.forgeRoutingDefaultErr = parseForgeRoutingDefault(os.Getenv(envForgeRoutingDefault))
 	// The tenant routing-policy levels (ADR-121 delivery 2): per-org and
 	// per-team policy documents in their own collection. No resolver, no
 	// TTL — one bounded point read per launch, and an outage refuses the
@@ -1228,18 +1235,18 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			// secrets the orchestrator deletes are pinnable by any
 			// webhook or subscription of the tenant, and a plain store
 			// delete would leave those pins dead in silence.
-			Secrets:         s.pinSweepingSecrets(),
-			ApiKeys:         s.apiKeys,
-			Sealer:          s.sealer,
-			Bindings:        s.botBindings,
-			Bots:            s.forgeBotForge,
-			Invocations:     s.forgeBotInvocations,
-			Schedules:       cfg.ScheduledBots,
+			Secrets:     s.pinSweepingSecrets(),
+			ApiKeys:     s.apiKeys,
+			Sealer:      s.sealer,
+			Bindings:    s.botBindings,
+			Bots:        s.forgeBotForge,
+			Invocations: s.forgeBotInvocations,
+			Schedules:   cfg.ScheduledBots,
 			// The forge subscription projector (ADR-172): nil — no
 			// projection, and every switch to the spine refused — when no
 			// trigger store is wired. Its role bots are the ones the router's
 			// staleness check reads, so both sides hash the same digest.
-			Subscriptions: s.forgeSubscriptionProjector(cfg.TriggerStore),
+			Subscriptions:   s.forgeSubscriptionProjector(cfg.TriggerStore),
 			AdminFor:        s.forgeAdminFor,
 			AdminForToken:   s.forgeAdminForToken,
 			BotAvatar:       s.projectBotAvatar(),

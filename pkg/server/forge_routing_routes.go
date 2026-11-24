@@ -96,11 +96,27 @@ func (s *Server) handleSyncForgeSubscriptions(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusForbidden, "admin or owner required")
 		return
 	}
-	if s.forgeOrchestrator == nil {
+	// The integration is the team's before anything about this server's
+	// wiring is answered: another team's id reads as absent, whatever is
+	// wired here.
+	if s.forgeIntegrations == nil {
 		httpError(w, http.StatusServiceUnavailable, "forge provisioning unavailable")
 		return
 	}
 	integrationID := r.PathValue("integration_id")
+	ri, err := s.forgeIntegrations.Get(r.Context(), integrationID)
+	switch {
+	case errors.Is(err, forge.ErrIntegrationNotFound) || (err == nil && ri.TenantID != teamID):
+		httpError(w, http.StatusNotFound, "integration not found")
+		return
+	case err != nil:
+		httpError(w, http.StatusServiceUnavailable, "read integration %s: %v", integrationID, err)
+		return
+	}
+	if s.forgeOrchestrator == nil {
+		httpError(w, http.StatusServiceUnavailable, "forge provisioning unavailable")
+		return
+	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	report, err := s.forgeOrchestrator.SyncSubscriptions(ctx, teamID, integrationID)
 	if err != nil {

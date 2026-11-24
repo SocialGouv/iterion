@@ -1386,7 +1386,13 @@ it**, each in its own invocation's mode and with its own `context_vars`.
   ships it (`requires.iterion`). Without manifest labels, an operator sets
   them per bot on the integration: `PATCH
   /api/teams/{id}/forge/repo-bots/{integration_id}` with `{"bot_triggers":
-  {"nestor": {"labels": ["securite"]}}}`.
+  {"nestor": {"labels": ["securite"]}}}`. The block answers `400` for a bot
+  the integration does not hold, a blank label, or a `launch_vars` key that
+  is the server's (`__iterion_*`, a minted publish var, `ITERION_*`); a
+  manifest var of that kind is dropped from the row and named in the sync
+  report. On an org that requires approval, a change that hands a label to
+  a bot that did not start on it — a residual pin dropped, a bot narrowed
+  beside the residual winner — parks like any widening.
 - **Project, then flip.** `POST …/repo-bots/{integration_id}/subscriptions/sync`
   projects the rows and answers the report (enabled and disabled rows per
   bot, their labels and reasons). `PUT …/repo-bots/{integration_id}/routing`
@@ -1394,8 +1400,12 @@ it**, each in its own invocation's mode and with its own `context_vars`.
   (409) a lane with no enabled row, a bot whose rows overlap, or
   hand-pinned `launch_vars` on the webhook config (move them to the
   integration's `launch_vars`). On an org that requires provisioning
-  approval, a flip to spine is an org admin's. `{"mode": "legacy"}` rolls
-  back, at any time, and nobody's claims are lost either way.
+  approval, a flip to spine is an org admin's — unless the org scoped its
+  gate to `shared_credentials` and the team funds its own runs.
+  `{"lane": "issues", "mode": "legacy"}` rolls back, at any time, and
+  nobody's claims are lost either way. The server default
+  (`ITERION_FORGE_ROUTING_DEFAULT`) accepts `legacy` alone: spine is
+  reached through this flip, per integration.
 - **The answers.** A label no row claims answers `200 filtered`, naming
   each bot and what it wanted; a bot out of scope or disabled is a
   per-bot filtered row while the others launch — never a 4xx. Rows whose

@@ -218,6 +218,14 @@ func (e laneEvent) cardedFor(c *native.Issue) bool {
 // A legacy lane (Bot == "") keeps the pre-bot rule: its own label, and every
 // pre-lane card of its project. An '@'-card is laned and never its own — an
 // old replica reading a bot card reaches the same verdict.
+// botLaneCard reports whether c carries a bot lane label — a card the
+// spine carded for one bot, as opposed to a lane card of the bot-less era.
+func botLaneCard(c *native.Issue) bool {
+	return slices.ContainsFunc(c.Labels, func(x string) bool {
+		return strings.HasPrefix(x, boardLaneLabelPrefix+"@")
+	})
+}
+
 func (l triggerLane) ownsCard(c *native.Issue) bool {
 	label := l.boardLabel()
 	laned := false
@@ -379,9 +387,14 @@ type laneRead struct {
 // takes over. The first answer wins in walk order, so a claim in either
 // store blocks a claim in the other.
 type laneVerdict struct {
-	answered   *webhooks.Delivery
-	card       *native.Issue
-	absorb     bool
+	answered *webhooks.Delivery
+	card     *native.Issue
+	absorb   bool
+	// legacyEra says the answering record is not the read's own bot lane:
+	// a row of a side family (Legacy, EventOnly) or a card carrying no bot
+	// lane label. Such a record was made by a router that decided the whole
+	// delivery, not one bot of it.
+	legacyEra  bool
 	nextKey    string
 	nextCardID string
 	displaced  *laneEvent
@@ -429,10 +442,11 @@ func (s *Server) readTriggerLane(ctx context.Context, cfg webhooks.Config, rd la
 		if d == nil {
 			continue
 		}
-		if !slices.Contains(rd.Bases, base) && rd.Bot != "" && d.BotID != rd.Bot {
+		side := !slices.Contains(rd.Bases, base)
+		if side && rd.Bot != "" && d.BotID != rd.Bot {
 			continue
 		}
-		return laneVerdict{answered: d}, nil
+		return laneVerdict{answered: d, legacyEra: side}, nil
 	}
 	// 2. the side generation chains, read-only.
 	for _, base := range rd.Legacy {
@@ -441,7 +455,7 @@ func (s *Server) readTriggerLane(ctx context.Context, cfg webhooks.Config, rd la
 			return laneVerdict{}, err
 		}
 		if d != nil {
-			return laneVerdict{answered: d, absorb: absorb}, nil
+			return laneVerdict{answered: d, absorb: absorb, legacyEra: true}, nil
 		}
 	}
 	for _, base := range rd.EventOnly {
@@ -450,7 +464,7 @@ func (s *Server) readTriggerLane(ctx context.Context, cfg webhooks.Config, rd la
 			return laneVerdict{}, err
 		}
 		if d != nil {
-			return laneVerdict{answered: d}, nil
+			return laneVerdict{answered: d, legacyEra: true}, nil
 		}
 	}
 	// 3. the board half, when a wired coordinator makes a card a claim.
@@ -459,7 +473,7 @@ func (s *Server) readTriggerLane(ctx context.Context, cfg webhooks.Config, rd la
 		return laneVerdict{}, err
 	}
 	if card != nil {
-		return laneVerdict{card: card, absorb: absorb}, nil
+		return laneVerdict{card: card, absorb: absorb, legacyEra: !botLaneCard(card)}, nil
 	}
 	// 4. the primary chain, which yields the claim key.
 	v, err := s.walkPrimaryChain(ctx, cfg, primary, rd.Board, ev)

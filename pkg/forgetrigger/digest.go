@@ -7,6 +7,7 @@ import (
 	"maps"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // digestFormat versions the canonical document ManifestDigest hashes. A
@@ -45,6 +46,16 @@ type digestRoute struct {
 	ArgsVar     string            `json:"args_var"`
 	OpensMR     bool              `json:"opens_mr"`
 	ContextVars map[string]string `json:"context_vars"`
+}
+
+// DigestBots is the bot set a projection digest hashes, whichever producer
+// computes it — the projector when it plans an integration, the router when
+// it judges that integration's rows stale: the integration's own bots
+// (RepoIntegration.BotIDs), sorted and deduplicated. Never the webhook
+// config's bot scope, which an operator may PATCH apart from the integration
+// (bot_ids, wildcard_bots) with no projection to follow.
+func DigestBots(ri forge.RepoIntegration) []string {
+	return sortedBots(ri.BotIDs)
 }
 
 // ManifestDigest is the digest of the manifest-side inputs a projection is
