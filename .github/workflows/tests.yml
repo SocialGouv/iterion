@@ -91,8 +91,8 @@ concurrency:
 #      sideways. The ruleset lives outside this repo and keeps its names — a
 #      PR that renamed a required job could never pass its own queue build
 #      (the check would never report and the entry would hang 60 minutes).
-#   2. GATED LEGS — `test-unit`, `test-e2e`, `studio`, `race-shard`: the real
-#      work. They run in the queue and are deliberately NOT required — their
+#   2. GATED LEGS — `test-unit`, `test-e2e`, `studio`, `test-native-exec`,
+#      `race-shard`: the real work. They run in the queue and are deliberately NOT required — their
 #      aggregator speaks for them. The only `if:` a leg carries is the tap
 #      skip below, byte for byte, which its aggregator carries too: a leg
 #      that grew any other `if:` would skip silently in the queue while its
@@ -131,7 +131,7 @@ concurrency:
 # (internal/ciguard's tap tests rewrite them); running them would spend ~57
 # minutes of compute on each pass, on the pull request and again in the queue
 # (measured on #2314). So the gated legs (`test-unit`, `test-e2e`, `studio`,
-# `race-shard`), the aggregators `test` and `race` that speak for them,
+# `test-native-exec`, `race-shard`), the aggregators `test` and `race` that speak for them,
 # `mongo-conformance`, `golangci`, `vendor-check` and `fmt-check` skip it. A
 # title is only a claim, and a
 # skipped job reports SUCCESS: `brand` — required, never skipped, and a
@@ -187,7 +187,12 @@ concurrency:
 #
 # Two jobs carry a GitHub-hosted label whatever the ref: desktop-vet-linux
 # (the platform-specific build) and docs-links (advisory and outside the queue).
-# Every REQUIRED job routes through the expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
+# Every REQUIRED job routes through the expression below. One gated leg,
+# test-native-exec, ends it on `vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest'`
+# instead of the scale set: its Bubblewrap mount needs a namespace-capable VM,
+# which ARC pods are not; its other clauses are this expression's, byte for
+# byte (internal/ciguard's native_exec_runner_test.go).
+# Measured 2026-09-08, on the six jobs routed self-hosted at
 # the time: all six passed there, nine runner pods starting at once with no
 # queueing.
 #
@@ -218,7 +223,8 @@ jobs:
     # SHARDED three ways, like race-shard (#3402). Unsharded, the suite grew
     # to a 24.5-min `go test` step under a 30-min job ceiling: a slow runner
     # cut the next step and a suite whose every package passed read red in the
-    # merge queue. Every package still runs: `./...` minus e2e, partitioned by
+    # merge queue. Every package still runs: `./...` minus e2e and
+    # pkg/sandbox/kubernetes (each proved by its own leg), partitioned by
     # scripts/ci/testshards with the UNIT weights table, a pure function of the
     # commit, so the three legs of one entry pick complementary sets. LPT seats
     # the heaviest row (`bots`) on shard 0; the one-time steps — the freshness
@@ -227,10 +233,10 @@ jobs:
     # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    # Nested read-only mount witnesses need a namespace-capable runner.
-    # ARC pods refuse that mount; a qualified private runner may override
-    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
+    # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
+    # excluded from the partition and proved by test-native-exec instead.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
@@ -392,15 +398,6 @@ jobs:
             sh scripts/chart-check-deps.sh charts/iterion
           fi
 
-      - name: Native exec environment prerequisites
-        # The native transport tests execute the real pair on a read-only mount.
-        # Missing isolation is a failure, not permission to skip the witness.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap build-essential
-          bwrap --version
-          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
-
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
         # with its own budget; running it here too doubled the wall-clock AND
@@ -421,12 +418,15 @@ jobs:
         # The partition goes through an ASSIGNMENT, never inline `$( )`:
         # inline substitution loses the splitter's exit code, and an
         # empty-shard refusal would degrade into `go test` with no package.
+        # pkg/sandbox/kubernetes is test-native-exec's; the quarantined flakes
+        # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
         shell: bash
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights scripts/ci/test-shards-unit-weights.tsv)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          go test -mod=vendor -count=1 -timeout 1500s $pkgs
+          go test -mod=vendor -count=1 -timeout 1500s -skip "$quarantine" $pkgs
 
       - name: Live e2e compile check
         if: matrix.shard == 2
@@ -457,16 +457,28 @@ jobs:
     # through the cache service ADR-105 measured at 1-3 MB/s. Runs in the
     # merge queue behind the required `test` aggregator; carries the tap skip
     # and nothing else.
+    #
+    # UNDER -race (#3664): this is the package's only run, so the data-race
+    # detector proves it here, on the scale set, and race-shard leaves it out
+    # of its partition. The `test` aggregator speaks for it: a race this leg
+    # finds reddens `test`. -race needs cgo, which the scale set's image
+    # (ci/arc-runner) and ubuntu-latest both build with. The whole package
+    # ran under -race in 1468-1785 s (2026-11-23) on GitHub-hosted
+    # ubuntu-latest (race-shard, runs 45180564490 and 45186345093), not on
+    # ARC; the shards are hash-split and uneven (the heaviest holds about a
+    # third of the package). So each shard keeps race-shard's proven -race
+    # bounds, 2400 s per package and a 50-minute job, until ARC -race shard
+    # walls are measured.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 25
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
     env:
-      CGO_ENABLED: "0"
+      CGO_ENABLED: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -519,11 +531,16 @@ jobs:
         # stay with their parent. All legs use one commit and Go's own
         # inventory; a discovery failure must stop before running any test.
         # The per-shard hang bound and e2e/main_test.go's parallel cap stay.
+        # The quarantined flakes (scripts/ci/test-quarantine.tsv) are skipped
+        # here and run nightly.
         shell: bash
         run: |
           set -euo pipefail
-          pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
-          go test -mod=vendor -count=1 -v -run "$pattern" -timeout 900s ./e2e
+          # Discovery lists under -race, the build execution runs: a file
+          # tagged `//go:build race` exists only in that variant.
+          pattern=$(GOFLAGS=-race go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -race -mod=vendor -count=1 -v -run "$pattern" -skip "$quarantine" -timeout 2400s ./e2e
 
   studio:
     # The studio half: eslint + tsc -b + vitest, plus the two drift checks
@@ -596,11 +613,65 @@ jobs:
             exit 1
           fi
 
+  test-native-exec:
+    # The one package the scale set cannot prove: pkg/sandbox/kubernetes's
+    # native transport witnesses run the real host/guest pair under a
+    # Bubblewrap read-only mount, and ARC pods refuse that mount (#3189). So
+    # test-unit and race-shard leave the package out of their partitions and
+    # this small job proves ALL of it — plain, as test-unit would, then under
+    # -race, as race-shard would — on a namespace-capable VM
+    # (CI_NATIVE_EXEC_RUNNER may select a qualified private runner). Fork,
+    # dependency-bot and global-off guards still win. Both required
+    # aggregators `needs:` it: `test` for the plain run, `race` for the race
+    # run, so neither verdict loses the package (#3662).
+    # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
+
+      - name: Native exec tests
+        # test-unit's flags: -count=1, CGO_ENABLED=0, 1500 s per package.
+        shell: bash
+        run: |
+          set -euo pipefail
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -mod=vendor -count=1 -timeout 1500s -skip "$quarantine" ./pkg/sandbox/kubernetes/
+
+      - name: Native exec tests under -race
+        # race-shard's flags: -race (cgo on), -count=1, 2400 s per package.
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" ./pkg/sandbox/kubernetes/
+
   # ---- required aggregator: the name the ruleset requires, no tests of its own ----
 
   test:
     # REQUIRED — the ruleset requires the NAME `test`, and this job is what
-    # reports it. It runs no tests: the three legs above do the work, and
+    # reports it. It runs no tests: the four legs above do the work, and
     # this job turns their conclusions into one required verdict.
     #
     # `!cancelled()` is load-bearing. With plain `needs:` and no `if:`,
@@ -614,7 +685,7 @@ jobs:
     # byte for byte. The step then re-verifies each leg's result rather than
     # trusting the needs-graph, so a red leg can only ever produce a red
     # required check.
-    needs: [test-unit, test-e2e, studio]
+    needs: [test-unit, test-e2e, studio, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 5
@@ -622,13 +693,14 @@ jobs:
       TEST_UNIT_RESULT: ${{ needs.test-unit.result }}
       TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
       STUDIO_RESULT: ${{ needs.studio.result }}
+      TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
     steps:
       - name: Every leg reported success
         shell: bash
         run: |
           set -euo pipefail
           fail=0
-          for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}"; do
+          for pair in "test-unit:${TEST_UNIT_RESULT}" "test-e2e:${TEST_E2E_RESULT}" "studio:${STUDIO_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
             leg="${pair%%:*}"
             result="${pair#*:}"
             if [ "$result" != "success" ]; then
@@ -650,7 +722,9 @@ jobs:
     # developer's machine.
     #
     # Sharding is purely mechanical and the guarantee is untouched: EVERY
-    # package still runs under -race, `./...` partitioned three ways by
+    # package still runs under -race — `./...` minus e2e (under -race in
+    # test-e2e, #3664) and pkg/sandbox/kubernetes (under -race in
+    # test-native-exec, #3662) — partitioned three ways by
     # scripts/ci/testshards — a pure function of the commit, so the three
     # legs of one merge-queue entry always pick complementary sets. The
     # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
@@ -658,10 +732,10 @@ jobs:
     # empty-shard refusal would degrade into `go test` with no package
     # arguments. The weights table carries measured -race package durations;
     # LPT packs the three shards to near-equal weight, and the three heaviest
-    # rows (e2e, bots, pkg/server) each lead one shard. The leg's wall is the
-    # larger of its heaviest package (e2e or bots, each one sequential test
+    # rows (bots, pkg/server, internal/fswatch) each lead one shard. The leg's
+    # wall is the larger of its heaviest package (bots, one sequential test
     # binary) and its shard's load spread over the runner's parallel test
-    # slots; LPT balances the second, only splitting e2e/bots lowers the first.
+    # slots; LPT balances the second, only splitting bots lowers the first.
     #
     # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
     # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
@@ -670,10 +744,10 @@ jobs:
     # lesson: a matrix over runs-on diverges from its id silently).
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    # Nested read-only mount witnesses need a namespace-capable runner.
-    # ARC pods refuse that mount; a qualified private runner may override
-    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
+    # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
+    # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
+    # excluded from the partition and proved by test-native-exec instead.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
@@ -732,35 +806,26 @@ jobs:
             sh scripts/chart-check-deps.sh charts/iterion
           fi
 
-      - name: Native exec environment prerequisites
-        # The native transport tests execute the real pair on a read-only mount.
-        # Missing isolation is a failure, not permission to skip the witness.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap build-essential
-          bwrap --version
-          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
-
       - name: Race tests (shard ${{ matrix.shard }} of 3)
         # Each package gets 2400 s under -race, inside the job's 50-minute
-        # ceiling. See the scripts/ci/testshards doc for why the assignment
-        # form is load-bearing.
+        # ceiling (#2789). See the scripts/ci/testshards doc for why the
+        # assignment form is load-bearing. The quarantined flakes
+        # (scripts/ci/test-quarantine.tsv) are skipped here and run nightly.
         run: |
           set -euo pipefail
-          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
+          pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -skip '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights scripts/ci/test-shards-weights.tsv)
+          quarantine=$(go run -mod=vendor ./scripts/ci/testquarantine -list scripts/ci/test-quarantine.tsv -skip)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          # e2e alone under -race took 1785 s (merge_group run 45186345093) and 1468 s
-          # (run 45180564490) on 2026-11-23: 1800 s leaves it no headroom, so the
-          # per-package bound stays at 2400 s (#2789).
-          go test -race -mod=vendor -count=1 -timeout 2400s $pkgs
+          go test -race -mod=vendor -count=1 -timeout 2400s -skip "$quarantine" $pkgs
 
   # ---- required aggregator: the name the ruleset requires ----
 
   race:
     # REQUIRED — the ruleset requires the NAME `race`; this job reports it and
-    # re-verifies the three shards' conclusions. The full suite still runs
-    # under -race (see race-shard); sharding changed where it runs, not
-    # whether it does.
+    # re-verifies the three shards' conclusions and test-native-exec's, whose
+    # second step runs pkg/sandbox/kubernetes under -race. Every package but
+    # e2e runs under -race behind this verdict; e2e runs under -race in
+    # test-e2e, behind `test` (#3664).
     #
     # A matrix `needs:` aggregates its legs' results: `success` only when
     # EVERY leg succeeded. `!cancelled()` is load-bearing — a plain `needs:`
@@ -768,21 +833,28 @@ jobs:
     # (the header's catastrophe, one level up). Combined with the tap skip
     # the shards carry, so this job skips exactly the entries they skip and
     # re-verifies every other one; ciguard pins the spelling byte for byte.
-    needs: [race-shard]
+    needs: [race-shard, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 5
     env:
       RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
+      TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
     steps:
       - name: Every shard reported success
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${RACE_SHARD_RESULT}" != "success" ]; then
-            echo "::error::race-shard reported ${RACE_SHARD_RESULT} — the required verdict is red because a shard is red."
-            exit 1
-          fi
+          fail=0
+          for pair in "race-shard:${RACE_SHARD_RESULT}" "test-native-exec:${TEST_NATIVE_EXEC_RESULT}"; do
+            leg="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then
+              echo "::error::leg ${leg} reported ${result} — the required verdict is red because its leg is red."
+              fail=1
+            fi
+          done
+          exit "$fail"
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo

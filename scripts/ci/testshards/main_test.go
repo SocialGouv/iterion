@@ -458,8 +458,8 @@ func TestTheCommittedWeightsTablesPackTheirLegs(t *testing.T) {
 	// rows: that refresh commit lowers its entry to the new count. A table
 	// absent from this map is a new weighted leg that must state its floor.
 	minRows := map[string]int{
-		"scripts/ci/test-shards-weights.tsv":      69, // merge_group run 45186345093 (2026-11-23)
-		"scripts/ci/test-shards-unit-weights.tsv": 40, // merge_group run 44559477253 (2026-11-19)
+		"scripts/ci/test-shards-weights.tsv":      67, // merge_group run 45186345093 (2026-11-23), less e2e and pkg/sandbox/kubernetes
+		"scripts/ci/test-shards-unit-weights.tsv": 39, // merge_group run 44559477253 (2026-11-19), less pkg/sandbox/kubernetes
 	}
 
 	calls, err := harvestWeightedSplitterCalls(filepath.Join(tree, ".github", "workflows", "tests.yml"))
