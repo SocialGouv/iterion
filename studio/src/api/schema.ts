@@ -5112,6 +5112,46 @@ export interface paths {
         patch: operations["patchTeamsByIdForgeRepoBotsByIntegrationId"];
         trace?: never;
     };
+    "/api/teams/{id}/forge/repo-bots/{integration_id}/routing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/teams/{id}/forge/repo-bots/{integration_id}/routing */
+        put: operations["putTeamsByIdForgeRepoBotsByIntegrationIdRouting"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/repo-bots/{integration_id}/subscriptions/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/forge/repo-bots/{integration_id}/subscriptions/sync */
+        post: operations["postTeamsByIdForgeRepoBotsByIntegrationIdSubscriptionsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/repos": {
         parameters: {
             query?: never;
@@ -8015,7 +8055,9 @@ export interface components {
         };
         Matcher: {
             actions?: string[];
+            added_labels?: string[];
             authors?: string[];
+            exclude_added_labels?: string[];
             kinds?: string[];
             labels?: string[];
             repos?: string[];
@@ -8631,10 +8673,12 @@ export interface components {
             created_at: string;
             created_by?: string;
             cron?: string;
+            disabled_reason?: string;
             enabled: boolean;
             filters?: {
                 [key: string]: string[];
             };
+            forge_binding?: string;
             guard?: string;
             guard_timeout?: string;
             guard_var?: string;
@@ -8657,6 +8701,7 @@ export interface components {
             max_concurrent?: number;
             mode?: string;
             no_live_run?: string;
+            opens_mr?: boolean;
             origin?: string;
             overlap?: string;
             poll_query?: {
@@ -8664,6 +8709,7 @@ export interface components {
             };
             poller?: string;
             poller_since?: number;
+            projection_digest?: string;
             repo?: string;
             retry_jitter?: string;
             retry_max_attempts?: number;
@@ -18455,6 +18501,48 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdForgeRepoBotsByIntegrationIdRouting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdForgeRepoBotsByIntegrationIdSubscriptionsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };

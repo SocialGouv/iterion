@@ -1330,10 +1330,12 @@ hardcoded reviewer and the guard was lost entirely.
 
 A webhook that an auto-provisioned integration has migrated therefore
 carries a **per-bot routing table** (`BotRules`, one entry per
-co-enabled bot). An inbound delivery then **fans out to every bot whose
-own rule claims the event and admits the author** — each with its own
-author filter, label filter, and launch vars, its own idempotency key,
-and a FRESH vars map (so two bots never share one publish grant)
+co-enabled bot). An inbound pull-request delivery then **fans out to
+every bot whose own rule claims the event and admits the author** — each
+with its own author filter and launch vars, its own idempotency key, and
+a FRESH vars map (so two bots never share one publish grant). The table
+carries no label filter the issue lane reads: per-bot labels are the
+subscription routing below
 ([pkg/webhooks/types.go:BotRule](../pkg/webhooks/types.go),
 [pkg/server/webhooks_common.go:resolveForgeEventBots](../pkg/server/webhooks_common.go)).
 
@@ -1364,6 +1366,48 @@ unchanged bot set backfills the table without minting a token or calling
 the forge. One contract change follows from the fan-out: a delivery no
 enabled bot claims is now **filtered (200)** rather than 403 — a 4xx on
 a forge hook is what makes GitHub disable it.
+
+### Per-bot labels on the issue lane — routing by subscription (ADR-172)
+
+On the legacy issue lane a label starts ONE bot, elected per webhook
+(`default_bot_id`, else the implementer, else the reviewer): two label
+bots on one repository start neither. An integration can instead route
+its issue lane **by subscription**
+([ADR-172](adr/172-a-forge-delivery-is-routed-by-the-subscriptions-its-integration-projects.md)):
+every bot of the integration that claims `issue_labeled` gets one
+subscription row, projected from its manifest and the integration's
+per-bot `bot_triggers`, and a label starts **every bot whose row claims
+it**, each in its own invocation's mode and with its own `context_vars`.
+
+- **Declare the labels** in the bot's manifest, on its `kind: forge`
+  invocation: `forge: { event: issue_labeled, actions: [labeled], labels:
+  [securite] }` (`*`, a literal, or a leading-`*` suffix such as
+  `*-chaos`; no prefix wildcard). The key needs the iterion release that
+  ships it (`requires.iterion`). Without manifest labels, an operator sets
+  them per bot on the integration: `PATCH
+  /api/teams/{id}/forge/repo-bots/{integration_id}` with `{"bot_triggers":
+  {"nestor": {"labels": ["securite"]}}}`.
+- **Project, then flip.** `POST …/repo-bots/{integration_id}/subscriptions/sync`
+  projects the rows and answers the report (enabled and disabled rows per
+  bot, their labels and reasons). `PUT …/repo-bots/{integration_id}/routing`
+  with `{"lane": "issues", "mode": "spine"}` flips the lane; it refuses
+  (409) a lane with no enabled row, a bot whose rows overlap, or
+  hand-pinned `launch_vars` on the webhook config (move them to the
+  integration's `launch_vars`). On an org that requires provisioning
+  approval, a flip to spine is an org admin's. `{"mode": "legacy"}` rolls
+  back, at any time, and nobody's claims are lost either way.
+- **The answers.** A label no row claims answers `200 filtered`, naming
+  each bot and what it wanted; a bot out of scope or disabled is a
+  per-bot filtered row while the others launch — never a 4xx. Rows whose
+  manifests changed since the last projection answer `503
+  subscriptions_stale` until the sync runs again (on GitHub, redeliver
+  the event after it). A flipped integration with no row answers `503`
+  too: it is never routed legacy behind your back.
+- The repository's `label_allowlist` and `hold_labels` still gate first,
+  for every bot: a bot's labels narrow it, never widen past them.
+- Not flipped, an integration answers byte for byte as before. The
+  pull-request and comment lanes stay on the routing table above until
+  their own phases.
 
 ## Idempotency
 
