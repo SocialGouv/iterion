@@ -33,7 +33,16 @@ call(name, input) runs one of this node's tools and returns {text, isError, trun
 
 call.parallel([{name, input}, …]) accepts up to four independent calls and returns entries in input order. Each entry has {status, text, isError, truncated, remaining}; an ok entry from a tool with a structured result also carries structured. status is "ok", "error", or "budget". Tool failures and budget refusals are entries, not exceptions. Every entry reports the same remaining budget after admitting the batch. Like call(), call.parallel() is synchronous. Only audited native glob and workspace_grep can overlap, where policy, hooks and limits allow it; other calls run exclusively. Cancellation does not undo effects that have already started.
 
-Prefer this when the work is many calls, or one call whose output you only need a part of; call a tool directly when you need exactly one result.`
+When a program pays: every direct call costs a turn that re-reads the whole conversation, and a program costs one turn for all the calls it makes. So write ONE program for a dependent chain — search, read what matched, keep what matters — and return the conclusion, not one program per step; and batch independent calls with call.parallel in ONE program, returning only the part you need from each (a title, the matching lines, a count), never the raw output. A program that makes one call and returns all of its output saves nothing: call that tool directly. For example, with a search tool and a read tool (use this node's own tool names):
+
+` + codemodeExample
+
+// codemodeExample is the program the description shows. It is a constant of
+// its own so a test can RUN it through the real host: an example the host
+// refuses would teach the model a form that costs it the whole program.
+const codemodeExample = `const hits = call("grep", {pattern: "TODO"}).text.split("\n").filter(Boolean).slice(0, 4);
+const pages = call.parallel(hits.map(h => ({name: "read_file", input: {path: h.split(":")[0]}})));
+pages.map((p, i) => ({hit: hits[i], head: p.status === "ok" ? p.text.slice(0, 300) : p.status}))`
 
 // codemodeDeferredComplement is appended to the description of a node that
 // DEMOTED at least one tool to catalogue-only, after the constant preamble
