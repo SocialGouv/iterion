@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { errorMessage } from "@/lib/errorHints";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, shortKeyID } from "@/lib/format";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
 import {
@@ -206,6 +206,11 @@ function PoolEntries({ entries }: { entries: KeyPoolEntry[] }) {
           <Tr key={e.id}>
             <Td className="font-mono">
               {e.source}/{e.ref}
+              {e.key_id && (
+                <span className="text-fg-muted ml-2 text-xs" title={e.key_id}>
+                  {shortKeyID(e.key_id)}
+                </span>
+              )}
             </Td>
             <Td>{e.model || "—"}</Td>
             <Td>{e.priority}</Td>

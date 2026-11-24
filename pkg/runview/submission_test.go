@@ -272,6 +272,29 @@ func TestLaunch_ALaunchThatFailsAfterCreatingItsRunEndsIt(t *testing.T) {
 	}
 }
 
+// The run is born before the launch builds its executor, so a failure spawnRun
+// does not end itself — here the manager refusing the registration as the
+// service stops — ends the run the same way, at the launch's own exit.
+func TestLaunch_AFailureAfterTheBirthOutsideSpawnRunsWritesEndsTheRun(t *testing.T) {
+	svc, fs, bot := localSubmissionService(t)
+	ctx := context.Background()
+	svc.manager.Stop(ctx)
+	spec := LaunchSpec{FilePath: bot, SubmissionKey: "k"}
+	_, err := svc.Launch(ctx, spec)
+	var persisted *RunPersistedError
+	if !errors.As(err, &persisted) || !strings.Contains(err.Error(), "manager is stopped") {
+		t.Fatalf("first submission = %v, want the persisted run's registration refusal", err)
+	}
+	r, err := fs.LoadRun(ctx, SubmissionRunID("", "k"))
+	if err != nil || r.Status != store.RunStatusFailed || r.FailureCode != store.FailureLaunchFailed {
+		t.Fatalf("the run left behind = %+v (%v), want it ended LAUNCH_FAILED", r, err)
+	}
+	var spent *SubmissionSpentError
+	if _, err := svc.Launch(ctx, spec); !errors.As(err, &spent) {
+		t.Fatalf("the key's next submission = %v, want its id spent", err)
+	}
+}
+
 // stampFailStore fails the first SaveRun that stamps a routing policy — the
 // write spawnRun performs right after its exclusive CreateRun.
 type stampFailStore struct {

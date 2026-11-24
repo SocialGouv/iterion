@@ -22,7 +22,9 @@ import { Input } from "@/components/ui/Input";
 import { ProjectBotIdentity } from "./ProjectBotIdentity";
 import { Radio } from "@/components/ui/Radio";
 import { Select } from "@/components/ui/Select";
+import { TagInput } from "@/components/ui/TagInput";
 import { hookBaseProblem, hookDeliveryAddress } from "@/lib/hookBase";
+import { labelFilterChange, splitNewLabelEntries, storedLabelFilter } from "@/lib/labelFilter";
 import { mergeGateLabel } from "@/lib/mergeGate";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 import {
@@ -71,13 +73,19 @@ export function EnableRepoPanel({
   // The merge-gate posture for a FRESH provision: "Gate merges" (the server's
   // default — nothing pinned) or "Advisory only" (gate_enabled: "false").
   const [gateOn, setGateOn] = useState(true);
+  // The operator's edit of the repo's issue-label filter. Null while the
+  // field is untouched: it then shows the list the repo holds, and Enable
+  // says nothing about it.
+  const [labelDraft, setLabelDraft] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // The posture belongs to the repo it was picked for: switching the
-  // Repository select starts the next one on the server's default, which is
-  // what the radios then show.
+  // The posture and the label filter belong to the repo they were picked for:
+  // switching the Repository select starts the next one on the server's
+  // default posture and on its own stored filter, which is what the radios
+  // and the field then show.
   useEffect(() => {
     setGateOn(true);
+    setLabelDraft(null);
   }, [repo]);
 
   // The team's integrations, ALWAYS read here, under the Integrations tab's
@@ -214,6 +222,27 @@ export function EnableRepoPanel({
   const postureUndecided =
     repo !== "" && !!freshPreview?.gates_merges && !integrationsReady && !integrationsError;
 
+  // The issue-label filter is first offered from a settled integrations read:
+  // the field shows the list the repo holds, and an empty field over a list
+  // the panel has not read would invite an edit that replaces it unseen. Once
+  // the operator has edited it, the field stays through later reads — an edit
+  // that left the screen would either be dropped or hold Enable hostage to a
+  // read that may never settle.
+  const offersLabelFilter = repo !== "" && (integrationsReady || labelDraft !== null);
+  const storedLabels = storedLabelFilter(existing);
+  const shownLabels = labelDraft ?? storedLabels;
+  // What Enable states about the filter: nothing while the list on screen is
+  // the stored one — which an untouched field always is, on screen or not.
+  const labelChange = labelFilterChange(storedLabels, shownLabels);
+  // The same statement in the operator's words, said next to the stored list.
+  const labelChangeEffect =
+    labelChange === undefined
+      ? ""
+      : labelChange.length === 0
+        ? " — Enable removes it."
+        : " — Enable replaces it.";
+  const labelFilterID = `forge-label-filter-${conn.id}`;
+
   const enable = async () => {
     if (!repo || selectedBots.length === 0) return;
     setBusy(true);
@@ -231,6 +260,8 @@ export function EnableRepoPanel({
       // posture pin: it has no stored launch_vars to drop, and the default
       // posture pins nothing at all.
       const launchVars = offersPosture && !gateOn ? { gate_enabled: "false" } : undefined;
+      // The label filter travels only as a change: omitted, the server keeps
+      // the list the repo holds; an empty list is its clearing form.
       const res = await enableForgeRepoBots(
         teamID,
         conn.id,
@@ -238,6 +269,7 @@ export function EnableRepoPanel({
         selectedBots,
         crons,
         launchVars,
+        labelChange,
       );
       onDone({ repo, connectionID: conn.id, pending: !!res.pending_approval });
     } catch (e) {
@@ -519,6 +551,64 @@ export function EnableRepoPanel({
             }
           />
         </fieldset>
+      )}
+
+      {offersLabelFilter && (
+        <div>
+          <label
+            htmlFor={labelFilterID}
+            className="block text-xs uppercase tracking-wider text-fg-muted mb-1"
+          >
+            Start only on these issue labels
+          </label>
+          <TagInput
+            // The input's own uncommitted text belongs to the repo it was
+            // typed for, like the list it would join.
+            key={repo}
+            id={labelFilterID}
+            value={shownLabels}
+            // A text holding several labels is read as the list it is.
+            onChange={(next) => setLabelDraft(splitNewLabelEntries(shownLabels, next))}
+            placeholder="Add a label…"
+            disabled={busy}
+            // The cap bounds ONE committed text, which may be a whole pasted
+            // list: at the widget's default of 64 a long label, or the end
+            // of a pasted list, would be cut with nothing said — and a cut
+            // entry never matches its label. A text past this cap still is.
+            maxTagLength={4096}
+          />
+          <p className="mt-1 text-caption text-fg-muted">
+            Separate labels with Enter or a comma. Empty = any issue label the bots declare
+            starts them. Pull requests and commands are not filtered.
+          </p>
+          {integrationsReady && storedLabels.length > 0 && (
+            // The list the repo holds stays named while the field is edited,
+            // with what Enable does to it — clearing it widens dispatch. Named
+            // from a settled read only, like every stored fact in this panel.
+            <p className="mt-1 text-xs text-fg-muted">
+              Label filter on this repo:{" "}
+              <span className="font-mono">{storedLabels.join(", ")}</span>
+              {labelChangeEffect}
+            </p>
+          )}
+        </div>
+      )}
+
+      {repo !== "" && !integrationsReady && !integrationsError && (
+        <div className="text-xs text-fg-muted">
+          Label filter: checking whether this repo already holds one…
+        </div>
+      )}
+
+      {repo !== "" && integrationsError && (
+        // Without a field there is nothing to send. With one — an edit made
+        // before the read failed — the line says what Enable does with it.
+        <div className="text-xs text-warning-fg">
+          Label filter: the one this repo may hold is unknown ({integrationsError})
+          {!offersLabelFilter
+            ? ", so none is offered — Enable keeps it."
+            : labelChangeEffect || " — Enable keeps it."}
+        </div>
       )}
 
       <div className="flex items-center gap-2">

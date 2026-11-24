@@ -58,9 +58,11 @@ func Record(ctx context.Context, s Scenario) (*Fixture, error) {
 		return nil, err
 	}
 	runID := "record-" + s.Bot + "-" + s.Name
-	if _, err := st.CreateRun(ctx, runID, wf.Name, s.Input); err != nil {
+	invocation, err := store.PrepareRunInvocation(ctx, st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: runID, WorkflowName: wf.Name, Inputs: s.Input}})
+	if err != nil {
 		return nil, err
 	}
+	ctx = invocation.Context
 
 	// Point the in-process tool workspace at the repo root.
 	prevWD, err := os.Getwd()

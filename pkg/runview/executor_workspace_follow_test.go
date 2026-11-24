@@ -57,13 +57,13 @@ func TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir(t *testing.T) {
 			},
 		},
 	}
-	exec, err := BuildExecutor(ExecutorSpec{
+	exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Workflow: wf,
 		Store:    st,
 		RunID:    "workspace-follow",
 		StoreDir: t.TempDir(),
 		WorkDir:  launch,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,13 +134,13 @@ func TestBuildExecutor_WorkspaceFileToolsFollowSetWorkDir(t *testing.T) {
 			},
 		},
 	}
-	exec, err := BuildExecutor(ExecutorSpec{
+	exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Workflow: wf,
 		Store:    st,
 		RunID:    "workspace-follow-files",
 		StoreDir: t.TempDir(),
 		WorkDir:  launch,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

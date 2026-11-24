@@ -216,7 +216,10 @@ var consultsHandoffs = map[[2]string]string{
 
 // notEnvNames: constants this package spells like an env name, which no code
 // reads from the environment, with what they are.
-var notEnvNames = map[string]string{}
+var notEnvNames = map[string]string{
+	"ITERION_STRICT_OUTPUT_VALIDATION": "spelled in ToolStdoutNotJSONError's message, for the reader of a refusal: the dial is the engine's (pkg/runtime reads it once per engine), and its verdict reaches this package on the context (ToolContract)",
+	"ITERION_STRICT_OUTPUT_REFS":       "spelled in UnresolvedOutputRefError's message, for the reader of a refusal: the dial is the engine's (pkg/runtime reads it once per engine), and its verdict reaches this package on the context (ToolContract)",
+}
 
 // envWrites: variables this package sets in an environment it hands on — the
 // crossing itself, a tool node's command, a settings hook's — and never

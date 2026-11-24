@@ -6,8 +6,8 @@ without ever letting an LLM be the yes/no arbiter of a merge.
 
 The split is deliberate:
 
-- **Revi (LLM) proposes** — one reviewer by default (`review_mode: mono`),
-  or independent Claude + GPT reviewers when `review_mode: dual` is an
+- **Revi (LLM) proposes** — one reviewer by default (`review_mode: single`),
+  or two independent reviewers when `review_mode: paired` is an
   intentional extra spend, find issues that are normalised, de-duplicated,
   and posted as inline PR comments.
 - **Determinism disposes** — the bot computes a **count** of findings at or
@@ -105,7 +105,7 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
-> the default mono mode, two when dual is explicitly selected. It is gated only
+> the default single mode, two when paired is explicitly selected. It is gated only
 > by the webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
 > there is no author-trust gate on this lane. On a public repo a fork
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
@@ -149,9 +149,9 @@ instead of tuning five separate vars ([SocialGouv/iterion#685](https://github.co
 
 | Tier | severity_threshold | max_findings | post_to_board | review_mode | Reviewer model |
 |------|---------------------|--------------|----------------|-------------|-----------------|
-| `glance` | `high` | `5` | `false` | mono only | cheaper same-family (`claude-sonnet-5` / `openai/gpt-5.4-mini`) |
-| `guard` (**default**) | `medium` | `15` | `true` | mono (auto-resolved) | full-strength (`claude-opus-5` / `openai/gpt-5.5`), unchanged since 0.7.0 |
-| `audit` | `low` | `40` | `true` | **forced dual**, regardless of `review_mode` | full-strength, both families |
+| `glance` | `high` | `5` | `false` | single only | the cheaper reviewer (`reviewer_glance`) |
+| `guard` (**default**) | `medium` | `15` | `true` | single (auto-resolved) | full-strength (`reviewer`) |
+| `audit` | `low` | `40` | `true` | **forced paired**, regardless of `review_mode` | full-strength, both reviewers |
 
 `guard` is byte-identical to the bot's pre-#685 posture — an unpinned repo
 sees no behaviour change. The tier is a **preset, never a cage**: every
@@ -197,7 +197,7 @@ review_tier=glance` could retarget a model, but it could not carry the
 tier's effort floor with it, and a `backend:` spelled as a var stays
 UNDECIDED to the compiler, which disarms the C176/C177 screens that say what
 a node may DO (#1389: 92 refusals down to 23). The bot therefore declares
-two extra judge nodes, `reviewer_claude_glance` / `reviewer_gpt_glance`,
+two extra judge nodes, `reviewer_alternate_glance` / `reviewer_glance`,
 pinned to the cheaper defaults, and the EXISTING `topology` condition router
 (ADR-052) picks between the full-strength and glance variant per family —
 the pattern to imitate for any future tier/variant knob that moves more than

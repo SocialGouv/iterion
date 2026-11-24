@@ -274,7 +274,16 @@ func (r *Runner) handleAdmissionMismatch(delivery *natsq.Delivery, kind admissio
 			// lookup could otherwise close that successor.
 			poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
 		}
-		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt, admissionParkOutcome(kind, payloadParked))
+		meta := admissionParkOutcome(kind, payloadParked)
+		if env.Resume != nil && env.Resume.CodemodeQuota != nil {
+			meta.ExactQueuedAt = env.Resume.CodemodeQuota.QueuedAt
+			if meta.ExactQueuedAt.IsZero() {
+				flipCancel()
+				logger.Warn("runner: mismatched quota resume for run %s has no exact queued marker — run document not flipped", env.RunID)
+				break
+			}
+		}
+		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt, meta)
 		flipCancel()
 		if serr != nil {
 			logger.Warn("runner: %s admission-rejection status flip for %s: %v", plan.reason, env.RunID, serr)
@@ -354,7 +363,7 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 	// story and the queue's diverged.
 	if changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — resume the run to retry it; a replay of the parked copy is refused)", err),
-		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
 		store.RunnerVerdictFromStatuses()); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
 	} else if !changed {

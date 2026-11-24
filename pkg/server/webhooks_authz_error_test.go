@@ -31,8 +31,8 @@ func TestWebhookAuthzErrorsAreAcknowledgedWithoutLaunching(t *testing.T) {
 			s.webhookPRForgeReviewReplyGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedReviewComment, string) (bool, string, string, error) {
 				return true, "", "", failure
 			}
-			s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
-				return true, true, "", "", failure
+			s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, webhooks.ThreadAnchor, error) {
+				return true, true, "", "", webhooks.ThreadAnchor{}, failure
 			}
 			s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
 				return true, "", failure

@@ -28,8 +28,8 @@ func TestReviewPRReviewerSlotsDeclareAClawSurface(t *testing.T) {
 
 	want := []string{"bash", "read_file", "glob", "grep"}
 	for _, id := range []string{
-		"reviewer_claude", "reviewer_claude_glance",
-		"reviewer_gpt", "reviewer_gpt_glance",
+		"reviewer_alternate",
+		"reviewer", "reviewer_glance",
 	} {
 		n, ok := cr.Workflow.Nodes[id]
 		if !ok {

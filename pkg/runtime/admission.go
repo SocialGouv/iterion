@@ -14,9 +14,74 @@ import (
 // document exists (so the decision is durable) and before attachments,
 // workspace setup or the first executor/model call. Legacy and report-only
 // contexts are allowed but still leave an explainable decision behind.
+// Each verdict is saved with the version it judged. A conflict reloads and
+// recomputes every check; it never applies a stale verdict to a fresh document.
 func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) error {
 	if run == nil {
 		return fmt.Errorf("runtime: admission: missing run %s", runID)
+	}
+	if e.store == nil {
+		return errors.New("run store unavailable")
+	}
+	var bindErr error
+	ctx, bindErr = store.BindRunValueFormat(ctx, run)
+	if bindErr != nil {
+		return bindErr
+	}
+	initialEpoch := run.ExecutionEpoch
+	// A prepared queued entry has its own acquisition, even without accounting.
+	// Retain that response throughout admission; metadata retries are not grants.
+	preparedStart, _ := ctx.Value(preparedQueuedStartKey{}).(*preparedQueuedStart)
+	preparedGrant := preparedStart != nil && preparedStart.grant != nil
+	if preparedGrant && !preparedStart.grant.Matches(run) {
+		return fmt.Errorf("%w: prepared admission execution changed", ErrAdmissionStopped)
+	}
+	initialStatus := run.Status
+	initialQueuedAt := run.QueuedAt
+	current := *run
+	writeCtx := context.WithoutCancel(ctx)
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		decision, refusal := e.computeAdmission(ctx, runID, &current)
+		current.Admission = &decision
+		if err := e.store.SaveRun(writeCtx, &current); err == nil {
+			// The caller continues with the admitted snapshot, including its
+			// updated CAS version and any concurrent descriptive metadata.
+			*run = current
+			return refusal
+		} else if !errors.Is(err, store.ErrRunConflict) {
+			return fmt.Errorf("runtime: persist admission: %w", err)
+		}
+		_, fresh, err := store.LoadRunWithValueFormat(writeCtx, e.store, runID)
+		if err != nil {
+			return err
+		}
+		// A new queue attempt may already have been claimed and returned to
+		// the same status. Keep its marker distinct from a status-only stop:
+		// the runner preserves the existing publication/rollback reoffer.
+		if err := e.supersededBy(fresh); err != nil {
+			return err
+		}
+		if (fresh.QueuedAt == nil) != (initialQueuedAt == nil) || (fresh.QueuedAt != nil && initialQueuedAt != nil && !fresh.QueuedAt.Equal(*initialQueuedAt)) {
+			return fmt.Errorf("%w: admission queue attempt changed", ErrResumeSuperseded)
+		}
+		if (e.correctionProtocolCapable() || preparedGrant) && fresh.ExecutionEpoch != initialEpoch {
+			return fmt.Errorf("%w: admission execution epoch changed", ErrAdmissionStopped)
+		}
+		if fresh.Status != initialStatus {
+			return fmt.Errorf("%w: %s became %s", ErrAdmissionStopped, initialStatus, fresh.Status)
+		}
+		current = *fresh
+	}
+	return fmt.Errorf("run %s admission CAS conflicted after 3 attempts", runID)
+}
+
+// computeAdmission reads one snapshot without persisting its verdict.
+func (e *Engine) computeAdmission(ctx context.Context, runID string, run *store.Run) (store.AdmissionDecision, error) {
+	if run == nil {
+		return store.AdmissionDecision{}, fmt.Errorf("runtime: admission: missing run %s", runID)
 	}
 	// PR2b admission (#1773): a run whose workspace holds an OUTSIDER's code
 	// (Trust untrusted — today the fork review lane) executes only inside a
@@ -30,8 +95,8 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 	// design — it simply does not qualify a deployment to run forks: THIS
 	// fork run is refused, typed, with the way out named.
 	if !run.Trust.Trusted() {
-		if err := e.refuseUntrustedWithoutSandbox(ctx, runID, run); err != nil {
-			return err
+		if d, err := e.computeUntrustedAdmission(run); err != nil {
+			return d, err
 		}
 	}
 	decision := store.AdmissionDecision{
@@ -44,10 +109,7 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 	if run.ExecutionContext == nil {
 		decision.Code = "legacy_context"
 		decision.Reason = "run predates the versioned execution-context contract"
-		if err := e.persistAdmission(ctx, runID, run, decision); err != nil {
-			return fmt.Errorf("runtime: persist admission: %w", err)
-		}
-		return nil
+		return decision, nil
 	}
 
 	c := run.ExecutionContext.Clone()
@@ -77,6 +139,12 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 			violations = append(violations, "runner requested enforce policy but persisted context is not enforce")
 		}
 	}
+	// The wire context repeats the launch declaration. Only the effective
+	// store's capability is an independent authority for this comparison.
+	storeObservation := e.runStoreObservation(ctx, c.RunStore)
+	if storeObservation != "" && c.RunStore.Required {
+		violations = append(violations, storeObservation)
+	}
 
 	policy := c.Policy
 	if policy == "" {
@@ -84,6 +152,9 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 	}
 	decision.Policy = policy
 	switch {
+	case len(violations) == 0 && storeObservation != "":
+		decision.Code = "context_store_optional"
+		decision.Reason = storeObservation + "; run_store.required=false waives only the store requirement"
 	case len(violations) == 0:
 		decision.Code = "context_match"
 		decision.Reason = "resolved execution context matches the run record"
@@ -98,21 +169,40 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 		decision.Code = "legacy_context_unvalidated"
 		decision.Reason = strings.Join(violations, "; ")
 	}
-	if err := e.persistAdmission(ctx, runID, run, decision); err != nil {
-		return fmt.Errorf("runtime: persist admission: %w", err)
+	if len(violations) != 0 && storeObservation != "" && !c.RunStore.Required {
+		decision.Reason += "; " + storeObservation + "; run_store.required=false waives only the store requirement"
 	}
 	if decision.Decision == "denied" {
-		return &RuntimeError{
+		return decision, &RuntimeError{
 			Code:    store.FailureLaunchFailed,
 			Message: "execution context admission denied",
 			Hint:    "align the run store, workflow revision and parent/workspace context, or use report/legacy policy while migrating",
 			Cause:   errors.New(decision.Reason),
 		}
 	}
-	return nil
+	return decision, nil
 }
 
-// refuseUntrustedWithoutSandbox is the PR2b floor (#1773): a fork run must
+// runStoreObservation never persists a capability error or an untrusted
+// declaration: either may contain a connection string or other private data.
+func (e *Engine) runStoreObservation(ctx context.Context, declared store.ContextRef) string {
+	if store.AsContextIdentityStore(e.store) == nil {
+		return "effective run store has no identity capability; comparison is unvalidated"
+	}
+	effective, err := store.ResolveStoreContextRef(ctx, e.store)
+	if err != nil {
+		return "effective run store identity is unavailable; comparison is unvalidated"
+	}
+	if !store.HasStoreContextIdentity(declared) {
+		return "declared run store has a legacy identity; comparison is unvalidated"
+	}
+	if !store.SameContextRefIdentity(declared, effective) {
+		return "declared run store identity differs from the effective run store"
+	}
+	return ""
+}
+
+// computeUntrustedAdmission is the PR2b floor (#1773): a fork run must
 // not execute inside the runner's trust domain. It asks the ONE sandbox
 // question the engine's own start will ask — RunWillBeSandboxed, the same
 // spec resolution and driver selection startSandbox walks — and refuses when
@@ -121,12 +211,10 @@ func (e *Engine) admitRun(ctx context.Context, runID string, run *store.Run) err
 // case #1564 taught every consumer to ask this exact predicate, not the mode
 // alone).
 //
-// The verdict is persisted as the run's admission decision before the
-// refusal returns, so the run record explains itself (the run list, the
-// studio and the failure row read Admission).
-func (e *Engine) refuseUntrustedWithoutSandbox(ctx context.Context, runID string, run *store.Run) error {
+// admitRun persists this verdict through the same CAS loop as context checks.
+func (e *Engine) computeUntrustedAdmission(run *store.Run) (store.AdmissionDecision, error) {
 	if RunWillBeSandboxed(e.workflow, e.sandboxOverride, e.sandboxDefault, admissionRepoRoot(run, e.workDir), e.sandboxDrivers) {
-		return nil
+		return store.AdmissionDecision{}, nil
 	}
 	// Name the tier that spoke, so the operator reads which knob decided:
 	// the override when one is set, its absence when the resolution fell to
@@ -143,10 +231,7 @@ func (e *Engine) refuseUntrustedWithoutSandbox(ctx context.Context, runID string
 		Reason:    reason,
 		CheckedAt: time.Now().UTC(),
 	}
-	if err := e.persistAdmission(ctx, runID, run, decision); err != nil {
-		return fmt.Errorf("runtime: persist admission: %w", err)
-	}
-	return &RuntimeError{
+	return decision, &RuntimeError{
 		Code:    store.FailureLaunchFailed,
 		Message: reason,
 		Hint:    "run fork-lane work only on a runner class whose sandbox resolves active — unset ITERION_SANDBOX_OVERRIDE=none on the runners that serve the fork lane (the override keeps meaning what it means for trusted runs; it does not qualify a deployment to run forks), or stop admitting fork-lane launches",
@@ -164,30 +249,4 @@ func admissionRepoRoot(run *store.Run, engineWorkDir string) string {
 		return ""
 	}
 	return runRepoRoot(run, engineWorkDir)
-}
-
-// persistAdmission uses the run CAS contract and never blindly overwrites a
-// newer run document. A concurrent writer is reload-and-reapply: the
-// decision is applied to the fresh copy, bounded to three attempts.
-func (e *Engine) persistAdmission(ctx context.Context, runID string, run *store.Run, decision store.AdmissionDecision) error {
-	if e.store == nil {
-		return errors.New("run store unavailable")
-	}
-	current := run
-	writeCtx := context.WithoutCancel(ctx)
-	for attempt := 0; attempt < 3; attempt++ {
-		copyDecision := decision
-		current.Admission = &copyDecision
-		if err := e.store.SaveRun(writeCtx, current); err == nil {
-			return nil
-		} else if !errors.Is(err, store.ErrRunConflict) {
-			return err
-		}
-		fresh, loadErr := e.store.LoadRun(writeCtx, runID)
-		if loadErr != nil {
-			return loadErr
-		}
-		current = fresh
-	}
-	return fmt.Errorf("run %s admission CAS conflicted after 3 attempts", runID)
 }

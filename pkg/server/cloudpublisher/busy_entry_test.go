@@ -55,7 +55,7 @@ func shapePledge(t *testing.T, pledges *credpool.MemoryPledgeStore, id string, s
 }
 
 func forfaitEntryPledge() string {
-	return credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+	return credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 }
 
 // coolingFor is a provider cooldown ending d from now.
@@ -443,9 +443,9 @@ func legacyDonorsFixture(t *testing.T, lent secrets.Provider, keyBots []string) 
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	for _, p := range []credpool.Pledge{
-		{ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1", UserID: "donor",
+		{ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1", UserID: "donor",
 			Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxConcurrentRuns: 1}},
-		{ID: credpool.PledgeID("donor2", credpool.SourceAPIKey, string(lent)), PoolID: "pool-1", UserID: "donor2",
+		{ID: credpool.PledgeID("donor2", credpool.SourceAPIKey, string(lent), "key-oa"), PoolID: "pool-1", UserID: "donor2",
 			Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(lent), KeyID: "key-oa"}, Enabled: true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxConcurrentRuns: 1}},
 	} {
 		if err := pledges.Upsert(ctx, p); err != nil {

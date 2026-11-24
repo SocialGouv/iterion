@@ -1423,12 +1423,12 @@ agent interviewer:
 ## remain the backstop.
 agent plan:
   description: "Author the build plan (read-only)"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: plan_output
   system: plan_system
   user: plan_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## plan_revise — the AUTHOR again, challenging the peer's critique. The
@@ -1437,14 +1437,14 @@ agent plan:
 ## Read-only.
 agent plan_revise:
   description: "Author challenges & integrates the critique"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: plan_revise_input
   output: plan_revised_output
   system: plan_revise_system
   user: plan_revise_user
   session: inherit_if_available
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: high
   readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
@@ -1471,12 +1471,12 @@ agent campaign:
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
 ## per-slice session.
 agent verify_build:
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   output: verify_plan
   system: verify_system
   user: verify_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
+  reasoning_effort: medium
   interaction: human
 
 ## review — adversarial in-loop self-review (readonly). Runs after the
@@ -1488,13 +1488,13 @@ agent verify_build:
 ## session: fresh. Convergent by design: light no-op on a red build, strict
 ## no-re-raise, blocks only verified real bugs (see review_system).
 agent review:
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
+  model: "claude-opus-5-5"
   backend: "claude_code"
   input: review_input
   output: review_output
   system: review_system
   user: review_user
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  reasoning_effort: high
   readonly: true
 
 agent finalize_mr:
@@ -1546,7 +1546,7 @@ judge plan_review:
   user: plan_review_user
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  reasoning_effort: high
   fallbacks:
     ## The plan_review_policy switch, expressed as a route gate:
     ## policy "skip" arms this terminal route — a peer failure completes

@@ -105,6 +105,12 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 		// selector. Collapse not-found and provider-mismatch into the
 		// same 401 as a bad token so the id space isn't probeable.
 		cfg, err := s.webhookConfigs.Get(r.Context(), id)
+		if err != nil && !errors.Is(err, webhooks.ErrNotFound) {
+			// An outage says nothing about the id — answering it as one
+			// would turn every delivery away for good.
+			s.webhookConfigUnavailable(w, provider, err)
+			return
+		}
 		if err != nil || cfg.Provider != provider {
 			httpError(w, http.StatusUnauthorized, "invalid webhook")
 			return
@@ -149,6 +155,16 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 		}
 		next.ServeHTTP(w, s.webhookActing(r, cfg, team))
 	})
+}
+
+// webhookConfigUnavailable answers a delivery whose webhook config could not
+// be read: 503 with a fixed text, the cause in the log. An outage does not
+// depend on the id, so the answer reveals nothing about which ids exist.
+func (s *Server) webhookConfigUnavailable(w http.ResponseWriter, provider webhooks.Provider, err error) {
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s delivery: the webhook store is unavailable: %s", provider, boundedText(err.Error(), maxIngressErrorText))
+	}
+	httpError(w, http.StatusServiceUnavailable, "the webhook store is unavailable; retry")
 }
 
 // The admission of an AUTHENTICATED delivery, one helper per step so every

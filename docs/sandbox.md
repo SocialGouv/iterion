@@ -3,7 +3,7 @@
 The sandbox is the boundary that makes autonomous agents safe to run: every
 coding agent and shell tool node executes inside a throwaway per-run Docker (or
 Podman) container instead of against your host credentials and filesystem. It is
-**on by default**: at product entry points (`iterion run`, `resume`,
+**on by default** on a local host (in cloud the chart decides, see below): at product entry points (`iterion run`, `resume`,
 the studio, the dispatcher) a workflow that declares no `sandbox:`
 block runs as `sandbox: auto` (devcontainer-aware, falling back to the
 published default image). Opting out is explicit and discouraged —
@@ -45,12 +45,14 @@ Either verdict is readable where an operator looks: the event in
 `iterion report` — "Sandbox skipped — the run is NOT isolated: …", or
 "Sandbox refused [SANDBOX_DRIVER_UNAVAILABLE]: …".
 
-(The cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none`
-— the runner pod as the isolation boundary — but the production
-deployment measured on 2026-08-05 does NOT: it carries
-`ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs do
-get the k8s sandbox. Anything needing a bind-mounted workspace there
-must declare `sandbox: none`.)
+(In cloud the chart decides. Under `runner.sandbox.enabled: false` — the
+default in `charts/iterion/values.yaml` — the runner ConfigMap renders
+`ITERION_SANDBOX_OVERRIDE=none`: runs execute in the runner pod, which is
+the isolation boundary, and a bot's `sandbox:` block starts nothing.
+Under `runner.sandbox.enabled: true`, or a `runnerPools[]` entry's own
+`sandbox.enabled`, the runner resolves `auto` by default and a sandboxed
+run gets a sibling pod ([Cloud](#cloud-iterion_modecloud)); anything
+needing a bind-mounted workspace there must declare `sandbox: none`.)
 
 **The override does not qualify a deployment to run untrusted
 workspaces.** A run whose `trust` is not the trusted default — today the
@@ -1510,7 +1512,8 @@ guard, none of them on a route or on a credential:
 - the **browser-facing** guards of the server's own pages
   (`ITERION_SECURITY_HEADERS`, `ITERION_ALLOWED_ORIGINS`,
   `ITERION_REQUIRE_ORIGIN`, `ITERION_REQUIRE_WS_ORIGIN`,
-  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`).
+  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`,
+  `ITERION_RUN_BIRTH_CHECK`).
   The cookie's own transport (`ITERION_COOKIE_SECURE`,
   `ITERION_COOKIE_DOMAIN`) and the auth requirement
   (`ITERION_DISABLE_AUTH`) are neutralised, which is the part of that
@@ -1772,9 +1775,10 @@ The repo's installs in place so relative package references
 ### Runs without a sandbox (cloud runner pods, plain host runs)
 
 Provisioning is **not** tied to a sandbox container. When no sandbox is
-active — which is **every cloud run** (the chart pins
-`ITERION_SANDBOX_OVERRIDE=none`: the runner pod is the isolation
-boundary, so a bot's inline `sandbox:` block never starts a container)
+active — which is **every cloud run on the chart's default**
+(`runner.sandbox.enabled: false` renders `ITERION_SANDBOX_OVERRIDE=none`:
+the runner pod is the isolation boundary, so a bot's inline `sandbox:`
+block never starts a container)
 and every local `iterion run` without a sandbox declaration — the same
 two sources are provisioned **on the executing host**: `devbox install`
 runs at run start (the bot's config staged into a per-run temp dir,

@@ -216,11 +216,62 @@ func (lb *launchBot) Cleanup() {
 // materialize is an explicit error, never a silent fall-through to the baked
 // tier (that would pair this launch with resources the operator replaced).
 func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath string) (*launchBot, error) {
-	lb, err := s.resolveBotTieredRaw(ctx, teamID, botID, filePath)
-	if err != nil || lb == nil || s.cfg.Mode != "cloud" {
+	hit, found, err := s.resolveBotTier(ctx, teamID, botID, filePath)
+	if err != nil || !found {
+		return nil, err
+	}
+	return s.launchBotOfTier(ctx, teamID, hit)
+}
+
+// launchBotOfTier is the launch-ready bot of a tier decision: the tier's
+// bundle materialized, and in cloud frozen with its collection. A launch
+// (resolveBotTiered) and the read of a bot's launch program
+// (handleBotLaunchSource) both come through here, so the program one reads is
+// the program the other runs.
+func (s *Server) launchBotOfTier(ctx context.Context, teamID string, hit botTierHit) (*launchBot, error) {
+	lb, err := s.rawLaunchBotOfTier(ctx, hit)
+	if err != nil || s.cfg.Mode != "cloud" {
 		return lb, err
 	}
 	return s.snapshotLaunchBot(ctx, teamID, lb)
+}
+
+// launchProgramOf is what a launch of lb hands the compile as its entry: the
+// label and the inline source, or — a local catalog bot, onDisk — the real
+// file alone, so its bundle-relative skills and prompts remain adjacent. The
+// ONE rule the launch (handleLaunchRun) and the read of a bot's program
+// (handleBotLaunchSource) both apply, so the identity one issues is the
+// identity the other compiles.
+func (s *Server) launchProgramOf(lb *launchBot) (path, source string, onDisk bool) {
+	if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
+		return lb.Path, lb.Source, false
+	}
+	return lb.Path, "", true
+}
+
+// tierReadGuard is asked about every tier whose bundle a resolution is about
+// to materialize — the bot itself and, in a freeze, each bundle it builds on
+// (a fragment's or a skill's producer, a child bundle) — BEFORE anything of
+// it is read. It rides the context of a resolution made to SHOW a program, or
+// to hold a launch to a pin only a reader can have been issued
+// (withTierReadGuard); a resolution that carries none reads every tier, as a
+// launch always has.
+type tierReadGuard func(hit botTierHit) error
+
+// tierUnavailableError is a stored tier that did not answer the tier
+// decision — its store failed on anything but an absence. The name may or may
+// not resolve there: transient, where an absence or a refusal is the bot as
+// stored. The message is the wrapped error's.
+type tierUnavailableError struct{ err error }
+
+func (e *tierUnavailableError) Error() string { return e.err.Error() }
+func (e *tierUnavailableError) Unwrap() error { return e.err }
+
+type tierReadGuardKey struct{}
+
+func tierReadGuardOf(ctx context.Context) tierReadGuard {
+	guard, _ := ctx.Value(tierReadGuardKey{}).(tierReadGuard)
+	return guard
 }
 
 // Raw resolution is also used while collecting a snapshot's child bundles;
@@ -229,6 +280,18 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 	hit, found, err := s.resolveBotTier(ctx, teamID, botID, filePath)
 	if err != nil || !found {
 		return nil, err
+	}
+	return s.rawLaunchBotOfTier(ctx, hit)
+}
+
+// rawLaunchBotOfTier materializes the tier a resolution chose, unfrozen. It
+// is the one door every bundle of a resolution comes through, which is where
+// the context's read guard, when there is one, refuses a tier.
+func (s *Server) rawLaunchBotOfTier(ctx context.Context, hit botTierHit) (*launchBot, error) {
+	if guard := tierReadGuardOf(ctx); guard != nil {
+		if err := guard(hit); err != nil {
+			return nil, err
+		}
 	}
 	if hit.origin != "catalog" {
 		return s.storedLaunchBot(hit.row, hit.origin)
@@ -308,7 +371,7 @@ func (s *Server) resolveBotTier(ctx context.Context, teamID, botID, filePath str
 			bs, found, err := s.teamBotRow(ctx, teamID, slug)
 			switch {
 			case err != nil:
-				return botTierHit{}, false, fmt.Errorf("resolve bot %q (team tier): %w", slug, err)
+				return botTierHit{}, false, &tierUnavailableError{fmt.Errorf("resolve bot %q (team tier): %w", slug, err)}
 			case found:
 				return botTierHit{origin: "team", slug: slug, row: bs}, true, nil
 			}
@@ -319,7 +382,7 @@ func (s *Server) resolveBotTier(ctx context.Context, teamID, botID, filePath str
 		case err == nil:
 			return botTierHit{origin: "platform", slug: slug, row: bs}, true, nil
 		case !errors.Is(err, botsource.ErrNotFound):
-			return botTierHit{}, false, fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)
+			return botTierHit{}, false, &tierUnavailableError{fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)}
 		}
 	}
 	paths, captured := ctx.Value(assistantWatchBotPathsKey{}).([]string)

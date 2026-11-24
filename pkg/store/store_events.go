@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -16,16 +15,11 @@ import (
 
 // AppendEvent appends an event to the run's events.jsonl.
 // Seq and Timestamp are set automatically.
-// The entire operation is serialized under mu to prevent interleaved writes
-// from concurrent branches. The sequence counter is only incremented after
+// The entire operation is serialized under mu and the stable run write lock
+// to prevent interleaved writes across branches, handles and processes. The sequence counter is only incremented after
 // a successful write to avoid gaps in the event stream.
-func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Event) (*Event, error) {
+func (s *FilesystemRunStore) AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return nil, err
-	}
-	// Tombstone guard BEFORE the MkdirAll below: without it a late
-	// writer's first append silently rebuilt the deleted run's tree.
-	if err := s.guardNotDeleted(runID); err != nil {
 		return nil, err
 	}
 	evt.RunID = runID
@@ -35,15 +29,45 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := s.acquireRunWriteLock(runID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	format, parent, err := s.valueRecordFormatLocked(ctx, runID, true)
+	if err != nil {
+		return nil, err
+	}
+	original, err := ObserveEventParent(ctx, runID, format, parent)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.openRunPayloadFile(ctx, runID, "events.jsonl", true)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	infoOnDisk, statErr := p.Stat()
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	cached := s.seqFile[p.key]
+	if cached == nil || infoOnDisk == nil || !os.SameFile(cached, infoOnDisk) || cached.Size() != infoOnDisk.Size() || !cached.ModTime().Equal(infoOnDisk.ModTime()) {
+		delete(s.seqSeed, p.key)
+	}
+	if s.seqFormat[p.key] != format {
+		delete(s.seqSeed, p.key)
+		s.seqFormat[p.key] = format
+	}
 
-	// On first append for this runID since process start, seed the in-memory
+	// On first append, or when another handle changed this file, seed the in-memory
 	// sequence counter from any existing events.jsonl. Without this, a fresh
 	// process opening a pre-existing run (typical for `iterion resume`) would
 	// restart Seq at 0 and produce duplicate sequence numbers in the
 	// append-only event stream — breaking the documented monotonic ordering
 	// and any downstream consumer that dedups by Seq.
-	if !s.seqSeed[runID] {
-		// scanMaxSeqLocked now returns the best-effort max+1 even on
+	if !s.seqSeed[p.key] {
+		// scanMaxSeqPathLocked returns the best-effort max+1 even on
 		// partial scan failures (a scanner error past N readable lines
 		// returns N+1 rather than 0), so we can trust `next` regardless
 		// of err. Restarting at 0 on a partial scan would collide with
@@ -51,17 +75,17 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 		// invariant downstream consumers rely on for dedup. The error
 		// remains worth logging so an operator can investigate the
 		// corruption — but we don't gate on it.
-		next, err := s.scanMaxSeqLocked(runID)
-		s.seq[runID] = next
+		next, err := s.scanMaxSeqPathLocked(p)
+		s.seq[p.key] = next
 		if err != nil && s.logger != nil {
 			s.logger.Warn("store: partial seq seed for run %s: %v (resuming from %d — best-effort)", runID, err, next)
 		}
-		s.seqSeed[runID] = true
+		s.seqSeed[p.key] = true
 	}
 
 	// Assign seq but don't increment the counter yet — only advance on
 	// successful write to prevent gaps from failed marshals or I/O.
-	evt.Seq = s.seq[runID]
+	evt.Seq = s.seq[p.key]
 
 	// Stamp the current log-buffer byte position when the runview
 	// Service has wired a callback; lets the studio's time-travel
@@ -69,7 +93,11 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	// line timestamps. Only overwrites when the caller didn't set
 	// LogOffset explicitly (Mongo-mode replays / synthetic test
 	// events can pre-fill).
-	if evt.LogOffset == 0 {
+	projected, err := ApplyEventProjection(ctx, original, &evt)
+	if err != nil {
+		return nil, err
+	}
+	if !projected && evt.LogOffset == 0 {
 		s.logPositionMu.RLock()
 		fn := s.logPositionFn
 		s.logPositionMu.RUnlock()
@@ -82,7 +110,7 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	// elapsed) so the studio can display suspend-excluded active time
 	// instead of re-deriving it from wall-clock event windows. Only
 	// when the caller didn't pre-fill it (Mongo replays / test events).
-	if evt.ActiveMs == 0 {
+	if !projected && evt.ActiveMs == 0 {
 		s.logPositionMu.RLock()
 		afn := s.activeDurationFn
 		s.logPositionMu.RUnlock()
@@ -91,22 +119,21 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 		}
 	}
 
-	line, err := json.Marshal(evt)
+	line, err := EncodeValueRecordJSON(ctx, format, ExactEvent, &evt)
 	if err != nil {
 		return nil, fmt.Errorf("store: marshal event: %w", err)
 	}
 	line = append(line, '\n')
 
-	p := s.eventsPath(runID)
-	if err := os.MkdirAll(filepath.Dir(p), dirPerm); err != nil {
-		return nil, fmt.Errorf("store: mkdir events: %w", err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// O_RDWR (not O_WRONLY): the torn-tail repair below ReadAt's the final
 	// byte to detect a partial last line left by a prior crash, and ReadAt on
 	// a write-only descriptor returns EBADF. O_APPEND still forces every Write
 	// to EOF regardless of the read offset, so append semantics are unchanged.
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR|os.O_APPEND, filePerm)
+	f, err := p.OpenFile(os.O_CREATE|os.O_RDWR|os.O_APPEND, filePerm)
 	if err != nil {
 		return nil, fmt.Errorf("store: open events: %w", err)
 	}
@@ -169,23 +196,31 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	// fsync failure as fatal used to leave the in-memory seq counter
 	// pinned at evt.Seq, so the next AppendEvent would assign the same
 	// Seq to a different event and produce duplicate sequence numbers
-	// in the file. Log instead, advance seq, and flag the run so the
-	// next run.json write re-syncs the events file first (writeRun's
-	// ordering barrier) — the checkpoint must never be durably ahead
+	// in the file. Log instead and advance seq; the next run.json write always
+	// re-syncs this events file first (writeRun's ordering barrier).
+	// The checkpoint must never be durably ahead
 	// of its event log.
 	if err := f.Sync(); err != nil {
-		s.eventsUnsynced[runID] = true
 		if s.logger != nil {
 			s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
 		}
-	} else {
-		delete(s.eventsUnsynced, runID)
 	}
 
 	// Always advance once the bytes are in the file. fsync confirms
 	// durability, not presence.
-	s.seq[runID] = evt.Seq + 1
+	s.seq[p.key] = evt.Seq + 1
+	if info, err := f.Stat(); err == nil {
+		s.seqFile[p.key] = info
+	} else {
+		delete(s.seqSeed, p.key)
+		delete(s.seqFile, p.key)
+	}
 
+	// Private provenance is returned only after successful publication.
+	evt, err = WithEventObservation(evt, original)
+	if err != nil {
+		return nil, err
+	}
 	return &evt, nil
 }
 
@@ -202,12 +237,11 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 // failures, not per-line parse errors.
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
-func (s *FilesystemRunStore) ScanEvents(_ context.Context, runID string, visit func(*Event) bool) error {
+func (s *FilesystemRunStore) ScanEvents(ctx context.Context, runID string, visit func(*Event) bool) error {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
-	p := s.eventsPath(runID)
-	f, err := os.Open(p)
+	f, format, err := s.openValueEvents(ctx, runID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -225,7 +259,10 @@ func (s *FilesystemRunStore) ScanEvents(_ context.Context, runID string, visit f
 			continue
 		}
 		evt := &Event{}
-		if err := json.Unmarshal(line, evt); err != nil {
+		if err := DecodeValueRecordJSON(ctx, format, ExactEvent, line, evt); err != nil {
+			if format == ExactValueFormat || ctx.Err() != nil {
+				return fmt.Errorf("store: decode exact event: %w", err)
+			}
 			skipped++
 			continue
 		}
@@ -296,19 +333,15 @@ func (s *FilesystemRunStore) LoadEvents(ctx context.Context, runID string) ([]*E
 	return events, err
 }
 
-// scanMaxSeqLocked reads events.jsonl for runID and returns max(Seq)+1, the
+// scanMaxSeqPathLocked reads the selected events file and returns max(Seq)+1, the
 // value that should be assigned to the next appended event. Returns 0 (with
 // nil error) if the file does not exist (fresh run) or contains no decodable
 // lines. Caller must hold s.mu.
 //
 // This intentionally does NOT use LoadEvents (which allocates the full slice
 // of events) — we only need the max Seq, so we scan and discard.
-func (s *FilesystemRunStore) scanMaxSeqLocked(runID string) (int64, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return 0, err
-	}
-	p := s.eventsPath(runID)
-	f, err := os.Open(p)
+func (s *FilesystemRunStore) scanMaxSeqPathLocked(p *runPayloadFile) (int64, error) {
+	f, err := p.Open()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
@@ -352,15 +385,15 @@ func (s *FilesystemRunStore) scanMaxSeqLocked(runID string) (int64, error) {
 	return next, scanErr
 }
 
-// syncEventsLocked fsyncs the run's events.jsonl and clears its
-// unsynced flag. Called under s.mu. A missing events file counts as
+// syncEventsPathLocked fsyncs the selected events file before every checkpoint,
+// including after another handle wrote it. Called under the stable run lock.
+// A missing events file counts as
 // synced (nothing to persist — the failed append may have been the
 // file's first line on a path that never materialised).
-func (s *FilesystemRunStore) syncEventsLocked(runID string) error {
-	f, err := os.OpenFile(s.eventsPath(runID), os.O_RDWR, filePerm)
+func (s *FilesystemRunStore) syncEventsPathLocked(path *runPayloadFile) error {
+	f, err := path.OpenFile(os.O_RDWR, filePerm)
 	if err != nil {
 		if os.IsNotExist(err) {
-			delete(s.eventsUnsynced, runID)
 			return nil
 		}
 		return err
@@ -369,6 +402,5 @@ func (s *FilesystemRunStore) syncEventsLocked(runID string) error {
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	delete(s.eventsUnsynced, runID)
-	return nil
+	return path.syncParent()
 }

@@ -181,6 +181,66 @@ workflow w:
 	}
 }
 
+func TestAMemoryBoundBelowTheWorkingFloorWarnsAtCompile(t *testing.T) {
+	t.Parallel()
+	// #3290: a memory bound below the measured floor a Go child works under
+	// cannot do real work — the platform raises it where the program spawns
+	// and reports the raise. The author learns HERE, at compile, not from a
+	// run that came back with more memory than they declared.
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    memory: 8388608
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	if got := countCode(r, DiagCodemodeMemoryBelowFloor); got != 1 {
+		t.Fatalf("C350 on memory below the working floor: %d time(s), want 1: %+v", got, r.Diagnostics)
+	}
+	// The message names the declared number AND the floor it will become.
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagCodemodeMemoryBelowFloor {
+			if !strings.Contains(d.Message, "8388608") || !strings.Contains(d.Message, "67108864") {
+				t.Errorf("C350 does not name the declared value and the floor: %s", d.Message)
+			}
+		}
+	}
+	// And the declared value is KEPT — the compiler warns, the parent clamps;
+	// a compiler that also raised the bound would give it two owners.
+	n := r.Workflow.Nodes["a"].(*AgentNode)
+	if n.CodemodeBounds == nil || n.CodemodeBounds.Memory != 8388608 {
+		t.Errorf("bounds = %+v, want the declared 8388608 carried through", n.CodemodeBounds)
+	}
+}
+
+func TestAMemoryBoundAtTheFloorDrawsNothing(t *testing.T) {
+	t.Parallel()
+	// The boundary, per the bounds doctrine's both-arms rule: at the floor
+	// exactly, no warning — the value is honoured as declared.
+	r := compileFile(t, `
+agent a:
+  model: "m"
+  backend: "claw"
+  codemode:
+    memory: 67108864
+
+workflow w:
+  entry: a
+  a -> done
+`)
+	if len(r.Diagnostics) > 0 {
+		t.Fatalf("memory at the floor drew diagnostics: %+v", r.Diagnostics)
+	}
+	n := r.Workflow.Nodes["a"].(*AgentNode)
+	if n.CodemodeBounds == nil || n.CodemodeBounds.Memory != 67108864 {
+		t.Errorf("bounds = %+v, want 67108864", n.CodemodeBounds)
+	}
+}
+
 func TestADurationThatIsNotOneIsReportedAndFallsBackToTheDefault(t *testing.T) {
 	t.Parallel()
 	r := compileFile(t, `

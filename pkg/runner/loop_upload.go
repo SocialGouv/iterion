@@ -18,20 +18,39 @@ const uploadRunFilesBudget = 5 * time.Minute
 // runner-local scratch dir to the durable read backend (the Mongo store's
 // S3 bridge). The server pod, which never saw this runner's disk, then
 // serves them from the artifact-files panel. Best-effort: a store without
-// the RunFilesUploader seam (filesystem dev store) no-ops cleanly, and an
+// either upload seam (filesystem dev store) no-ops cleanly, and an
 // upload failure is logged, never fatal — the run's outcome is already
-// decided. Runs on a background ctx carrying the run's tenant identity so
+// decided. Retains the original data binding while detaching cancellation so
 // a cancelled/timed-out run still flushes what it produced (mirrors
 // recordRunGitMeta), within uploadRunFilesBudget.
-func (r *Runner) uploadRunFiles(_ context.Context, msg *queue.RunMessage) {
+func (r *Runner) uploadRunFiles(ctx context.Context, msg *queue.RunMessage) {
+	r.uploadRunFilesWithGrant(ctx, msg, nil)
+}
+func (r *Runner) uploadRunFilesWithGrant(ctx context.Context, msg *queue.RunMessage, grant store.RunFilesGrant) {
 	up := store.AsRunFilesUploader(r.cfg.Store)
-	if up == nil {
+	granted := store.AsRunFilesGrantUploader(r.cfg.Store)
+	if up == nil && granted == nil {
 		return
 	}
-	bounded, cancel := context.WithTimeout(context.Background(), uploadRunFilesBudget)
+	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), uploadRunFilesBudget)
 	defer cancel()
 	idCtx := store.WithIdentity(bounded, msg.TenantID, msg.OwnerID)
-	n, err := up.UploadRunFiles(idCtx, msg.RunID)
+	var n int
+	var err error
+	if grant != nil {
+		idCtx, err = grant.Bind(idCtx, msg.RunID)
+	}
+	if err == nil {
+		if binding, ok := store.RunDataBindingFrom(idCtx); ok && binding.Header().Protocol == store.IncarnationRunData {
+			if grant == nil || granted == nil {
+				err = store.ErrRunDataCapability
+			} else {
+				n, err = granted.UploadRunFilesFrom(idCtx, msg.RunID, grant)
+			}
+		} else if up != nil {
+			n, err = up.UploadRunFiles(idCtx, msg.RunID)
+		}
+	}
 	if err != nil {
 		r.cfg.Logger.Warn("runner: run %s: upload artifact files: %v", msg.RunID, err)
 		return

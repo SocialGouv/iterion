@@ -32,7 +32,7 @@ func TestEnsureLogSource_LiveTailAndRelease(t *testing.T) {
 		t.Fatalf("seed run.log: %v", err)
 	}
 
-	rel, buf := svc.ensureLogSource(runID)
+	rel, buf := svc.ensureLogSource(t.Context(), runID)
 	if buf == nil {
 		t.Fatal("ensureLogSource returned a nil buffer")
 	}
@@ -88,8 +88,8 @@ func TestEnsureLogSource_Refcount(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	rel1, buf1 := svc.ensureLogSource(runID)
-	rel2, buf2 := svc.ensureLogSource(runID)
+	rel1, buf1 := svc.ensureLogSource(t.Context(), runID)
+	rel2, buf2 := svc.ensureLogSource(t.Context(), runID)
 	if buf1 == nil || buf2 == nil || buf1 != buf2 {
 		t.Fatal("both holders must share the same live buffer")
 	}

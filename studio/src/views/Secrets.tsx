@@ -22,6 +22,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
+import { SecretNameField } from "@/components/shared/SecretNameField";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
@@ -302,19 +303,7 @@ function UpsertSecretDialog({
       <div className="space-y-3 text-sm">
         {!rotate && (
           <>
-            <label className="block">
-              <div className="text-xs text-fg-muted mb-1">Name</div>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                error={name !== "" && !v.ok}
-                placeholder="GITHUB_TOKEN"
-                autoFocus
-              />
-              <div className={`text-xs mt-1 ${v.ok ? "text-fg-muted" : "text-danger"}`}>
-                {v.ok ? "OK" : v.error ?? "—"}
-              </div>
-            </label>
+            <SecretNameField value={name} onChange={setName} placeholder="GITHUB_TOKEN" />
             <label className="block">
               <div className="text-xs text-fg-muted mb-1">Scope</div>
               <Select
@@ -335,6 +324,9 @@ function UpsertSecretDialog({
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="paste here — never shown again"
+            // "new-password", not "off": a browser ignores "off" on a password
+            // input and fills the saved login's password into it.
+            autoComplete="new-password"
             autoFocus={rotate}
           />
         </label>

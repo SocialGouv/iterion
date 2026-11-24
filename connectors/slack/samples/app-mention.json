@@ -1,0 +1,22 @@
+{
+  "headers": {
+    "X-Slack-Request-Timestamp": "1731600120",
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "team_id": "T024BE7LD",
+    "api_app_id": "A07V1L2M3N4",
+    "type": "event_callback",
+    "event_id": "Ev07XYZDEF",
+    "event_time": 1731600120,
+    "event": {
+      "type": "app_mention",
+      "user": "U061F7AUR",
+      "text": "<@U07BOT> resume ce fil",
+      "ts": "1731600119.000200",
+      "thread_ts": "1731599999.000100",
+      "event_ts": "1731600119.000200",
+      "channel": "C0LAN2Q65"
+    }
+  }
+}

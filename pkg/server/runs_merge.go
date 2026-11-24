@@ -59,13 +59,20 @@ func (s *Server) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.runs.PerformMergeCtx(r.Context(), id, runview.MergeRequest{
+	// A request the gate admitted on its expected birth merges that run
+	// only: every store access of the merge is bound to it (actionOrigin).
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.PerformMergeCtx(ctx, id, runview.MergeRequest{
 		Strategy:      store.MergeStrategy(req.MergeStrategy),
 		MergeInto:     req.MergeInto,
 		CommitMessage: req.CommitMessage,
 	})
 	if err != nil {
-		if s.writeBotTreeWait(w, r, err) {
+		if s.writeActionFailure(w, r, a, err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		// The service's error messages are descriptive enough to surface
@@ -117,8 +124,16 @@ func (s *Server) handleCommitAndFinalize(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
-	res, err := s.runs.CommitAndFinalizeCtx(r.Context(), id, req.CommitMessage)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.CommitAndFinalizeCtx(ctx, id, req.CommitMessage)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusConflict, "commit-and-finalize: %v", err)
 		return
 	}
@@ -331,8 +346,13 @@ func (s *Server) handleResolveMergeConflict(w http.ResponseWriter, r *http.Reque
 		s.httpErrorFor(w, r, http.StatusBadRequest, "path required")
 		return
 	}
-	if err := s.runs.ResolveMergeConflictFile(r.Context(), id, req.Path, req.Content); err != nil {
-		if s.writeBotTreeWait(w, r, err) {
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if err := s.runs.ResolveMergeConflictFile(ctx, id, req.Path, req.Content); err != nil {
+		if s.writeActionFailure(w, r, a, err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusConflict, "resolve: %v", err)
@@ -340,8 +360,11 @@ func (s *Server) handleResolveMergeConflict(w http.ResponseWriter, r *http.Reque
 	}
 	// Return the fresh state so the UI can reflect the now-staged file
 	// without polling.
-	res, err := s.runs.GetMergeConflicts(r.Context(), id)
+	res, err := s.runs.GetMergeConflicts(ctx, id)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "refresh: %v", err)
 		return
 	}
@@ -394,9 +417,14 @@ func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.R
 	}
 	var req resolveConflictWithAgentRequest
 	_ = readJSON(r, &req) // body is optional
-	res, err := s.runs.ResolveAllConflictsWithAgent(r.Context(), id, req.Model)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.ResolveAllConflictsWithAgent(ctx, id, req.Model)
 	if err != nil {
-		if s.writeContentBoundaryRefusedError(w, r, "agent resolve", err) || s.writeBotTreeWait(w, r, err) {
+		if s.writeActionFailure(w, r, a, err) || s.writeContentBoundaryRefusedError(w, r, "agent resolve", err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		if errors.Is(err, runview.ErrConflictSetChanged) {
@@ -433,9 +461,14 @@ func (s *Server) handleFinalizeMergeConflict(w http.ResponseWriter, r *http.Requ
 	}
 	var req finalizeMergeConflictRequest
 	_ = readJSON(r, &req)
-	res, err := s.runs.FinalizeMergeAfterConflict(r.Context(), id, req.Message)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	res, err := s.runs.FinalizeMergeAfterConflict(ctx, id, req.Message)
 	if err != nil {
-		if s.writeBotTreeWait(w, r, err) {
+		if s.writeActionFailure(w, r, a, err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusConflict, "finalize: %v", err)
@@ -466,8 +499,13 @@ func (s *Server) handleAbortMergeConflict(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
-	if err := s.runs.AbortMergeConflict(r.Context(), id); err != nil {
-		if s.writeBotTreeWait(w, r, err) {
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if err := s.runs.AbortMergeConflict(ctx, id); err != nil {
+		if s.writeActionFailure(w, r, a, err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusConflict, "abort: %v", err)

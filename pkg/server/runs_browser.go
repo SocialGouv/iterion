@@ -296,7 +296,17 @@ func (s *Server) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run console disabled")
 		return
 	}
-	if _, err := s.runs.LoadRunCtx(r.Context(), runID); err != nil {
+	// Under an admitted expectation this load is the bound pre-check of the
+	// ID-keyed browser start.
+	a := s.admittedAction(r, runID)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(ctx, runID); err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}

@@ -27,8 +27,8 @@ exist are deployment-wide `${ITERION_VIBE_*}` env references read from the pod e
 single platform bot-vars record (`cmd/iterion/remote_admin.go:532`). Revi is the measured case —
 six slots, two bots:
 
-- `bots/review-pr/lib/nodes.bot`: `agent converge` (:13), `judge reviewer_claude` (:67) and its
-  glance twin (:199), `judge reviewer_gpt` (:157) and its glance twin (:222);
+- `bots/review-pr/lib/nodes.bot`: `agent converge` (:13), `judge reviewer_alternate` (:67) and its
+  glance twin (:199), `judge reviewer` (:157) and its glance twin (:222);
 - `bots/revi-converse/main.bot`: `agent converse_agent` (:239), whose `backend: "claude_code"`
   (:241) is a literal with no dial at all.
 
@@ -206,7 +206,7 @@ that pinned the field to nothing still says `"<level>_lock"` rather than `"defau
 Entry-wise, not replace-wholesale, because a cell is independent by construction — `ForNode`
 resolves per field (`model_override.go:144`) — so merging cells cannot produce the "reordered prefix"
 trap that made `pair_order` replace. Concretely: a team pins `judge → backend: claw`, an integration
-pins `reviewer_gpt → model: <gateway id>`, and both hold.
+pins `reviewer → model: <gateway id>`, and both hold.
 
 `providers` is a single list and folds like `pair_order`: a level REPLACES it, first setter wins,
 lockable. A list that merged would let a level ADD a provider the level below meant to exclude, which
@@ -223,7 +223,7 @@ Specificity is **not** precedence. Two different mechanisms are at work: within 
 
 `locks: [overrides]` and `locks: [providers]` lock the block, not a cell. A level that must pin one
 slot locks the block and states every cell it wants. Coarse on purpose, and said out loud: a per-cell
-lock vocabulary (`locks: ["overrides.reviewer_claude.backend"]`) is a second grammar inside a list of
+lock vocabulary (`locks: ["overrides.reviewer_alternate.backend"]`) is a second grammar inside a list of
 field names, and nothing has yet needed it. Per ADR-121, the binding surfaces hold no lock primitive
 at all — their write path refuses `locks` with the reason named, exactly as `decodeScheduleRouting`
 (`pkg/server/schedules_routes.go:113`) already does.
@@ -390,7 +390,7 @@ for the next bot that carries a rescue route.
 **A bot-side `when:` var is not the contract either**, which the draft got wrong three ways:
 
 - `bots/review_pr_glm_route_test.go:115-120` — in `package bots`, inside `task test` → `task check` —
-  REFUSES any `when:` on the zai route of `reviewer_claude`, `reviewer_claude_glance`, `converge` and
+  REFUSES any `when:` on the zai route of `reviewer_alternate`, `reviewer_alternate_glance`, `converge` and
   `converse_agent`: exactly the four routes the draft proposed to gate. Its reason is fact 3 above.
   The guard is the author's reasoned refusal of this mechanism and it stays as it is.
 - Even after §4 teaches the walk to read `when:`, the knob is a string: `vars.glm_rescue != 'off'`
@@ -446,7 +446,7 @@ SPECIFICITY, keeping the last rule whose score is `>=` the best so far (:144-166
 `selectorScore` gives `"*"` = 1, a kind keyword = 10, a glob = 100+, an exact node id = 100000
 (:171-192) — and the launcher's canonical gesture is the LEAST specific selector: `--backend claw`
 and the studio dropdown both record `"*"` (`splitSelectorValue`, :206-210). So an integration cell on
-`reviewer_claude` would silently outrank an operator's explicit `--backend claude_code` at the launch
+`reviewer_alternate` would silently outrank an operator's explicit `--backend claude_code` at the launch
 button, on exactly the nodes this feature exists to pin — philosophy §1's "never silently replace an
 operator's explicit choice". `modelOverrideRule` therefore gains a layer `rank`, `ForNode` compares
 `(rank, score)` lexicographically, and `MergeOver` stamps `o`'s rows one rank above `base`'s. Eight
@@ -455,7 +455,7 @@ does between `MergeOver`'s two layers — a CLI resume's flags over the rows its
 (`TestMergeOver_TheTopLayerWinsAtEverySelectorPair`). The launch's fold of the policy's cells under
 its own rows, below, carries no rank across the wire: a launch row wins a cell on the same selector
 and a launch `*` row overrides its field in every node cell, but a cell on a more specific node
-selector than a launch row other than `*` still wins the field both pin — a `reviewer_claude` cell
+selector than a launch row other than `*` still wins the field both pin — a `reviewer_alternate` cell
 beats a `reviewer_*` launch row (`TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow`).)
 
 The launch folds the two into **one** list at a named helper — `runview.EffectiveModelOverrides(launchRows, policy)` —

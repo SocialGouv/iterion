@@ -46,15 +46,26 @@ func TestImageSmokeFrame(t *testing.T) {
 
 // An application import here would execute initialization before native inputs
 // are sanitized. Check the actual dependency closure, not just direct imports.
+func splitOutput(cmd *exec.Cmd) (stdout, stderr []byte, err error) {
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return out.Bytes(), errBuf.Bytes(), err
+}
+
 func TestGuestDependencyClosure(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "../../../.."))
 	cmd := exec.Command("go", "list", "-mod=vendor", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "./cmd/iterion-execenv-guest")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
-	output, err := cmd.CombinedOutput()
+	// stdout only: go writes environment diagnostics ("writing stat cache:
+	// read-only file system" under a read-only module cache) to stderr, and
+	// every field of such a line would otherwise read as a phantom dependency.
+	output, stderr, err := splitOutput(cmd)
 	if err != nil {
-		t.Fatalf("guest dependency closure: %v: %s", err, output)
+		t.Fatalf("guest dependency closure: %v: %s", err, stderr)
 	}
 	allowed := map[string]bool{"github.com/SocialGouv/iterion/cmd/iterion-execenv-guest": true, "github.com/SocialGouv/iterion/pkg/sandbox/execenv/protocol": true}
 	for _, dependency := range strings.Fields(string(output)) {

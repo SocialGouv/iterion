@@ -59,6 +59,12 @@ var reasoningEffortWriters = map[string]string{
 	"generation_request.go:fireOnRequest":    effortNotWire + ": the OnRequest hook's RequestInfo",
 	"events.go:toLLMRequestInfo":             effortNotWire + ": RequestInfo onto the llm_request event's info",
 	"hooks.go:onLLMRequest":                  effortNotWire + ": the llm_request event's data map",
+	"model_boundary.go:recordReasoningEffort": effortNotWire + ": the Result's record of the effort a call ran at, " +
+		"stamped on the node's output (`_reasoning_effort_applied`) — after the request, never onto one",
+	"generation.go:buildStepResult": effortNotWire + ": the StepResult's record of the effort a request carried on the wire " +
+		"(wireReasoningEffort), read by the claw backend's report — after the request, never onto one",
+	"generation.go:GenerateObjectDirect": effortNotWire + ": a structured turn's StepResult records the effort its request " +
+		"carried on the wire, as buildStepResult does",
 }
 
 // effortMappers are the functions a MAPS entry's body calls.

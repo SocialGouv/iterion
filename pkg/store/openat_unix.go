@@ -20,6 +20,23 @@ func openRunFileAt(root string, components []string) (*os.File, fs.FileInfo, err
 	}
 	defer unix.Close(rootFD)
 
+	return openRunFileFromFD(rootFD, components, 0)
+}
+
+func openRunFileRetained(root *os.Root, components []string) (*os.File, fs.FileInfo, error) {
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer dir.Close()
+	return openRunFileFromFD(int(dir.Fd()), components, 0)
+}
+
+// openRunFileFromFD borrows rootFD and owns each descendant it opens.
+func openRunFileFromFD(rootFD int, components []string, extraFlags int) (*os.File, fs.FileInfo, error) {
+	if len(components) == 0 {
+		return nil, nil, os.ErrInvalid
+	}
 	dirFD := rootFD
 	for _, component := range components[:len(components)-1] {
 		nextFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
@@ -37,7 +54,7 @@ func openRunFileAt(root string, components []string) (*os.File, fs.FileInfo, err
 		}
 	}()
 
-	finalFD, err := unix.Openat(dirFD, components[len(components)-1], unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	finalFD, err := unix.Openat(dirFD, components[len(components)-1], unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|extraFlags, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -53,6 +70,23 @@ func openRunFileAt(root string, components []string) (*os.File, fs.FileInfo, err
 			return nil, nil, err
 		}
 		return nil, nil, syscall.EISDIR
+	}
+	return f, info, nil
+}
+
+func openRegularRunFileRetained(root *os.Root, name string) (*os.File, fs.FileInfo, error) {
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer dir.Close()
+	f, info, err := openRunFileFromFD(int(dir.Fd()), []string{name}, unix.O_NONBLOCK)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		f.Close()
+		return nil, nil, os.ErrInvalid
 	}
 	return f, info, nil
 }

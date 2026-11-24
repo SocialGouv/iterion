@@ -34,8 +34,8 @@ func TestFromKeepaliveInvocation(t *testing.T) {
 	if len(sub.Match.Sources) != 1 || sub.Match.Sources[0] != SourceSchedule {
 		t.Fatalf("Match.Sources = %v, want [schedule]", sub.Match.Sources)
 	}
-	if sub.EffectiveMode() != bundle.ExecutionDirect {
-		t.Fatalf("mode = %q, want direct", sub.EffectiveMode())
+	if mode, err := sub.EffectiveMode(); err != nil || mode != bundle.ExecutionDirect {
+		t.Fatalf("mode = %q (%v), want direct", mode, err)
 	}
 	if sub.Vars["mode"] != "watch" {
 		t.Fatalf("default vars not propagated: %+v", sub.Vars)

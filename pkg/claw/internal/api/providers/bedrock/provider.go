@@ -110,6 +110,10 @@ type Client struct {
 	Bedrock   invoker
 }
 
+// WireReasoningEffort is "" (api.EffortWire): MarshalRequest writes no
+// effort field, whatever the request names.
+func (c *Client) WireReasoningEffort(_, _ string) string { return "" }
+
 // StreamResponse marshals req into a Bedrock-flavoured Anthropic body, calls
 // InvokeModelWithResponseStream, and translates the resulting EventStream
 // into Anthropic-shaped api.StreamEvent values.

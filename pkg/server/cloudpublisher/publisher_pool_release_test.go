@@ -105,7 +105,7 @@ func TestPublisher_PoolCleanupOwnsItsGrant(t *testing.T) {
 				} else if len(open) != 0 {
 					t.Fatalf("failed acquisition retained its lease: %v", open)
 				}
-				pledgeID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+				pledgeID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code", "")
 				day, _, err := f.ledger.Usage(ctx, pledgeID, time.Now().UTC())
 				if err != nil || day.Runs != wantRuns {
 					t.Fatalf("daily runs=%d, want %d (%v)", day.Runs, wantRuns, err)

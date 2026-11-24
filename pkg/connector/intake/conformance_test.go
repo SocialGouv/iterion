@@ -80,6 +80,15 @@ func delivery(tenant, ingress, dedup string, at time.Time) Intake {
 	}
 }
 
+// polledItem is an item a poller accepted at a sequence.
+func polledItem(tenant, poller, item string, seq int64, at time.Time) Intake {
+	return Intake{
+		TenantID: tenant, ConnectionID: "conn-" + tenant, PollerID: poller, TriggerID: "issue.changed",
+		DedupKey: item, Sequence: seq, Event: []byte(`{"outputs":{},"payload":{"key":"` + item + `"}}`),
+		ReceivedAt: at,
+	}
+}
+
 func mustAccept(t *testing.T, s Store, in Intake) Intake {
 	t.Helper()
 	got, created, err := s.Accept(context.Background(), in)
@@ -89,9 +98,7 @@ func mustAccept(t *testing.T, s Store, in Intake) Intake {
 	return got
 }
 
-func pending(in Intake, sub string, at time.Time) Pair {
-	return Pair{TenantID: in.TenantID, IntakeID: in.ID, SubscriptionID: sub, ReceivedAt: in.ReceivedAt, State: PairPending, CreatedAt: at}
-}
+func pending(in Intake, sub string, at time.Time) Pair { return PairFor(in, sub, at) }
 
 func ids[T any](rows []T, id func(T) string) []string {
 	out := make([]string, 0, len(rows))
@@ -142,7 +149,7 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		a := mustAccept(t, s, delivery("t1", "ing-1", "same", t0))
 		b := mustAccept(t, s, delivery("t2", "ing-1", "same", t0))
 		polled := delivery("t1", "", "same", t0)
-		polled.PollerID = "ing-1"
+		polled.PollerID, polled.Sequence = "ing-1", 1
 		c := mustAccept(t, s, polled)
 		if a.ID == b.ID || a.ID == c.ID || b.ID == c.ID {
 			t.Fatalf("ids %s %s %s collide across tenants or sources", a.ID, b.ID, c.ID)
@@ -159,6 +166,14 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 			"no dedup key":   func(in *Intake) { in.DedupKey = "" },
 			"no instant":     func(in *Intake) { in.ReceivedAt = time.Time{} },
 			"event not JSON": func(in *Intake) { in.Event = []byte("{") },
+			"a polled intake without its sequence": func(in *Intake) {
+				in.IngressID, in.PollerID = "", "pl-1"
+			},
+			"an ingress intake with a sequence": func(in *Intake) { in.Sequence = 3 },
+			"an ingress intake primed":          func(in *Intake) { in.State = IntakePrimed },
+			"an intake accepted already matched": func(in *Intake) {
+				in.IngressID, in.PollerID, in.Sequence, in.State = "", "pl-1", 1, IntakeMatched
+			},
 		} {
 			t.Run(name, func(t *testing.T) {
 				s := newStore(t)
@@ -355,6 +370,64 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
+	t.Run("a primed intake is durable and terminal: never claimed, never backlog", func(t *testing.T) {
+		s := newStore(t)
+		primed := polledItem("t1", "pl-1", "item-a", 1, t0)
+		primed.State = IntakePrimed
+		got := mustAccept(t, s, primed)
+		if got.State != IntakePrimed || got.Sequence != 1 {
+			t.Fatalf("primed row = state %q sequence %d, want primed at 1", got.State, got.Sequence)
+		}
+		fresh := mustAccept(t, s, polledItem("t1", "pl-1", "item-b", 2, t0))
+		if fresh.State != IntakePending {
+			t.Fatalf("a later item = %q, want pending", fresh.State)
+		}
+		claimed, err := s.ClaimIntakes(ctx, "w", t0.Add(time.Hour), ttl, 10)
+		if err != nil || !reflect.DeepEqual(intakeIDs(claimed), []string{fresh.ID}) {
+			t.Fatalf("claim = (%v, %v), want the pending item only", intakeIDs(claimed), err)
+		}
+		if n, err := s.CountBacklog(ctx, "t1"); err != nil || n != 1 {
+			t.Fatalf("backlog = (%d, %v), want 1: a primed row owes nothing", n, err)
+		}
+		// A primed item re-observed meets its row as it stands.
+		again := polledItem("t1", "pl-1", "item-a", 9, t0.Add(time.Minute))
+		if row, created, err := s.Accept(ctx, again); err != nil || created || row.State != IntakePrimed || row.Sequence != 1 {
+			t.Fatalf("re-accept = (%+v, %v, %v), want the primed row at sequence 1", row, created, err)
+		}
+	})
+
+	t.Run("a poller's intakes list by sequence, highest first, bounded by sequence and count", func(t *testing.T) {
+		// Accepted out of sequence order, in both orders: the list is the
+		// store's sequence order, never its arrival order.
+		for name, order := range map[string][]int64{"ascending": {1, 2, 3, 4}, "shuffled": {3, 1, 4, 2}} {
+			t.Run(name, func(t *testing.T) {
+				s := newStore(t)
+				rows := map[int64]Intake{}
+				for _, seq := range order {
+					rows[seq] = mustAccept(t, s, polledItem("t1", "pl-1", fmt.Sprintf("item-%d", seq), seq, t0))
+				}
+				mustAccept(t, s, polledItem("t1", "pl-2", "item-1", 1, t0))
+				mustAccept(t, s, polledItem("t2", "pl-1", "item-1", 1, t0))
+				mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+
+				got, err := s.ListPollerIntakes(ctx, "t1", "pl-1", 3, 0)
+				want := []string{rows[3].ID, rows[2].ID, rows[1].ID}
+				if err != nil || !reflect.DeepEqual(intakeIDs(got), want) {
+					t.Fatalf("list ≤ 3 = (%v, %v), want %v", intakeIDs(got), err, want)
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t1", "pl-1", 4, 2); !reflect.DeepEqual(intakeIDs(got), []string{rows[4].ID, rows[3].ID}) {
+					t.Fatalf("bounded list = %v, want the two highest", intakeIDs(got))
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t1", "pl-1", 0, 0); len(got) != 0 {
+					t.Fatalf("list ≤ 0 = %v, want nothing", intakeIDs(got))
+				}
+				if got, _ := s.ListPollerIntakes(ctx, "t3", "pl-1", 9, 0); len(got) != 0 {
+					t.Fatalf("another tenant lists %v", intakeIDs(got))
+				}
+			})
+		}
+	})
+
 	t.Run("lists newest first, filtered by state, bounded", func(t *testing.T) {
 		s := newStore(t)
 		a := mustAccept(t, s, delivery("t1", "ing-1", "a", t0))
@@ -397,6 +470,155 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 	})
 
+	t.Run("a polled pair carries its item's key, the same whatever poller accepted the revision", func(t *testing.T) {
+		s := newStore(t)
+		a := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 7, t0))
+		b := mustAccept(t, s, polledItem("t1", "pl-b", "item-x", 2, t0))
+		v2 := mustAccept(t, s, polledItem("t1", "pl-a", "item-x|v2", 8, t0))
+		conn := polledItem("t1", "pl-c", "item-x", 1, t0)
+		conn.ConnectionID = "conn-other"
+		otherConn := mustAccept(t, s, conn)
+		trig := polledItem("t1", "pl-d", "item-x", 1, t0)
+		trig.TriggerID = "issue.created"
+		otherTrig := mustAccept(t, s, trig)
+		ten := polledItem("t2", "pl-a", "item-x", 1, t0)
+		ten.ConnectionID = "conn-t1"
+		otherTenant := mustAccept(t, s, ten)
+		hook := mustAccept(t, s, delivery("t1", "ing-1", "item-x", t0))
+		rows := []Intake{a, b, v2, otherConn, otherTrig, otherTenant, hook}
+		for _, in := range rows {
+			if err := s.WritePairs(ctx, []Pair{pending(in, "s1", t0)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		key := map[string]string{}
+		for _, in := range rows {
+			p, err := s.GetPair(ctx, in.TenantID, PairID(in.ID, "s1"))
+			if err != nil {
+				t.Fatalf("pair of %s under (intake, subscription) = %v", in.ID, err)
+			}
+			key[in.ID] = p.ItemKey
+		}
+		want := PolledItemKey("t1", "conn-t1", "issue.changed", "item-x")
+		if key[a.ID] != want || key[b.ID] != want {
+			t.Fatalf("item keys of one revision on two pollers = %q and %q, want both %q", key[a.ID], key[b.ID], want)
+		}
+		seen := map[string]string{want: "the revision"}
+		for name, in := range map[string]Intake{"another version": v2, "another connection": otherConn, "another trigger": otherTrig, "another tenant": otherTenant} {
+			if k := key[in.ID]; k == "" || seen[k] != "" {
+				t.Fatalf("%s: item key %q is empty or shared with %s", name, k, seen[k])
+			} else {
+				seen[k] = name
+			}
+		}
+		if key[hook.ID] != "" {
+			t.Fatalf("a webhook pair carries item key %q, want none", key[hook.ID])
+		}
+	})
+
+	t.Run("a subscription's launched pair of an item is found whatever intake carried it, and only a launched one", func(t *testing.T) {
+		s := newStore(t)
+		item := PolledItemKey("t1", "conn-t1", "issue.changed", "item-x")
+		refused := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+		dead := mustAccept(t, s, polledItem("t1", "pl-b", "item-x", 1, t0))
+		launched := mustAccept(t, s, polledItem("t1", "pl-c", "item-x", 1, t0))
+		owed := mustAccept(t, s, polledItem("t1", "pl-d", "item-x", 1, t0))
+		nm := pending(refused, "s3", t0)
+		nm.State, nm.Reason = PairNotMatched, "filters"
+		// s2's launch of the item comes first: a read blind to the
+		// subscription would answer it for s1.
+		if err := s.WritePairs(ctx, []Pair{pending(refused, "s2", t0), nm}); err != nil {
+			t.Fatal(err)
+		}
+		c, _ := s.ClaimPairs(ctx, "w", t0, ttl, 5)
+		if len(c) != 1 || c[0].SubscriptionID != "s2" {
+			t.Fatalf("claim = %v, want s2's pair alone", pairSubs(c))
+		}
+		if err := s.MarkPairLaunched(ctx, c[0].ID, c[0].Generation, "run-s2", t0); err != nil {
+			t.Fatal(err)
+		}
+		at := t0.Add(time.Second)
+		if err := s.WritePairs(ctx, []Pair{pending(refused, "s1", at), pending(dead, "s1", at), pending(launched, "s1", at), pending(owed, "s1", at)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := s.LaunchedPair(ctx, "t1", "s1", item); err != nil || found {
+			t.Fatalf("with every s1 pair pending = (%v, %v), want none", found, err)
+		}
+		claimed, _ := s.ClaimPairs(ctx, "w", at, ttl, 5)
+		byIntake := map[string]Pair{}
+		for _, p := range claimed {
+			byIntake[p.IntakeID] = p
+		}
+		if len(byIntake) != 4 {
+			t.Fatalf("claimed %d of s1's pairs, want 4", len(byIntake))
+		}
+		if err := s.RefusePair(ctx, byIntake[refused.ID].ID, byIntake[refused.ID].Generation, "moved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.BuryPair(ctx, byIntake[dead.ID].ID, byIntake[dead.ID].Generation, 3, "spent"); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := s.LaunchedPair(ctx, "t1", "s1", item); err != nil || found {
+			t.Fatalf("with s1's pairs refused, dead and claimed = (%v, %v), want none: none delivered", found, err)
+		}
+		if err := s.MarkPairLaunched(ctx, byIntake[launched.ID].ID, byIntake[launched.ID].Generation, "run-s1", at); err != nil {
+			t.Fatal(err)
+		}
+		got, found, err := s.LaunchedPair(ctx, "t1", "s1", item)
+		if err != nil || !found || got.ID != PairID(launched.ID, "s1") || got.RunID != "run-s1" || got.State != PairLaunched {
+			t.Fatalf("s1's launched pair = (%+v, %v, %v), want the one on %s with its run", got, found, err, launched.ID)
+		}
+		if got, found, _ := s.LaunchedPair(ctx, "t1", "s2", item); !found || got.RunID != "run-s2" {
+			t.Fatalf("s2's launched pair = (%+v, %v), want its own", got, found)
+		}
+		if _, found, err := s.LaunchedPair(ctx, "t1", "s3", item); err != nil || found {
+			t.Fatalf("s3, not matched = (%v, %v), want none", found, err)
+		}
+		if _, found, err := s.LaunchedPair(ctx, "t1", "s1", PolledItemKey("t1", "conn-t1", "issue.changed", "item-x|v2")); err != nil || found {
+			t.Fatalf("another revision = (%v, %v), want none", found, err)
+		}
+		if _, found, err := s.LaunchedPair(ctx, "t2", "s1", item); err != nil || found {
+			t.Fatalf("another tenant = (%v, %v), want none", found, err)
+		}
+		if _, _, err := s.LaunchedPair(ctx, "t1", "s1", ""); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("a read naming no item = %v, want ErrInvalid", err)
+		}
+	})
+
+	t.Run("among an item's launched pairs, the earliest launched is found", func(t *testing.T) {
+		// Launched in both orders: the answer follows the launch instant,
+		// never the row's id or its arrival.
+		for _, laterFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("later written first=%v", laterFirst), func(t *testing.T) {
+				s := newStore(t)
+				a := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+				b := mustAccept(t, s, polledItem("t1", "pl-b", "item-x", 1, t0))
+				if err := s.WritePairs(ctx, []Pair{pending(a, "s1", t0), pending(b, "s1", t0)}); err != nil {
+					t.Fatal(err)
+				}
+				c, _ := s.ClaimPairs(ctx, "w", t0, ttl, 5)
+				if len(c) != 2 {
+					t.Fatalf("claimed %d, want 2", len(c))
+				}
+				gen := map[string]int64{c[0].ID: c[0].Generation, c[1].ID: c[1].Generation}
+				first, second := PairID(a.ID, "s1"), PairID(b.ID, "s1")
+				if laterFirst {
+					first, second = second, first
+				}
+				if err := s.MarkPairLaunched(ctx, second, gen[second], "run-later", t0.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.MarkPairLaunched(ctx, first, gen[first], "run-earlier", t0); err != nil {
+					t.Fatal(err)
+				}
+				got, found, err := s.LaunchedPair(ctx, "t1", "s1", PolledItemKey("t1", "conn-t1", "issue.changed", "item-x"))
+				if err != nil || !found || got.ID != first || got.RunID != "run-earlier" {
+					t.Fatalf("launched pair = (%s %s, %v, %v), want %s, the earliest launched", got.ID, got.RunID, found, err, first)
+				}
+			})
+		}
+	})
+
 	t.Run("write pairs refuses a pair no matcher could have written", func(t *testing.T) {
 		s := newStore(t)
 		in := mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
@@ -408,6 +630,14 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 			"born launched":            func(p *Pair) { p.State = PairLaunched },
 			"not matched without why":  func(p *Pair) { p.State = PairNotMatched },
 			"refused without a reason": func(p *Pair) { p.State = PairRefused },
+			"not built by PairFor": func(p *Pair) {
+				*p = Pair{TenantID: p.TenantID, IntakeID: p.IntakeID, SubscriptionID: p.SubscriptionID, ReceivedAt: p.ReceivedAt, State: PairPending, CreatedAt: p.CreatedAt}
+			},
+			"pointed at another intake": func(p *Pair) { p.IntakeID = "in-other" },
+			"moved to another tenant":   func(p *Pair) { p.TenantID = "t2" },
+			"an item key PairFor did not read": func(p *Pair) {
+				p.ItemKey = PolledItemKey("t1", "conn-t1", "issue.updated", "d")
+			},
 		} {
 			t.Run(name, func(t *testing.T) {
 				p := pending(in, "s1", t0)
@@ -419,6 +649,38 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 		if got, _ := s.ListPairs(ctx, "t1", PairQuery{}, 0); len(got) != 0 {
 			t.Fatalf("a refused pair was written: %v", pairSubs(got))
+		}
+	})
+
+	t.Run("write pairs refuses a polled pair stripped of its item key", func(t *testing.T) {
+		s := newStore(t)
+		in := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+		p := pending(in, "s1", t0)
+		p.ItemKey = ""
+		if err := s.WritePairs(ctx, []Pair{p}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("WritePairs = %v, want ErrInvalid: its launch could not be judged", err)
+		}
+		if got, _ := s.ListPairs(ctx, "t1", PairQuery{}, 0); len(got) != 0 {
+			t.Fatalf("a refused pair was written: %v", pairSubs(got))
+		}
+	})
+
+	t.Run("a pair read back is a row, not a pair to write again", func(t *testing.T) {
+		// Every twin answers the same: the identity PairFor reads is never
+		// stored, so no twin hands back a row that writes as a new pair.
+		s := newStore(t)
+		in := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+		if err := s.WritePairs(ctx, []Pair{pending(in, "s1", t0)}); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.ListPairs(ctx, "t1", PairQuery{}, 0)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("pairs = (%v, %v)", pairSubs(rows), err)
+		}
+		again := rows[0]
+		again.SubscriptionID = "s2"
+		if err := s.WritePairs(ctx, []Pair{again}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("writing a row read back = %v, want ErrInvalid", err)
 		}
 	})
 
@@ -520,6 +782,46 @@ func runConformance(t *testing.T, newStore func(*testing.T) Store) {
 		}
 		if _, err := s.ReplayPair(ctx, "t2", byID["s1"].ID, t0); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("replay from another tenant = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("a match-refused pair is re-judged, and only such a pair", func(t *testing.T) {
+		s := newStore(t)
+		in := mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+		var pairs []Pair
+		for _, sub := range []string{"m", "n", "r"} {
+			p := pending(in, sub, t0)
+			p.State, p.Reason = PairRefused, "expression past its budget"
+			pairs = append(pairs, p)
+		}
+		pairs = append(pairs, pending(in, "p", t0))
+		if err := s.WritePairs(ctx, pairs); err != nil {
+			t.Fatal(err)
+		}
+		at := t0.Add(time.Hour)
+		before, _ := s.GetPair(ctx, "t1", PairID(in.ID, "m"))
+		got, err := s.RejudgePair(ctx, "t1", before.ID, Verdict{SubscriptionID: "m", Matched: true}, at)
+		if err != nil || got.State != PairPending || got.MatchRefusal || got.Reason != "" || got.Attempts != 0 ||
+			got.Generation != before.Generation+1 || !got.NotBefore.Equal(stamp(at)) {
+			t.Fatalf("a matching re-judgment = %+v (%v), want pending, its refusal cleared, due now", got, err)
+		}
+		got, err = s.RejudgePair(ctx, "t1", PairID(in.ID, "n"), Verdict{SubscriptionID: "n", Reason: "filter room: no"}, at)
+		if err != nil || got.State != PairNotMatched || got.MatchRefusal || got.Reason != "filter room: no" {
+			t.Fatalf("a non-matching re-judgment = %+v (%v), want not_matched with its reason", got, err)
+		}
+		got, err = s.RejudgePair(ctx, "t1", PairID(in.ID, "r"), Verdict{SubscriptionID: "r", Refusal: "still past its budget"}, at)
+		if err != nil || got.State != PairRefused || !got.MatchRefusal || got.Reason != "still past its budget" {
+			t.Fatalf("a refusing re-judgment = %+v (%v), want refused by matching, with the new reason", got, err)
+		}
+		// Only a match-refused pair: a pending one, a re-judged one, a
+		// foreign tenant's are not.
+		for _, id := range []string{PairID(in.ID, "p"), PairID(in.ID, "m")} {
+			if _, err := s.RejudgePair(ctx, "t1", id, Verdict{Matched: true}, at); !errors.Is(err, ErrNotReplayable) {
+				t.Fatalf("re-judging %s = %v, want ErrNotReplayable", id, err)
+			}
+		}
+		if _, err := s.RejudgePair(ctx, "t2", PairID(in.ID, "r"), Verdict{Matched: true}, at); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("re-judging from another tenant = %v, want ErrNotFound", err)
 		}
 	})
 

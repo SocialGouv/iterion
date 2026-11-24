@@ -1,37 +1,20 @@
 package model
 
 import (
+	"context"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/numeric"
 )
 
-// ValidateOutput checks that output contains all required fields from the
-// schema with compatible types. It does NOT attempt to repair or coerce
-// invalid values. The caller chooses advisory or strict handling.
+// ValidateOutput checks the schema without repairing values. Structured
+// consumers use CollectOutputViolations rather than parsing diagnostics.
 func ValidateOutput(output map[string]any, schema *ir.Schema) error {
-	var errs []string
-
-	for _, f := range schema.Fields {
-		val, ok := output[f.Name]
-		if !ok {
-			errs = append(errs, fmt.Sprintf("missing required field %q", f.Name))
-			continue
-		}
-
-		if err := checkFieldType(f, val); err != nil {
-			errs = append(errs, err.Error())
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
+	return ValidateOutputWithRegistry(output, schema, nil)
 }
 
 // ConformComputeOutput conforms a compute node's evaluated output to its
@@ -111,22 +94,22 @@ func conformFieldValue(f *ir.SchemaField, val any) (any, error) {
 // checkFieldType validates that val is compatible with the expected field type.
 func checkFieldType(f *ir.SchemaField, val any) error {
 	if val == nil && f.Type != ir.FieldTypeJSON {
-		return fmt.Errorf("field %q is null", f.Name)
+		return outputViolation(f.Name, OutputNull, "field %q is null", f.Name)
 	}
 
 	switch f.Type {
 	case ir.FieldTypeString:
 		s, ok := val.(string)
 		if !ok {
-			return fmt.Errorf("field %q: expected string, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected string, got %T", f.Name, val)
 		}
 		if len(f.EnumValues) > 0 && !slices.Contains(f.EnumValues, s) {
-			return fmt.Errorf("field %q: value %q not in enum %v", f.Name, iterlog.Truncate(s, 2048), f.EnumValues)
+			return outputViolation(f.Name, OutputEnum, "field %q: value %q not in enum %v", f.Name, iterlog.Truncate(s, 2048), f.EnumValues)
 		}
 
 	case ir.FieldTypeBool:
 		if _, ok := val.(bool); !ok {
-			return fmt.Errorf("field %q: expected bool, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected bool, got %T", f.Name, val)
 		}
 
 	case ir.FieldTypeInt:
@@ -134,15 +117,15 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 		// to an int64: both are integers when whole.
 		_, ok, fractional := integerOf(val)
 		if fractional {
-			return fmt.Errorf("field %q: expected integer, got float %v", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected integer, got float %v", f.Name, val)
 		}
 		if !ok {
-			return fmt.Errorf("field %q: expected integer, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected integer, got %T", f.Name, val)
 		}
 
 	case ir.FieldTypeFloat:
 		if _, ok := numberOf(val); !ok {
-			return fmt.Errorf("field %q: expected number, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected number, got %T", f.Name, val)
 		}
 
 	case ir.FieldTypeJSON:
@@ -158,26 +141,26 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 		switch v := val.(type) {
 		case string:
 			if strings.TrimSpace(v) == "" {
-				return fmt.Errorf("field %q: file path is empty", f.Name)
+				return outputViolation(f.Name, OutputInvalidFile, "field %q: file path is empty", f.Name)
 			}
 		case map[string]any:
 			p, _ := v["path"].(string)
 			if strings.TrimSpace(p) == "" {
-				return fmt.Errorf("field %q: file descriptor has no path", f.Name)
+				return outputViolation(f.Name, OutputInvalidFile, "field %q: file descriptor has no path", f.Name)
 			}
 		default:
-			return fmt.Errorf("field %q: expected file descriptor or path, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected file descriptor or path, got %T", f.Name, val)
 		}
 
 	case ir.FieldTypeStringArray:
 		arr, ok := val.([]any)
 		if !ok {
-			return fmt.Errorf("field %q: expected string array, got %T", f.Name, val)
+			return outputViolation(f.Name, OutputWrongType, "field %q: expected string array, got %T", f.Name, val)
 		}
 		for i, item := range arr {
 			s, ok := item.(string)
 			if !ok {
-				return fmt.Errorf("field %q[%d]: expected string, got %T", f.Name, i, item)
+				return outputViolation(f.Name, OutputWrongType, "field %q[%d]: expected string, got %T", f.Name, i, item)
 			}
 			// String arrays inherit the field's enum constraint
 			// (FieldTypeString applies it per scalar — without this
@@ -185,7 +168,7 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 			// but never enforced server-side, so a stray value would
 			// flow downstream unchecked).
 			if len(f.EnumValues) > 0 && !slices.Contains(f.EnumValues, s) {
-				return fmt.Errorf("field %q[%d]: value %q not in enum %v", f.Name, i, iterlog.Truncate(s, 2048), f.EnumValues)
+				return outputViolation(f.Name, OutputEnum, "field %q[%d]: value %q not in enum %v", f.Name, i, iterlog.Truncate(s, 2048), f.EnumValues)
 			}
 		}
 	}
@@ -193,70 +176,23 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 	return nil
 }
 
-// integerOf reports val as an int64 when it is an integer under any Go
-// numeric representation: a native integer kind, or a float with no
-// fractional part (the JSON decoder's shape for every number). fractional
-// is true when val is a float that has one — the one mismatch a caller
-// words differently from "wrong type", since the fix is a rounding, not a
-// retype.
-func integerOf(val any) (n int64, ok bool, fractional bool) {
-	switch v := val.(type) {
-	case int:
-		return int64(v), true, false
-	case int8:
-		return int64(v), true, false
-	case int16:
-		return int64(v), true, false
-	case int32:
-		return int64(v), true, false
-	case int64:
-		return v, true, false
-	case uint8:
-		return int64(v), true, false
-	case uint16:
-		return int64(v), true, false
-	case uint32:
-		return int64(v), true, false
-	case uint:
-		if uint64(v) > math.MaxInt64 {
-			return 0, false, false
-		}
-		return int64(v), true, false
-	case uint64:
-		if v > math.MaxInt64 {
-			return 0, false, false
-		}
-		return int64(v), true, false
-	case float32:
-		return integerOfFloat(float64(v))
-	case float64:
-		return integerOfFloat(v)
-	}
-	return 0, false, false
-}
-
-func integerOfFloat(v float64) (int64, bool, bool) {
-	if math.IsNaN(v) || math.IsInf(v, 0) || v < math.MinInt64 || v >= math.MaxInt64 {
+// integerOf checks the exact integer domain before any IEEE conversion.
+// A JSON decimal fraction remains fractional even if float64 would round it.
+func integerOf(val any) (int64, bool, bool) {
+	n, err := numeric.Read(context.Background(), val)
+	if err != nil {
 		return 0, false, false
 	}
-	if v != math.Trunc(v) {
-		return 0, false, true
-	}
-	return int64(v), true, false
+	return n.Int64()
 }
 
-// numberOf reports val as a float64 when it is a number of any Go kind.
+// numberOf explicitly selects the finite IEEE domain of a declared float.
 func numberOf(val any) (float64, bool) {
-	switch v := val.(type) {
-	case float64:
-		return v, true
-	case float32:
-		return float64(v), true
+	n, err := numeric.Read(context.Background(), val)
+	if err != nil {
+		return 0, false
 	}
-	if n, ok, _ := integerOf(val); ok {
-		return float64(n), true
-	}
-	return 0, false
+	return n.Float64()
 }
 
 // OutputSchemaMismatchFields identifies missing or incompatible fields without

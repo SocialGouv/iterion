@@ -38,7 +38,7 @@ func TestBuildExecutor_UndeclaredLaunchVarDoesNotReachTheExecutorVars(t *testing
 		},
 		Vars: map[string]string{"zz": "claw", "b": "kimi"},
 	}
-	executor, err := BuildExecutor(spec)
+	executor, err := BuildExecutor(preparedExecutorFixture(t, spec))
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}

@@ -1537,6 +1537,38 @@ workflow operator_resume:
 	}
 }
 
+func TestResumeRestatesOnlyTheRequestedCodemodeQuota(t *testing.T) {
+	hermeticSandbox(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	botPath := writeFixture(t, dir, "quota.bot", "workflow quota:\n  worktree: none\n  repo_devbox: off\n  entry: done\n")
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "cli-resume-quota"
+	if err := st.SaveRun(ctx, &store.Run{ID: id, Status: store.RunStatusPausedOperator,
+		CodemodeBoundsOverride: &ir.CodemodeBounds{StoreEntries: 12, StoreBytes: 500, ToolCalls: 17}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCheckpoint(ctx, id, &store.Checkpoint{NodeID: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := newTestPrinter(cli.OutputHuman)
+	if err := cli.RunResumeWithFile(ctx, botPath, cli.ResumeOptions{RunID: id, StoreDir: storeDir,
+		CodemodeBounds: &ir.CodemodeBounds{StoreBytes: 800}}, p); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	doc, err := st.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.CodemodeBoundsOverride; doc.Status != store.RunStatusFinished || got == nil || got.StoreEntries != 12 || got.StoreBytes != 800 || got.ToolCalls != 17 {
+		t.Fatalf("resume status = %s; bounds = %+v, want finished with unchanged entries and tool calls, updated bytes", doc.Status, got)
+	}
+}
+
 func TestResume_NotPaused(t *testing.T) {
 	dir := t.TempDir()
 	botPath := writeFixture(t, dir, "test.bot", humanWorkflow)

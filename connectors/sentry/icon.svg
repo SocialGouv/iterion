@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>sentry</title>
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="#362D59"/>
+  <path d="M16 8.5a7.5 7.5 0 0 1 7.5 7.5" stroke="#ffffff" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  <path d="M16 13.5a2.5 2.5 0 0 1 2.5 2.5" stroke="#ffffff" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  <circle cx="16" cy="23.5" r="1.9" fill="#ffffff"/>
+</svg>

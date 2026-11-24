@@ -292,12 +292,12 @@ func TestEverySalvageOptInIsListed(t *testing.T) {
 		// (salvageRefusal, applyParsedSource), each save reads the stored
 		// file under its lock (checkStoredFile) and the unit saves load
 		// strictly (saveUnit, unparseUnitFiles).
-		"pkg/server/server_files.go (*Server).handleOpenFile Salvage unit.Salvage(unit.LoadDirWithMain(absPath, absPath, data))": "the editor's open of a bot in several files: the view marshalled with provenance, bindable false unless Whole, read_refusal, a revision no whole load has",
-		"pkg/server/server_dsl.go (*Server).serveDiskExample Salvage unit.Salvage(u, loadErr)":                                   "the bot picker's open, as handleOpenFile's; only the unit the strict loader answered (no error) is flattened",
-		"pkg/server/server_files_unit.go (*Server).parseUnitFiles Salvage unit.Salvage(unit.LoadMap(req.Files, main))":           "the cloud editor's open of a bundle, as handleOpenFile's",
-		"pkg/server/server_files_unit.go (*Server).parseUnitFiles Salvage unit.Salvage(unit.LoadMap(files, main))":               "the same open, re-read once a declared dependencies.fragments entry resolved into its files (ADR-145): the resolution is decided on the DECLARATION, never from what this reading lacks, and the resolved file is read-only — unparseUnitFiles refuses a write to it",
-		"pkg/server/server_files_unit.go (*Server).parseUnitWithFile Salvage unit.Salvage(staged, nil)":                          "the per-file apply's answer shows the staged unit — loaded whole, by the strict loader — through the view (unitInfoOf)",
-		"pkg/botregistry/schema.go LoadSchema Salvage unit.Salvage(loaded, loadErr)":                                             "the view's file NAMES key the cached refusal of a short load — the files it read decide where the budget ran out; the schema is the whole unit's alone",
+		"pkg/server/server_files.go openWorkflow Salvage unit.Salvage(unit.LoadDirWithMain(diskPath, diskPath, data))": "the editor's open of a bot in several files: the view marshalled with provenance, bindable false unless Whole, read_refusal, a revision no whole load has",
+		"pkg/server/server_dsl.go (*Server).serveDiskExample Salvage unit.Salvage(u, loadErr)":                         "the bot picker's open, as handleOpenFile's; only the unit the strict loader answered (no error) is flattened",
+		"pkg/server/server_files_unit.go (*Server).parseUnitFiles Salvage unit.Salvage(unit.LoadMap(req.Files, main))": "the cloud editor's open of a bundle, as handleOpenFile's",
+		"pkg/server/server_files_unit.go (*Server).parseUnitFiles Salvage unit.Salvage(unit.LoadMap(files, main))":     "the same open, re-read once a declared dependencies.fragments entry resolved into its files (ADR-145): the resolution is decided on the DECLARATION, never from what this reading lacks, and the resolved file is read-only — unparseUnitFiles refuses a write to it",
+		"pkg/server/server_files_unit.go (*Server).parseUnitWithFile Salvage unit.Salvage(staged, nil)":                "the per-file apply's answer shows the staged unit — loaded whole, by the strict loader — through the view (unitInfoOf)",
+		"pkg/botregistry/schema.go LoadSchema Salvage unit.Salvage(loaded, loadErr)":                                   "the view's file NAMES key the cached refusal of a short load — the files it read decide where the budget ran out; the schema is the whole unit's alone",
 		// The author document's reading: refused whole, it is the empty file
 		// beside its refusal, never a partial program.
 		"pkg/dsl/canon/document.go Document Parse author.Parse(name, text)":              "canon.Document refuses a document whose reading holds an error before using its File",
@@ -481,7 +481,7 @@ func viewHolders(m *modtypes.Module, p *modtypes.Package) (holders, decodes []st
 // read whole.
 func TestEveryFunctionHoldingASalvageIsListed(t *testing.T) {
 	listed := map[string]string{
-		"pkg/server/server_files.go (*Server).handleOpenFile":         "the editor's open (TestEverySalvageOptInIsListed)",
+		"pkg/server/server_files.go openWorkflow":                     "the editor's open (TestEverySalvageOptInIsListed)",
 		"pkg/server/server_files.go unitReadRefusal":                  "the answer's word for the view's refusal: its message and hint",
 		"pkg/server/server_files_unit.go unitInfoOf":                  "the answer's unit: the view's file names, revision, verdicts",
 		"pkg/server/server_files_unit.go (*Server).parseUnitFiles":    "the cloud editor's open (TestEverySalvageOptInIsListed)",
@@ -829,6 +829,8 @@ var unsafeFiles = map[string]string{
 	"cmd/iterion-desktop/prgname_linux.go":            "the C string handed to g_set_prgname",
 	"cmd/iterion-desktop/window_icon_linux.go":        "the GTK window handle the icon is set on",
 	"pkg/scripthost/confine_linux.go":                 "the landlock_ruleset_attr handed to landlock_create_ruleset(2), which takes a struct pointer and its size",
+	"pkg/scripthost/socketdeny_linux.go":              "the sock_fprog handed to seccomp(2) to install the child's socket-denial filter",
+	"scripts/ci/inpodbench/main.go":                   "the io_uring_params buffer handed to io_uring_setup(2), the escape probe's attempt to get a ring",
 }
 
 // reflectPointerFiles are the production files that turn a reflect.Value
@@ -837,7 +839,12 @@ var unsafeFiles = map[string]string{
 // import, UnsafePointer and NewAt read an unexported field — a view's unit —
 // as a value of its type, and the read-only mark of the field does not hold
 // it. None does today.
-var reflectPointerFiles = map[string]string{}
+var reflectPointerFiles = map[string]string{
+	"pkg/backend/model/output_correction_ownership.go": "identity-only memoization while copying cyclic values; no pointer reconstruction or hidden field access",
+	"pkg/dsl/expr/numeric_format.go":                   "identity-only active-path cycle detection; values stay rooted in the active map",
+	"pkg/recordcodec/plan.go":                          "identity-only metadata cycle detection; no reconstructed pointer or access to unexported fields",
+	"pkg/valuecodec/encode.go":                         "identity-only exact-value cycle detection; no pointer reconstruction or dereference through an address",
+}
 
 // reflectPointerMethods are the reflect.Value methods that hand out an
 // address: a pointer to read any value as any type through.

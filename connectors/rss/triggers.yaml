@@ -1,0 +1,54 @@
+schema_version: 1
+connector: rss
+
+# A feed has no webhook: its only trigger is polled, so the package declares no
+# ingress.
+triggers:
+  - id: rss.item.published
+    delivery: poll
+    display_name: Entry published or revised
+    description: >-
+      An entry appeared in the feed, or one already seen changed. A feed has no
+      server-side filter, so each tick reads the whole document and the seen set
+      removes what was already delivered: an entry is delivered once per
+      revision this poller observes, keyed by its guid (Atom id), else its link,
+      else the digest of its content. An entry published and withdrawn between
+      two ticks is never seen, and an entry revised twice between them is one
+      event.
+    poll:
+      operation: rss.feed.read
+      # The feed decoder's normalized shape: the items, each carrying the id
+      # and version it derived.
+      items: 'response.items'
+      item_id: 'item.id'
+      item_version: 'item.version'
+      interval: { default: 15m, min: 5m }
+    outputs:
+      - { name: subject, from: 'payload.title' }
+      - name: actor
+        from: 'payload.author'
+        description: The entry's author as the feed names it (an Atom entry with none has the feed's).
+      - { name: thread, from: 'payload.id' }
+      - { name: labels, from: 'payload.categories', type: list }
+      - { name: item_id, from: 'payload.id' }
+      - { name: title, from: 'payload.title' }
+      - { name: link, from: 'payload.link' }
+      - name: summary
+        from: 'payload.summary'
+        description: The RSS description or the Atom summary, as the feed wrote it (often HTML).
+      - name: content
+        from: 'payload.content'
+        description: The full body — RSS content:encoded or Atom content — when the feed carries one.
+      - { name: author, from: 'payload.author' }
+      - name: published
+        from: 'payload.published'
+        description: RFC 3339 in UTC when the feed's date parses, else as written.
+      - name: updated
+        from: 'payload.updated'
+        description: Atom's updated instant, RFC 3339 in UTC; RSS has none.
+      - { name: categories, from: 'payload.categories', type: list }
+    # A list filter matches an entry carrying any of the chosen categories.
+    filters:
+      - { id: author, from: 'payload.author', type: string }
+      - { id: category, from: 'payload.categories', type: list }
+    sample: samples/feed.json

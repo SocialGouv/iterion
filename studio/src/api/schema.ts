@@ -1697,6 +1697,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/pool/entries/{pledge}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/me/pool/entries/{pledge} */
+        delete: operations["deleteMePoolEntriesByPledge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/pool/history": {
         parameters: {
             query?: never;
@@ -4572,6 +4591,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/bots/{name}/triggers/from-invocation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/bots/{name}/triggers/from-invocation */
+        post: operations["postTeamsByIdBotsByNameTriggersFromInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/config-editor/shares": {
         parameters: {
             query?: never;
@@ -5093,6 +5132,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/intakes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/intakes */
+        get: operations["getTeamsByIdIntakes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/intakes/{sub}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/intakes/{sub} */
+        get: operations["getTeamsByIdIntakesBySub"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/intakes/{sub}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/intakes/{sub}/replay */
+        post: operations["postTeamsByIdIntakesBySubReplay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/invitations": {
         parameters: {
             query?: never;
@@ -5288,6 +5386,45 @@ export interface paths {
         put?: never;
         /** POST /api/teams/{id}/oauth/{kind}/refresh */
         post: operations["postTeamsByIdOauthByKindRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/pairs */
+        get: operations["getTeamsByIdPairs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/pairs/{sub}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/pairs/{sub}/replay */
+        post: operations["postTeamsByIdPairsBySubReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5542,6 +5679,25 @@ export interface paths {
         patch: operations["patchTeamsByIdSecretsBySecretId"];
         trace?: never;
     };
+    "/api/teams/{id}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/sources */
+        get: operations["getTeamsByIdSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/status": {
         parameters: {
             query?: never;
@@ -5556,6 +5712,67 @@ export interface paths {
         /** POST /api/teams/{id}/status */
         post: operations["postTeamsByIdStatus"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/triggers */
+        get: operations["getTeamsByIdTriggers"];
+        put?: never;
+        /** POST /api/teams/{id}/triggers */
+        post: operations["postTeamsByIdTriggers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/triggers/preview */
+        post: operations["postTeamsByIdTriggersPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/triggers/{sub}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/triggers/{sub} */
+        get: operations["getTeamsByIdTriggersBySub"];
+        /** PUT /api/teams/{id}/triggers/{sub} */
+        put: operations["putTeamsByIdTriggersBySub"];
+        post?: never;
+        /** DELETE /api/teams/{id}/triggers/{sub} */
+        delete: operations["deleteTeamsByIdTriggersBySub"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5902,6 +6119,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{name}/launch-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/v1/bots/{name}/launch-source
+         * @description The program a launch naming this bot runs, as the caller's active team resolves it (team row, then platform override, then baked catalog — the launch's own resolution and materialization): the canonical bot id, the tier that serves, the entry source and its parsed document, the preset set the launch applies (the program's presets block overlaid by the bundle's presets/<name>.md), and sha256 — the identity of the WHOLE program the launch compiles (entry source, bundle prompts and presets, fragments, included files: the workflow_hash a run records). A launch form renders its fields from it and, in cloud, pins its launch to that program by posting bot_id with expect_source_sha256 = sha256 to POST /api/runs, which runs that program or refuses 409 bot_source_changed; outside cloud a pin is refused (400 launch_pin_unsupported). The identity does not cover a child bot's program, the skills, the manifest or the bundle's other files. A team's own row is readable by those who may edit the team's bots; a platform override and the baked catalog are readable by any authenticated caller with an active team — nothing confidential belongs in a platform override — except where one is built on a team's own row, which a caller who may not edit that team's bots is refused.
+         */
+        get: operations["getV1BotsByNameLaunchSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/{name}/overlay": {
         parameters: {
             query?: never;
@@ -5934,6 +6173,80 @@ export interface paths {
         put?: never;
         /** POST /api/v1/bots/{name}/triggers/from-invocation */
         post: operations["postV1BotsByNameTriggersFromInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{id}/icon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/connectors/{id}/icon */
+        get: operations["getV1ConnectorsByIdIcon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/intakes */
+        get: operations["getV1Intakes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/intakes/{id} */
+        get: operations["getV1IntakesById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/intakes/{id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/intakes/{id}/replay */
+        post: operations["postV1IntakesByIdReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6151,6 +6464,42 @@ export interface paths {
         get: operations["getV1NativeIssuesByIdDependencyGraph"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/pairs */
+        get: operations["getV1Pairs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairs/{id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pairs/{id}/replay */
+        post: operations["postV1PairsByIdReplay"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6560,6 +6909,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/sources */
+        get: operations["getV1Sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers": {
         parameters: {
             query?: never;
@@ -6606,6 +6972,23 @@ export interface paths {
         get: operations["getV1TriggersHealth"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/triggers/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/triggers/preview */
+        post: operations["postV1TriggersPreview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7086,6 +7469,8 @@ export interface components {
             backend_conversation?: string;
             backend_name?: string;
             backend_pending_tool_use_id?: string;
+            /** Format: byte */
+            backend_permission_input?: string;
             backend_session_fingerprint?: string;
             backend_session_id?: string;
             backend_session_state_ref?: string;
@@ -7097,6 +7482,7 @@ export interface components {
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
             budget_unreported_calls?: number;
+            correction_accounting?: components["schemas"]["CorrectionAccounting"];
             cost_usd_total?: number;
             fired_events?: {
                 [key: string]: {
@@ -7134,6 +7520,9 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            node_failure_streaks?: {
+                [key: string]: components["schemas"]["NodeFailureStreak"];
+            };
             node_id: string;
             node_sessions?: {
                 [key: string]: components["schemas"]["NodeSessionSlot"];
@@ -7146,6 +7535,7 @@ export interface components {
             parallel?: components["schemas"]["ParallelCheckpoint"];
             recovery_code?: string;
             recovery_pause?: boolean;
+            resume_pause_cost_readings?: components["schemas"]["ResumePauseCostReading"][];
             round_robin_counters?: {
                 [key: string]: number;
             };
@@ -7159,6 +7549,18 @@ export interface components {
             vars: {
                 [key: string]: unknown;
             };
+        };
+        CodemodeBoundsRequest: {
+            concurrent_tool_calls?: number;
+            cpu?: string;
+            memory?: number;
+            result_bytes?: number;
+            script_bytes?: number;
+            store_bytes?: number;
+            store_entries?: number;
+            tool_calls?: number;
+            tool_result_bytes?: number;
+            wall?: string;
         };
         Comment: {
             author?: string;
@@ -7179,6 +7581,27 @@ export interface components {
             path: string;
             ref: string;
             secret_id?: string;
+        };
+        CorrectionAccounting: {
+            daily_marks?: {
+                [key: string]: number;
+            };
+            daily_scope_cost_usd?: {
+                [key: string]: number;
+            };
+            iteration_marks?: {
+                [key: string]: boolean;
+            };
+            unpriced_marks?: {
+                [key: string]: number;
+            };
+            unpriced_node_marks?: {
+                [key: string]: boolean;
+            };
+            usage_marks?: {
+                [key: string]: components["schemas"]["OutputCorrectionUsage"];
+            };
+            version: number;
         };
         CredentialPreview: {
             candidates: components["schemas"]["CredentialPreviewCandidate"][];
@@ -7229,8 +7652,11 @@ export interface components {
         };
         CredentialPreviewRequest: {
             bot_id?: string;
+            codemode?: string;
+            codemode_bounds?: components["schemas"]["CodemodeBoundsRequest"];
             llm_routing?: components["schemas"]["Policy"];
             permission?: string;
+            review_mode?: string;
             source: components["schemas"]["CredentialPreviewSource"];
             vars?: {
                 [key: string]: string;
@@ -7499,6 +7925,15 @@ export interface components {
             reason: string;
             spec: string;
         };
+        InvocationUsageRoute: {
+            backend?: string;
+            provider?: string;
+            reported_model?: string;
+            requested_model?: string;
+            scope: string;
+            session_fingerprint?: string;
+            session_id?: string;
+        };
         Issue: {
             assignee?: string;
             awaiting_input?: boolean;
@@ -7563,6 +7998,14 @@ export interface components {
             parent_run_id?: string;
             root_run_id?: string;
         };
+        Literal: {
+            bool_val?: boolean;
+            float_val?: number;
+            int_val?: number;
+            kind?: string;
+            raw?: string;
+            str_val?: string;
+        };
         Maintenance: {
             fence_launches: boolean;
             reason: string;
@@ -7585,6 +8028,10 @@ export interface components {
             team_id: string;
             team_name: string;
             team_slug: string;
+        };
+        NodeFailureStreak: {
+            count: number;
+            fingerprint: string;
         };
         NodeServed: {
             backend: string;
@@ -7611,24 +8058,63 @@ export interface components {
             teams: components["schemas"]["MembershipView"][];
             unavailable?: boolean;
         };
+        OutputCorrectionCause: {
+            kind: string;
+            node_id?: string;
+            provider?: string;
+            /** Format: date-time */
+            reset_at?: string;
+            self_imposed?: boolean;
+            timeout_nanos?: number;
+            version: number;
+            window_kind?: string;
+        };
         OutputCorrectionEpisode: {
             attempts?: number;
             budget?: number;
+            cause?: components["schemas"]["OutputCorrectionCause"];
             episode_id?: string;
+            generation?: string;
             input_fingerprint?: string;
             invocation_id?: string;
             last_error?: string;
             last_output_fingerprint?: string;
             last_violation_fingerprint?: string;
+            ledger_key?: string;
             node_id?: string;
+            reservations?: components["schemas"]["OutputCorrectionReservation"][];
             /** Format: date-time */
             retired_at?: string;
             retired_reason?: string;
+            revision?: number;
             /** Format: date-time */
             started_at?: string;
             status?: string;
+            terminal_kind?: string;
             /** Format: date-time */
             updated_at?: string;
+            usage?: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReceipt: {
+            observation?: components["schemas"]["UsageObservation"];
+            projection?: components["schemas"]["UsageProjection"];
+            usage: components["schemas"]["OutputCorrectionUsage"];
+        };
+        OutputCorrectionReservation: {
+            execution_epoch: string;
+            id: string;
+            initial_usage_id?: string;
+            logical_invocation_id?: string;
+            origin?: components["schemas"]["UsageOrigin"];
+            receipt?: components["schemas"]["OutputCorrectionReceipt"];
+            scope_key: string;
+            /** Format: date-time */
+            started_at: string;
+        };
+        OutputCorrectionUsage: {
+            cost_usd?: number;
+            tokens?: number;
+            unreported_calls?: number;
         };
         Override: {
             backend?: string;
@@ -7800,6 +8286,21 @@ export interface components {
             /** Format: date-time */
             queued_at?: string;
         };
+        Preset: {
+            description?: string;
+            display_name?: string;
+            name?: string;
+            prompt?: string;
+            skills?: string[];
+            values?: components["schemas"]["PresetValue"][];
+        };
+        PresetValue: {
+            key?: string;
+            value?: components["schemas"]["Literal"];
+        };
+        PresetsBlock: {
+            entries?: components["schemas"]["Preset"][];
+        };
         PricefeedEntry: {
             declared?: boolean;
             feed: string;
@@ -7838,6 +8339,16 @@ export interface components {
             providers: components["schemas"]["ProviderStatus"][];
             resolved_default: string;
         };
+        ReportedEconomicSession: {
+            backend: string;
+            fingerprint?: string;
+            session_id: string;
+        };
+        ResumePauseCostReading: {
+            backend: string;
+            session: string;
+            usd: number;
+        };
         RoutingPolicy: {
             allowed_actions?: string[];
             block_when?: string[];
@@ -7870,6 +8381,7 @@ export interface components {
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bank_state?: string;
+            birth_id: string;
             bot_source_tenant?: string;
             bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
@@ -8004,10 +8516,12 @@ export interface components {
             client_id?: string;
             conversation_id?: string;
             delivery_id?: string;
+            intake_id?: string;
             issue_id?: string;
             issue_identifier?: string;
             issue_title?: string;
             kind?: string;
+            pair_id?: string;
             schedule_id?: string;
             schedule_name?: string;
         };
@@ -8015,6 +8529,7 @@ export interface components {
             active: boolean;
             auto_merge?: boolean;
             bank_state?: string;
+            birth_id: string;
             bundle_display_name?: string;
             bundle_name?: string;
             /** Format: date-time */
@@ -8066,6 +8581,12 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        SessionCostObservation: {
+            backend: string;
+            cost_usd: number;
+            fingerprint?: string;
+            session_id: string;
+        };
         SessionLedgerEntry: {
             session_id: string;
             tasks: string[];
@@ -8100,13 +8621,20 @@ export interface components {
         };
         Subscription: {
             args_var?: string;
+            backfill?: number;
+            backfill_done?: boolean;
             bot_id: string;
+            connection_id?: string;
+            connector_key?: string;
             consume_labels?: boolean;
             /** Format: date-time */
             created_at: string;
             created_by?: string;
             cron?: string;
             enabled: boolean;
+            filters?: {
+                [key: string]: string[];
+            };
             guard?: string;
             guard_timeout?: string;
             guard_var?: string;
@@ -8128,8 +8656,14 @@ export interface components {
             match: components["schemas"]["Matcher"];
             max_concurrent?: number;
             mode?: string;
+            no_live_run?: string;
             origin?: string;
             overlap?: string;
+            poll_query?: {
+                [key: string]: string;
+            };
+            poller?: string;
+            poller_since?: number;
             repo?: string;
             retry_jitter?: string;
             retry_max_attempts?: number;
@@ -8141,11 +8675,16 @@ export interface components {
             };
             stale_after?: string;
             tenant_id?: string;
+            trigger_id?: string;
             /** Format: date-time */
             updated_at: string;
+            var_map?: {
+                [key: string]: string;
+            };
             vars?: {
                 [key: string]: string;
             };
+            when?: string;
         };
         SyncOutcome: {
             changes?: components["schemas"]["EntryChange"][];
@@ -8179,6 +8718,67 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        UsageComponent: {
+            call_id?: string;
+            cost_kind: string;
+            cost_known: boolean;
+            cost_usd: number;
+            ordinal: number;
+            outcome?: string;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            source: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens: number;
+            unpriced_tokens: number;
+            unreported_calls: number;
+        };
+        UsageObservation: {
+            collection_id?: string;
+            components?: components["schemas"]["UsageComponent"][];
+            count_iteration?: boolean;
+            other_cost_usd?: number;
+            sessions?: components["schemas"]["SessionCostObservation"][];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+            version: number;
+        };
+        UsageOrigin: {
+            org_id?: string;
+            pool_grantless?: boolean;
+            publication: string;
+            run_id: string;
+            tenant_id: string;
+            version: number;
+        };
+        UsageProjection: {
+            collection_id: string;
+            lines: components["schemas"]["UsageProjectionLine"][];
+            version: number;
+        };
+        UsageProjectionLine: {
+            call_id?: string;
+            cost_known: boolean;
+            cost_usd: number;
+            kind: string;
+            ordinal?: number;
+            previous_max_usd?: number;
+            reported_session?: components["schemas"]["ReportedEconomicSession"];
+            route?: components["schemas"]["InvocationUsageRoute"];
+            session?: components["schemas"]["SessionCostObservation"];
+            source?: string;
+            token_split?: components["schemas"]["UsageTokenSplit"];
+            tokens?: number;
+            unpriced_tokens?: number;
+            unreported_calls?: number;
+        };
+        UsageTokenSplit: {
+            cache_read: number;
+            cache_write: number;
+            input: number;
+            output: number;
         };
         UserView: {
             created_at?: string;
@@ -8418,6 +9018,18 @@ export interface components {
             secret_id?: string;
             secret_name_for_workflow?: string;
         };
+        botLaunchSourceResponse: {
+            bindable: boolean;
+            bot_id: string;
+            diagnostics?: string[];
+            document: unknown;
+            presets?: components["schemas"]["PresetsBlock"];
+            read_refusal?: components["schemas"]["readRefusalInfo"];
+            sha256: string;
+            source: string;
+            tier: string;
+            unit?: components["schemas"]["unitInfo"];
+        };
         botRolesSettingsView: {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
@@ -8511,8 +9123,10 @@ export interface components {
             capabilities?: string[];
             connector: string;
             display_name?: string;
+            password?: string;
             scheme_id?: string;
-            token: string;
+            token?: string;
+            username?: string;
         };
         connectionDTO: {
             alias: string;
@@ -8528,6 +9142,7 @@ export interface components {
             id: string;
             placement: string;
             scheme_id: string;
+            scheme_kind: string;
             scopes_known?: boolean;
             status: string;
             status_reason?: string;
@@ -8538,9 +9153,11 @@ export interface components {
         connectionPatchReq: {
             capabilities?: string[];
             display_name?: string;
+            password?: string;
             status?: string;
             status_reason?: string;
             token?: string;
+            username?: string;
         };
         createApiKeyReq: {
             base_url?: string;
@@ -8688,6 +9305,13 @@ export interface components {
             repo_full_name: string;
             sync_issues_enabled: boolean;
             web_url?: string;
+        };
+        launchBudgetSpec: {
+            max_cost_usd?: number;
+            max_duration?: string;
+            max_iterations?: number;
+            max_parallel_branches?: number;
+            max_tokens?: number;
         };
         legalDocumentView: {
             accessibility: components["schemas"]["Accessibility"];
@@ -8921,6 +9545,23 @@ export interface components {
             unavailable_reason?: string;
             warning?: string;
         };
+        previewCodemodeBounds: {
+            concurrent_tool_calls: number;
+            cpu: string;
+            memory: number;
+            result_bytes: number;
+            script_bytes: number;
+            store_bytes: number;
+            store_entries: number;
+            tool_calls: number;
+            tool_result_bytes: number;
+            wall: string;
+        };
+        previewCodemodeLimits: {
+            ceiling: components["schemas"]["previewCodemodeBounds"];
+            default: components["schemas"]["previewCodemodeBounds"];
+            memory_floor: number;
+        };
         previewCostNode: {
             cost_max_usd: number;
             cost_min_usd: number;
@@ -8932,8 +9573,10 @@ export interface components {
             tokens_out: number;
         };
         previewCostRequest: {
+            ambient_context?: string;
             backend?: string;
             backend_names?: string[];
+            codemode?: string;
             file_path?: string;
             permission?: string;
             source?: string;
@@ -8944,11 +9587,15 @@ export interface components {
                     [key: string]: components["schemas"]["previewBackendOption"];
                 };
             };
+            codemode_limits?: components["schemas"]["previewCodemodeLimits"];
             cost_max_usd: number;
             cost_min_usd: number;
             effective?: components["schemas"]["previewEffectiveSettings"];
             nodes: components["schemas"]["previewCostNode"][];
             notes?: string[];
+            route_refusals?: {
+                [key: string]: string;
+            };
             tokens_max: number;
             tokens_min: number;
         };
@@ -9030,11 +9677,32 @@ export interface components {
             updated_at?: string;
             updated_by?: string;
         };
+        readRefusalInfo: {
+            hint?: string;
+            message: string;
+        };
         registerReq: {
             email: string;
             invitation?: string;
             name?: string;
             password: string;
+        };
+        resumeCodemodeStoreRequest: {
+            store_bytes?: number;
+            store_entries?: number;
+        };
+        resumeRunRequest: {
+            accept_scratch_loss?: boolean;
+            answers?: {
+                [key: string]: unknown;
+            };
+            attachments?: string[];
+            budget?: components["schemas"]["launchBudgetSpec"];
+            codemode_store?: components["schemas"]["resumeCodemodeStoreRequest"];
+            file_path?: string;
+            force?: boolean;
+            source?: string;
+            timeout?: string;
         };
         routingPolicyView: {
             origin: string;
@@ -9074,6 +9742,24 @@ export interface components {
             runner_pool?: string;
             slug: string;
             status: string;
+        };
+        unitFileInfo: {
+            dependency?: string;
+            digest?: string;
+            imports?: string[];
+            parse_error?: string;
+            parse_errors?: number;
+            profile?: number;
+            rel: string;
+        };
+        unitInfo: {
+            files: components["schemas"]["unitFileInfo"][];
+            load_error?: string;
+            load_errors?: number;
+            main: string;
+            revision: string;
+            root: string;
+            unread?: string[];
         };
         updateApiKeyReq: {
             base_url?: string;
@@ -12578,6 +13264,26 @@ export interface operations {
             };
         };
     };
+    deleteMePoolEntriesByPledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getMePoolHistory: {
         parameters: {
             query?: never;
@@ -15870,7 +16576,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["resumeRunRequest"];
+            };
+        };
         responses: {
             /** @description Response */
             default: {
@@ -16879,6 +17589,27 @@ export interface operations {
             };
         };
     };
+    postTeamsByIdBotsByNameTriggersFromInvocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdConfigEditorShares: {
         parameters: {
             query?: never;
@@ -17784,6 +18515,68 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdIntakes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdIntakesBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdIntakesBySubReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdInvitations: {
         parameters: {
             query?: never;
@@ -18069,6 +18862,47 @@ export interface operations {
             path: {
                 id: string;
                 kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdPairs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdPairsBySubReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
             };
             cookie?: never;
         };
@@ -18538,12 +19372,155 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postTeamsByIdStatus: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdTriggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdTriggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdTriggersPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdTriggersBySub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sub: string;
             };
             cookie?: never;
         };
@@ -19027,6 +20004,63 @@ export interface operations {
             };
         };
     };
+    getV1BotsByNameLaunchSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botLaunchSourceResponse"];
+                };
+            };
+            /** @description a bundle the answer draws on is not readable by the caller — the tier that serves the bot, or a bundle a launch freezes with it (the producer of a fragment or of a skill, a child, whether or not the answer carries its text): only a team's own row is refused, to a caller who may not edit that team's bots. The answer names the bundle; launching the bot by id with no pin is unaffected */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the name resolves on no tier */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the bot resolves but not to a launchable program — the refusal a launch of it would draw */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the resolution or the reading itself failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a tier did not answer, or the server's concurrent DSL readings are at their bound (dsl_read_admission); retry */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     putV1BotsByNameOverlay: {
         parameters: {
             query?: never;
@@ -19053,6 +20087,84 @@ export interface operations {
             header?: never;
             path: {
                 name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1ConnectorsByIdIcon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1Intakes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1IntakesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1IntakesByIdReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };
@@ -19314,6 +20426,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DependencyGraphResponse"];
                 };
+            };
+        };
+    };
+    getV1Pairs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1PairsByIdReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -19912,6 +21062,24 @@ export interface operations {
             };
         };
     };
+    getV1Sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getV1Triggers: {
         parameters: {
             query?: never;
@@ -19971,6 +21139,24 @@ export interface operations {
         };
     };
     getV1TriggersHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1TriggersPreview: {
         parameters: {
             query?: never;
             header?: never;

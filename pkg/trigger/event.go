@@ -36,6 +36,10 @@ const (
 	SourceManual Source = "manual"
 	// SourceCustom is an external integration via the signed emit ingress.
 	SourceCustom Source = "custom"
+	// SourceConnector is an event a connector package declares (ADR-168): it
+	// is matched from its durable intake by the connector worker, never from
+	// the bus. Kind is the package trigger id.
+	SourceConnector Source = "connector"
 )
 
 // Board event kinds (the Kind field when Source == SourceBoard). They are a
@@ -78,6 +82,10 @@ const (
 	// evaluator treats such events as observational and never re-launches them,
 	// so publishing them onto the bus cannot double-launch.
 	PayloadLaunchedRunID = "launched_run_id"
+	// PayloadObservational, when true, marks an event published for
+	// observers only: the evaluator never evaluates it, whatever else it
+	// carries (ADR-168 §8.5 — readers ship before any publisher sets it).
+	PayloadObservational = "observational"
 )
 
 // Subject is the thing an event is about (a PR, an issue/card, a run, a repo).
@@ -125,4 +133,10 @@ type Event struct {
 	// (issue title/body, comment args, board from/to state, ...).
 	Payload    map[string]any `json:"payload,omitempty" bson:"payload,omitempty"`
 	OccurredAt time.Time      `json:"occurred_at" bson:"occurred_at"`
+	// ConnectionID, and IngressID or PollerID, say where a connector event
+	// came from. Set by the server only — never read from a payload — they
+	// select the subscriptions bound to that connection (ConnectorKey).
+	ConnectionID string `json:"connection_id,omitempty" bson:"connection_id,omitempty"`
+	IngressID    string `json:"ingress_id,omitempty" bson:"ingress_id,omitempty"`
+	PollerID     string `json:"poller_id,omitempty" bson:"poller_id,omitempty"`
 }

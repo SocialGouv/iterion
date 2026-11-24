@@ -1,0 +1,85 @@
+schema_version: 1
+connector: slack
+domain: messaging
+operations:
+- id: slack.message.post
+  summary: Post a message to a channel, or reply in a thread.
+  resource: message
+  verb: post
+  tags: [chat]
+  http:
+    method: POST
+    path: /chat.postMessage
+    request_body: json
+  params:
+  - key: channel
+    name: channel
+    in: body
+    type: string
+    required: true
+    description: The channel id (C…), or a user id to open a direct message.
+  - key: text
+    name: text
+    in: body
+    type: string
+    required: true
+    description: The message text, in mrkdwn.
+  - key: thread_ts
+    name: thread_ts
+    in: body
+    type: string
+    description: The `ts` of the message to reply under. Omit to post top-level.
+  - key: unfurl_links
+    name: unfurl_links
+    in: body
+    type: boolean
+    description: Whether Slack expands the links in the message.
+  results:
+  - status: 200
+    description: The posted message, under `message`.
+  errors:
+  - status: 200
+    class: bad_request
+    description: >-
+      Slack answers 200 with `ok: false` and an `error` code; the package's
+      outcome policy reads it.
+  effect: create
+  deterministic: false
+
+- id: slack.conversation.list
+  summary: List the channels the token can see, for a picker.
+  resource: conversation
+  verb: list
+  tags: [chat]
+  http:
+    method: GET
+    path: /conversations.list
+  params:
+  - key: types
+    name: types
+    in: query
+    type: string
+    default: public_channel,private_channel
+    description: Comma-separated conversation types to include.
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    default: 200
+    description: How many conversations to return per page (Slack caps it at 999).
+  - key: cursor
+    name: cursor
+    in: query
+    type: string
+    description: The `next_cursor` of the previous page.
+  - key: exclude_archived
+    name: exclude_archived
+    in: query
+    type: boolean
+    default: true
+    description: Leave archived channels out.
+  results:
+  - status: 200
+    description: The page of conversations, under `channels`.
+  effect: read
+  deterministic: true

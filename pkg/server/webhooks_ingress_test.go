@@ -122,6 +122,17 @@ type ingressFixture struct {
 	conns   *connection.MemoryStore
 }
 
+func (f *ingressFixture) freezeLimiterClock(t *testing.T) {
+	t.Helper()
+	lim, ok := f.s.authLimiter.(*authRateLimiter)
+	if !ok {
+		t.Fatalf("the fixture's limiter is %T", f.s.authLimiter)
+	}
+	// Exhaustion witnesses count requests at one instant: a slow runner must
+	// not refill the bucket while the test is spending its initial burst.
+	lim.now = func() time.Time { return time.Unix(1234, 0) }
+}
+
 func newIngressFixture(t *testing.T, pkgs ...*spec.Package) *ingressFixture {
 	t.Helper()
 	s := newWebhookTestServer(t)
@@ -409,7 +420,12 @@ func TestIngress_AChangedContractIsRefusedUntilReBound(t *testing.T) {
 func TestIngress_TheDeclaredAckAnswersWhileMatchingIsPending(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
 	f.s.cfg.ConnectorIntakeRetention = 72 * time.Hour
-	at := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	// Anchored to the wall clock, not to a fixed date: the store prunes the
+	// rows whose expiry passed, judged against its own clock, so a literal
+	// instant becomes a bomb — the row is pruned the day real time crosses
+	// at+retention and the read below sees nothing. The server clock is
+	// pinned to the same instant so the retention assertion stays exact.
+	at := time.Now().UTC().Truncate(time.Second)
 	f.s.ingressClock = func() time.Time { return at }
 	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 	body := `{"sender":{"login":"alice"}}`
@@ -638,6 +654,7 @@ func TestIngress_ASuspendedTeamWritesNothing(t *testing.T) {
 // ingress's state being touched.
 func TestIngress_ThePerAddressLimitAppliesBeforeTheProof(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
+	f.freezeLimiterClock(t)
 	cfg, _ := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 	var limited bool
 	for i := 0; i <= int(connectorIngressIPBucket.burst); i++ {
@@ -1172,10 +1189,13 @@ func TestIngress_WarnIngressBoundsItsCause(t *testing.T) {
 type acceptLost struct{ *intake.MemoryStore }
 
 func (a acceptLost) Accept(ctx context.Context, in intake.Intake) (intake.Intake, bool, error) {
-	if _, _, err := a.MemoryStore.Accept(ctx, in); err != nil {
+	_, created, err := a.MemoryStore.Accept(ctx, in)
+	if err != nil {
 		return intake.Intake{}, false, err
 	}
-	return intake.Intake{}, false, errors.New("read back the stored intake: connection reset")
+	// The Mongo twin's contract: the write's verdict travels with the
+	// read-back error.
+	return intake.Intake{}, created, errors.New("read back the stored intake: connection reset")
 }
 
 // A write whose answer was lost but whose row landed is a stored delivery:
@@ -1258,6 +1278,7 @@ func TestIngressCRUD_AStoreOutageIsNotAVerdict(t *testing.T) {
 // from one shared pool of addresses.
 func TestIngress_OneExhaustedIngressLeavesAnotherFromTheSameAddress(t *testing.T) {
 	f := newIngressFixture(t, ingForgePackage())
+	f.freezeLimiterClock(t)
 	a, _ := f.create(t, `{"name":"a","provider":"connector","connector_connection_id":"conn-forge"}`)
 	b, mintedB := f.create(t, `{"name":"b","provider":"connector","connector_connection_id":"conn-forge"}`)
 	for i := 0; i <= int(connectorIngressIPBucket.burst); i++ {
@@ -1331,4 +1352,120 @@ func TestWebhookCRUD_AConnectionsOutageIsNotABindingVerdict(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "10.42.3.17") {
 		t.Fatalf("patch: code=%d body=%s, want 503 naming no internal address", w.Code, w.Body.String())
 	}
+}
+
+// slowStore writes nothing and answers when the write's deadline passes; its
+// reads honour their context, as a real driver does.
+type slowStore struct{ *intake.MemoryStore }
+
+func (slowStore) Accept(ctx context.Context, _ intake.Intake) (intake.Intake, bool, error) {
+	<-ctx.Done()
+	return intake.Intake{}, false, ctx.Err()
+}
+
+func (s slowStore) GetIntake(ctx context.Context, tenantID, id string) (intake.Intake, error) {
+	if err := ctx.Err(); err != nil {
+		return intake.Intake{}, err
+	}
+	return s.MemoryStore.GetIntake(ctx, tenantID, id)
+}
+
+// A write that hits its deadline is re-read under a bound of its own: the
+// row proven absent gives the unit back, and the vendor's retry is charged
+// once.
+func TestIngress_ATimedOutWriteIsReReadUnderItsOwnBound(t *testing.T) {
+	f := newIngressFixture(t, ingForgePackage())
+	f.s.ingressWriteLimit = 50 * time.Millisecond
+	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
+	f.s.connectorIntakes = slowStore{f.intakes}
+	body := `{"sender":{"login":"alice"}}`
+	if w := f.deliver(cfg.ID, body, f.forgeDelivery(minted, body, "issue_comment", "d-1")); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a timed-out write: code=%d, want 503", w.Code)
+	}
+	if n := f.monthly(t); n != 0 {
+		t.Fatalf("a timed-out write proven absent kept %d units, want 0", n)
+	}
+	f.s.connectorIntakes = f.intakes
+	if w := f.deliver(cfg.ID, body, f.forgeDelivery(minted, body, "issue_comment", "d-1")); w.Code != http.StatusAccepted {
+		t.Fatalf("the retry: code=%d", w.Code)
+	}
+	if n := f.monthly(t); n != 1 {
+		t.Fatalf("one stored delivery charged %d units, want 1", n)
+	}
+}
+
+// twinThenLostReadBack misses the row at the lookup — a concurrent twin
+// writes it right after — and reports the twin's row with a failed read-back.
+type twinThenLostReadBack struct {
+	*intake.MemoryStore
+	looked bool
+}
+
+func (s *twinThenLostReadBack) GetIntake(ctx context.Context, tenantID, id string) (intake.Intake, error) {
+	if !s.looked {
+		s.looked = true
+		return intake.Intake{}, intake.ErrNotFound
+	}
+	return s.MemoryStore.GetIntake(ctx, tenantID, id)
+}
+
+func (s *twinThenLostReadBack) Accept(context.Context, intake.Intake) (intake.Intake, bool, error) {
+	return intake.Intake{}, false, errors.New("read back the stored intake: connection reset")
+}
+
+// A failed read-back over a twin's row is the twin's delivery: acked, and this
+// call's unit given back.
+func TestIngress_ATwinsRowMetAfterAFailedReadBackIsNotChargedTwice(t *testing.T) {
+	f := newIngressFixture(t, ingForgePackage())
+	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
+	body := `{"sender":{"login":"alice"}}`
+	if w := f.deliver(cfg.ID, body, f.forgeDelivery(minted, body, "issue_comment", "d-1")); w.Code != http.StatusAccepted {
+		t.Fatalf("the twin: code=%d", w.Code)
+	}
+	f.s.connectorIntakes = &twinThenLostReadBack{MemoryStore: f.intakes}
+	if w := f.deliver(cfg.ID, body, f.forgeDelivery(minted, body, "issue_comment", "d-1")); w.Code != http.StatusAccepted {
+		t.Fatalf("the delivery meeting the twin's row: code=%d", w.Code)
+	}
+	if n := f.monthly(t); n != 1 {
+		t.Fatalf("one stored delivery and its twin: %d units charged, want 1", n)
+	}
+}
+
+// failingConfigs cannot read the webhook store.
+type failingConfigs struct{ webhooks.ConfigStore }
+
+func (failingConfigs) Get(context.Context, string) (webhooks.Config, error) {
+	return webhooks.Config{}, errors.New("server selection error: mongo-0.mongo.svc.cluster.local 10.42.3.17")
+}
+
+// A webhook store that cannot answer is an outage on every inbound lane —
+// 503 naming no internal address — never the 401 of an unknown id.
+func TestIngress_AConfigStoreOutageIsNotAnUnknownID(t *testing.T) {
+	f := newIngressFixture(t, ingForgePackage())
+	cfg, minted := f.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
+	f.s.webhookConfigs = failingConfigs{f.s.webhookConfigs}
+	body := `{"sender":{"login":"alice"}}`
+	if w := f.deliver(cfg.ID, body, f.forgeDelivery(minted, body, "issue_comment", "d-1")); w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "10.42.3.17") {
+		t.Fatalf("connector lane: code=%d body=%s, want 503 naming no internal address", w.Code, w.Body.String())
+	}
+	if code, ran, _, _ := runWebhookAuth(f.s, "any", "iwh_x"); code != http.StatusServiceUnavailable || ran {
+		t.Fatalf("webhookAuth: code=%d ran=%v, want 503 and no handler", code, ran)
+	}
+}
+
+// A package whose only triggers are polled has nothing a delivery can reach:
+// binding an ingress to it would accept, ack and drop every delivery. The bind
+// refuses it, naming why; the same package with a webhook trigger binds.
+func TestIngress_APackageWhoseTriggersAreAllPolledBindsNoIngress(t *testing.T) {
+	polled := ingForgePackage()
+	polled.Triggers = []spec.Trigger{{ID: "forge.issue.listed", Delivery: spec.DeliveryPoll}}
+	f := newIngressFixture(t, polled)
+	w := httptest.NewRecorder()
+	f.s.handleCreateWebhook(w, whReq(superAdminCtx(), "POST", "/api/teams/t1/webhooks",
+		`{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "polled trigger is fed by its poller") {
+		t.Fatalf("an ingress on a polled-only package: code=%d body=%s, want 400 naming why", w.Code, w.Body.String())
+	}
+	g := newIngressFixture(t, ingForgePackage())
+	g.create(t, `{"name":"forge","provider":"connector","connector_connection_id":"conn-forge"}`)
 }

@@ -134,7 +134,7 @@ func clawAgentsMdParts(task delegate.Task, boundary string, budget int) []string
 	}
 	var parts []string
 	for i := len(chain) - 1; i >= 0; i-- {
-		section, ok := clawAgentsMdSection(chain[i], budget, confined, boundaryReal)
+		section, ok := clawAgentsMdSection(chain[i], workDir, budget, confined, boundaryReal)
 		if ok {
 			parts = append(parts, section)
 			budget -= len(section)
@@ -153,7 +153,14 @@ func clawAgentsMdParts(task delegate.Task, boundary string, budget int) []string
 // shadows the file, or the file is not there — not there meaning also, where
 // the walk confines its workspace scope, a link resolving outside the
 // boundary, the walk's own refusal of its files.
-func clawAgentsMdSection(dir string, budget int, confined bool, boundaryReal string) (section string, ok bool) {
+//
+// The heading's path is RELATIVE TO THE WORKSPACE (workDir), not absolute:
+// the section is one block of the system prompt, and two runs of the same
+// node in two checkouts must read the same bytes or the provider's prefix
+// cache cuts at the first one (#3283) — the workspace's own file spells
+// "AGENTS.md", one above it "../AGENTS.md". The instruction content is
+// unchanged; only the header spelling moves.
+func clawAgentsMdSection(dir, workDir string, budget int, confined bool, boundaryReal string) (section string, ok bool) {
 	if budget <= 0 {
 		return "", false
 	}
@@ -177,7 +184,15 @@ func clawAgentsMdSection(dir string, budget int, confined bool, boundaryReal str
 		}
 		data = d
 	}
-	section = fmt.Sprintf("## AGENTS.md (%s)\n\n%s", path, clawStripFrontmatter(data))
+	header := path
+	if rel, err := filepath.Rel(workDir, path); err == nil {
+		// The chain only walks the workspace's own tree, so this is
+		// "AGENTS.md" for the workspace's file, "sub/AGENTS.md" below it,
+		// "../AGENTS.md" above — every spelling workspace-relative, none
+		// carrying the checkout's path.
+		header = rel
+	}
+	section = fmt.Sprintf("## AGENTS.md (%s)\n\n%s", header, clawStripFrontmatter(data))
 	if len(section) > budget {
 		section = section[:budget] + "\n... (truncated)"
 	}

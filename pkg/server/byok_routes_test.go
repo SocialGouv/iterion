@@ -790,3 +790,46 @@ func (s *rotateOnGetKeyStore) Get(ctx context.Context, id string) (secrets.ApiKe
 	}
 	return k, err
 }
+
+// The team page lists the team's keys. A user-scoped row is a personal
+// credential, managed at /api/me/api-keys, and no machine lane can spend one
+// (validateKeyOverrides refuses that pin): listed under the team, it would
+// present the team as holding a credential it does not hold.
+func TestListTeamApiKeys_OmitsTheCallersPersonalKeys(t *testing.T) {
+	keys := secrets.NewMemoryApiKeyStore()
+	ctx := store.WithTenant(t.Context(), "team-a")
+	for _, k := range []secrets.ApiKey{
+		{ID: "team-wide", TenantID: "team-a", ScopeTeamID: "team-a", Provider: secrets.ProviderAnthropic, Name: "team-wide", CreatedAt: time.Now().UTC()},
+		{ID: "alice-personal", TenantID: "team-a", ScopeTeamID: "team-a", ScopeUserID: "alice", Provider: secrets.ProviderAnthropic, Name: "alice-personal", CreatedAt: time.Now().UTC()},
+	} {
+		if err := keys.Create(ctx, k); err != nil {
+			t.Fatalf("create %s: %v", k.ID, err)
+		}
+	}
+	srv := &Server{apiKeys: keys, logger: iterlog.Nop()}
+
+	r := httptest.NewRequest("GET", "/api/teams/team-a/api-keys", nil)
+	r.SetPathValue("id", "team-a")
+	r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), auth.Identity{UserID: "alice", IsSuperAdmin: true, TeamID: "team-a"}), "team-a"))
+	w := httptest.NewRecorder()
+	srv.handleListTeamApiKeys(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Keys []apiKeyView `json:"keys"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	byID := map[string]apiKeyView{}
+	for _, k := range body.Keys {
+		byID[k.ID] = k
+	}
+	if got, ok := byID["alice-personal"]; ok {
+		t.Fatalf("the team list returned the caller's user-scoped key %q (scope_user_id=%q) — a personal credential belongs to /api/me/api-keys, and no machine lane can spend it", got.Name, got.ScopeUserID)
+	}
+	if _, ok := byID["team-wide"]; !ok {
+		t.Fatalf("the team list dropped the team-wide key — team keys are what it lists")
+	}
+}

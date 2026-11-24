@@ -31,7 +31,7 @@ func buildWithRunFallback(t *testing.T, tools []string) []*store.Event {
 		// crossing to another backend.
 		RunFallback: []ir.Fallback{{Backend: "claw", Model: "openai/gpt-5.5"}},
 	}
-	if _, err := BuildExecutor(spec); err != nil {
+	if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 	evts, err := st.LoadEvents(context.Background(), spec.RunID)
@@ -106,7 +106,7 @@ func buildWithRunFallbackVars(t *testing.T, def string, vars map[string]string) 
 		// A CLI route: a crossing iff the run's reading of the node is claw.
 		RunFallback: []ir.Fallback{{Backend: "claude_code", Model: "claude-opus-5"}},
 	}
-	if _, err := BuildExecutor(spec); err != nil {
+	if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}
 	evts, err := st.LoadEvents(context.Background(), spec.RunID)
@@ -166,7 +166,7 @@ func TestBuildExecutor_PolicyLadderHonoursTheContentBoundary(t *testing.T) {
 				PolicyLadder:    []ir.PolicyLadderStage{{Harness: "claw", Credential: "openai_key", On: []string{"usage_window"}}},
 				ContentBoundary: row.boundary,
 			}
-			if _, err := BuildExecutor(spec); err != nil {
+			if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 				t.Fatalf("BuildExecutor: %v", err)
 			}
 			if landed := len(agent.Fallbacks) == 1 && agent.Fallbacks[0].Policy; landed != row.lands {

@@ -7,7 +7,10 @@ import {
   expectUniqueAccessibleNames,
 } from "@/__tests__/a11y/axeHelpers";
 
+import type { RunEvent } from "@/api/runs";
+
 import { ToolCallList, ToolPayloadBlock } from "./ToolCalls";
+import { groupToolCalls } from "./toolCallModel";
 
 afterEach(cleanup);
 
@@ -172,5 +175,114 @@ describe("tool calls axe", () => {
   it("Runs · detail Tools tab — axe smoke, incompletes included", async () => {
     const { container } = mountTools();
     await expectNoViolationsStrict(container, "ToolCallList");
+  });
+});
+
+// A codemode program's card holds its nested calls: the same per-call
+// controls repeat inside it, a batch adds its own group, and the program adds
+// its nested-calls toggle — every name still has to carry its row.
+function programEvent(seq: number, type: RunEvent["type"], data: Record<string, unknown>): RunEvent {
+  return { seq, timestamp: "2026-01-01T00:00:00Z", type, run_id: "run-1", node_id: "n", data } as RunEvent;
+}
+
+const PROGRAM_EVENTS: RunEvent[] = [
+  programEvent(1, "tool_started", { tool: "codemode", tool_use_id: "toolu_P", input: '{"source":"call(\\"glob\\", {})"}' }),
+  programEvent(2, "tool_started", { tool: "glob", tool_use_id: "codemode_A_1", parent_tool_use_id: "toolu_P", input: '{"pattern":"*"}' }),
+  programEvent(3, "tool_called", { tool: "glob", tool_use_id: "codemode_A_1", parent_tool_use_id: "toolu_P", output: "a.md" }),
+  programEvent(4, "tool_error", {
+    tool: "ask_user",
+    tool_use_id: "codemode_A_2",
+    parent_tool_use_id: "toolu_P",
+    batch: { first: 2, size: 2, index: 0 },
+    error: "pauses the run",
+  }),
+  programEvent(5, "tool_started", {
+    tool: "glob",
+    tool_use_id: "codemode_A_3",
+    parent_tool_use_id: "toolu_P",
+    batch: { first: 2, size: 2, index: 1 },
+    input: '{"pattern":"b"}',
+  }),
+  programEvent(6, "tool_called", {
+    tool: "glob",
+    tool_use_id: "codemode_A_3",
+    parent_tool_use_id: "toolu_P",
+    batch: { first: 2, size: 2, index: 1 },
+    output: "b.md",
+  }),
+  programEvent(7, "tool_error", {
+    tool: "codemode",
+    tool_use_id: "toolu_P",
+    error: "codemode refused (script_error): Error: nope",
+    codemode: {
+      limits: { tool_calls: 4096, wall_ns: 30_000_000_000, memory_bytes: 268_435_456 },
+      adjusted: [{ field: "tool_calls", requested: 99999, applied: 4096 }],
+      refusal: "script_error",
+      calls: 2,
+      source_bytes: 18,
+      confinement: { cpu_seconds: 1, memory_bytes: 1_342_177_280, all_threads: true, landlock_abi: 4 },
+      effective_wall_ns: 2_000_000_000,
+    },
+  }),
+];
+
+function mountProgram() {
+  return render(
+    <main>
+      <ToolCallList calls={groupToolCalls(PROGRAM_EVENTS)} runId="run-1" />
+    </main>,
+  );
+}
+
+describe("codemode program card", () => {
+  it("shows the program, its verdict, its budget and the bound the clamp moved", () => {
+    mountProgram();
+    // The program block and the summary's first line both show the source.
+    expect(screen.getAllByText("call(\"glob\", {})").length).toBe(2);
+    expect(screen.getByText("script_error")).toBeTruthy();
+    expect(screen.getByText(/calls 2 \/ 4096/)).toBeTruthy();
+    const limits = screen.getByRole("table", { name: "limits requested for codemode seq 7" });
+    expect(limits.textContent).toContain("99999 → 4096 (adjusted)");
+    const enforced = screen.getByRole("table", { name: "limits enforced for codemode seq 7" });
+    expect(enforced.textContent).toContain("cpu_seconds1s");
+    expect(enforced.textContent).toContain("all_threadsyes");
+    expect(screen.getByText(/wall cut to 2s by the node's deadline/)).toBeTruthy();
+    expect(screen.getByText("call.parallel × 2")).toBeTruthy();
+  });
+
+  it("collapses and reopens the nested calls under one named toggle", () => {
+    mountProgram();
+    const toggle = screen.getByRole("button", { name: "nested calls (3) of codemode seq 7" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "copy output of glob seq 3" })).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "copy output of glob seq 3" })).toBeNull();
+  });
+
+  it("leaves no two controls sharing an accessible name inside the nested list", () => {
+    const { container } = mountProgram();
+    expectUniqueAccessibleNames(container, "Runs · codemode program", {
+      roles: ["button"],
+      expected: [
+        "copy program of codemode seq 7",
+        "copy the error of codemode seq 7",
+        "nested calls (3) of codemode seq 7",
+        "copy raw input of glob seq 3",
+        "copy output of glob seq 3",
+        "show raw event of glob seq 3",
+        "copy the error of ask_user seq 4",
+        "show raw event of ask_user seq 4",
+        "copy raw input of glob seq 6",
+        "copy output of glob seq 6",
+        "show raw event of glob seq 6",
+        "show raw event of codemode seq 7",
+      ],
+    });
+  });
+
+  it("Runs · detail Tools tab, codemode program — axe smoke, incompletes included", async () => {
+    const { container } = mountProgram();
+    await expectNoViolationsStrict(container, "ToolCallList codemode");
   });
 });

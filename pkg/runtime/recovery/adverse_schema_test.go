@@ -8,12 +8,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -333,10 +335,11 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 			// Claw's malformed tool block has no prose to extract. Claude Code
 			// supplies prose, so its additional extraction call shares the same
 			// allowance: one re-ask + one extraction, never two business retries.
-			want := "attempt,active,unchanged"
+			// Owned events report committed transitions, not transient callback states.
+			want := "attempt,unchanged"
 			wantAttempts := 1
 			if name == delegate.BackendClaudeCode {
-				want = "attempt,active,attempt,exhausted,unchanged"
+				want = "attempt,attempt,unchanged"
 				wantAttempts = 2
 				if len(prose.tasks) != 2 || len(mock.calls) != 2 {
 					t.Errorf("claude calls: business/reask=%d extraction=%d", len(prose.tasks), len(mock.calls))
@@ -361,5 +364,316 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 				t.Fatalf("parse feedback missing: calls=%d", len(mock.calls))
 			}
 		})
+	}
+}
+
+type ownedExtractionAmbiguous struct{}
+
+func (ownedExtractionAmbiguous) Error() string         { return "auxiliary transport ambiguous" }
+func (ownedExtractionAmbiguous) AmbiguousEffect() bool { return true }
+func TestOwnedExtractionAllowanceAndControl(t *testing.T) {
+	for _, mode := range []string{"zero", "one", "two", "ambiguous", "joined-cancel", "cancel-only", "deadline", "parent-cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("TMPDIR", t.TempDir())
+			t.Setenv("ANTHROPIC_BASE_URL", "")
+			t.Setenv("ANTHROPIC_API_KEY", "test-key")
+			invoke, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			budget := 2
+			if mode == "zero" {
+				budget = 0
+			}
+			if mode == "one" {
+				budget = 1
+			}
+			t.Setenv(model.EnvOutputCorrectionBudget, fmt.Sprint(budget))
+			extract := &rvaScriptClient{scripts: [][]api.StreamEvent{rvaToolUse("ex", `{"verdict":true,"reason":"ok"}`)}}
+			failure := &rvaFailingClient{err: ownedExtractionAmbiguous{}}
+			if mode == "joined-cancel" {
+				failure.err = errors.Join(ownedExtractionAmbiguous{}, context.Canceled)
+			}
+			if mode == "cancel-only" {
+				failure.err = context.Canceled
+			}
+			if mode == "deadline" {
+				failure.err = &model.ErrNodeDeadline{NodeID: "judge", Timeout: time.Second}
+			}
+			reg := model.NewRegistry()
+			reg.Register("anthropic", func(string) (api.APIClient, error) {
+				if mode == "parent-cancel" {
+					return &ownedExtractionCancelClient{inner: failure, cancel: cancel}, nil
+				}
+				if mode == "ambiguous" || mode == "joined-cancel" || mode == "cancel-only" || mode == "deadline" {
+					return failure, nil
+				}
+				return extract, nil
+			})
+			prose := &rvaProseBackend{}
+			backends := delegate.NewRegistry()
+			backends.Register(delegate.BackendClaudeCode, prose)
+			wf := rvaWorkflow(delegate.BackendClaudeCode)
+			st, e := store.New(t.TempDir())
+			if e != nil {
+				t.Fatal(e)
+			}
+			exec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(backends), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+			err := runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes()))).Run(invoke, "ownedExtraction", nil)
+			r, e := st.LoadRun(context.Background(), "ownedExtraction")
+			if e != nil {
+				t.Fatal(e)
+			}
+			ep := r.OutputCorrections["judge"]
+			t.Logf("mode=%s business=%d extraction=%d failedExtraction=%d attempts=%d status=%s err=%v", mode, len(prose.tasks), len(extract.calls), failure.calls, ep.Attempts, ep.Status, err)
+			if mode == "ambiguous" || mode == "joined-cancel" {
+				if !errtrack.IsAmbiguousEffect(err) || ep.Cause == nil || ep.Cause.Kind != "ambiguous" {
+					t.Fatalf("AUX_STOP_ERASED err=%v cause=%+v", err, ep.Cause)
+				}
+				return
+			}
+			if mode == "parent-cancel" {
+				var schema *model.OutputSchemaError
+				if err == nil || r.Status != store.RunStatusCancelled || errors.As(err, &schema) {
+					t.Fatalf("PARENT_CANCEL_RECLASSIFIED %v status=%s", err, r.Status)
+				}
+				return
+			}
+			if mode == "cancel-only" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("AUX_CANCEL_ERASED %v", err)
+				}
+				return
+			}
+			if mode == "deadline" {
+				var stop *model.ErrNodeDeadline
+				if !errors.As(err, &stop) || ep.Cause == nil || ep.Cause.Kind != "node_deadline" {
+					t.Fatalf("AUX_DEADLINE_ERASED %v %+v", err, ep.Cause)
+				}
+				return
+			}
+			wantBusiness := 2
+			if budget == 0 {
+				wantBusiness = 1
+			}
+			wantExtraction := 0
+			if budget == 2 {
+				wantExtraction = 1
+			}
+			if len(prose.tasks) != wantBusiness || len(extract.calls) != wantExtraction || ep.Attempts != budget {
+				t.Fatalf("allowance counts mismatch")
+			}
+			if budget == 2 {
+				if err != nil || len(ep.Reservations) != 2 || ep.Reservations[0].Receipt.Usage.Tokens != 10 || ep.Reservations[1].Receipt.Usage.Tokens != 70 {
+					t.Fatalf("split bills lost: err=%v episode=%+v", err, ep)
+				}
+			} else {
+				var typed *model.OutputSchemaError
+				if !errors.As(err, &typed) {
+					t.Fatalf("schema disposition lost %v", err)
+				}
+			}
+		})
+	}
+}
+
+type ownedExtractionStopStore struct {
+	*store.FilesystemRunStore
+	cancel  context.CancelFunc
+	stopped bool
+}
+
+func (s *ownedExtractionStopStore) SetRunOutputCorrectionIf(ctx context.Context, id string, a store.RunExecutionAuthority, key string, expected store.OutputCorrectionExpected, next store.OutputCorrectionEpisode) (bool, error) {
+	ok, err := s.FilesystemRunStore.SetRunOutputCorrectionIf(ctx, id, a, key, expected, next)
+	if ok && err == nil && !s.stopped && next.Attempts == 1 && next.Status == "active" && len(next.Reservations) == 1 && next.Reservations[0].Receipt != nil {
+		s.stopped = true
+		s.cancel()
+	}
+	return ok, err
+}
+func TestOwnedExtractionRestartPreservesAllowance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv(model.EnvOutputCorrectionBudget, "2")
+	extract := &rvaScriptClient{scripts: [][]api.StreamEvent{rvaToolUse("ex", `{"verdict":true,"reason":"ok"}`)}}
+	reg := model.NewRegistry()
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return extract, nil })
+	prose := &rvaProseBackend{}
+	backends := delegate.NewRegistry()
+	backends.Register(delegate.BackendClaudeCode, prose)
+	wf := rvaWorkflow(delegate.BackendClaudeCode)
+	base, e := store.New(t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := &ownedExtractionStopStore{FilesystemRunStore: base, cancel: cancel}
+	makeEngine := func() *runtime.Engine {
+		exec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(backends), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+		return runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes())))
+	}
+	first := makeEngine().Run(ctx, "ownedExtraction-restart", nil)
+	r, e := base.LoadRun(context.Background(), "ownedExtraction-restart")
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Logf("interrupted=%v status=%s attempts=%d delegations=%d extraction=%d", first, r.Status, r.OutputCorrections["judge"].Attempts, len(prose.tasks), len(extract.calls))
+	if !st.stopped || len(prose.tasks) != 2 || len(extract.calls) != 0 || r.OutputCorrections["judge"].Attempts != 1 {
+		t.Fatal("interruption did not land between operations")
+	}
+	second := makeEngine().Resume(context.Background(), "ownedExtraction-restart", nil)
+	r, e = base.LoadRun(context.Background(), "ownedExtraction-restart")
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Logf("resumed=%v status=%s attempts=%d delegations=%d extraction=%d", second, r.Status, r.OutputCorrections["judge"].Attempts, len(prose.tasks), len(extract.calls))
+	if r.OutputCorrections["judge"].Attempts > 2 || len(extract.calls) > 1 {
+		t.Fatal("restart exceeded allowance")
+	}
+}
+
+func (s *ownedExtractionStopStore) SetRunOutputCorrection(ctx context.Context, id, key string, next store.OutputCorrectionEpisode) error {
+	err := s.FilesystemRunStore.SetRunOutputCorrection(ctx, id, key, next)
+	if err == nil && !s.stopped && next.Attempts == 1 && next.Status == "active" && next.LastOutputFingerprint != "" {
+		s.stopped = true
+		s.cancel()
+	}
+	return err
+}
+
+type ownedExtractionCancelClient struct {
+	inner  *rvaFailingClient
+	cancel context.CancelFunc
+}
+
+func (c *ownedExtractionCancelClient) StreamResponse(ctx context.Context, r api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.cancel()
+	return c.inner.StreamResponse(ctx, r)
+}
+
+type ownedAuxiliaryOpaque struct{ err error }
+
+func (e ownedAuxiliaryOpaque) Error() string      { return "redacted auxiliary failure" }
+func (e ownedAuxiliaryOpaque) As(target any) bool { return errors.As(e.err, target) }
+func TestOwnedAuxiliaryStopsPreserveProvenance(t *testing.T) {
+	auth := &delegate.ErrAuthFailed{Provider: "auxiliary", Detail: "fixture"}
+	window := &delegate.ErrRateLimited{Provider: "auxiliary", Kind: delegate.RateLimitKindUsageWindow, Detail: "fixture"}
+	deadline := &model.ErrNodeDeadline{NodeID: "judge", Timeout: time.Second}
+	for _, row := range []struct {
+		name  string
+		cause error
+		want  string
+	}{
+		{"opaque-scalar-cancel", ownedAuxiliaryOpaque{context.Canceled}, "cancel"},
+		{"window-cancel", errors.Join(window, context.Canceled), "cancel"},
+		{"nested-deadline", &model.ErrNodeDeadline{NodeID: "judge", Timeout: time.Second, Observed: errors.Join(auth, window)}, "node_deadline"},
+		{"opaque-nested-deadline", ownedAuxiliaryOpaque{&model.ErrNodeDeadline{NodeID: "judge", Timeout: time.Second, Observed: errors.Join(auth, window)}}, "node_deadline"},
+		{"opaque-window-ambiguous", ownedAuxiliaryOpaque{errors.Join(window, ownedExtractionAmbiguous{}, context.Canceled)}, "ambiguous"},
+		{"opaque-cancel", ownedAuxiliaryOpaque{errors.Join(errors.New("ordinary"), context.Canceled)}, "cancel"},
+		{"opaque-ambiguous", ownedAuxiliaryOpaque{errors.Join(errors.New("ordinary"), ownedExtractionAmbiguous{})}, "ambiguous"},
+		{"auth-cancel", errors.Join(auth, context.Canceled), "cancel"},
+		{"api-auth-cancel", errors.Join(&api.APIError{StatusCode: 401, Message: "invalid key"}, context.Canceled), "cancel"},
+		{"auth-deadline", errors.Join(auth, deadline), "node_deadline"},
+		{"opaque-auth-deadline", ownedAuxiliaryOpaque{errors.Join(auth, deadline)}, "node_deadline"},
+		{"auth-ambiguous-cancel", errors.Join(auth, ownedExtractionAmbiguous{}, context.Canceled), "ambiguous"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("TMPDIR", t.TempDir())
+			t.Setenv("ANTHROPIC_BASE_URL", "")
+			t.Setenv("ANTHROPIC_API_KEY", "test-key")
+			t.Setenv(model.EnvOutputCorrectionBudget, "2")
+			failure := &rvaFailingClient{err: row.cause}
+			reg := model.NewRegistry()
+			reg.Register("anthropic", func(string) (api.APIClient, error) { return failure, nil })
+			prose := &rvaProseBackend{}
+			backends := delegate.NewRegistry()
+			backends.Register(delegate.BackendClaudeCode, prose)
+			wf := rvaWorkflow(delegate.BackendClaudeCode)
+			st, e := store.New(t.TempDir())
+			if e != nil {
+				t.Fatal(e)
+			}
+			exec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(backends), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+			err := runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes()))).Run(context.Background(), "r30", nil)
+			r, e := st.LoadRun(context.Background(), "r30")
+			if e != nil {
+				t.Fatal(e)
+			}
+			ep := r.OutputCorrections["judge"]
+			t.Logf("stop=%s business=%d auxiliary=%d attempts=%d status=%s cause=%+v err=%v", row.want, len(prose.tasks), failure.calls, ep.Attempts, r.Status, ep.Cause, err)
+			if len(prose.tasks) != 2 || failure.calls != 1 || ep.Attempts != 2 {
+				t.Fatal("unexpected paid operation or missing reservation")
+			}
+			var leakedAuth *delegate.ErrAuthFailed
+			var leakedWindow *delegate.ErrRateLimited
+			if errors.As(err, &leakedAuth) || errors.As(err, &leakedWindow) {
+				t.Fatalf("AUXILIARY_GRAPH_ESCAPED %v", err)
+			}
+			if row.want == "cancel" {
+				var schema *model.OutputSchemaError
+				if !errors.As(err, &schema) || !errtrack.AnyCause(err, func(e error) bool { return errors.Is(e, context.Canceled) }) || ep.Cause != nil || !schema.Stopped || strings.Contains(schema.Error(), "budget exhausted") {
+					t.Fatalf("AUX_AUTH_LEAK_OR_CANCEL_LOST err=%v cause=%+v", err, ep.Cause)
+				}
+			} else if ep.Cause == nil || ep.Cause.Kind != row.want {
+				t.Fatalf("CONTROL_PRIORITY_LOST want=%s cause=%+v err=%v", row.want, ep.Cause, err)
+			}
+			if row.want != "cancel" {
+				freshExec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(backends), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+				resumed := runtime.New(wf, st, freshExec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes()))).Resume(context.Background(), "r30", nil)
+				reread, e := st.LoadRun(context.Background(), "r30")
+				if e != nil {
+					t.Fatal(e)
+				}
+				persisted := reread.OutputCorrections["judge"]
+				if resumed == nil || errors.As(resumed, &leakedAuth) || errors.As(resumed, &leakedWindow) || persisted.Cause == nil || persisted.Cause.Kind != row.want || persisted.Attempts != 2 || failure.calls != 1 || reread.Status == store.RunStatusPausedWaitingHuman {
+					t.Fatalf("REHYDRATED_AUXILIARY_LEAK err=%v cause=%+v calls=%d attempts=%d status=%s", resumed, persisted.Cause, failure.calls, persisted.Attempts, reread.Status)
+				}
+			}
+
+		})
+	}
+}
+
+type ownedBusinessAuth struct {
+	calls int
+	cause error
+}
+
+func (b *ownedBusinessAuth) Execute(context.Context, delegate.Task) (delegate.Result, error) {
+	b.calls++
+	if b.calls > 1 {
+		return delegate.Result{}, b.cause
+	}
+	return delegate.Result{Output: map[string]any{"text": "finished answer"}, ParseFallback: true, SessionID: "business-session", Tokens: 10}, nil
+}
+func TestOwnedBusinessAuthKeepsProvenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv(model.EnvOutputCorrectionBudget, "2")
+	failure := &rvaFailingClient{err: errors.New("must not extract")}
+	reg := model.NewRegistry()
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return failure, nil })
+	business := &ownedBusinessAuth{cause: &delegate.ErrAuthFailed{Provider: "business", Detail: "fixture"}}
+	backends := delegate.NewRegistry()
+	backends.Register(delegate.BackendClaudeCode, business)
+	wf := rvaWorkflow(delegate.BackendClaudeCode)
+	st, e := store.New(t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	exec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(backends), model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}))
+	err := runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes()))).Run(context.Background(), "r32-business", nil)
+	r, e := st.LoadRun(context.Background(), "r32-business")
+	if e != nil {
+		t.Fatal(e)
+	}
+	ep := r.OutputCorrections["judge"]
+	if !errors.Is(err, runtime.ErrRunPaused) || business.calls != 2 || failure.calls != 0 || ep.Cause == nil || ep.Cause.Kind != "auth" || ep.Cause.Provider != "business" {
+		t.Fatalf("BUSINESS_PROVENANCE_LOST err=%v business=%d extraction=%d cause=%+v", err, business.calls, failure.calls, ep.Cause)
 	}
 }

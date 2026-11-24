@@ -63,6 +63,13 @@ type RunHeader struct {
 	SubbotChildren map[string]string  `json:"subbot_children,omitempty"`
 	Attempts       []store.RunAttempt `json:"attempts,omitempty"`
 	ID             string             `json:"id"`
+	// BirthID is the run's store-owned birth identity (store.Run.BirthID):
+	// a run deleted and recreated under the same ID has another one. A
+	// client sends it back as the expected birth of the requests it makes
+	// about this run, and the server refuses a request whose run was
+	// replaced. Always present on the wire: "" is a historical run with no
+	// birth; an absent field is a server that predates birth exposure.
+	BirthID string `json:"birth_id"`
 	// TenantID is the team the run belongs to (ADR-103): the by-id
 	// resolution serves a run from its own team, and this field lets a
 	// caller - the studio's run console above all - disclose that the
@@ -1571,6 +1578,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Attempts:             r.Attempts,
 		SubbotChildren:       r.SubbotChildren,
 		ID:                   r.ID,
+		BirthID:              r.BirthID,
 		TenantID:             r.TenantID,
 		ExecutionContext:     r.ExecutionContext,
 		Admission:            r.Admission,
@@ -1657,8 +1665,23 @@ func worktreeAvailable(dir string) bool {
 // BuildSnapshot is the cold-read convenience: load run.json + events
 // from the store, then fold them into a RunSnapshot. Events are
 // streamed via ScanEvents to keep memory bounded for long runs.
+//
+// The scan carries the loaded run's observation — its header and the
+// tenant its store recorded (runObservation) — so a native store refuses
+// the events of a successor recreated under the same ID with a different
+// header or in another tenant instead of folding them into this run's
+// metadata. Caller intent is compared, never replaced, and nothing is
+// reloaded. A store that ignores its context gets no such guarantee.
 func BuildSnapshot(ctx context.Context, s store.RunStore, runID string) (*RunSnapshot, error) {
-	run, err := s.LoadRun(ctx, runID)
+	ctx, run, err := store.LoadRunWithValueFormat(ctx, s, runID)
+	if err != nil {
+		return nil, err
+	}
+	o, err := runObservation(run)
+	if err != nil {
+		return nil, err
+	}
+	ctx, err = store.BindRunObservation(ctx, o)
 	if err != nil {
 		return nil, err
 	}

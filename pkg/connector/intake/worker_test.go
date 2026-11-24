@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -452,6 +453,36 @@ func TestWorkerMaintenanceHoldSpendsNoAttempt(t *testing.T) {
 	}
 }
 
+// postponedErr is a transient denial, as the launch gate answers a team at
+// its concurrency cap.
+type postponedErr struct{ after time.Duration }
+
+func (e postponedErr) Error() string                      { return "concurrency cap" }
+func (e postponedErr) PostponeFor() (time.Duration, bool) { return e.after, true }
+
+// A transient denial postpones the pair by the delay it names and spends no
+// attempt, however often it repeats (ADR-168 Q3).
+func TestWorkerPostponesATransientDenialWithoutSpending(t *testing.T) {
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	sub.fail = func(string, int) error { return fmt.Errorf("gate: %w", postponedErr{after: 45 * time.Second}) }
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "d", t0))
+	tick(t, w)
+	p := onlyPair(t, s, "t1")
+	if p.State != PairPending || p.Attempts != 0 || !p.NotBefore.Equal(stamp(t0.Add(45*time.Second))) {
+		t.Fatalf("pair = %+v, want pending, attempts whole, due in 45s", p)
+	}
+	for i := 0; i < 10; i++ {
+		clock.Add(time.Minute)
+		tick(t, w)
+	}
+	if p := onlyPair(t, s, "t1"); p.State != PairPending || p.Attempts != 0 {
+		t.Fatalf("pair = %+v after %d denials, want its budget whole", p, sub.calls)
+	}
+}
+
 // A pair whose intake is gone cannot be launched: refused, visibly.
 func TestWorkerRefusesAPairWhoseIntakeIsGone(t *testing.T) {
 	ctx := context.Background()
@@ -589,5 +620,115 @@ func TestWorkerRefusesAnIncompleteConfiguration(t *testing.T) {
 		if err := w.Run(context.Background(), time.Second); err == nil {
 			t.Errorf("%s: Run started", name)
 		}
+	}
+}
+
+// A polled pair whose subscription already received its item revision —
+// launched from another poller's intake — is refused before any submission,
+// naming the pair and run that delivered it; its replay answers the same.
+func TestWorkerDoesNotLaunchARevisionItsSubscriptionReceived(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	a := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+	tick(t, w)
+	first, err := s.GetPair(ctx, "t1", PairID(a.ID, "s1"))
+	if err != nil || first.State != PairLaunched {
+		t.Fatalf("the first poller's pair = (%+v, %v), want launched", first, err)
+	}
+	clock.Add(time.Minute)
+	b := mustAccept(t, s, polledItem("t1", "pl-b", "item-x", 4, clock.Now()))
+	tick(t, w)
+	second, _ := s.GetPair(ctx, "t1", PairID(b.ID, "s1"))
+	want := "already delivered to this subscription: pair " + first.ID + " launched run " + first.RunID + " for the same item revision"
+	if second.State != PairRefused || second.Reason != want || sub.calls != 1 {
+		t.Fatalf("the second poller's pair = %+v after %d submissions, want refused saying %q, never submitted", second, sub.calls, want)
+	}
+	if _, err := s.ReplayPair(ctx, "t1", second.ID, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tick(t, w)
+	if again, _ := s.GetPair(ctx, "t1", second.ID); again.State != PairRefused || again.Reason != want || sub.calls != 1 {
+		t.Fatalf("the replayed pair = %+v after %d submissions, want the same refusal", again, sub.calls)
+	}
+}
+
+// A pair that delivered nothing — refused at launch, dead — does not stand
+// for the revision: the other poller's pair of it launches.
+func TestWorkerLaunchesARevisionNoPairDelivered(t *testing.T) {
+	for _, end := range []string{"refused", "dead"} {
+		t.Run(end, func(t *testing.T) {
+			ctx := context.Background()
+			s := NewMemoryStore()
+			clock := &fakeClock{now: t0}
+			sub := newSubmitter()
+			a := mustAccept(t, s, polledItem("t1", "pl-a", "item-x", 1, t0))
+			blocked := "connector-pair:" + PairID(a.ID, "s1") + "#0"
+			sub.fail = func(key string, _ int) error {
+				if key != blocked {
+					return nil
+				}
+				if end == "refused" {
+					return Refuse("its subscription now listens to another connection, trigger or poller", nil)
+				}
+				return errors.New("PROBE: the launch path is down")
+			}
+			w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+			for i := 0; i < 4; i++ {
+				tick(t, w)
+				clock.Add(2 * time.Minute)
+			}
+			if p, _ := s.GetPair(ctx, "t1", PairID(a.ID, "s1")); p.State != end {
+				t.Fatalf("the first poller's pair = %+v, want %s", p, end)
+			}
+			b := mustAccept(t, s, polledItem("t1", "pl-b", "item-x", 4, clock.Now()))
+			tick(t, w)
+			if p, _ := s.GetPair(ctx, "t1", PairID(b.ID, "s1")); p.State != PairLaunched || sub.runCount() != 1 {
+				t.Fatalf("the second poller's pair = %+v with %d runs, want it launched, the revision's one run", p, sub.runCount())
+			}
+		})
+	}
+}
+
+// A webhook pair names no item: two deliveries of one signed body on two
+// ingresses each launch, whatever the other did.
+func TestWorkerNeverJudgesAWebhookPairDelivered(t *testing.T) {
+	s := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	w := newWorker(s, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	mustAccept(t, s, delivery("t1", "ing-1", "same", t0))
+	tick(t, w)
+	clock.Add(time.Minute)
+	mustAccept(t, s, delivery("t1", "ing-2", "same", clock.Now()))
+	tick(t, w)
+	pairs, _ := s.ListPairs(context.Background(), "t1", PairQuery{State: PairLaunched}, 0)
+	if len(pairs) != 2 || sub.runCount() != 2 {
+		t.Fatalf("launched webhook pairs = %v with %d runs, want both", pairSubs(pairs), sub.runCount())
+	}
+}
+
+// failingLaunchedRead answers every LaunchedPair read with an outage.
+type failingLaunchedRead struct{ Store }
+
+func (failingLaunchedRead) LaunchedPair(context.Context, string, string, string) (Pair, bool, error) {
+	return Pair{}, false, errors.New("PROBE: the pair store is unreachable")
+}
+
+// A launched-pair read that fails is a failed attempt, retried: the pair is
+// neither submitted on a guess nor refused.
+func TestWorkerRetriesAPairWhoseDeliveryCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemoryStore()
+	clock := &fakeClock{now: t0}
+	sub := newSubmitter()
+	w := newWorker(failingLaunchedRead{mem}, &stubMatcher{verdicts: []Verdict{{SubscriptionID: "s1", Matched: true}}}, sub, clock, "w")
+	in := mustAccept(t, mem, polledItem("t1", "pl-a", "item-x", 1, t0))
+	tick(t, w)
+	p, _ := mem.GetPair(ctx, "t1", PairID(in.ID, "s1"))
+	if p.State != PairPending || p.Attempts != 1 || !strings.Contains(p.LastError, "PROBE: the pair store is unreachable") || sub.calls != 0 {
+		t.Fatalf("pair = %+v after %d submissions, want pending, one attempt spent on the read, never submitted", p, sub.calls)
 	}
 }

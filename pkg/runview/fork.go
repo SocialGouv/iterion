@@ -53,6 +53,10 @@ type ForkSpec struct {
 	// gateForkInputs. A value re-sent unchanged does not: the parent was
 	// already admitted with it.
 	NewInputs map[string]any
+	// SourceExpectOrigin is the origin a checked surface admitted for RunID,
+	// the source: the run Fork loads is verified against it before the child
+	// exists. The child is created unbound. The zero value is unchecked.
+	SourceExpectOrigin ActionOrigin
 }
 
 // ForkResult is the response shape returned to HTTP / CLI callers.
@@ -88,6 +92,9 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	parent, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load parent run: %w", err)
+	}
+	if err := spec.SourceExpectOrigin.Verify(parent); err != nil {
+		return nil, fmt.Errorf("runview: fork: %w", err)
 	}
 	turnStore := store.AsTurnStore(s.store)
 	if turnStore == nil {
@@ -209,6 +216,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// children of the child's tree.
 	child.ModelOverrides = slices.Clone(parent.ModelOverrides)
 	child.LaunchModelOverrides = slices.Clone(parent.LaunchModelOverrides)
+	// The run-level override choices ride too: the fork child is the
+	// recovery path of the parent run, and an operator who killed codemode
+	// (or pinned the permission gate) at launch expects the child to start
+	// from THAT decision, not from the authored DSL the child's empty doc
+	// would replay (found by tour 2 — the permission half is a pre-existing
+	// hole of the same shape; both fixed here).
+	child.PermissionOverride = parent.PermissionOverride
+	child.CodemodeOverride = parent.CodemodeOverride
+	child.CodemodeBoundsOverride = parent.CodemodeBoundsOverride
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {

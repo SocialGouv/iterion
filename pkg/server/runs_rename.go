@@ -45,8 +45,16 @@ func (s *Server) handleRenameRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "name too long (max 200 chars)")
 		return
 	}
-	run, err := s.runs.RenameRunCtx(r.Context(), id, name)
+	a := s.admittedAction(r, id)
+	ctx, ok := s.actionContext(w, r, a)
+	if !ok {
+		return
+	}
+	run, err := s.runs.RenameRunCtx(ctx, id, name)
 	if err != nil {
+		if s.writeActionFailure(w, r, a, err) {
+			return
+		}
 		code := http.StatusNotFound
 		if errors.Is(err, store.ErrRunConflict) {
 			code = http.StatusConflict

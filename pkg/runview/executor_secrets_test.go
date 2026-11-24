@@ -45,7 +45,7 @@ func TestBuildExecutor_RequiredSecretUnresolvedFails(t *testing.T) {
 		LocalSecrets: secrets.NewMemoryGenericSecretStore(),
 		LocalSealer:  sealer,
 	}
-	_, err = BuildExecutor(spec)
+	_, err = BuildExecutor(preparedExecutorFixture(t, spec))
 	if err == nil {
 		t.Fatal("expected BuildExecutor to fail for an unresolved required secret")
 	}
@@ -74,7 +74,7 @@ func TestBuildExecutor_OptionalSecretUnresolvedOK(t *testing.T) {
 		LocalSecrets: secrets.NewMemoryGenericSecretStore(),
 		LocalSealer:  sealer,
 	}
-	if _, err := BuildExecutor(spec); err != nil {
+	if _, err := BuildExecutor(preparedExecutorFixture(t, spec)); err != nil {
 		t.Fatalf("optional unresolved secret must not fail BuildExecutor: %v", err)
 	}
 }

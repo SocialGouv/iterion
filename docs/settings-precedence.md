@@ -12,6 +12,8 @@ run override  >  node DSL  >  workflow DSL  >  env  >  default
 | Compression | CLI `--compress` / studio select | `compress:` (agent/judge; tool nodes are opt-in only) | `compress:` | `ITERION_COMPRESS` | `on` when a rewriter plugin is enabled and its binary present, else `off` |
 | Auto-memory | CLI `--auto-memory` / studio select | `auto_memory:` (agent/judge) | `auto_memory:` | `ITERION_AUTO_MEMORY` | `off` (a run is hermetic by default — [memory-and-knowledge.md](memory-and-knowledge.md)) |
 | Ambient context | CLI `--ambient-context` / launch API `ambient_context` / studio select | `ambient_context:` (agent/judge) | `ambient_context:` | `ITERION_AMBIENT_CONTEXT` | `workspace`: the repository's instruction files, not the operator's setup ([ADR-119](adr/119-ambient-context-policy.md)) |
+| Codemode (mode) | CLI `--codemode` / launch API `codemode` | `codemode:` (agent/judge on claw) | `codemode:` | — deliberately none ([ADR-132 §1](adr/132-a-run-reads-no-environment.md); [ADR-165](adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md) repeats it) | `off` — codemode changes what a model is handed, so it is opted into |
+| Codemode (bounds) | CLI `--codemode-*` / launch API `codemode_bounds` | the `codemode:` block, field by field | the `codemode:` block, field by field | — none | `scripthost.DefaultLimits`, under `Ceiling` with the 64 MiB memory floor; every value still passes `Clamp` at spawn |
 | Permission gate | CLI `--permission` / studio select | `permission:` | `permission:` | `ITERION_PERMISSION` | `off` |
 | Backend | CLI `--backend` / studio select | `backend:` | `default_backend:` | `ITERION_DEFAULT_BACKEND` | credential auto-detection ([docs/backends.md](backends.md)) |
 

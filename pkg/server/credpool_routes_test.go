@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -97,12 +99,160 @@ func TestPoolIDForUser_neverAttachesToAnotherOrgsPool(t *testing.T) {
 	}
 }
 
+// twoKeyPledges seeds one lender with two api_key pledges of the same
+// provider, each naming its own key — the shape two Anthropic plans make.
+func twoKeyPledges(t *testing.T, pledges *credpool.MemoryPledgeStore, userID, poolID, ref string, keyIDs ...string) []credpool.Pledge {
+	t.Helper()
+	out := make([]credpool.Pledge, 0, len(keyIDs))
+	for _, keyID := range keyIDs {
+		p := credpool.Pledge{
+			PoolID: poolID, UserID: userID,
+			Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: ref, KeyID: keyID},
+			Enabled:    true, Health: credpool.HealthOK,
+		}
+		p.ID = credpool.APIKeyPledgeID(userID, ref, keyID)
+		if err := pledges.Upsert(context.Background(), p); err != nil {
+			t.Fatalf("seed %s: %v", keyID, err)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func deleteMyPledgeByID(s *Server, userID, pledgeID string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("DELETE", "/api/me/pool/entries/x", nil)
+	r.SetPathValue("pledge", pledgeID)
+	r = r.WithContext(auth.WithIdentity(context.Background(), auth.Identity{UserID: userID}))
+	w := httptest.NewRecorder()
+	s.handleDeleteMyPledgeByID(w, r)
+	return w
+}
+
+// Withdrawing by pledge id must remove EXACTLY the key named. A view that
+// hands the donor a (source, ref) address instead would withdraw whichever
+// of their two keys the store happened to resolve — the second half of a
+// donation gone because they withdrew the first.
+// Mutants: (1) the handler deletes the pledge it looked up without the
+// ownership check → the foreign-pledge case reds and eve's row disappears;
+// (2) the id is not compared to the caller → the 404 case reds with 204.
+func TestDeleteMyPledgeByID_deletesOnlyThatKey(t *testing.T) {
+	ctx := context.Background()
+	pledges := credpool.NewMemoryPledgeStore()
+	seeded := twoKeyPledges(t, pledges, "jo", "pool-1", "anthropic", "key-forfait-1", "key-forfait-2")
+	s := &Server{credPoolPledges: pledges, logger: iterlog.New(iterlog.LevelError, nil)}
+
+	w := deleteMyPledgeByID(s, "jo", seeded[0].ID)
+	if w.Code != 204 {
+		t.Fatalf("delete = %d (%s), want 204", w.Code, w.Body.String())
+	}
+	if _, err := pledges.Get(ctx, seeded[0].ID); !errors.Is(err, credpool.ErrNotFound) {
+		t.Errorf("the named key is still pledged (%v) — the withdrawal did nothing", err)
+	}
+	if _, err := pledges.Get(ctx, seeded[1].ID); err != nil {
+		t.Fatalf("the OTHER key of the same lender went with it (%v) — one withdrawal took both", err)
+	}
+
+	// A pledge of another donor is indistinguishable from one that does not
+	// exist: 404 both ways, and nothing is deleted.
+	foreign := twoKeyPledges(t, pledges, "eve", "pool-1", "anthropic", "key-eve")
+	w = deleteMyPledgeByID(s, "jo", foreign[0].ID)
+	if w.Code != 404 {
+		t.Fatalf("deleting another donor's pledge = %d (%s), want 404", w.Code, w.Body.String())
+	}
+	if _, err := pledges.Get(ctx, foreign[0].ID); err != nil {
+		t.Fatalf("another donor's pledge was deleted (%v) — the ownership check is the whole guard", err)
+	}
+	if w := deleteMyPledgeByID(s, "jo", "no-such-pledge"); w.Code != 404 {
+		t.Errorf("unknown id = %d, want 404 — a different status would tell a prober the id exists", w.Code)
+	}
+}
+
+// The (source, ref) shim stays exact while it lasts: an api_key pair that
+// names several pledges refuses instead of guessing, and ?key_id= picks one.
+// Mutant: the several-match case deletes matches[0] → the 400 assertion
+// reds and jo silently loses a key they never named.
+func TestDeleteMyPledge_shimNamesTheKey(t *testing.T) {
+	ctx := context.Background()
+	pledges := credpool.NewMemoryPledgeStore()
+	seeded := twoKeyPledges(t, pledges, "jo", "pool-1", "anthropic", "key-forfait-1", "key-forfait-2")
+	s := &Server{credPoolPledges: pledges, logger: iterlog.New(iterlog.LevelError, nil)}
+
+	shim := func(query string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("DELETE", "/api/me/pool/api_key/anthropic"+query, nil)
+		r.SetPathValue("source", "api_key")
+		r.SetPathValue("ref", "anthropic")
+		r = r.WithContext(auth.WithIdentity(ctx, auth.Identity{UserID: "jo"}))
+		w := httptest.NewRecorder()
+		s.handleDeleteMyPledge(w, r)
+		return w
+	}
+
+	if w := shim(""); w.Code != http.StatusBadRequest {
+		t.Fatalf("unnamed key with two pledges = %d (%s), want 400", w.Code, w.Body.String())
+	}
+	if _, err := pledges.Get(ctx, seeded[0].ID); err != nil {
+		t.Fatalf("the refused shim deleted something anyway: %v", err)
+	}
+	if w := shim("?key_id=key-forfait-2"); w.Code != 204 {
+		t.Fatalf("named key = %d (%s), want 204", w.Code, w.Body.String())
+	}
+	if _, err := pledges.Get(ctx, seeded[1].ID); !errors.Is(err, credpool.ErrNotFound) {
+		t.Errorf("the named key is still pledged (%v)", err)
+	}
+	if _, err := pledges.Get(ctx, seeded[0].ID); err != nil {
+		t.Errorf("the other key went with it (%v)", err)
+	}
+}
+
+// Two keys of one lender are two rows of the operator roster. The roster's
+// row key used to be (user, source, ref), which names ONE row for both — so
+// the second key's row was written over the first and the operator saw one
+// donation where there are two.
+// Mutants: (1) ID dropped from the donorView literal → every row's id is
+// empty and the distinctness assertion reds; (2) KeyID dropped → the two
+// rows read identically and the pairing assertion reds.
+func TestToPoolView_twoKeysOfSameLenderAreDistinguishable(t *testing.T) {
+	ctx := context.Background()
+	pledges := credpool.NewMemoryPledgeStore()
+	seeded := twoKeyPledges(t, pledges, "jo", "pool-1", "anthropic", "key-forfait-1", "key-forfait-2")
+	s := &Server{
+		credPoolPledges: pledges,
+		credPoolLedger:  credpool.NewMemoryLedger(),
+		logger:          iterlog.New(iterlog.LevelError, nil),
+	}
+	r := httptest.NewRequest("GET", "/api/teams/team-1/pool", nil)
+	r = r.WithContext(auth.WithIdentity(ctx, auth.Identity{UserID: "jo"}))
+	v := s.toPoolView(r, credpool.Pool{ID: "pool-1", OrgID: "org-1", Enabled: true}, true)
+
+	if len(v.Donors) != 2 {
+		t.Fatalf("roster rows = %d, want 2 — one row per key", len(v.Donors))
+	}
+	rowOf := map[string]string{}
+	for _, d := range v.Donors {
+		if d.ID == "" {
+			t.Fatalf("donor row %+v has no id — (user, source, ref) cannot key this roster", d)
+		}
+		if d.KeyID == "" {
+			t.Fatalf("donor row %+v names no key — the operator cannot tell which key it is", d)
+		}
+		rowOf[d.ID] = d.KeyID
+	}
+	if len(rowOf) != 2 {
+		t.Fatalf("roster ids collided: %v — two rows share one id", rowOf)
+	}
+	for _, p := range seeded {
+		if got, ok := rowOf[p.ID]; !ok || got != p.KeyID {
+			t.Errorf("entry %s (key %s) reads as %q in the roster, present=%v", p.ID, p.KeyID, got, ok)
+		}
+	}
+}
+
 // The donor roster is the contributors' business, not every org member's.
 func TestToPoolView_hidesTheRosterFromNonManagers(t *testing.T) {
 	ctx := context.Background()
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("alice", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		ID: credpool.PledgeID("alice", credpool.SourceOAuth, "claude_code", ""), PoolID: "pool-1",
 		UserID: "alice", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)

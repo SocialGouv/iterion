@@ -75,14 +75,73 @@ export interface NodeFinishedEvent extends RunEventBase {
   };
 }
 
+// A codemode program's nested call's place in a `call.parallel` batch
+// (pkg/scripthost BatchSlot): `first` is the frame id of the batch's first
+// entry, shared by the whole batch; `size` the entries the program
+// submitted, budget-refused ones included; `index` this entry's position.
+export interface ToolBatchSlot {
+  first: number;
+  size: number;
+  index: number;
+}
+
+// One bound the clamp moved away from what the author declared, keyed by
+// the bound's wire name (`tool_calls`, `memory_bytes`, `wall_ns`, …).
+export interface CodemodeLimitAdjustment {
+  field: string;
+  requested: number;
+  applied: number;
+}
+
+// A codemode program's report, carried on its call's completion event
+// (pkg/backend/model CodemodeReport). Optional keys are omitted when zero
+// or empty.
+export interface CodemodeReport {
+  // The bounds the host asked the child to hold, after the clamp, by wire
+  // name.
+  limits: Record<string, number>;
+  // What the child's kernel enforced (pkg/scripthost Applied): cpu_seconds,
+  // memory_bytes, memory_base_bytes, landlock_abi, sockets_denied,
+  // all_threads. A deployment's stricter rlimit wins, CPU rounds up to a
+  // whole second. Absent when no child reported it.
+  confinement?: Record<string, number | boolean>;
+  // The wall time the program actually had when the node's deadline left
+  // less than `limits.wall_ns`.
+  effective_wall_ns?: number;
+  adjusted?: CodemodeLimitAdjustment[];
+  // The scripthost refusal code; absent on success and on a host error,
+  // which the event's `error` names.
+  refusal?: string;
+  // Requests the parent served against the call budget, run-state ones
+  // included.
+  calls: number;
+  budget_refused?: number;
+  state_calls?: number;
+  source_bytes: number;
+}
+
 // Shared payload for the tool lifecycle trio — emitted by the
 // claude_code PreToolUse/PostToolUse hooks and the claw tool loop
 // (pkg/backend/model/hooks.go).
 export interface ToolEventData {
   tool?: string;
-  // Correlates start↔completion on backends that surface one
-  // (claude_code); absent on the claw single-tool loop.
+  // Correlates start↔completion. The claude_code hooks and the claw tool
+  // loop stamp it on every tool event, refusals included; it is absent on
+  // a DSL tool node's events and on events older than the field.
   tool_use_id?: string;
+  // The tool_use id of the call that made this one: a codemode program's
+  // nested call names its program's call. Absent on a call the model made
+  // itself and on every event older than the field — such events stay
+  // top-level, never regrouped by id shape or by order.
+  parent_tool_use_id?: string;
+  batch?: ToolBatchSlot;
+  // On a codemode call's completion only.
+  codemode?: CodemodeReport;
+  // "launcher" on the sandbox launcher's own refusal of a forwarded call:
+  // its tool_use_id and parent_tool_use_id are what the runner claimed, so
+  // a reader keeps it apart from the runner's own events. Only the launcher
+  // sets it; a relayed event cannot carry it.
+  emitted_by?: "launcher";
   // Tool input — object for structured tools, JSON string on some
   // paths; shape is tool-specific.
   input?: unknown;

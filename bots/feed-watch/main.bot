@@ -482,16 +482,12 @@ schema commit_output:
 ## a board.* grant would buy a card nobody reads. The grant alone opens
 ## them — iterion's own MCP servers sit outside a node's `mcp:` scope.
 ##
-## The gpt_forfait fallback keeps the digest deliverable when the
-## Anthropic subscription window (or iterion's own usage cap on it) is
-## exhausted: usage_window routes the SAME prompt to the OpenAI family
-## through claw, billed on the codex OAuth forfait when no metered key
-## is present. The deny gate survives the route — a sandboxed claw run
-## receives the policy over the IPC and enforces it in-container. The
-## crossing is loud (`model_fallback` event, `_fallback_used` /
-## `_served_by: gpt_forfait` on the output), and the deterministic
-## verify_message firewall downstream judges the digest the same way
-## whoever served it.
+## No model fallback: the route the launch resolves (the node defaults, or
+## a schedule's routing pin onto a team gateway key) is the only one the
+## digest spends. A digest that route cannot serve fails loudly, and
+## nothing is lost — the queue is cleared only after publication
+## (commit_state), so the next digest of the category picks up every
+## unsent item and its window note says how far back it reaches.
 agent synthesize:
   model: "${FEED_WATCH_MODEL:-}"
   backend: "${FEED_WATCH_BACKEND:-claude_code}"
@@ -502,11 +498,6 @@ agent synthesize:
   tools: [web_fetch, todo_write]
   tool_max_steps: 30
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
-  fallbacks:
-    gpt_forfait:
-      backend: "claw"
-      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-6-sol}"
-      on: [usage_window]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -807,7 +798,7 @@ tool fetch_feeds:
 ## digest can fire concurrently from cron.
 tool dedup_queue:
   script: |
-    import json, os, fcntl, subprocess
+    import json, os, fcntl, subprocess, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     entries_file = {{input.entries_file}}
     fetch_errors = {{input.errors}}
@@ -847,7 +838,8 @@ tool dedup_queue:
                              repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
@@ -1722,16 +1714,18 @@ tool notify_silence:
                 print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
                       repr(state_dir) + ': ' + ', '.join(outside[:5]), file=sys.stderr)
             elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
+                # git's own lines go to stderr, here and below: this
+                # node's stdout is its JSON answer.
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
-                                ' (' + str(silence_days) + 'd)'], check=True)
+                                ' (' + str(silence_days) + 'd)'], check=True, stdout=sys.stderr)
                 br = subprocess.run(['git', '-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD'],
                                     capture_output=True, text=True).stdout.strip() or 'HEAD'
                 for _ in range(5):
-                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD']).returncode == 0:
+                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD'], stdout=sys.stderr).returncode == 0:
                         break
                     if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
-                                       'origin', br]).returncode != 0:
+                                       'origin', br], stdout=sys.stderr).returncode != 0:
                         subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
                         print('feed-watch: could not push silence.json (rebase conflict)', file=sys.stderr)
                         break
@@ -1768,7 +1762,7 @@ tool notify_silence:
 ## dedup, and optionally commit+push the state.
 tool commit_state:
   script: |
-    import json, os, fcntl, subprocess, datetime
+    import json, os, fcntl, subprocess, datetime, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     snapshot_ids = set({{input.snapshot_ids}} or [])
@@ -1806,7 +1800,8 @@ tool commit_state:
                              repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        # git's summary goes to stderr: this node's stdout is its JSON answer.
+        subprocess.run(['git', 'commit', '-m', msg], check=True, stdout=sys.stderr)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):

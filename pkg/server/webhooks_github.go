@@ -462,6 +462,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 	meta := prforgeIssueMeta(p)
+	meta.DeliveryID = forgeDeliveryID(r, webhooks.ProviderGitHub)
 
 	// Common gates (event + project) mirror the PR path.
 	labeled := p.IsLabeled() && webhooks.MatchLabel(cfg.LabelAllowlist, p.LabelName)
@@ -508,11 +509,13 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, repo, issue#, trigger).
-	// The trigger is the label for the labeled path (re-applying a DIFFERENT
-	// label still launches; the SAME label replays no-op) and a stable "opened"
-	// marker for the zero-touch path (so a later label on the same issue is a
-	// distinct trigger, not a replay of the open).
+	// Idempotency: one trigger lane per (tenant, webhook, repo, issue#,
+	// trigger). The trigger is the label for the labeled path (a DIFFERENT
+	// label is its own lane) and a stable "opened" marker for the zero-touch
+	// path (so a later label on the same issue is a distinct trigger, not a
+	// replay of the open). The key is the lane's first claim: a redelivery of
+	// a claimed event replays no-op, and re-applying the SAME label launches
+	// again once the lane's previous run has ended (webhooks_trigger_lane.go).
 	trigger := p.LabelName
 	if !labeled {
 		trigger = "opened"
@@ -527,7 +530,8 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{})
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{},
+		newIssueTriggerLane(p.ProjectPath, meta.SubjectID, trigger))
 }
 
 // issueLabeledVars composes the launch vars an implementer bot (featurly)

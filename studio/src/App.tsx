@@ -33,6 +33,8 @@ const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const TriggersView = lazy(() => import("@/views/Triggers"));
+const SourcesView = lazy(() => import("@/views/Sources"));
+const PlugWizardView = lazy(() => import("@/views/Sources/PlugWizardView"));
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 const PluginsView = lazy(() => import("@/views/Plugins"));
 const SecretsView = lazy(() => import("@/views/Secrets"));
@@ -914,6 +916,19 @@ function AuthedApp() {
           <Route path="/triggers">
             <ErrorBoundary area="Automations view">
               <TriggersView />
+            </ErrorBoundary>
+          </Route>
+          {/* Same gating as /triggers: the wizard's enable writes a
+              subscription, and the catalog read model exists wherever the
+              trigger spine does. */}
+          <Route path="/sources">
+            <ErrorBoundary area="Sources view">
+              <SourcesView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/sources/plug">
+            <ErrorBoundary area="Plug wizard">
+              <PlugWizardView />
             </ErrorBoundary>
           </Route>
           {serverInfo?.marketplace_enabled ? (

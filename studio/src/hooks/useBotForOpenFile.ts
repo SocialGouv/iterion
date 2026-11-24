@@ -1,36 +1,40 @@
 import { useEffect, useMemo } from "react";
 
 import type { BotEntryWithSchema } from "@/api/bots";
+import { useMaybeAuth } from "@/auth/AuthContext";
+import { resolveOpenBot } from "@/lib/startSources";
 import { useBotsStore } from "@/store/bots";
 import { useDocumentStore } from "@/store/document";
 
-// matchesBundleMain reports whether the open file is `<bundle>/main.bot`
-// for the given bot, by exact match against the server-provided
-// workspace-relative path (Entry.rel_path) — the same form the editor
-// opens (currentFilePath is workspace-relative).
-function matchesBundleMain(filePath: string, bot: BotEntryWithSchema): boolean {
-  if (!bot.is_bundle || !bot.rel_path) return false;
-  return filePath === `${bot.rel_path}/main.bot`;
-}
-
 /**
- * useBotForOpenFile resolves the bundle bot whose `main.bot` is the file
- * currently open in the editor, or null when the open file is not a
- * bundle's main.bot (loose .bot, or no file). Drives the
- * conditional Inspector "Bot" metadata tab. Triggers a one-time bots
- * fetch so the tab works on a cold editor load.
+ * useOpenBot resolves the registry bot the editor's open file is — a
+ * bundle's main.bot, a loose bot, or a team's bot opened from its source
+ * (resolveOpenBot, the one reading of "which bot is open") — or null. It
+ * triggers a one-time bots fetch so it answers on a cold editor load.
  */
-export function useBotForOpenFile(): BotEntryWithSchema | null {
+export function useOpenBot(): BotEntryWithSchema | null {
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
+  // No auth context (a local studio, a canvas rendered alone) is no team.
+  const activeTeamID = useMaybeAuth()?.activeTeamID ?? "";
 
   useEffect(() => {
     if (bots === null) void fetchBots();
   }, [bots, fetchBots]);
 
-  return useMemo(() => {
-    if (!currentFilePath || !bots) return null;
-    return bots.find((b) => matchesBundleMain(currentFilePath, b)) ?? null;
-  }, [currentFilePath, bots]);
+  return useMemo(
+    () => resolveOpenBot(bots, currentFilePath, activeTeamID) ?? null,
+    [bots, currentFilePath, activeTeamID],
+  );
+}
+
+/**
+ * useBotForOpenFile is useOpenBot narrowed to a bundle: the conditional
+ * Inspector "Bot" metadata tab edits a bundle's manifest, which a loose
+ * .bot has none of.
+ */
+export function useBotForOpenFile(): BotEntryWithSchema | null {
+  const bot = useOpenBot();
+  return bot?.is_bundle ? bot : null;
 }

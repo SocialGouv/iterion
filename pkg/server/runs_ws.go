@@ -224,9 +224,40 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Cross-store mode skips this — the foreign FS store has no
 	// tenant scoping and the resolveCrossStore() above already
 	// gated the path under the iterion home.
-	if xStore == nil {
-		if _, lerr := s.runs.LoadRunCtx(r.Context(), runID); lerr != nil {
+	//
+	// The run read here is also the ORIGIN the socket keeps: its header is
+	// what every snapshot, event and log subscription of this socket binds
+	// to (runConn.streamCtx), so a run deleted and recreated under the same
+	// ID is refused rather than served in its place. The cross-store read
+	// binds the same way; a run absent from the foreign store stays
+	// unbound, as before, so one created after the upgrade is admitted.
+	//
+	// A dial carrying an expected birth was compared by runOriginGate: the
+	// socket binds exactly the origin the gate compared, without a second
+	// read a successor could slip into — and a redial carries its
+	// expectation again, on whichever replica serves it.
+	var origin store.RunObservation
+	admittedOnExpectation := false
+	if admitted, ok := admittedOrigin(r.Context(), runID); ok {
+		origin, admittedOnExpectation = admitted, true
+	} else if xStore == nil {
+		o, lerr := s.runs.CaptureRunOrigin(r.Context(), runID)
+		if lerr != nil {
 			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		origin = o
+	} else {
+		o, lerr := runview.CaptureRunOriginIn(r.Context(), xStore, runID)
+		switch {
+		case lerr == nil:
+			origin = o
+		case errors.Is(lerr, store.ErrRunNotFound):
+		case errors.Is(lerr, store.ErrRunDeleted):
+			http.Error(w, "run deleted", http.StatusGone)
+			return
+		default:
+			http.Error(w, "cross-store run could not be read: "+lerr.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -242,6 +273,8 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	rc.clientIP = s.clientIP(r)
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
+	rc.origin = origin
+	rc.admittedOnExpectation = admittedOnExpectation
 	// One store-agnostic streaming source per connection (ADR-053): a
 	// per-conn FileSource for cross-store observation (closed with the
 	// conn — see close()), the Service's shared source otherwise.
@@ -316,13 +349,22 @@ type runConn struct {
 	// per-connection FileSource, closed with the conn.
 	src runstream.Source
 
-	mu            sync.Mutex
-	subscribed    bool
-	eventSub      runstream.EventSubscription
-	logSubscribed bool
-	logSub        runstream.LogSubscription
-	closeOnce     sync.Once
-	closed        chan struct{}
+	// origin is the run the upgrade authorized, observed once by the
+	// upgrade's own read: header and stored tenant, provenance only. Zero
+	// (unobserved) when a cross-store run was absent at the upgrade.
+	origin store.RunObservation
+	// admittedOnExpectation reports that origin is the one runOriginGate
+	// compared with the dial's expected birth: the socket's mutating actions
+	// then run bound to it (actionContext). A socket dialed without an
+	// expectation keeps the unbound actions every older client gets.
+	admittedOnExpectation bool
+
+	mu                  sync.Mutex
+	eventOwner          *wsSubscriptionOwner
+	logOwner            *wsSubscriptionOwner
+	subscriptionWorkers sync.WaitGroup
+	closeOnce           sync.Once
+	closed              chan struct{}
 	// closeFrame is what the write pump writes when it reads the empty item
 	// sendCh carries as the close marker. Set once — the first reason is the
 	// one that decided — under mu, which the pump takes to read it.
@@ -356,6 +398,141 @@ func (c *runConn) authCtx() context.Context {
 	return store.WithIdentity(context.Background(), c.tenantID, c.userID)
 }
 
+// streamCtx is authCtx bound to the run the upgrade authorized
+// (store.BindRunObservation): the parent of every event and log reservation,
+// so a snapshot, replay or log read of any (re)subscription reads that run
+// and is refused for a successor recreated under the same ID. On a socket
+// admitted on an expected birth it is also the context of the mutating
+// actions that only touch the store (actionContext); a resume or a child run
+// never inherits it. A connection with no observed origin (a cross-store run
+// absent at the upgrade) stays unbound.
+func (c *runConn) streamCtx() (context.Context, error) {
+	ctx := c.authCtx()
+	if !c.origin.Observed() {
+		return ctx, nil
+	}
+	return store.BindRunObservation(ctx, c.origin)
+}
+
+// wsErrRunOriginLost answers a mutating envelope whose socket's origin is
+// gone: the run behind its ID was replaced or deleted after the upgrade.
+const wsErrRunOriginLost = "run_origin_lost"
+
+// wsCauseOriginLost is the cause the scope_lost close frame names when the
+// socket's origin is gone.
+const wsCauseOriginLost = "the run this socket watches was replaced or deleted"
+
+// runOriginLost reports whether err says the run behind the ID is no longer
+// the origin the reader bound: a successor's header, a deletion, an absence.
+func runOriginLost(err error) bool {
+	return errors.Is(err, store.ErrRunDataIdentityChanged) || errors.Is(err, store.ErrRunDeleted) || errors.Is(err, store.ErrRunNotFound)
+}
+
+// closeOnOriginLost closes a bound connection whose origin err reports gone,
+// behind the typed error envelope the caller already queued: nothing this
+// socket was opened on can be served again, and a redial authorizes whatever
+// run holds the ID now. An unbound connection, or any other error, keeps the
+// socket.
+func (c *runConn) closeOnOriginLost(err error) {
+	if !c.origin.Observed() || !runOriginLost(err) {
+		return
+	}
+	if c.server != nil && c.server.logger != nil {
+		c.server.logger.Info("server: ws of run %s lost its origin — closing: %v", c.runID, err)
+	}
+	c.closeWithReason(websocket.CloseNormalClosure, wsCloseScopeLost, wsCauseOriginLost)
+}
+
+// actionContext is the context a mutating envelope's action runs under. On
+// a socket the gate admitted on an expected birth — unless the operator
+// turned the comparison off (ITERION_RUN_BIRTH_CHECK=0) — it is the socket's
+// bound context (streamCtx), checked: the action's store accesses refuse a
+// successor recreated under the ID, and a store that may drop the context is
+// refused. Otherwise it is the unbound authCtx, unchecked: exactly the calls
+// an older client's socket makes.
+func (c *runConn) actionContext() (ctx context.Context, checked bool, err error) {
+	if !c.admittedOnExpectation || runBirthCheckOff() {
+		return c.authCtx(), false, nil
+	}
+	if err := store.RequireBoundObservationStore(c.server.runs.RunStore()); err != nil {
+		return nil, false, err
+	}
+	ctx, err = c.streamCtx()
+	if err != nil {
+		return nil, false, err
+	}
+	return ctx, true, nil
+}
+
+// actionExpectation is what an envelope that resumes the run carries into
+// the run service instead of a bound context (runview.ActionOrigin): the
+// socket's origin, checked on the sockets actionContext checks — the service
+// verifies the run it re-enters and the execution keeps no binding — and the
+// zero value on every other socket. A store that may drop the context is
+// refused as actionContext refuses it.
+func (c *runConn) actionExpectation() (runview.ActionOrigin, error) {
+	_, checked, err := c.actionContext()
+	if err != nil || !checked {
+		return runview.ActionOrigin{}, err
+	}
+	return runview.ExpectRunOrigin(c.origin), nil
+}
+
+// sendScopeUnavailable answers an envelope whose action could not be bound
+// to the socket's origin (actionContext): the action does not run.
+func (c *runConn) sendScopeUnavailable(env runWSEnvelope, err error) {
+	c.sendError(errCodeScopeUnavailable, "the run this socket watches cannot be bound to its origin: "+err.Error(), env.AckID)
+}
+
+// writeActionFailure answers a checked envelope's failure by the rule of the
+// HTTP actions (Server.writeActionFailure): it reads the run's current
+// origin, unbound, and only when the run is gone or holds another birth than
+// the socket's sends run_origin_lost and closes the socket scope_lost. It
+// reports whether it answered; otherwise the envelope's own handling applies.
+func (c *runConn) writeActionFailure(env runWSEnvelope, err error) bool {
+	if err == nil || !c.origin.Observed() {
+		return false
+	}
+	current, rerr := c.server.runs.CaptureRunOrigin(c.authCtx(), c.runID)
+	switch {
+	case rerr == nil && current.Header().BirthID == c.origin.Header().BirthID:
+		return false
+	case rerr == nil || runOriginLost(rerr):
+	default:
+		if c.server.logger != nil {
+			c.server.logger.Warn("server: ws of run %s: a %s failed (%v) and its origin could not be read again: %v", c.runID, env.Type, err, rerr)
+		}
+		return false
+	}
+	if c.server.logger != nil {
+		c.server.logger.Warn("server: ws of run %s: a %s admitted at birth %s failed on a lost origin: %v", c.runID, env.Type, quoteBirth(c.origin.Header().BirthID), err)
+	}
+	c.sendError(wsErrRunOriginLost, wsCauseOriginLost+" — reopen it to act on the run that holds this ID now", env.AckID)
+	c.closeWithReason(websocket.CloseNormalClosure, wsCloseScopeLost, wsCauseOriginLost)
+	return true
+}
+
+// refuseChecked answers an envelope's refusal: on a checked envelope by the
+// failure rule first (writeActionFailure — the refusal may have judged the
+// run that holds the ID now, not the socket's origin), otherwise, or when
+// the origin holds, with code and msg.
+func (c *runConn) refuseChecked(env runWSEnvelope, checked bool, cause error, code, msg string) {
+	if checked && c.writeActionFailure(env, cause) {
+		return
+	}
+	c.sendError(code, msg, env.AckID)
+}
+
+// requireBoundSource refuses, before any subscription, a stream source that
+// cannot honor the bound context of a connection with an origin: stripping
+// the binding would serve whatever run holds the ID now.
+func (c *runConn) requireBoundSource() error {
+	if !c.origin.Observed() {
+		return nil
+	}
+	return runstream.RequireBoundObservationSource(c.src)
+}
+
 func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
 	return &runConn{
 		server: s,
@@ -367,7 +544,7 @@ func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
 }
 
 func (c *runConn) run() {
-	defer c.close()
+	defer c.finishConnection()
 	errtrack.Go("server.runWS.writePump", c.writePump)
 	errtrack.Go("server.runWS.watchLifetime", c.watchLifetime)
 	errtrack.Go("server.runWS.watchStanding", c.watchStanding)
@@ -423,7 +600,7 @@ func (c *runConn) watchStanding() {
 		case <-t.C:
 		}
 		c.mu.Lock()
-		idle := !c.subscribed && !c.logSubscribed
+		idle := c.eventOwner == nil && c.logOwner == nil
 		c.mu.Unlock()
 		if idle {
 			continue
@@ -489,21 +666,20 @@ func (c *runConn) closeWithReason(code int, token, cause string) {
 
 func (c *runConn) close() {
 	c.closeOnce.Do(func() {
-		close(c.closed)
 		c.mu.Lock()
-		if c.eventSub != nil {
-			_ = c.eventSub.Close()
-			c.eventSub = nil
-		}
-		if c.logSub != nil {
-			_ = c.logSub.Close()
-			c.logSub = nil
-		}
+		close(c.closed)
+		events, logs := c.eventOwner, c.logOwner
+		c.eventOwner, c.logOwner = nil, nil
 		c.mu.Unlock()
-		if c.xStore != nil && c.src != nil {
-			_ = c.src.Close() // per-connection cross-store FileSource
+		if events != nil {
+			events.cancel()
 		}
-		_ = c.conn.Close()
+		if logs != nil {
+			logs.cancel()
+		}
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
 		if c.server.cfg.Metrics != nil {
 			c.server.cfg.Metrics.WSConnections.Dec()
 		}
@@ -606,12 +782,13 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 //
 // A connection carrying no credential is one no auth context ever reached
 // (the local run console, a server built without the middleware): there is
-// nothing to ask about. A cross-store connection drives no run of this
-// server (its mutating envelopes are refused downstream), so its scope is
-// not re-derived here; its credential still is.
+// no credential to ask about, but its origin is still compared (originHolds).
+// A cross-store connection drives no run of this server (its mutating
+// envelopes are refused downstream), so neither its origin nor its scope is
+// re-derived here; its credential still is.
 func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	if c.identity.Credential == "" {
-		return true
+		return c.originHolds(env)
 	}
 	ctx, cancel := context.WithTimeout(c.authCtx(), runWSStandingTimeout)
 	defer cancel()
@@ -633,6 +810,9 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	}
 	if c.xStore != nil {
 		return true
+	}
+	if !c.originHolds(env) {
+		return false
 	}
 	team, terr := c.server.runTenant(ctx, c.runID)
 	if terr != nil {
@@ -666,6 +846,47 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	return true
 }
 
+// originHolds asks, per envelope that changes the run, whether the run behind
+// this socket's ID is still the origin its upgrade authorized: the run is
+// loaded under the bound context (streamCtx), which a native store refuses for
+// a successor recreated under the same ID. A replaced, deleted or missing
+// origin refuses the envelope with run_origin_lost and closes the socket
+// scope_lost — the run it was opened on is gone, and the action would land on
+// another. A read that did not complete refuses THAT envelope only.
+//
+// This is an admission check, not an atomic guarantee: the run can still be
+// replaced between the check and the action. On a socket admitted on an
+// expected birth the action itself runs bound or carries the origin
+// (actionContext, actionExpectation); on any other socket it keeps the
+// unbound authCtx. A resume or a child run never inherits the binding.
+func (c *runConn) originHolds(env runWSEnvelope) bool {
+	if c.xStore != nil || !c.origin.Observed() {
+		return true
+	}
+	bound, err := c.streamCtx()
+	if err == nil {
+		ctx, cancel := context.WithTimeout(bound, runWSStandingTimeout)
+		_, err = c.server.runs.LoadRunCtx(ctx, c.runID)
+		cancel()
+	}
+	if err == nil {
+		return true
+	}
+	if runOriginLost(err) {
+		if c.server.logger != nil {
+			c.server.logger.Warn("server: ws of run %s refused a %s: %v", c.runID, env.Type, err)
+		}
+		c.sendError(wsErrRunOriginLost, wsCauseOriginLost+" — reopen it to act on the run that holds this ID now", env.AckID)
+		c.closeOnOriginLost(err)
+		return false
+	}
+	if c.server.logger != nil {
+		c.server.logger.Error("server: ws of run %s: its origin could not be checked: %v", c.runID, err)
+	}
+	c.sendError("scope_unavailable", "the run this socket watches could not be checked — retry", env.AckID)
+	return false
+}
+
 // handleSubscribe registers the connection's event subscription and
 // sends the catch-up sequence: snapshot first, then (with
 // replay_history) any persisted events with seq >= from_seq, then the
@@ -681,86 +902,115 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 			return
 		}
 	}
-
-	c.mu.Lock()
-	if c.subscribed {
-		c.mu.Unlock()
-		c.sendAck(env.AckID)
+	if err := c.requireBoundSource(); err != nil {
+		c.sendError("event_stream_failed", err.Error(), env.AckID)
 		return
 	}
-	c.subscribed = true
-	c.mu.Unlock()
-
-	snap, err := c.snapshot()
+	parent, err := c.streamCtx()
 	if err != nil {
-		c.mu.Lock()
-		c.subscribed = false
-		c.mu.Unlock()
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
 		return
 	}
-	// The caller's standing for THIS run (the ADR-148 review's F4): the
-	// upgrade resolved it; the studio derives its action affordances
-	// from it. Server-attached after the deterministic build, like the
-	// REST path.
+	owner, created := c.reserveSubscription(parent, false)
+	if !created {
+		if owner != nil {
+			c.sendAck(env.AckID)
+		}
+		return
+	}
+	var sub runstream.EventSubscription
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			if sub != nil {
+				_ = sub.Close()
+			}
+			c.clearFailedSubscription(owner, false)
+			c.finishSubscription(owner)
+		}
+	}()
+	snap, err := c.snapshotCtx(owner.ctx)
+	if err != nil {
+		if owner.ctx.Err() == nil {
+			c.sendError("snapshot_failed", err.Error(), env.AckID)
+			c.closeOnOriginLost(err)
+		}
+		return
+	}
+	if owner.ctx.Err() != nil {
+		return
+	}
 	if c.identity.Role != "" {
 		snap.Viewer = &runview.RunViewer{Role: string(c.identity.Role), Via: c.identity.Via}
 	}
-	c.sendEnvelope(wsTypeSnapshot, snap, env.AckID)
-
-	// Lazy mode: advance the effective replay floor past the snapshot
-	// so the source sees "nothing to replay". Live tail still flows
-	// unaffected. The frontend pulls history on demand via
-	// /api/runs/{id}/events.
-	effectiveFromSeq := req.FromSeq
-	if !req.ReplayHistory && snap.LastSeq != runview.NoEventsSeq {
-		effectiveFromSeq = snap.LastSeq + 1
-	}
-
-	sub, err := c.src.SubscribeEvents(c.authCtx(), c.runID, effectiveFromSeq)
-	if err != nil {
-		c.mu.Lock()
-		c.subscribed = false
-		c.mu.Unlock()
-		c.sendError("event_stream_failed", err.Error(), "")
+	if !c.sendEnvelope(wsTypeSnapshot, snap, env.AckID) {
 		return
 	}
-	c.mu.Lock()
-	c.eventSub = sub
-	c.mu.Unlock()
-	errtrack.Go("server.runWS.pumpEvents", func() { c.pumpEvents(sub) })
+	position := runstream.EventCursor{Seq: req.FromSeq}
+	if !req.ReplayHistory && snap.LastSeq != runview.NoEventsSeq {
+		position = runstream.EventCursor{Seq: snap.LastSeq, After: true}
+	}
+	sub, err = runstream.SubscribeEventsCursor(owner.ctx, c.src, c.runID, position)
+	if err != nil {
+		if owner.ctx.Err() == nil {
+			c.sendError("event_stream_failed", err.Error(), "")
+			c.closeOnOriginLost(err)
+		}
+		return
+	}
+	if sub == nil {
+		c.sendError("event_stream_failed", "source returned no subscription", "")
+		return
+	}
+	if !c.ownsSubscription(owner, false) {
+		return
+	}
+	handedOff = true
+	errtrack.Go("server.runWS.pumpEvents", func() { defer c.finishSubscription(owner); c.pumpEventsCtx(owner.ctx, sub) })
 }
 
 // snapshot builds the subscribe-time snapshot from whichever store this
 // connection observes — the only remaining storage difference in the
 // WS layer (the foreign store has no Service wrapper to ask).
-func (c *runConn) snapshot() (*runview.RunSnapshot, error) {
+func (c *runConn) snapshotCtx(ctx context.Context) (*runview.RunSnapshot, error) {
 	if c.xStore != nil {
-		return runview.BuildSnapshot(context.Background(), c.xStore, c.runID)
+		return runview.BuildSnapshot(ctx, c.xStore, c.runID)
 	}
-	return c.server.runs.SnapshotCtx(c.authCtx(), c.runID)
+	return c.server.runs.SnapshotCtx(ctx, c.runID)
 }
 
 // pumpEvents forwards the subscription to the WS: replay pages ship as
 // event_batch envelopes (one frame per page instead of one per event),
 // live deliveries as single event envelopes. The Events channel closing
-// means the stream ended — a corrupted event log (surfaced on Errors
-// right before the close) becomes an events_corrupted error envelope,
-// any other end becomes terminated. Transient source errors (e.g. a
+// means the stream ended. Already-published permanent errors become error
+// envelopes (preserving events_corrupted); clean completion becomes terminated.
+// Transient source errors (e.g. a
 // change-stream reconnect notice) are logged and the stream stays open.
 func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
+	c.pumpEventsCtx(c.authCtx(), sub)
+}
+func (c *runConn) pumpEventsCtx(ctx context.Context, sub runstream.EventSubscription) {
 	defer func() { _ = sub.Close() }()
 	events := sub.Events()
 	errs := sub.Errors()
 	var fatal error
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
+		case <-ctx.Done():
+			return
 		case <-c.closed:
 			return
 		case batch, ok := <-events:
 			if !ok {
+				fatal = drainRunStreamFatal(fatal, errs)
 				if errors.Is(fatal, store.ErrEventsCorrupted) {
 					c.sendError("events_corrupted", fatal.Error(), "")
+				} else if fatal != nil {
+					c.sendError("event_stream_failed", fatal.Error(), "")
+					c.closeOnOriginLost(fatal)
 				} else {
 					c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
 				}
@@ -783,7 +1033,7 @@ func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
 				errs = nil
 				continue
 			}
-			fatal = err
+			fatal = retainRunStreamFatal(fatal, err)
 			if c.server.logger != nil {
 				c.server.logger.Warn("server: ws event stream %s: %v", c.runID, err)
 			}
@@ -792,13 +1042,7 @@ func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
 }
 
 func (c *runConn) handleUnsubscribe(env runWSEnvelope) {
-	c.mu.Lock()
-	if c.eventSub != nil {
-		_ = c.eventSub.Close()
-		c.eventSub = nil
-	}
-	c.subscribed = false
-	c.mu.Unlock()
+	c.unsubscribe(false)
 	c.sendAck(env.AckID)
 }
 
@@ -814,7 +1058,21 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 	if c.server.logger != nil {
 		c.server.logger.Info("server: cancel run %q via WS from %s", c.runID, c.clientIP)
 	}
-	err := c.server.runs.Cancel(c.runID)
+	// On a socket admitted on an expected birth the cancel is the HTTP
+	// one's: the cloud flip and the inactive flip are bound to the socket's
+	// origin, the ID-keyed signals behind originHolds' bound load, and a
+	// refusal on a lost origin is run_origin_lost, never an ack.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	var err error
+	if checked {
+		err = c.server.runs.CancelCtx(context.WithoutCancel(ctx), c.runID)
+	} else {
+		err = c.server.runs.Cancel(c.runID)
+	}
 	if err != nil && errors.Is(err, runview.ErrRunNotActive) {
 		// Match the HTTP handler's behaviour: dispatcher-spawned runs
 		// aren't tracked by the runview Manager — try the dispatcher's
@@ -824,12 +1082,20 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 			c.sendAck(env.AckID)
 			return
 		}
-		if _, ciErr := c.server.runs.CancelInactiveCtx(c.authCtx(), c.runID); ciErr != nil && c.server.logger != nil {
-			c.server.logger.Warn("server: ws cancel of inactive run %s: %v", c.runID, ciErr)
+		if _, ciErr := c.server.runs.CancelInactiveCtx(ctx, c.runID); ciErr != nil {
+			if checked && c.writeActionFailure(env, ciErr) {
+				return
+			}
+			if c.server.logger != nil {
+				c.server.logger.Warn("server: ws cancel of inactive run %s: %v", c.runID, ciErr)
+			}
 		}
 		err = nil
 	}
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError("cancel_failed", err.Error(), env.AckID)
 		return
 	}
@@ -848,7 +1114,18 @@ func (c *runConn) handlePause(env runWSEnvelope) {
 	if c.server.logger != nil {
 		c.server.logger.Info("server: pause run %q via WS from %s", c.runID, c.clientIP)
 	}
+	// The pause is an ID-keyed signal: originHolds' bound load is its
+	// pre-check. On a socket admitted on an expected birth a refusal on a
+	// lost origin is run_origin_lost, as over HTTP.
+	_, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
 	if err := c.server.runs.Pause(c.runID); err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		if errors.Is(err, runview.ErrRunNotActive) {
 			// The run isn't held in this process — either terminal or
 			// running cross-process (cloud). Studio hides the Pause
@@ -893,6 +1170,17 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// never a later read the gate did not judge. What the gate admitted
 	// rides the ResumeSpec, and the run service refuses a resume whose
 	// document names another trust.
+	//
+	// On a socket admitted on an expected birth the resume carries the
+	// socket's origin (ResumeSpec.ExpectOrigin): the run service verifies the
+	// run it re-enters, so a successor recreated under the ID is refused,
+	// and every failure on a lost origin is run_origin_lost. That load and
+	// the chat-history read stay unbound, as the HTTP resume's do.
+	expect, eerr := c.actionExpectation()
+	if eerr != nil {
+		c.sendScopeUnavailable(env, eerr)
+		return
+	}
 	var (
 		runMeta *store.Run
 		loadErr = errors.New("run service unavailable")
@@ -906,7 +1194,9 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)
 	if d != nil {
-		c.sendError(d.reason, d.detail, env.AckID)
+		// The subject was read from the run behind the ID now: on a lost
+		// origin the denial judged another run, and the loss is the answer.
+		c.refuseChecked(env, expect.Checked(), d.err(), d.reason, d.detail)
 		return
 	}
 	// The gate's run-quota increment IS the metering, so the returns between
@@ -932,6 +1222,9 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		return
 	}
 	if loadErr != nil || runMeta == nil {
+		if expect.Checked() && c.writeActionFailure(env, loadErr) {
+			return
+		}
 		msg := "run not found"
 		if loadErr != nil {
 			msg = loadErr.Error()
@@ -943,7 +1236,8 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	if filePath == "" {
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
-			c.sendError("file_path_required", "run has no persisted FilePath; supply file_path or source in payload", env.AckID)
+			const msg = "run has no persisted FilePath; supply file_path or source in payload"
+			c.refuseChecked(env, expect.Checked(), errors.New(msg), "file_path_required", msg)
 			return
 		}
 	}
@@ -953,11 +1247,14 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		if errors.Is(err, bundle.ErrAuthorDocument) {
 			code = "author_document"
 		}
-		c.sendError(code, err.Error(), env.AckID)
+		c.refuseChecked(env, expect.Checked(), err, code, err.Error())
 		return
 	}
 	hostInputs, err := c.server.assistantChatHostInputs(c.authCtx(), runMeta)
 	if err != nil {
+		if expect.Checked() && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError("chat_history_failed", err.Error(), env.AckID)
 		return
 	}
@@ -966,18 +1263,22 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// tenant_id filter still applies on writes.
 	runMayExist = true
 	if _, err := c.server.runs.Resume(c.authCtx(), runview.ResumeSpec{
-		RunID:      c.runID,
-		FilePath:   absPath,
-		Source:     req.Source,
-		Answers:    req.Answers,
-		HostInputs: hostInputs,
-		Admitted:   gateAdmitted(subj, adm),
+		RunID:        c.runID,
+		FilePath:     absPath,
+		Source:       req.Source,
+		Answers:      req.Answers,
+		HostInputs:   hostInputs,
+		Admitted:     gateAdmitted(subj, adm),
+		ExpectOrigin: expect,
 	}); err != nil {
 		// The callee reports whether anything durable happened — see
 		// handleLaunchRun. ErrRunNotResumable carries no marker, so the
 		// routine lost race below gives its unit back.
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false
+		}
+		if expect.Checked() && c.writeActionFailure(env, err) {
+			return
 		}
 		// A parked gate has two legitimate resumers — the operator and the
 		// assistant-watch coordinator delivering an event. The loser of that
@@ -1024,8 +1325,18 @@ func (c *runConn) handleQueueMessage(env runWSEnvelope) {
 	if len(req.Skills) > 0 {
 		qopts = append(qopts, runview.WithMessageSkills(req.Skills))
 	}
-	msg, err := c.server.runs.QueueMessage(c.authCtx(), c.runID, req.Text, qopts...)
+	// On a socket admitted on an expected birth the load and the append are
+	// bound to the socket's origin.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	msg, err := c.server.runs.QueueMessage(ctx, c.runID, req.Text, qopts...)
 	if err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		c.sendError("queue_failed", err.Error(), env.AckID)
 		return
 	}
@@ -1046,7 +1357,17 @@ func (c *runConn) handleCancelQueuedMessage(env runWSEnvelope) {
 		c.sendError("missing_message_id", "message_id is required", env.AckID)
 		return
 	}
-	if err := c.server.runs.CancelQueuedMessage(c.authCtx(), c.runID, req.MessageID); err != nil {
+	// On a socket admitted on an expected birth the inbox CAS is bound to the
+	// socket's origin.
+	ctx, checked, cerr := c.actionContext()
+	if cerr != nil {
+		c.sendScopeUnavailable(env, cerr)
+		return
+	}
+	if err := c.server.runs.CancelQueuedMessage(ctx, c.runID, req.MessageID); err != nil {
+		if checked && c.writeActionFailure(env, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, store.ErrQueuedMessageNotFound):
 			c.sendError("not_found", err.Error(), env.AckID)

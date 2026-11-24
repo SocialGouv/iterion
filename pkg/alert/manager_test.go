@@ -48,7 +48,7 @@ func newTestManager(sink Sink) *Manager {
 	return NewManager(
 		WithStallTimeout(5*time.Minute),
 		WithBaseURL("http://localhost:4891/"),
-		WithRunLookup(func(id string) (string, bool) { return "nice-run", true }),
+		WithRunLookup(func(_ string, _ store.RunObservation, _ bool) (string, bool) { return "nice-run", true }),
 		WithSinks(sink),
 	)
 }
@@ -62,7 +62,7 @@ func TestDispatchRecoversFromPanickingSink(t *testing.T) {
 	panicSink := FuncSink(func(context.Context, Alert) { panic("boom") })
 	m := NewManager()
 
-	m.dispatch([]Sink{panicSink, capture}, []Alert{{RunID: "r1"}})
+	m.dispatch([]Sink{panicSink, capture}, []delivery{{a: Alert{RunID: "r1"}}})
 
 	waitFor(t, func() bool { return len(capture.snapshot()) == 1 })
 	if got := capture.snapshot(); got[0].RunID != "r1" {
@@ -171,11 +171,11 @@ func TestStallFiresOnceAndReArms(t *testing.T) {
 	// 6 minutes since last progress — stall fires.
 	clock = base.Add(6 * time.Minute)
 	fired := m.checkStalls(clock)
-	if len(fired) != 1 || fired[0].Kind != KindStall {
+	if len(fired) != 1 || fired[0].a.Kind != KindStall {
 		t.Fatalf("want 1 stall, got %+v", fired)
 	}
-	if fired[0].NodeID != "agent" {
-		t.Errorf("stall NodeID = %q, want agent", fired[0].NodeID)
+	if fired[0].a.NodeID != "agent" {
+		t.Errorf("stall NodeID = %q, want agent", fired[0].a.NodeID)
 	}
 
 	// Still stalled — must not re-fire.
@@ -226,7 +226,7 @@ func TestNoStallWhilePausedForHuman(t *testing.T) {
 	// real stall DOES fire — the suppression was scoped to the pause.
 	clock = resumeAt.Add(6 * time.Minute)
 	fired := m.checkStalls(clock)
-	if len(fired) != 1 || fired[0].Kind != KindStall {
+	if len(fired) != 1 || fired[0].a.Kind != KindStall {
 		t.Fatalf("post-resume genuine stall did not fire: %+v", fired)
 	}
 }

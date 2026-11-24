@@ -44,6 +44,51 @@ erDiagram
         int64 next_plan_seq
         int64 next_note_seq
     }
+    run_data_v1_events {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int64 seq
+        string type
+        map data
+        int64 log_offset
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_logs {
+        ObjectId _id PK "identity is unique (data_namespace, offset)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int64 offset
+        bytes data
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_plans {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int seq
+        object todos "an ARRAY of plan todos"
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_notes {
+        ObjectId _id PK "identity is unique (data_namespace, seq)"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        int seq
+        string author
+        string body
+        string tenant_id FK "team id"
+        datetime ts
+    }
+    run_data_v1_seq {
+        object _id PK "{tenant_id, data_namespace}"
+        int64 next_seq
+        int64 next_plan_seq
+        int64 next_note_seq
+    }
     interactions {
         object _id PK "{run_id, interaction_id}"
         string run_id FK "runs._id"
@@ -62,6 +107,16 @@ erDiagram
         string text
         string node_id
         string[] skill_refs
+        datetime queued_at
+        string tenant_id FK "team id"
+    }
+    run_data_v1_user_messages {
+        object _id PK "{run_id, message_id, namespace}"
+        string run_id FK "logical run ID; not full birth identity"
+        string data_namespace "run-data-v1/fFORMAT/run/birth/"
+        string interaction_id "logical interaction ID"
+        string status "queued|delivered|consumed|cancelled"
+        string text
         datetime queued_at
         string tenant_id FK "team id"
     }
@@ -100,11 +155,19 @@ erDiagram
     run_turns     }o--|| runs : "run_id"
     interactions  }o--|| runs : "run_id"
     user_messages }o--|| runs : "run_id"
+    run_data_v1_user_messages }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_events }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_logs }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_plans }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_notes }o--o| runs : "logical run_id; namespace retains birth"
+    run_data_v1_seq }o--o| runs : "_id.data_namespace retains run and birth"
     runs          |o--o| interactions : "checkpoint.interaction_id"
     user_messages }o--o| interactions : "interaction_id"
 ```
 
-- Every stream names its run with a top-level `run_id`. `run_seq` is the one exception — its run id lives *inside* the compound `_id`. The counter is one row per (tenant value, run), not one per run.
+- Payload streams name their logical run with a top-level `run_id`. Historical `run_seq` stores the run id inside compound `_id` and has one row per (tenant value, run). Staged `run_data_v1_seq` instead keys its three independent counters by `{tenant_id, data_namespace}`; the namespace retains the format, run and birth, with no top-level `run_id`.
+- `run_data_v1_user_messages` is the staged incarnation inbox; protocol-one admission remains closed. Its namespace also participates in reads, CAS and cleanup. Rows can outlive a published header, so the organization sweep removes all births by tenant, including orphan rows.
+- The five staged `run_data_v1_events`, `run_data_v1_logs`, `run_data_v1_plans`, `run_data_v1_notes` and `run_data_v1_seq` collections isolate stream data and counters by incarnation. Admission remains closed. Their logical relationships are optional because rows can outlive the parent header; tenant cleanup covers orphan births. Notes and counters have no TTL.
 - A gap in `seq` is normal.
 - `interactions` is the durable question/answer record and `runs.checkpoint.interaction_id` is only a pointer to the pending one.
 - `dev` is a tenant *value*, not a team. A server started with `DisableAuth` stamps the store ctx under the id `dev` for both tenant and owner, so every row written in that ctx — for example `events` — carries `tenant_id: dev`.
@@ -387,8 +450,14 @@ stateDiagram-v2
 | `events` | `pkg/store/mongo` | `store.Event` | `tenant_id` — team id | unique `(run_id, seq)`; TTL `ts` after `eventsTTLDays` | `file events.jsonl` |
 | `run_logs` | `pkg/store/mongo` | `runLogDoc` | `tenant_id` — team id | unique `(run_id, offset)`; TTL `ts` after `eventsTTLDays` | `file run.log` |
 | `run_seq` | `pkg/store/mongo` | `bson.M` literal, no Go struct | inside `_id` — `{tenant_id, run_id}`, team id | `_id` only; no TTL | `none (cloud-only)` |
+| `run_data_v1_events` | `pkg/store/mongo` | `store.Event` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/events.jsonl` |
+| `run_data_v1_logs` | `pkg/store/mongo` | `runLogDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, offset)`; nonunique `(tenant_id, data_namespace, offset)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/run.log` |
+| `run_data_v1_plans` | `pkg/store/mongo` | `runPlanDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; TTL `ts` when `eventsTTLDays > 0` | staged file `.run-data-v1/f<format>/<run>/<birth>/plans/<NNNN>.json` |
+| `run_data_v1_notes` | `pkg/store/mongo` | `runNoteDoc` stamped with namespace | `tenant_id` — canonical parent tenant | unique `(data_namespace, seq)`; nonunique `(tenant_id, data_namespace, seq)`; no TTL | staged file `.run-data-v1/f<format>/<run>/<birth>/notes/<NNNN>.json` |
+| `run_data_v1_seq` | `pkg/store/mongo` | `bson.M` literal, no Go struct | inside `_id` — `{tenant_id, data_namespace}`, canonical parent tenant | `_id` only; no TTL | `none (cloud-only)` |
 | `interactions` | `pkg/store/mongo` | `interactionDoc` wrapping `store.Interaction` | `tenant_id` — team id | `_id` `{run_id, interaction_id}`; no TTL | `file interactions/<id>.json` |
 | `user_messages` | `pkg/store/mongo` | `userMessageDoc` wrapping `store.QueuedUserMessage` | `tenant_id` — team id | `_id` `{run_id, message_id}`; no TTL | `file user_messages.jsonl` |
+| `run_data_v1_user_messages` | `pkg/store/mongo` | `userMessageDoc` wrapping `store.QueuedUserMessage` | `tenant_id` — team id | `_id` `{run_id, message_id, namespace}`; nonunique `(data_namespace, run_id, queued_at)` and `(data_namespace, run_id, status, queued_at)`; no TTL | staged file `.run-data-v1/f<format>/<run>/<birth>/user_messages.jsonl` |
 | `run_plans` | `pkg/store/mongo` | `runPlanDoc` | `tenant_id` — team id | unique `(run_id, seq)`; TTL `ts` after `eventsTTLDays` | `file plans/<NNNN>.json` |
 | `run_notes` | `pkg/store/mongo` | `runNoteDoc` | `tenant_id` — team id | unique `(run_id, seq)`; no TTL | `file notes/<NNNN>.json` |
 | `run_turns` | `pkg/store/mongo` | `runTurnDoc` for `store.TurnCheckpoint` | `tenant_id` — team id | unique `(run_id, node_id, loop_iter, turn_index)`; TTL `ts` | `file turns/<node>/<iter>/<turn>.json` |

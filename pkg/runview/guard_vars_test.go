@@ -206,10 +206,10 @@ func TestASubbotChildNeverDeclaresItsWayToTheParentsGrant(t *testing.T) {
 	if res.Workflow == nil {
 		t.Fatalf("compile: %v", res.Diagnostics)
 	}
-	exec, err := BuildExecutor(ExecutorSpec{
+	exec, err := BuildExecutor(preparedExecutorFixture(t, ExecutorSpec{
 		Ctx: context.Background(), Store: st, RunID: "run-child", ParentRunID: "run-parent", Workflow: res.Workflow,
 		Vars: map[string]string{}, WorkDir: t.TempDir(), StoreDir: t.TempDir(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("BuildExecutor: %v", err)
 	}

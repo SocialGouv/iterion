@@ -73,3 +73,16 @@ describe("buildBudgetPayload", () => {
     ).toEqual({ max_duration: "4 hours" });
   });
 });
+
+it("a sub-1 fraction is dropped, never sent as the zero the comment promises to omit", () => {
+  // Same class as the codemode twin (revi gate on #3354): flooring after the
+  // positivity test would have sent max_tokens: 0.
+  expect(buildBudgetPayload({ ...emptyBudgetFieldValues, maxTokens: "0.5" })).toBeUndefined();
+  expect(
+    buildBudgetPayload({ ...emptyBudgetFieldValues, maxIterations: "0.9" }),
+  ).toBeUndefined();
+  // Cost is DOLLARS, not a count: a sub-1 cap is real and must travel.
+  expect(
+    buildBudgetPayload({ ...emptyBudgetFieldValues, maxCostUsd: "0.004" }),
+  ).toEqual({ max_cost_usd: 0.004 });
+});

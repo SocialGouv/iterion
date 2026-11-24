@@ -45,6 +45,8 @@ export const ROUTE_TITLES: readonly RouteTitle[] = [
   { pattern: "/dispatcher", title: "Dispatcher" },
   { pattern: "/insights", title: "Insights" },
   // The nav names this view "Automations"; the URL kept the old name.
+  { pattern: "/sources", title: "Sources" },
+  { pattern: "/sources/plug", title: "Brancher une source" },
   { pattern: "/triggers", title: "Automations" },
   { pattern: "/marketplace", title: "Marketplace" },
   { pattern: "/plugins", title: "Plugins" },

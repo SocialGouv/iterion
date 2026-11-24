@@ -79,6 +79,10 @@ func TestLeaseHold_aParkReleasesItsLeaseWithinTheCeiling(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		prepared, err := store.PrepareRunInvocation(t.Context(), st, store.NewLegacyRunInvocation{Spec: store.RunCreateSpec{ID: "run-park", WorkflowName: "wf"}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		up := &stuckUploader{RunStore: st, entered: make(chan struct{}), release: make(chan struct{})}
 		lease := &countingLease{}
 		r := &Runner{cfg: Config{Store: up, WorkDir: synctestWorkDir(t), HeartbeatInterval: 20 * time.Second, Logger: iterlog.Nop()}}
@@ -86,7 +90,7 @@ func TestLeaseHold_aParkReleasesItsLeaseWithinTheCeiling(t *testing.T) {
 		defer runCancel(nil)
 		done := make(chan error, 1)
 		go func() {
-			done <- r.executeHoldingLease(runCtx, runCancel, parkingRunMessage(t, "run-park"), nil, lease, nopProgress{}, nil)
+			done <- r.executeHoldingLease(runCtx, runCancel, parkingRunMessage(t, "run-park"), prepared.Run, lease, nopProgress{}, nil)
 		}()
 		<-up.entered
 		time.Sleep(postEngineCeiling - time.Minute)

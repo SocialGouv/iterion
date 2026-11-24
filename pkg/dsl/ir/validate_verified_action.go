@@ -29,6 +29,9 @@ const (
 //     whose ONLY budgeted rung is max_repair_attempts and whose recipe is a
 //     bare registered tool name reaches no rung (rung 3 corrects a command
 //     the recipe does not carry, rung 4 is off) — the recovery is inert.
+//   - C352 — rung 4 reachable, and its agent served no tool: on claw the
+//     `agent_tools:` list is the agent's whole surface, so a rung that
+//     declares none dispatches an agent that cannot act on the goal.
 func (c *compiler) validateVerifiedActions(w *Workflow) {
 	for _, node := range w.Nodes {
 		tn, ok := node.(*ToolNode)
@@ -101,7 +104,49 @@ func (c *compiler) validateVerifiedActions(w *Workflow) {
 				"tool %q budgets only max_repair_attempts under policy: recover, but rung 3 proposes a corrected command and a registered tool name (%q) has none — dispatch skips the rung, and rung 4 is off without max_agent_attempts, so NO recovery rung is reachable",
 				tn.ID, tn.Command)
 		}
+
+		// C352 — rung 4 is reachable and its agent holds nothing to act
+		// with. The agent is told to achieve the goal with its tools, and
+		// the postcondition re-check is the only judge of what it did: with
+		// no tool it can change nothing the oracle reads, so the rung spends
+		// its model calls and the node fails as if the rung had not run.
+		//
+		// Asked whatever the permission gate says — the defect is the
+		// surface, not a rule — and only where the SOURCE sends the agent to
+		// claw: the synthetic node dispatch builds carries no backend of its
+		// own, so the workflow's `default_backend:` is the one field that
+		// names its route. A route the source does not decide — no default,
+		// `auto`, a reference a launch answers — is the dispatch's to judge,
+		// and on a backend that keeps its own roster an agent with no
+		// `agent_tools:` holds that roster.
+		if ToolRecoveryAgentRung(tn) &&
+			effectiveNodeBackend("", w.DefaultBackend) == clawBackendName &&
+			ClawRecoveryAgentSurfaceEmpty(tn, w) {
+			c.warnfAtProperty(DiagRecoveryAgentNoTools, "tool", tn.ID, "recovery",
+				"tool %q: its recovery agent (rung 4, max_agent_attempts: %d) runs on claw and declares no tool in `recovery.agent_tools:` — on claw that list IS the agent's tool surface, so the agent asked to achieve the goal with its tools is served none: it can change nothing the postcondition checks, and the rung spends its model calls for nothing",
+				tn.ID, tn.Recovery.MaxAgentAttempts)
+		}
 	}
+}
+
+// ClawRecoveryAgentSurfaceEmpty reports whether a claw dispatch of a tool
+// node's rung-4 recovery agent serves that agent no tool at all.
+//
+// The agent is a synthetic node dispatch builds from the tool node
+// (pkg/backend/model: recoveryAgentNode, agentRecovery): its `tools:` is the
+// `agent_tools:` list verbatim and it declares nothing else — no
+// interaction, no memory block, no codemode of its own. So on claw, where
+// the list IS the surface (ClawToolSurfaceEmpty), it holds what the list
+// names, plus the codemode tool where the WORKFLOW turns codemode on: the
+// one rung an undeclaring node inherits it from.
+//
+// pkg/backend/model's TestClawRecoveryAgentSurfaceEmptyAgreesWithTheExecutor
+// holds it to the tools of the request the rung sends.
+func ClawRecoveryAgentSurfaceEmpty(tn *ToolNode, w *Workflow) bool {
+	if tn.Recovery != nil && len(tn.Recovery.AgentTools) > 0 {
+		return false
+	}
+	return !ResolveCodemode("", "", w.Codemode).On
 }
 
 func displayPolicy(p string) string {

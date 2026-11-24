@@ -34,6 +34,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
+	"github.com/SocialGouv/iterion/pkg/connector/poller"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -257,6 +258,9 @@ type Server struct {
 	// connectorIntakes is the connector ingress lane's durable intake; nil
 	// leaves POST /api/webhooks/c/{id} unregistered.
 	connectorIntakes intake.Store
+	// connectorPollers is the pollers' durable state (ADR-168 §7); nil runs
+	// no poller and refuses a subscription to a polled trigger.
+	connectorPollers poller.Store
 	orgUsage         orgusage.Counter
 	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
 	// leaves the /credentials/usage views unregistered.
@@ -453,6 +457,10 @@ type Server struct {
 	// vendor's documented request is signed at its own instant). nil →
 	// time.Now().UTC().
 	ingressClock func() time.Time
+	// ingressWriteLimit overrides ingressWriteTimeout (test seam — a test
+	// cannot wait ten seconds for a write to hit its deadline). Zero → the
+	// constant.
+	ingressWriteLimit time.Duration
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
 	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration
@@ -484,10 +492,12 @@ type Server struct {
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
 	// realWebhookNoteGate. Returns (authorized, replyInThread, threadContext,
-	// reason, err): replyInThread marks a plain reply in a Revi thread (no
-	// /revi command); threadContext is the discussion transcript the converse
-	// bot receives as {{vars.thread_context}} ("" when not fetched).
-	webhookNoteGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, err error)
+	// reason, anchor, err): replyInThread marks a plain reply in a Revi
+	// thread (no /revi command); threadContext is the discussion transcript
+	// the converse bot receives as {{vars.thread_context}} ("" when not
+	// fetched); anchor is the thread ROOT's diff position (the discussion
+	// fetch already had it), which the converse bot focuses its diff read on.
+	webhookNoteGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (authorized, replyInThread bool, threadContext, reason string, anchor webhooks.ThreadAnchor, err error)
 	// webhookCommandGate overrides the generic slash-command replier gate
 	// (forge token + loop-guard + allowlist/role authz, honouring the route's
 	// per-command MinReplierRole — test seam). nil → realWebhookCommandGate.
@@ -1004,6 +1014,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookDeliveries:    cfg.WebhookDeliveries,
 		webhookCounter:       cfg.WebhookCounter,
 		connectorIntakes:     cfg.ConnectorIntakes,
+		connectorPollers:     cfg.ConnectorPollers,
 		webhookDeferred:      cfg.WebhookDeferred,
 		syncDebounce:         webhookSyncDebounceFromEnv(),
 		orgUsage:             cfg.OrgUsage,
@@ -1419,10 +1430,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// canonicalRedirect sits INSIDE securityHeaders so the 302 carries the
 	// same headers as any other response, and outside everything else: a
 	// navigation to the wrong host has no business reaching the auth gate.
+	// runOriginGate sits inside the auth gate: it compares a request's
+	// expected run birth after scopeRunByID's 404, on the DisableAuth chain
+	// too (run_origin_gate.go). normalizeOwnStore sits outside both: a
+	// `?store=` naming this server's own store is gone before either reads
+	// the request.
 	s.handler = securityHeaders(
 		canonicalRedirect(cfg.CanonicalRedirect, cfg.PublicURL,
 			errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
-				errtrack.HTTPErrorMiddleware(s.logger)(s.authMiddleware(s.mux)),
+				errtrack.HTTPErrorMiddleware(s.logger)(s.normalizeOwnStore(s.authMiddleware(s.runOriginGate(s.mux)))),
 			),
 		),
 	)

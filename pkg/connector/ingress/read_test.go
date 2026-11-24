@@ -731,3 +731,105 @@ func TestReadThePreProofScanIsBounded(t *testing.T) {
 		t.Fatalf("a body past the member bound = %v, want ErrUnauthenticated naming the bound", err)
 	}
 }
+
+// A body timestamp is the vendor's volatile member: a re-signed retry — a
+// new instant — must meet the row its first delivery opened, so the dedup
+// digest elides it. The signature still covers the whole body, so only the
+// vendor can re-sign; a body otherwise different is another delivery.
+func TestIngress_ABodyTimestampResignedRetryOpensNoSecondIntake(t *testing.T) {
+	body := func(ts string, identifier string) []byte {
+		return []byte(`{"action":"create","type":"Issue","data":{"id":"abc","identifier":"` + identifier + `","title":"Fix it"},"webhookTimestamp":` + ts + `}`)
+	}
+	sign := func(b []byte) string {
+		mac := hmac.New(sha256.New, []byte("linear-secret-xyz"))
+		mac.Write(b)
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	in := &spec.Ingress{
+		Credential: spec.IngressCredential{Scheme: spec.SchemeHMACSHA256, In: "header", Name: "Linear-Signature", Secret: "minted"},
+		Timestamp:  &spec.IngressTimestamp{In: "body", Name: "webhookTimestamp", Unit: "ms", Tolerance: "60s"},
+		Event:      spec.IngressLocator{From: `payload.type + "." + payload.action`},
+	}
+	read := func(b []byte) Delivery {
+		h := http.Header{}
+		h.Set("Linear-Signature", sign(b))
+		d, err := Read(Request{Ingress: in, Triggers: []spec.Trigger{{ID: "linear.issue.created", Event: "Issue.create"}},
+			Secret: []byte("linear-secret-xyz"), Body: b, Header: h, Now: time.UnixMilli(1763190000000).Add(10 * time.Second)})
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		return d
+	}
+	d1 := read(body("1763190000000", "ENG-42"))
+	d2 := read(body("1763190005000", "ENG-42"))
+	if d1.DedupKey != d2.DedupKey {
+		t.Fatalf("dedup %s != %s: a re-signed retry of the same event opened a second identity", d1.DedupKey, d2.DedupKey)
+	}
+	if d3 := read(body("1763190000000", "ENG-99")); d3.DedupKey == d1.DedupKey {
+		t.Fatal("a different delivery shared the dedup identity")
+	}
+	// The digest is the body's own, minus the volatile member — computed
+	// here by its own JSON surgery, not by calling the helper.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body("1763190000000", "ENG-42"), &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "webhookTimestamp")
+	canonical, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := hex.EncodeToString(func() []byte { sum := sha256.Sum256(canonical); return sum[:] }()); d1.DedupKey != want {
+		t.Fatalf("dedup = %s, want the body's digest without its timestamp (%s)", d1.DedupKey, want)
+	}
+}
+
+// A polled trigger declares no event — its poller names it — so a delivery
+// that names no event at all must not reach it: the poller is its only feed.
+func TestReadAnUnnamedDeliveryNeverReachesAPolledTrigger(t *testing.T) {
+	d, err := Read(forgejoRequest(func(r *Request) {
+		r.Header.Del("X-Forgejo-Event")
+		r.Triggers = append(r.Triggers, spec.Trigger{
+			ID: "forgejo.issue.polled", Delivery: spec.DeliveryPoll,
+			Outputs: []spec.TriggerOutput{{Name: "actor", From: "payload.sender.login"}},
+		})
+	}))
+	if err != nil {
+		t.Fatalf("an authenticated delivery with no event: %v", err)
+	}
+	if d.TriggerID != "" || d.Filtered == "" {
+		t.Fatalf("the unnamed delivery read as trigger %q (filtered %q) — a polled trigger is fed by its poller only", d.TriggerID, d.Filtered)
+	}
+}
+
+// A loop guard and a handshake condition are read as the language reads a
+// guard (expr.Truthy): the natural guard `payload.bot_id` drops a bot's
+// message, and an unset, empty or "false" value keeps the delivery (#3360).
+func TestReadAGuardIsReadAsACondition(t *testing.T) {
+	in := &spec.Ingress{
+		Credential: spec.IngressCredential{Scheme: spec.SchemeToken, In: "query", Name: "t", Secret: "minted"},
+		Event:      spec.IngressLocator{From: "payload.type"},
+		Handshake:  &spec.IngressHandshake{When: `payload.challenge`, Respond: "payload.challenge"},
+	}
+	trig := []spec.Trigger{{ID: "chat.message.posted", Event: "message", Ignore: `payload.bot_id`}}
+	read := func(body string) Delivery {
+		t.Helper()
+		d, err := Read(Request{Ingress: in, Triggers: trig, Secret: []byte("tok"), Body: []byte(body),
+			Header: http.Header{}, Query: url.Values{"t": {"tok"}}, Now: time.Now()})
+		if err != nil {
+			t.Fatalf("read %s: %v", body, err)
+		}
+		return d
+	}
+	if d := read(`{"type":"message","bot_id":"B42"}`); d.Filtered == "" {
+		t.Fatalf("a bot's message under the guard payload.bot_id = %+v, want dropped", d)
+	}
+	for _, body := range []string{`{"type":"message"}`, `{"type":"message","bot_id":""}`, `{"type":"message","bot_id":"false"}`} {
+		if d := read(body); d.Filtered != "" || d.Event == nil {
+			t.Errorf("%s = %+v, want it kept", body, d)
+		}
+	}
+	if d := read(`{"type":"url_verification","challenge":"c-1"}`); d.Handshake == nil || *d.Handshake != "c-1" {
+		t.Fatalf("a handshake whose condition renders a string = %+v, want answered", d)
+	}
+}

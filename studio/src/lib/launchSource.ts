@@ -2,8 +2,8 @@ import type { ServerInfo } from "@/api/types";
 
 type WorkspaceInfo = Pick<ServerInfo, "mode" | "work_dir">;
 
-function normalizePath(value: string): string | null {
-  const normalized = value.trim().replace(/\\/g, "/");
+function normalizePath(value: string, preserveSpelling = false): string | null {
+  const normalized = preserveSpelling ? value : value.trim().replace(/\\/g, "/");
   if (!normalized) return null;
 
   const absolute = normalized.startsWith("/");
@@ -26,13 +26,13 @@ function normalizePath(value: string): string | null {
   return body || ".";
 }
 
-function absolutePath(value: string, base?: string): string | null {
-  const normalized = normalizePath(value);
+export function absolutePath(value: string, base?: string, preserveSpelling = false): string | null {
+  const normalized = normalizePath(value, preserveSpelling);
   if (!normalized) return null;
   if (normalized.startsWith("/")) return normalized;
-  const normalizedBase = base ? normalizePath(base) : null;
+  const normalizedBase = base ? normalizePath(base, preserveSpelling) : null;
   if (!normalizedBase || !normalizedBase.startsWith("/")) return null;
-  return normalizePath(`${normalizedBase}/${normalized}`);
+  return normalizePath(`${normalizedBase}/${normalized}`, preserveSpelling);
 }
 
 function isStrictDescendant(target: string | null, root: string | null): boolean {
@@ -94,11 +94,17 @@ export function sourceForLaunch({
 }
 
 /**
- * A launch names its program: the text itself inline, or — where the server
- * can read the operator's filesystem — a workflow path. With neither, the
- * request carries an empty file_path and no source, and the server refuses it
- * by name ("file_path, source or bot_id is required") naming fields the form
- * never showed.
+ * A launch names its program one of three ways: the text itself inline; —
+ * where the server can read the operator's filesystem — a workflow path; or a
+ * bot the server resolves, by its id, pinned to the digest of the program
+ * this form rendered (`namedBot`, the read of
+ * GET /api/v1/bots/{name}/launch-source). With none of them, the request
+ * carries an empty file_path and no source, and the server refuses it by name
+ * ("file_path, source or bot_id is required") naming fields the form never
+ * showed.
+ *
+ * A named bot is a program only WITH its digest: the id alone would launch
+ * whatever the tier holds when the request lands, not what this form shows.
  *
  * A cloud file_path is not a program: the server pod has no operator
  * filesystem, so it infers a catalog bot id FROM the path and runs that
@@ -110,14 +116,28 @@ export function sourceForLaunch({
  *
  * The launch form can be up before it has a program: the inline branch's text
  * is the RENDER of the editor's document (useLaunchDoc), one round trip
- * behind it. Lives next to sourceForLaunch so the gate and the payload read
- * the same rule.
+ * behind it, and a named bot's digest is one read behind its slug. Lives next
+ * to sourceForLaunch so the gate and the payload read the same rule.
  */
 export function launchCarriesProgram({
   filePath,
   source,
   serverInfo,
-}: Pick<LaunchSourceInput, "filePath" | "source" | "serverInfo">): boolean {
+  namedBot,
+}: Pick<LaunchSourceInput, "filePath" | "source" | "serverInfo"> & {
+  /** Absent on a launch that names no bot; `null` on one that names a bot
+   *  whose program has not been read yet — which carries no program, whatever
+   *  text or path stands beside it. */
+  namedBot?: NamedBotProgram | null;
+}): boolean {
+  if (namedBot !== undefined) return !!namedBot && !!namedBot.id && !!namedBot.sha256;
   if (source) return true;
   return !!filePath && serverInfo?.mode !== "cloud";
+}
+
+/** A bot the server resolves, pinned to the program a form rendered: the
+ *  canonical id and the digest the server issued with that program. */
+export interface NamedBotProgram {
+  id: string;
+  sha256: string;
 }

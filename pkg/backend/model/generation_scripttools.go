@@ -2,10 +2,11 @@ package model
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -50,18 +51,34 @@ const ScriptHostToolName = "codemode"
 // the funnel. A broker outside would need the funnel widened, which is the
 // same thing as giving the funnel a second door.
 type scriptToolServer struct {
-	d   *toolDispatcher
-	ctx context.Context
+	d     *toolDispatcher
+	ctx   context.Context
+	state CodemodeState
+
+	// budget is the script's per-result bound ([scripthost.Limits.ToolResultBytes],
+	// already clamped), armed on every nested call's context so a tool that
+	// caps its own output can re-cap to what the script may receive (CM-8).
+	// Zero means the arming caller had no budget to give — reachable only
+	// from tests that build a server by hand, since the codemode tool always
+	// clamps `want` at install.
+	budget int64
 
 	// withheld is the tool the script host itself is bound to, withheld so a
 	// script cannot nest another script host. Empty while no DSL attribute
 	// exists, which is CM-1b's deliberate state.
 	withheld string
 
-	// seq mints the tool_use id. Atomic because the field is read by the pump
-	// goroutine; the counter is per-script, so the ids a run's events carry
-	// say which call of which script they belong to.
-	seq atomic.Int64
+	// A nested call's tool_use id is idPrefix, unique per program so two
+	// programs cannot collide in the run-wide event sinks, then the call's
+	// frame ID — program order, as the child minted it, never the order
+	// workers reached this server in.
+	idPrefix string
+
+	// parent is the tool_use id of the codemode call this program runs
+	// under, which every nested call's events name. Empty when the program
+	// was not started through the door, and its calls then read as
+	// top-level ones.
+	parent string
 }
 
 // newScriptToolServer takes the dispatcher and the context from the ctx of the
@@ -89,65 +106,140 @@ func newScriptToolServer(ctx context.Context, withheld string) (*scriptToolServe
 			"model: a script host can only borrow a node's tool door from the context of that node's own tool call; " +
 				"this context carries none")
 	}
-	s := &scriptToolServer{d: d, withheld: strings.TrimSpace(withheld)}
+	s := &scriptToolServer{
+		d:        d,
+		withheld: strings.TrimSpace(withheld),
+		idPrefix: "codemode_" + rand.Text(),
+		parent:   executingToolUseIDFrom(ctx),
+	}
 
-	// The narrowing is declared ONCE, on the ctx every nested dispatch
-	// carries, so the set tool_search answers from is the set this server
-	// will actually serve. Derived from the same predicate that refuses —
-	// not a second list — so the two cannot drift: a tool added to the
-	// withheld class disappears from discovery in the same edit.
-	// withAsksDenied is the OTHER half of the rule, and round 5 shipped only
-	// the first. Withholding the ask TOOLS stops a program from asking on
-	// purpose; it does nothing about the ask VERDICT, which an ordinary tool
-	// raises from inside a program when a permission rule matches it. An
-	// adversarial round drove exactly that: `call("Bash", …)` under an `ask`
-	// policy tore the program down mid-flight — with its earlier calls
-	// already committed — and paused the whole run on the codemode tool_use.
-	//
-	// The degradation is the one subagent.go states for the identical
-	// problem (#2877): the gate answers a refusal tool_result the program can
-	// catch, instead of raising ErrAskUser from a place no resume can return
-	// to. A program is the node's own turn, so there is no parent to carry
-	// the question — which is why the only honest answer is "call it
-	// directly".
+	// Snapshot any inherited narrowing before workers start. Dispatch pins
+	// its actual table through this same filter; Ask verdicts refuse rather
+	// than pausing a script the operator could not resume.
+	inherit, narrowed := tool.ExecutableToolFilterFrom(ctx)
+	allowed := make(map[string]bool, len(d.toolMap))
+	for name := range d.toolMap {
+		if _, denied := s.withhold(name); !denied && (!narrowed || inherit(name)) {
+			allowed[name] = true
+		}
+	}
 	s.ctx = tool.WithExecutableToolFilter(withAsksDenied(ctx), func(name string) bool {
-		_, withheldHere := s.withhold(name)
-		return !withheldHere
+		return allowed[name]
 	})
 	return s, nil
 }
 
-// CallTool implements [scripthost.ToolServer].
-//
-// The ctx argument is the PUMP's, which carries the parent's script deadline;
-// the dispatch uses the NODE's, because that is the one the door vouches for.
-// Both matter: the pump's ending is what stops the serving loop, and the
-// node's is what the tool runs under. Swapping them would either make every
-// call refuse (a ctx the door cannot vouch for) or let a call outlive the
-// script's wall bound.
-func (s *scriptToolServer) CallTool(_ context.Context, name string, input json.RawMessage) (scripthost.ToolOutcome, error) {
+// ConcurrentSafe answers from the same frozen definition dispatch executes.
+// A false verdict is an exclusive barrier, not just a lower pool priority.
+func (s *scriptToolServer) ConcurrentSafe(name string) bool {
+	if !s.d.parallel {
+		return false
+	}
+	if _, denied := s.withhold(name); denied {
+		return false
+	}
+	key := generationToolKey(s.d.toolMap, name)
+	def, known := s.d.toolMap[key]
+	keep, narrowed := tool.ExecutableToolFilterFrom(s.ctx)
+	return known && def.concurrentSafe && (!narrowed || keep(key))
+}
+
+// CallTool implements [scripthost.ToolServer]. The worker supplies a
+// deadline, cancellation and the call's frame. Values always descend from the
+// attested node.
+func (s *scriptToolServer) CallTool(worker context.Context, name string, input json.RawMessage) (scripthost.ToolOutcome, error) {
+	if err := worker.Err(); err != nil {
+		return scripthost.ToolOutcome{}, err
+	}
+	// The id is minted FIRST, before any verdict: a call the server refuses
+	// is still a call the program made, and its refusal is reported under
+	// the same id and parent as a call that ran.
+	//
+	// The frame is the pump's (scripthost.WithCallFrame). A context without
+	// one did not come from a program, and is refused rather than numbered
+	// from a counter: a number minted here would be goroutine order
+	// presented as program order.
+	frame, ok := scripthost.CallFrameFrom(worker)
+	if !ok {
+		return scripthost.ToolOutcome{}, fmt.Errorf("model: the script host served call %q without its call frame; "+
+			"a nested call is dispatched by the script host's tool channel only", name)
+	}
+	tu := s.nestedToolUse(frame, name, input)
 	if refusal, ok := s.withhold(name); ok {
-		return scripthost.ToolOutcome{Text: refusal, IsError: true}, nil
+		block := refusalOutcome(refusal, tu, s.d.onToolCall)
+		return scripthost.ToolOutcome{Text: toolResultText(*block), IsError: true}, nil
 	}
 
-	// A tool_use id a reader can attribute: the run's events carry it, so a
-	// nested call is visible as what it is rather than as an unexplained extra
-	// call on the step.
-	tu := toolUseBlock{
-		ID:          fmt.Sprintf("codemode_%d", s.seq.Add(1)),
-		Name:        name,
-		PartialJSON: string(normaliseInput(input)),
+	parent := s.ctx
+	if deadline, ok := worker.Deadline(); ok {
+		var cancelDeadline context.CancelFunc
+		parent, cancelDeadline = context.WithDeadline(parent, deadline)
+		defer cancelDeadline()
 	}
-
-	block, abort := s.d.dispatch(s.ctx, tu)
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
+	stop := context.AfterFunc(worker, func() { cancel(context.Cause(worker)) })
+	defer stop()
+	// AfterFunc starts asynchronously, even when the worker is already done.
+	if err := worker.Err(); err != nil {
+		return scripthost.ToolOutcome{}, err
+	}
+	// The rich-result sink (CM-7) and the script's own result budget (CM-8)
+	// are armed on the PER-CALL context, not on the server's: two calls of
+	// one batch derive two contexts here, so parallel workers never share a
+	// sink and the budget arms exactly where a tool reads it. After dispatch
+	// returns, the sink holds the call's structured content — the Read
+	// auto-retry's overwrite semantics live in the sink — and the outcome
+	// carries it beside the text.
+	sink := tool.NewRichResultSink()
+	ctx = tool.WithRichResultSink(ctx, sink)
+	if s.budget > 0 {
+		ctx = scripthost.WithScriptResultBudget(ctx, s.budget)
+	}
+	block, abort := s.d.dispatch(ctx, tu)
 	if abort != nil {
+		if err := worker.Err(); err != nil && errors.Is(abort, ctx.Err()) {
+			return scripthost.ToolOutcome{}, err
+		}
 		// The funnel's abort contract, unchanged: today the only case is a
 		// tool whose verdict needs the operator. A script cannot wait for an
 		// answer, so the abort travels OUT to the caller of Host.Run rather
 		// than becoming a refusal the script could retry in a loop.
 		return scripthost.ToolOutcome{}, abort
 	}
-	return scripthost.ToolOutcome{Text: toolResultText(block), IsError: block.IsError}, nil
+	if err := worker.Err(); err != nil {
+		return scripthost.ToolOutcome{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return scripthost.ToolOutcome{}, err
+	}
+	out := scripthost.ToolOutcome{Text: toolResultText(block), IsError: block.IsError}
+	if raw, ok := sink.Result(); ok {
+		out.Structured = raw
+	}
+	return out, nil
+}
+
+// RefusedOnBudget implements [scripthost.BudgetRefusalObserver]: a call the
+// parent refused on the spent budget was never dispatched, and is reported
+// here as the refusal it is, under its own id and parent.
+func (s *scriptToolServer) RefusedOnBudget(frame scripthost.CallFrame, name string, input json.RawMessage, text string) {
+	refusalOutcome(text, s.nestedToolUse(frame, name, input), s.d.onToolCall)
+}
+
+// nestedToolUse is a program's call as the tool_use block the door
+// dispatches: an id a reader can attribute — the run's events carry it, so a
+// nested call is visible as what it is rather than as an unexplained extra
+// call on the step — the program's call as its parent, and the batch slot it
+// came in.
+func (s *scriptToolServer) nestedToolUse(frame scripthost.CallFrame, name string, input json.RawMessage) toolUseBlock {
+	return toolUseBlock{
+		ID:          fmt.Sprintf("%s_%d", s.idPrefix, frame.ID),
+		Name:        name,
+		PartialJSON: string(normaliseInput(input)),
+		Parent:      s.parent,
+		Batch:       frame.Batch,
+	}
 }
 
 // withhold reports the tools a script may not call, by CLASS and not by a list
@@ -178,6 +270,14 @@ func (s *scriptToolServer) CallTool(_ context.Context, name string, input json.R
 //     quota.
 //   - the script host's own tool, so a script cannot nest another.
 func (s *scriptToolServer) withhold(name string) (string, bool) {
+	return scriptWithheld(name, s.withheld)
+}
+
+// scriptWithheld is the withheld class as a predicate of the tool name and the
+// script host's own name: the ONE rule the server refuses by, the dispatch pin
+// narrows by, and the codemode description and catalogue are composed by
+// (CM-3). A second copy would let the index list a tool the door refuses.
+func scriptWithheld(name, self string) (string, bool) {
 	switch {
 	// The ask channel, from the predicate subagent.go already derives from
 	// the spellings the runtime appends these under — never a fresh list.
@@ -201,7 +301,7 @@ func (s *scriptToolServer) withhold(name string) (string, bool) {
 		return fmt.Sprintf(
 			"tool %q starts a sub-agent, which a script cannot do: a sub-agent spends a budget of its own "+
 				"and must be admitted against the node's reserve. Call it directly instead.", name), true
-	case s.withheld != "" && strings.EqualFold(strings.TrimSpace(name), s.withheld):
+	case self != "" && strings.EqualFold(strings.TrimSpace(name), self):
 		return fmt.Sprintf(
 			"tool %q is the script host itself: a script cannot start another script.", name), true
 	}

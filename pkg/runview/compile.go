@@ -264,6 +264,50 @@ func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace strin
 	return wf, cs, b, u, err
 }
 
+// ErrProgramChanged reports a pinned launch (LaunchSpec.ExpectProgramHash)
+// whose compile read another program than the one the pin names: a file of
+// the bot — its main, a prompt, a preset, a fragment, an included file —
+// changed since the caller read it. Nothing was persisted or published.
+var ErrProgramChanged = errors.New("runview: the program is not the one the launch was pinned to")
+
+// ErrLaunchPinUnsupported reports a pinned launch (LaunchSpec.ExpectProgramHash)
+// on a lane that cannot hold a pin. A pin is held where the launch is
+// published with the program its compile read — the publisher lane, whose
+// runner executes the frozen collection the message carries. Every other
+// lane reads the bot again after the launch is accepted: the in-process
+// engine merges the bundle's presets from disk, a detached runner compiles
+// its own copy, and a launch parked behind the pipeline cap compiles when
+// its slot frees, or from a rebuilt spec after a restart. A pin compared
+// there would be outrun by the next read, so it is refused instead.
+var ErrLaunchPinUnsupported = errors.New("runview: a pinned launch is the cloud lane's guarantee — only a launch published with its frozen program runs the bytes its pin was compared with, and this lane reads the bot's files again after the launch is accepted")
+
+// checkPinnedProgram holds a pinned launch to its pin, at the compile whose
+// result is published: cs is what that compile consumed, and the runner
+// executes the frozen collection it was read from. A compile that answered
+// no identity cannot honour a pin, and refuses it.
+func checkPinnedProgram(spec LaunchSpec, cs *CompiledSource) error {
+	if spec.ExpectProgramHash == "" {
+		return nil
+	}
+	if cs == nil || cs.Hash != spec.ExpectProgramHash {
+		return ErrProgramChanged
+	}
+	return nil
+}
+
+// LaunchProgramHash is the workflow identity a launch of these four
+// LaunchSpec fields compiles (CompiledSource.Hash): what a caller reads to pin
+// a later launch of the same program (LaunchSpec.ExpectProgramHash). It goes
+// through the launch's own compile, so a program a launch would refuse is
+// refused here by the same sentence, and it executes nothing.
+func LaunchProgramHash(path, source, bundleDir, bundleEntry string) (string, error) {
+	_, cs, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "", AnalysisTrust)
+	if err != nil {
+		return "", err
+	}
+	return cs.Hash, nil
+}
+
 // relLaunchError is the #1934 root cut for the launch path's refusals
 // (#1970): the run console answers them verbatim — 400 "launch: %v" — and
 // a refusal of a disk read names the server's paths. The cut is the launch

@@ -68,27 +68,25 @@ func AsRunNoteStore(s RunStore) RunNoteStore {
 	return capability[RunNoteStore](s)
 }
 
-// notesDir returns <root>/runs/<runID>/notes after validating runID.
-func (s *FilesystemRunStore) notesDir(runID string) (string, error) {
-	if err := sanitizePathComponent("run ID", runID); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.root, "runs", runID, "notes"), nil
-}
-
 // AppendRunNote implements RunNoteStore over runs/<id>/notes/<NNNN>.json.
 // Holds s.mu across the read-max-seq + write so concurrent note appends
 // can't collide on a sequence number.
-func (s *FilesystemRunStore) AppendRunNote(_ context.Context, runID string, note RunNote) (RunNote, error) {
-	dir, err := s.notesDir(runID)
+func (s *FilesystemRunStore) AppendRunNote(ctx context.Context, runID string, note RunNote) (RunNote, error) {
+	_, unlock, err := s.lockRunMetadataMutation(ctx, runID)
+	if err != nil {
+		return RunNote{}, err
+	}
+	defer unlock()
+	if _, err := json.Marshal(note); err != nil {
+		return RunNote{}, err
+	}
+	dir, err := s.openRunPayloadDirectory(ctx, runID, true, "notes")
 	if err != nil {
 		return RunNote{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	seqs, err := noteSeqs(dir)
+	defer dir.Close()
+	seqs, err := noteSeqsDirectory(dir)
 	if err != nil {
 		return RunNote{}, err
 	}
@@ -105,11 +103,7 @@ func (s *FilesystemRunStore) AppendRunNote(_ context.Context, runID string, note
 	if err != nil {
 		return RunNote{}, fmt.Errorf("store: marshal run note: %w", err)
 	}
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return RunNote{}, fmt.Errorf("store: mkdir notes: %w", err)
-	}
-	p := filepath.Join(dir, fmt.Sprintf("%04d.json", nextSeq))
-	if err := writeFileAtomic(p, data, filePerm); err != nil {
+	if err := dir.WriteAtomic(ctx, fmt.Sprintf("%04d.json", nextSeq), data, filePerm); err != nil {
 		return RunNote{}, err
 	}
 	return note, nil
@@ -117,12 +111,13 @@ func (s *FilesystemRunStore) AppendRunNote(_ context.Context, runID string, note
 
 // ListRunNotes implements RunNoteStore: every note under
 // runs/<id>/notes in ascending Seq (chronological) order.
-func (s *FilesystemRunStore) ListRunNotes(_ context.Context, runID string) ([]RunNote, error) {
-	dir, err := s.notesDir(runID)
+func (s *FilesystemRunStore) ListRunNotes(ctx context.Context, runID string) ([]RunNote, error) {
+	dir, err := s.openRunPayloadDirectory(ctx, runID, false, "notes")
 	if err != nil {
 		return nil, err
 	}
-	seqs, err := noteSeqs(dir)
+	defer dir.Close()
+	seqs, err := noteSeqsDirectory(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +126,7 @@ func (s *FilesystemRunStore) ListRunNotes(_ context.Context, runID string) ([]Ru
 	}
 	out := make([]RunNote, 0, len(seqs))
 	for _, seq := range seqs {
-		note, rerr := readNoteFile(dir, seq)
+		note, rerr := readNoteFileDirectory(dir, seq)
 		if rerr != nil {
 			// Skip an unreadable/corrupt note rather than failing the whole
 			// listing — a partial note history is more useful than none,
@@ -147,7 +142,7 @@ func (s *FilesystemRunStore) ListRunNotes(_ context.Context, runID string) ([]Ru
 // directory, rewriting each matching note file atomically under s.mu. A
 // note file it cannot read is left as is and named in the error, so the
 // erasure that calls it is answered as incomplete rather than reported done.
-func (s *FilesystemRunStore) ReattributeRunNotes(_ context.Context, fromAuthor, toAuthor string) (int64, error) {
+func (s *FilesystemRunStore) ReattributeRunNotes(ctx context.Context, fromAuthor, toAuthor string) (int64, error) {
 	if strings.TrimSpace(fromAuthor) == "" {
 		return 0, fmt.Errorf("store: reattribute run notes: no author to match")
 	}
@@ -155,10 +150,10 @@ func (s *FilesystemRunStore) ReattributeRunNotes(_ context.Context, fromAuthor, 
 	defer s.mu.Unlock()
 	runs, err := os.ReadDir(filepath.Join(s.root, "runs"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
+		if !os.IsNotExist(err) {
+			return 0, fmt.Errorf("store: reattribute run notes: read runs dir: %w", err)
 		}
-		return 0, fmt.Errorf("store: reattribute run notes: read runs dir: %w", err)
+		runs = nil
 	}
 	var n int64
 	var errs []error
@@ -193,6 +188,14 @@ func (s *FilesystemRunStore) ReattributeRunNotes(_ context.Context, fromAuthor, 
 			n++
 		}
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	extra, scopeErr := s.reattributeIncarnationRunNotes(ctx, fromAuthor, toAuthor)
+	n += extra
+	if scopeErr != nil {
+		errs = append(errs, scopeErr)
+	}
 	if len(errs) > 0 {
 		return n, fmt.Errorf("store: reattribute run notes: %w", errors.Join(errs...))
 	}
@@ -201,8 +204,9 @@ func (s *FilesystemRunStore) ReattributeRunNotes(_ context.Context, fromAuthor, 
 
 // noteSeqs returns the sorted sequence numbers of the <NNNN>.json note
 // files in dir. A missing dir is (nil, nil).
-func noteSeqs(dir string) ([]int, error) {
-	entries, err := os.ReadDir(dir)
+func noteSeqs(dir string) ([]int, error) { return noteSeqsDirectory(historicalSnapshotDirectory(dir)) }
+func noteSeqsDirectory(dir snapshotDirectory) ([]int, error) {
+	entries, err := dir.ReadDir()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -227,8 +231,10 @@ func noteSeqs(dir string) ([]int, error) {
 
 // readNoteFile reads and decodes one run note by sequence number.
 func readNoteFile(dir string, seq int) (RunNote, error) {
-	p := filepath.Join(dir, fmt.Sprintf("%04d.json", seq))
-	data, err := os.ReadFile(p)
+	return readNoteFileDirectory(historicalSnapshotDirectory(dir), seq)
+}
+func readNoteFileDirectory(dir snapshotDirectory, seq int) (RunNote, error) {
+	data, err := dir.ReadFile(fmt.Sprintf("%04d.json", seq))
 	if err != nil {
 		return RunNote{}, fmt.Errorf("store: read run note: %w", err)
 	}

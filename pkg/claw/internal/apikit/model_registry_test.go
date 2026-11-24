@@ -32,6 +32,11 @@ func TestModelRegistryLookup(t *testing.T) {
 		{"gpt-5.5", false, "gpt-5.5", 128_000},
 		{"openai/gpt-5.5", false, "gpt-5.5", 128_000},
 		{"unknown-model", true, "", 0},
+		// A dated snapshot of a known model is that model; an unknown id is
+		// not turned into one by stripping its date.
+		{"claude-opus-5-5-20260101", false, "claude-opus-5-5", 128_000},
+		{"claude-haiku-4-5-20251001", false, "claude-haiku-4-5", 64_000},
+		{"unknown-model-20260101", true, "", 0},
 	}
 
 	for _, tt := range tests {
@@ -249,5 +254,76 @@ func TestModelRegistryRegisterAndLookupConcurrently(t *testing.T) {
 
 	for i := 0; i < N*2; i++ {
 		<-done
+	}
+}
+
+// TestModelRegistryNormalizeModelName pins lexical normalization: resolve an
+// exact alias, then strip one date, preserving unknown spelling otherwise.
+//
+// Mutation that reddens it: drop the date strip from NormalizeModelName
+// (the dated rows answer the suffixed id).
+func TestModelRegistryNormalizeModelName(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"opus", "claude-opus-5-5"},
+		{"claude-opus-5-5", "claude-opus-5-5"},
+		{"claude-opus-5-5-20260101", "claude-opus-5-5"},
+		{"claude-haiku-4-5-20251001", "claude-haiku-4-5"},
+		{"claude-sonnet-4-5", "claude-sonnet-4-5"},
+		{"claude-nova-9", "claude-nova-9"},
+		{"unknown-model-20260101", "unknown-model"},
+		{"  Unknown-Model-20260101  ", "Unknown-Model"},
+		{"unknown-20260101-20260202", "unknown-20260101"},
+		{"opus-2026010", "opus-2026010"},
+		{"opus-202601011", "opus-202601011"},
+		{"opus-20260x01", "opus-20260x01"},
+		{"  OPUS  ", "claude-opus-5-5"},
+		{"  ", ""},
+		{"gpt-5.5", "gpt-5.5"},
+	} {
+		if got := NormalizeModelName(tt.in); got != tt.want {
+			t.Errorf("NormalizeModelName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// Lookup retries after removing a date; normalization intentionally does not.
+// Making normalization canonical-first changes the CLI effort reporter's
+// interpretation of bare dated aliases (its recording-endpoint tests cover it).
+func TestModelRegistryDatedAliasLookupAndNormalization(t *testing.T) {
+	for _, tt := range []struct{ in, normalized, canonical string }{
+		{"opus-20260101", "opus", "claude-opus-5-5"},
+		{"  OPUS-20260101  ", "OPUS", "claude-opus-5-5"},
+		{"sonnet-4-6-20260101", "sonnet-4-6", "claude-sonnet-4-6"},
+		{"haiku-20260101", "haiku", "claude-haiku-4-5"},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := NormalizeModelName(tt.in); got != tt.normalized {
+				t.Errorf("normalization = %q, want %q", got, tt.normalized)
+			}
+			entry := DefaultModelRegistry().LookupModel(tt.in)
+			if entry == nil || entry.Canonical != tt.canonical {
+				t.Errorf("lookup = %+v, want canonical %q", entry, tt.canonical)
+			}
+		})
+	}
+}
+
+func TestModelRegistryNormalizationResolvesAnExactDatedAliasFirst(t *testing.T) {
+	reg := DefaultModelRegistry()
+	const canonical = "normalization-test-model-20260101"
+	const alias = "normalization-test-alias-20260202"
+	reg.RegisterModel(ModelEntry{Canonical: canonical, Aliases: []string{alias}})
+	t.Cleanup(func() {
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+		delete(reg.models, canonical)
+		delete(reg.aliases, canonical)
+		delete(reg.aliases, alias)
+	})
+	if got := NormalizeModelName(alias); got != "normalization-test-model" {
+		t.Errorf("normalization = %q, want the resolved name without its date", got)
+	}
+	if got := reg.LookupModel(alias); got == nil || got.Canonical != canonical {
+		t.Errorf("lookup = %+v, want the exact registered identity %q", got, canonical)
 	}
 }

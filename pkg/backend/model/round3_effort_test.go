@@ -50,7 +50,8 @@ func TestR3_G8HumanStandInUsesTheRouteMatrix(t *testing.T) {
 		t.Errorf("human effort=%s calls=%d err=%v", sent, len(calls), err)
 	}
 	// Same route through the delegate seam, for contrast:
-	t.Logf("executeDelegate seam would send %q", e.routeReasoningEffort(context.Background(), "approve", "openai_compatible/deepseek", "medium"))
+	seam, _ := e.routeReasoningEffort(context.Background(), "approve", "openai_compatible/deepseek", "medium")
+	t.Logf("executeDelegate seam would send %q", seam)
 }
 
 // The cut-turn rung lowers to an effort the route accepts.
@@ -100,7 +101,7 @@ func TestR3_G8Tolerance(t *testing.T) {
 		t.Setenv("OPENAI_COMPATIBLE_REASONING_EFFORTS", tc.raw)
 		var log bytes.Buffer
 		e := newTestClawExecutor(NewRegistry(), verdictWorkflow(), WithLogger(iterlog.New(iterlog.LevelWarn, &log)))
-		got := e.routeReasoningEffort(context.Background(), "n", "openai_compatible/deepseek", "medium")
+		got, _ := e.routeReasoningEffort(context.Background(), "n", "openai_compatible/deepseek", "medium")
 		if got != tc.want {
 			t.Errorf("%s: got=%s want=%s", tc.raw, got, tc.want)
 		}

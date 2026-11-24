@@ -405,3 +405,23 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   surfaces that describe C303's scope (the registry's property doc, and the
   grammar, properties, SKILL and quickref pages derived from it) are accurate
   about C303 and are slice 3's to widen, not a comment fix's.
+
+## Amendment — 2026-11-20: slice S lands, and C310 stays true (#2940)
+
+Slice S landed: the convergence merge, the terminal merge, the reported
+collector and the end cause all read the branch-ordered results, and
+`byBranchID` compares a numeric suffix as a number within a stem. The same
+numeric order now also applies to `fan_out_all` and LLM multi-select targets
+that share a stem (`review_2` before `review_10`).
+
+Clause 2's premise that C310 describes this capture was wrong, so the four
+C310 texts do not move. C310 is about a contract **output port**, and a port
+is projected by `subbotcontracts.ProjectOutput` from the child run's node
+capture: `SubbotOutputCapture`, which keeps the last `node_finished` per node
+id ([subbot.go](../../pkg/runview/subbot.go)), or on a resume
+`subbotNodeOutputs`, which scans the event log where the last write wins.
+Neither reads the engine's `rs.outputs`, so "the port projects whichever
+execution finished last" is still true. Inside one child run, the collector
+now reads the highest item while a port bound to the same template node
+projects the item that finished last; making the port capture deterministic
+is its own change, not taken here.

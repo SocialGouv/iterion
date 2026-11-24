@@ -47,8 +47,17 @@ the team's UUID; it is refused with `--token` (a token's team is fixed at
 its mint) and with the browser flow (the approval pins the studio's active
 team).
 
-`iterion remote status` shows the logged-in instance + account;
-`iterion remote logout` forgets the credential.
+`iterion remote status` shows the logged-in instance + account, the
+version and commit the instance runs (read from its public
+`GET /api/server/info`) and this client's own version — so a session sees
+whether a roll is due without reading the code. An instance that does not
+tell its version (a release older than the route, an error, an answer that
+is not the server's info, no answer within 5 s —
+`ITERION_REMOTE_SERVER_INFO_TIMEOUT` raises it) leaves it unknown with the
+reason, and the status still succeeds. `--json` prints the whole answer,
+the one the operator MCP's `remote_status` gives: `server.version`,
+`server.commit`, `client_version`, or `server_info_error` in place of
+`server`. `iterion remote logout` forgets the credential.
 
 ### CI / scripting (environment only)
 
@@ -163,7 +172,7 @@ the staging step alone and prints the upload id.
 | `labels` / `board` | `list · rename · merge · delete` / `get · set · bind · show · unbind` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
-| `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
+| `schedules` | `list · create · update · delete` (team-scoped, cloud recurring bots; `update <id> --data` is the PATCH — a field left out is kept; `key_overrides` pins a BYOK key per provider, see [scheduling.md](scheduling.md#notes--limits)) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
 | `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
 | `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` (from the studio, or from a CLI holding a session credential: the invitation is a team token, which a stored personal access token does not mint) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |

@@ -581,3 +581,49 @@ func TestAnOperationAtAnInertMaturityIsRefusedAtTheChokepoint(t *testing.T) {
 		})
 	}
 }
+
+// A poller resolves its connection by id, under the tenant's-configuration
+// trust, through the one path: the action grant, the connection's connector
+// and its tenant are judged as for an action node, and an unstated trust
+// still refuses.
+func TestAPollerResolvesItsConnectionByID(t *testing.T) {
+	ctx := context.Background()
+	st := connection.NewMemoryStore()
+	r := resolver(t, st)
+	r.Trust = connection.TrustOfTenantConfiguration()
+	c := conn("c1", "tenant-a", "main")
+	c.BaseURL = "https://probe.internal"
+	c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+	seed(t, r, st, c)
+	agentOnly := conn("c2", "tenant-a", "agent")
+	agentOnly.Capabilities = []connection.Capability{connection.CapAgent}
+	agentOnly.GrantedScopes, agentOnly.ScopesKnown = []string{"read:issue"}, true
+	seed(t, r, st, agentOnly)
+	other := conn("c3", "tenant-b", "main")
+	seed(t, r, st, other)
+	foreign := conn("c4", "tenant-a", "forge")
+	foreign.Connector = "forgejo"
+	seed(t, r, st, foreign)
+
+	_, op, cred, baseURL, err := r.ResolveActionByConnection(ctx, "probe.issue.get", "c1")
+	if err != nil || op.ID != "probe.issue.get" || cred.Value != "the-token" || baseURL != "https://probe.internal" {
+		t.Fatalf("resolve by id = (%s, %+v, %q, %v), want the connection's credential and origin", op.ID, cred, baseURL, err)
+	}
+	for name, tc := range map[string]struct {
+		id, want string
+		trust    connection.ActionTrust
+	}{
+		"no action grant":     {"c2", "action", connection.TrustOfTenantConfiguration()},
+		"another tenant's id": {"c3", "no connection", connection.TrustOfTenantConfiguration()},
+		"an unknown id":       {"c9", "no connection", connection.TrustOfTenantConfiguration()},
+		"another connector's": {"c4", `is a "forgejo" connection`, connection.TrustOfTenantConfiguration()},
+		"an unstated trust":   {"c1", "nobody stated", connection.TrustUnknown()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r.Trust = tc.trust
+			if _, _, _, _, err := r.ResolveActionByConnection(ctx, "probe.issue.get", tc.id); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("resolve %s = %v, want a refusal naming %q", tc.id, err, tc.want)
+			}
+		})
+	}
+}

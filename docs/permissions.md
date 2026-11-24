@@ -178,6 +178,22 @@ were the other is the mistake this section exists to prevent. `tools:`
 bounds what *exists*; the policy bounds what may *run*; nothing joins them
 at run time.
 
+**On claw the list is the whole surface, and a rule is not a grant.** A claw
+node holds the tools its `tools:` list names — plus `ask_user` under
+`interaction:`, codemode's tool, and the store tools of a `memory:` block
+where the node declares no `output:` schema (a node that declares one, with
+none of the others, answers through the structured path, whose request sends
+none of them) — and nothing behind them: no `tools:` line there is *no tool at
+all*, the opposite of what it means on claude_code. So `allow: ["Read(**)"]` on a claw node that
+declares no `tools:` approves calls to a tool the node does not hold: the
+model is served nothing to call and the rules bound nothing. **C351** says so
+at compile time, on a route the source sends to claw (a `fallbacks:` route
+included); it stays silent on a node that only inherits the workflow's lists,
+and on a route the source does not decide. A tool node's rung-4 recovery
+agent is the same surface under another name: its `recovery.agent_tools:` list
+is its whole tool list, and **C352** names the agent that declares none on a
+workflow whose `default_backend:` is claw — with or without a gate.
+
 On `claude_code` a `tools:` list is **not** inert. The hard-restrict flag
 `--tools` is deliberately unused (see `pkg/backend/toolcatalog`), but iterion
 turns the list into `claudesdk.WithDisallowedTools`, which the SDK spells as
@@ -536,11 +552,14 @@ case, a space after the colon) all name the same class.
   `bash`), and claw's `repl` is a SECOND shell no spelling bounds.
 - `ask: ["class:shell"]` gates the class the same way: every member call
   pauses for a human, in every mode (an explicit ask precedes the mode
-  default), future members included. The pause is the unsandboxed mechanism:
-  on a sandboxed claw node a policy that can produce an ask refuses the NODE
-  at dispatch (a sandbox has no seam to pause the run for a human), and an
-  unsandboxed headless run stalls at the call until a human answers the
-  approval — an asked tool executes nothing unattended in either shape.
+  default), future members included. The pause is the unsandboxed mechanism;
+  on a sandboxed claw node the approval channel serves it for launcher-placed
+  tools (MCP, in-memory registries) — the launcher consumes the one-time
+  approval and executes the call itself — while an ask that can reach a
+  container-executed tool refuses the NODE at dispatch (a sandbox container
+  cannot be certified host-side), and an unsandboxed headless run stalls at
+  the call until a human answers the approval — an asked tool executes
+  nothing unattended in any of the three shapes.
 - `allow: ["class:shell"]` grants the class including future members —
   `allow:` widens. Accepted, not refused: the row is the author's explicit
   choice, and a refusal would replace it (**C167** warns instead, and
@@ -780,17 +799,35 @@ decode the native event and spell the native verdict.
   off-policy call to the operator, so nothing off-policy ever executes
   silently. To resolve the pause, the operator just **answers the
   approval question** with `allow`, `allow always`, or `deny` — on any of the
-  three gated backends. The pause carries a structured marker (tool + input
-  + rule); the runtime maps the answer to a grant rule
-  (`allow` = argument-scoped, `allow always` = whole-tool) and feeds it
-  back into the resolved policy, so the agent's re-issued call passes the
-  gate and executes after the generic `[PERMISSION GRANTED]` resume reminder.
-  For a search tool the argument scope is the **directory**
-  (`Grep(path:/work/pkg)`), not the pattern the model chose: an approved
-  search cannot be replayed against another directory, and inside the
-  approved one the pattern may vary.
-  `deny` refuses the call and the agent adapts. The `--permission-allow`
-  flags on `resume` remain available for scripted/headless approval.
+  three gated backends. The pause carries a structured marker (tool, input,
+  and rule).
+  - **Claw outside a sandbox:** `allow` authorizes the exact pending call.
+    The engine records consumption before dispatch and returns the actual
+    tool result to the model. A failure after dispatch can leave the outcome
+    unknown; a single-use authorization is not a guarantee of exactly-once
+    external effects. Approval answers to a new claw pause include
+    `_approval_interaction_id` from the question alongside the decision;
+    Studio sends it automatically. For headless resume, pass `--answers-file`
+    with `{"ask_user_response":"allow","_approval_interaction_id":"<id from the pending question>"}`.
+    Sandboxed claw serves the same exact approval through the launcher's
+    approval channel for launcher-placed tools (MCP, in-memory registries):
+    the pause crosses the sandbox IPC, the launcher consumes the claim and
+    executes the call itself, and a crossing that fails after a consumption
+    is typed ambiguous like the in-process path. A sandboxed claw node whose
+    ask-capable policy can also reach a container-executed tool (bash, the
+    file tools) still refuses at dispatch — the launcher cannot certify an
+    execution inside the container. When an
+    approved dispatch's outcome is unknown (a failure after the call ran),
+    every resume is refused until `resume --force` acknowledges it: the node
+    re-runs from its checkpoint, claw asks the permission again under a fresh
+    interaction ID, and answering it dispatches the call once more — the
+    double effect is the operator's explicit decision.
+  - **CLI permission adapters:** `allow` supplies an argument-scoped rule
+    for the resumed invocation, and the model reissues the call. For a
+    search tool the argument scope is the **directory** (for example,
+    `Grep(path:/work/pkg)`), not the pattern.
+  - `allow always` remains a whole-tool grant for the rest of the run.
+    `deny` refuses the pending call and lets the agent adapt.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
 - **Backend scope:** `claw`, `claude_code`, and pi RPC support `ask` and
@@ -831,7 +868,8 @@ decode the native event and spell the native verdict.
 - Diagnostics: **C110** (invalid permission mode), **C111** (a rule list
   that reaches no gated reader — including a workflow list every gated
   reader replaces), **C112** (tool-node `permission:` — parsed but not
-  enforced), **C154** (an entry the gate's parser cannot read, refused at
+  enforced), **C351** (a node's own rule lists on a claw route that serves
+  it no tool), **C352** (a recovery agent served no tool on claw), **C154** (an entry the gate's parser cannot read, refused at
   compile time instead of at dispatch), **C136** / **C176** (a route that
   cannot serve the gate in force for the node, node-declared `ask:` rules
   included).

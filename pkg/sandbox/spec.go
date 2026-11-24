@@ -197,6 +197,9 @@ type Spec struct {
 // the path; the run file store owns the directory (its write target), and
 // the two meet only here.
 type ReadBackDir struct {
+	// RootOpener supplies an independently owned retained import directory.
+	// Nil preserves historical HostDir resolution. It is never serialized.
+	RootOpener RootOpener `json:"-"`
 	// ContainerPath is the declared path inside the container (absolute,
 	// clean — the same text Spec.ReadBackPaths carries).
 	ContainerPath string
@@ -226,8 +229,10 @@ func (d ReadBackDir) Cap() int64 {
 // source must stay under (what [safepath.RealBindSource] compares against);
 // Path is the source the mount string names.
 type BindSourceCheck struct {
-	Root string
-	Path string
+	// Identity validates the originally selected source at container creation.
+	Identity BindPathIdentity `json:"-"`
+	Root     string
+	Path     string
 
 	// MustExist marks a source the ENGINE laid for this run and binds at
 	// that path — the workspace worktree. Nothing at the border recreates

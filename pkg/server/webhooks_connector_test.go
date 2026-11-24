@@ -421,3 +421,69 @@ func TestConnectorWebhook_AFlippedConnectorStopsVouching(t *testing.T) {
 		t.Fatalf("the refusal must name the connector mismatch, got: %s", body)
 	}
 }
+
+// An outage of the connection plane is no verdict on the connector lane: 503
+// naming no internal address, no launch, no terminal delivery record — a
+// filtered answer would never be redelivered.
+func TestConnectorWebhook_AStoreOutageIsNotFiltered(t *testing.T) {
+	for name, break_ := range map[string]func(*Server){
+		"connections": func(s *Server) { s.connectionStore = failingConnections{connection.NewMemoryStore()} },
+		"catalog":     func(s *Server) { s.connectorCatalog = failingCatalog{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+			if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			got := connectorLaunches(s)
+			break_(s)
+			w := httptest.NewRecorder()
+			s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+			if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "10.42.3.17") {
+				t.Fatalf("code=%d body=%s, want 503 naming no internal address", w.Code, w.Body.String())
+			}
+			if len(*got) != 0 {
+				t.Fatalf("launches = %v", *got)
+			}
+			if list, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10); err != nil || len(list) != 0 {
+				t.Fatalf("an outage recorded %d deliveries (err %v), want none", len(list), err)
+			}
+		})
+	}
+}
+
+// A delivery that names no event must not reach a polled trigger on this lane
+// either: a polled trigger declares no event, and a lookup that compared
+// names would match an empty header to it. The lane and the ingress share one
+// lookup (spec.WebhookTrigger), so the refusal is the same on both.
+func TestConnectorWebhook_AnUnnamedDeliveryNeverReachesAPolledTrigger(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	pkg, _, err := connection.BakedCatalog().Package("forgejo")
+	if err != nil {
+		t.Fatalf("the shipped forgejo package: %v", err)
+	}
+	polled := *pkg
+	polled.Triggers = append(append([]spec.Trigger(nil), pkg.Triggers...), spec.Trigger{
+		ID: "forgejo.issue.polled", Delivery: spec.DeliveryPoll,
+		Poll: &spec.TriggerPoll{
+			Operation: "forgejo.issue.list",
+			Params:    map[string]string{"owner": "query.owner", "repo": "query.repo"},
+			Query:     []spec.PollQueryField{{ID: "owner", Required: true}, {ID: "repo", Required: true}},
+			ItemID:    "item.number",
+			Interval:  spec.PollInterval{Default: "5m", Min: "1m"},
+		},
+	})
+	if err := polled.Validate(); err != nil {
+		t.Fatalf("the fixture's polled trigger must be one the format accepts: %v", err)
+	}
+	s.connectorCatalog = connection.NewMemoryCatalog(&polled)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("a delivery with no event header reached a trigger and launched")
+		return "", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", "", pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "filtered") {
+		t.Fatalf("code=%d body=%s, want the delivery filtered", w.Code, w.Body.String())
+	}
+}

@@ -26,6 +26,9 @@ func (s *Store) RecordPreEngineRefusal(ctx context.Context, id string, q store.P
 		attempts = append(attempts, bson.M{"queued_at": bson.M{"$lte": q.PublishedAt}})
 	}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$in": store.PreEngineRefusalFromStatuses(q)}, "$or": attempts}))
+	if !applyExactQueuedAt(filter, q.ExactQueuedAt) {
+		return store.PreEngineRefusalResult{}, nil
+	}
 	now := time.Now().UTC()
 	set := statusTransitionSet(q.TargetStatus(), q.Message, q.Outcome(), now)
 	if q.Disposition != store.PreEngineFinalVerdict {
@@ -51,7 +54,11 @@ func (s *Store) RecordPreEngineRefusal(ctx context.Context, id string, q store.P
 	var after struct {
 		Status store.RunStatus `bson:"status"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, statusTransitionPipeline(set), options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"status": 1})).Decode(&after)
+	result, err := s.findOneAndUpdateRunMetadata(ctx, id, filter, statusTransitionPipeline(set), options.FindOneAndUpdate().SetReturnDocument(options.After).SetProjection(bson.M{"status": 1}))
+	if err != nil {
+		return store.PreEngineRefusalResult{}, err
+	}
+	err = result.Decode(&after)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return store.PreEngineRefusalResult{}, nil
 	}

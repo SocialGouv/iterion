@@ -248,6 +248,10 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// WireReasoningEffort is "" (api.EffortWire): buildRequest writes no effort
+// field, whatever the request names.
+func (c *Client) WireReasoningEffort(_, _ string) string { return "" }
+
 // StreamResponse sends a streaming streamRawPredict request to Vertex and
 // returns a channel of api.StreamEvent values. The wire format is identical to
 // Anthropic's SSE, so we reuse api.SseParser.

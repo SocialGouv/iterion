@@ -203,7 +203,7 @@ route-scoped selector, so after de-dial a tenant cannot pin a rescue tier — an
 would then prune the authored `glm-5.3`/`zai` rescue as outside its funded providers, which is
 correct tenancy and a lost safety tier at the same time. So `overrides` gains the route-scoped
 selector the site vocabulary already spells: `node#name`, the exact key `ProviderResolution.Pins`
-uses for an authored route (`override_fold.go:98`, :293). A cell `{selector: "reviewer_claude#glm",
+uses for an authored route (`override_fold.go:98`, :293). A cell `{selector: "reviewer_alternate#glm",
 model: "openai_compatible/scaleway/glm-5.3"}` pins that rescue route through the same fold, the
 same locks, the same provenance map — no second mechanism, the Nth-variant test answered by
 extending the existing one. Two guards the route-scoped selector owes, from the plan review: it
@@ -374,7 +374,7 @@ changes WHO may pin a route, never what the author wrote.
 The five non-routing lines: the three var-default knobs become their literals; the
 `publish_review` command (`nodes.bot:478`) stops forwarding `${ITERION_VIBE_EFFORT_*}` into a
 child's env and forwards instead the values the run actually used — the command already receives
-`AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}}` from the run's inputs (:478), so
+`AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_alternate_model}}` from the run's inputs (:478), so
 effort joins the same input set, computed from the same fold, and the report stops being a
 reconstruction from a dial; `adr-cartograph`'s `ITERION_DISPATCHER_PORT` read moves to the bare
 `$PORT` of the env the engine constructs for tool processes (§1's write, not a read).

@@ -76,7 +76,7 @@ func (r *Runner) recordPreEngineRefusal(ctx context.Context, msg *queue.RunMessa
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	q := store.PreEngineRefusalRequest{Phase: v.Phase, Code: v.Code, Message: message, Hint: v.Hint, PublishedAt: publishedAt, Disposition: v.Disposition, FinalStatus: v.FinalStatus,
+	q := store.PreEngineRefusalRequest{Phase: v.Phase, Code: v.Code, Message: message, Hint: v.Hint, PublishedAt: publishedAt, ExactQueuedAt: codemodeQuotaQueuedAt(msg), Disposition: v.Disposition, FinalStatus: v.FinalStatus,
 		LeaveQueued: v.Disposition == store.PreEngineFinalVerdict && r.releasesRefusedResumes(msg)}
 	result, err := recorder.RecordPreEngineRefusal(idCtx, msg.RunID, q)
 	if err != nil {
@@ -108,4 +108,13 @@ func (r *Runner) recordPreEngineRefusal(ctx context.Context, msg *queue.RunMessa
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{Type: typ, Data: data}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit %s for pre-engine refusal %s: %v", msg.RunID, typ, v.Phase, err)
 	}
+}
+
+// refuseUnpreparedInvocation reports a refusal before a run's original identity
+// could be captured. It must not retry a durable write against an unvalidated row.
+func (r *Runner) refuseUnpreparedInvocation(_ context.Context, msg *queue.RunMessage, cause error) error {
+	if r.cfg.Logger != nil && msg != nil {
+		r.cfg.Logger.Warn("runner: run %s: invocation preparation refused without mutation: %v", msg.RunID, cause)
+	}
+	return cause
 }

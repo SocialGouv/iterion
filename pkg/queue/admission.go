@@ -79,13 +79,18 @@ func Admit(msg *RunMessage, run *store.Run) Admission {
 	return Admission{}
 }
 
-// Superseded is the identity rule of a delivery: every transition into
-// queued refreshes QueuedAt, and only a publication makes one — so a run
-// queued after msg was published belongs to a newer attempt. A document
-// without the marker, or a publication time that cannot be read, has no
-// identity to tell.
+// Superseded compares a quota patch's exact queue marker. For older
+// delivery shapes, only the historical publication-time fence is available:
+// a marker newer than the publication supersedes it.
 func Superseded(msg *RunMessage, run *store.Run) bool {
-	if msg == nil || run == nil || run.QueuedAt == nil {
+	if msg == nil || run == nil {
+		return false
+	}
+	if msg.Resume != nil && msg.Resume.CodemodeQuota != nil {
+		marker := msg.Resume.CodemodeQuota.QueuedAt
+		return marker.IsZero() || !store.MatchesExactQueuedAt(run.QueuedAt, marker)
+	}
+	if run.QueuedAt == nil {
 		return false
 	}
 	published, err := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)

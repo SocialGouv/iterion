@@ -94,7 +94,7 @@ and this spec's edit crosses all four:
 | file | lines | holds |
 |---|---|---|
 | `bots/review-pr/main.bot` | 720 | `workflow review_pr:` — the vars, the budget and every edge — and `prompt pacer_policy:`; no node and no schema |
-| `bots/review-pr/lib/nodes.bot` | 1 329 | `router fan:` with `mode: fan_out_all`, the four reviewer judges (`judge reviewer_claude:` … `judge reviewer_gpt_glance:`), `compute merge_reviews:`, `compute pr_gate:` |
+| `bots/review-pr/lib/nodes.bot` | 1 662 | `router fan:` with `mode: fan_out_all`, the four reviewer judges (`judge reviewer_alternate:` … `judge reviewer_glance:`), `compute merge_reviews:`, `compute pr_gate:` |
 | `bots/review-pr/lib/prompts.bot` | 539 | `prompt review_system:`, one user prompt per family, `prompt emit_system:` |
 | `bots/review-pr/lib/schemas.bot` | 275 | `schema review_output:`, what a reviewer returns, and `schema family_reviews:`, the merged blocks |
 
