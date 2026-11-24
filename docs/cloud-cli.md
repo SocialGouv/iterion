@@ -57,7 +57,20 @@ is not the server's info, no answer within 5 s —
 reason, and the status still succeeds. `--json` prints the whole answer,
 the one the operator MCP's `remote_status` gives: `server.version`,
 `server.commit`, `client_version`, or `server_info_error` in place of
-`server`. `iterion remote logout` forgets the credential.
+`server`. When the instance runs another major release, the status still
+answers both versions, leaves the account unread and says why in
+`major_mismatch`. `iterion remote logout` forgets the credential.
+
+Every request names this client's version in an `X-Iterion-Client` header.
+Before its first request, and again after a 404 or a 426 answer, the client
+reads the instance's version from `GET /api/server/info`; when both sides
+name a release and their majors differ, the request is refused before it is
+sent, with both versions in the error. `ITERION_REMOTE_ALLOW_MAJOR_MISMATCH=1`
+sends it anyway. A `dev` client, an instance that tells no version or a
+`0.x` placeholder version (an image built without `VERSION`) and a failed
+read pass. A 426 answer whose `error_code` is `client_too_old` is the
+server refusing this client's release: upgrade the CLI. The operator MCP's
+`remote_*` tools share the client, and the gate with it.
 
 ### CI / scripting (environment only)
 

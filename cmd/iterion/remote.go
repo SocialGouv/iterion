@@ -201,6 +201,7 @@ func probeIdentity(ctx context.Context, base, token string) (identityAnswer, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set(cli.RemoteClientHeader, cli.RawVersion())
 	hc := &http.Client{
 		Timeout:       identityProbeTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

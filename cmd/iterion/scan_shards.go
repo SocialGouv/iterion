@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -493,6 +494,7 @@ func dispatchCloud(ctx context.Context, plans []shardPlan, baseVars map[string]s
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(cli.RemoteClientHeader, cli.RawVersion())
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
