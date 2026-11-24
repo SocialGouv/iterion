@@ -1211,6 +1211,10 @@ func (w *writer) codemode(cb *ast.CodemodeBlock) *yaml.Node {
 	p.int64("tool_result_bytes", cb.ToolResultBytes)
 	p.int64("store_entries", cb.StoreEntries)
 	p.int64("store_bytes", cb.StoreBytes)
+	p.int64("subagents_tokens", cb.SubagentsTokens)
+	p.int64("subagents_tokens_per_agent", cb.SubagentsTokensPerAgent)
+	p.int64("subagents_concurrent", cb.SubagentsConcurrent)
+	p.int64("subagents_steps_per_agent", cb.SubagentsStepsPerAgent)
 	return p.node()
 }
 

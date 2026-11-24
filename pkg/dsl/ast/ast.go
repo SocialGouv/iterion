@@ -1221,7 +1221,16 @@ type CodemodeBlock struct {
 	ToolResultBytes     int64  // tool_result_bytes: bytes of ONE tool result
 	StoreEntries        int64  // store_entries: keys in the run bank
 	StoreBytes          int64  // store_bytes: total UTF-8 key and JSON value bytes in the run bank
-	Span                Span
+	// Subagents bounds — declaring `subagents_tokens` is what makes
+	// `tools.agent` callable from this node's programs (CM-13, ADR-165: a
+	// scriptable agent requires a finite reserve booked before the child
+	// runs). Zero means ABSENT, like every other bound here; a node that
+	// declares none keeps the agent tool withheld from its scripts.
+	SubagentsTokens         int64 // subagents_tokens: the node's whole reserve, in tokens, its children draw against
+	SubagentsTokensPerAgent int64 // subagents_tokens_per_agent: one child's hold; zero = the whole reserve
+	SubagentsConcurrent     int64 // subagents_concurrent: children of this node in flight; zero = 1
+	SubagentsStepsPerAgent  int64 // subagents_steps_per_agent: one child's tool-loop steps; zero = the node's own step budget
+	Span                    Span
 }
 
 // Bounded reports whether the block declares any bound — i.e. whether it was
@@ -1242,7 +1251,8 @@ func (c *CodemodeBlock) Bounded() bool {
 		return false
 	}
 	return c.ToolCalls != 0 || c.ConcurrentToolCalls != 0 || c.Wall != "" || c.CPU != "" || c.Memory != 0 ||
-		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0
+		c.ScriptBytes != 0 || c.ResultBytes != 0 || c.ToolResultBytes != 0 || c.StoreEntries != 0 || c.StoreBytes != 0 ||
+		c.SubagentsTokens != 0 || c.SubagentsTokensPerAgent != 0 || c.SubagentsConcurrent != 0 || c.SubagentsStepsPerAgent != 0
 }
 
 // SandboxBuildBlock is the AST representation of a `build:` sub-block

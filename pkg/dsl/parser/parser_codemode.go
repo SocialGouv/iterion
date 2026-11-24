@@ -133,6 +133,20 @@ func (p *parser) parseCodemodeProp(cb *ast.CodemodeBlock, propTok Token, host st
 		} else {
 			cb.StoreBytes = value
 		}
+	case "subagents_tokens", "subagents_tokens_per_agent", "subagents_concurrent", "subagents_steps_per_agent":
+		value := p.expectInt64()
+		if value < 0 {
+			p.addErrorHint(DiagInvalidValue, propTok, name+" must be non-negative",
+				"Declare a positive bound, or use zero to inherit the default.")
+		} else if name == "subagents_tokens" {
+			cb.SubagentsTokens = value
+		} else if name == "subagents_tokens_per_agent" {
+			cb.SubagentsTokensPerAgent = value
+		} else if name == "subagents_concurrent" {
+			cb.SubagentsConcurrent = value
+		} else {
+			cb.SubagentsStepsPerAgent = value
+		}
 	default:
 		p.unknownProperty("codemode", propTok, name)
 		p.skipUnknownProperty()

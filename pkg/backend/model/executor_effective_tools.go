@@ -159,13 +159,14 @@ func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 		return &ClawExecutor{staticProgramOnly: true}
 	}
 	return &ClawExecutor{
-		staticProgramOnly: true,
-		defaultBackend:    wf.DefaultBackend,
-		wfAutoMemory:      wf.AutoMemory,
-		wfCodemode:        wf.Codemode,
-		wfCodemodeDefer:   wf.CodemodeDefer,
-		wfCodemodeBounds:  wf.CodemodeBounds,
-		wfCapabilities:    wf.Capabilities,
+		staticProgramOnly:   true,
+		defaultBackend:      wf.DefaultBackend,
+		wfAutoMemory:        wf.AutoMemory,
+		wfCodemode:          wf.Codemode,
+		wfCodemodeDefer:     wf.CodemodeDefer,
+		wfCodemodeBounds:    wf.CodemodeBounds,
+		wfCodemodeSubagents: wf.CodemodeSubagents,
+		wfCapabilities:      wf.Capabilities,
 		// The image-attachment append is decided by the PROGRAM — a
 		// workflow's `attachments:` and the prompt body that references one —
 		// so the seams read it here too. On every backend but claw it puts

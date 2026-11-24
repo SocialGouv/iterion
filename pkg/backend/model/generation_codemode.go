@@ -98,19 +98,23 @@ var codemodeInputSchema = json.RawMessage(`{
 // catalogue each script receives both come from this one snapshot, through
 // the same withheld predicate the door narrows by, so the index cannot list a
 // tool the door refuses.
-func installCodemode(opts *GenerationOptions, deferred bool, want *scripthost.Limits, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
-	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, deferred, want)
+func installCodemode(opts *GenerationOptions, deferred bool, want *scripthost.Limits, reserve *scripthost.SubagentReserve, onClamp func(requested, applied scripthost.Limits), onWarn func(msg string)) error {
+	return installCodemodeOn(opts, scripthost.Host{OnClamp: onClamp, OnWarn: onWarn}, deferred, want, reserve)
 }
 
 // installCodemodeOn is installCodemode on a given host: production passes the
 // host above, tests pass one whose child is the test binary — so the wiring a
 // test drives is the wiring that ships, catalogue included.
-func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred bool, want *scripthost.Limits) error {
+func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred bool, want *scripthost.Limits, reserve *scripthost.SubagentReserve) error {
 	var limits scripthost.Limits
 	if want != nil {
 		limits = *want
 	}
-	catalog := scriptCatalog(opts.Tools, ScriptHostToolName)
+	// The reserve arms the script route of the agent tool (CM-13): the
+	// catalogue keeps the tool, the description tells the program the
+	// bounds it draws against, and the door serves it. A node that declared
+	// no reserve keeps the tool withheld exactly as before.
+	catalog := scriptCatalog(opts.Tools, ScriptHostToolName, reserve != nil)
 	// The ONE bound of this snapshot: the index is composed from it, the
 	// deferral reads it, and Host.Run bounds the same catalogue with the
 	// same deterministic function, so all three see one set.
@@ -122,6 +126,17 @@ func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred b
 		markCatalogueOnly(opts.Tools, bounded, opts.Permission)
 	}
 	description := codemodeToolDescription(bounded, omitted, anyCatalogueOnly(opts.Tools))
+	if reserve != nil {
+		per := reserve.TokensPerAgent
+		if per <= 0 {
+			per = reserve.Tokens
+		}
+		concurrent := reserve.Concurrent
+		if concurrent <= 0 {
+			concurrent = 1
+		}
+		description += fmt.Sprintf("\n\nagent: a program may start sub-agents of this node. Each child admits against the node's reserve of %d tokens (a child books %d until it settles its actual usage) and at most %d may run at once. A program cannot choose a child's model — children run on the node's own model.", reserve.Tokens, per, concurrent)
+	}
 	if opts.codemodeState != nil {
 		description += "\n\ncall.store(key, value) writes a JSON value to this run’s shared state; call.load(key) reads it. A missing key returns undefined, not null. Both are synchronous, count against the script call budget, and cannot dispatch tools. The bank is bounded; handle invalid input and quota errors without retrying the same write."
 	}
@@ -132,10 +147,18 @@ func installCodemodeOn(opts *GenerationOptions, host scripthost.Host, deferred b
 
 // scriptCatalog is the node's tools a program can call, as the catalogue
 // entries discovery answers from.
-func scriptCatalog(tools []GenerationTool, self string) []toolindex.Tool {
+func scriptCatalog(tools []GenerationTool, self string, subagentsArmed bool) []toolindex.Tool {
 	out := make([]toolindex.Tool, 0, len(tools))
 	for _, t := range tools {
-		if _, withheld := scriptWithheld(t.Name, self); withheld {
+		if isAgentTool(t.Name) {
+			// Armed or not, the agent tool never reaches scriptWithheld:
+			// that predicate refuses it UNCONDITIONALLY (the reserve refusal
+			// is one of its cases), so falling through would drop the tool
+			// from the catalogue of an armed node whose door serves it.
+			if !subagentsArmed {
+				continue
+			}
+		} else if _, withheld := scriptWithheld(t.Name, self); withheld {
 			continue
 		}
 		out = append(out, toolindex.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})

@@ -556,4 +556,20 @@ const (
 	// the reason C348 states: the workflow's defer is a default every node
 	// that turns codemode on itself inherits.
 	DiagCodemodeDeferWithModeOff DiagCode = "C355" // codemode defer: on declared beside `mode: off` on a node — no program runs, so the deferral is inert (warning)
+
+	// A subagents bound that cannot arm the reserve it names: an unsized
+	// reserve (no subagents_tokens) or a per-agent hold wider than the
+	// reserve it draws against. An ERROR rather than a warning — every
+	// admission would refuse, so the declaration can only describe a run
+	// that never happens; leaving it silent would read the block as armed
+	// where the door reads it as withheld.
+	DiagCodemodeSubagentsUnsized DiagCode = "C356" // codemode subagents bound arms nothing: no subagents_tokens, or a per-agent hold above the reserve (error)
+
+	// The reserve's own C348: subagents bounds declared beside `mode: off`
+	// on a node. As written no program runs and the reserve arms nothing; a
+	// launch override that turns codemode on makes it live, the same reach
+	// C348 has for the bounds and C355 for the defer. Workflow rung exempt —
+	// the workflow's reserve is a default every node that turns codemode on
+	// itself inherits.
+	DiagCodemodeSubagentsWithModeOff DiagCode = "C357" // codemode subagents reserve declared beside `mode: off` on a node — no program runs, so the reserve arms nothing (warning)
 )

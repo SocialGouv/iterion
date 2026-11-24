@@ -825,6 +825,20 @@ type Task struct {
 	// spent its budget of 64 tool calls" — is loud rather than silent.
 	CodemodeBounds *scripthost.Limits
 
+	// SubagentReserve is the node-level budget the node's programs'
+	// sub-agent calls draw against (CM-13, ADR-165): a finite reserve booked
+	// before a child runs, settled with the child's actual usage. Arming it
+	// — the author declared subagents_tokens and the executor resolved the
+	// ladder — is what makes the agent tool callable from this node's
+	// programs; nil keeps it withheld. nil here and nil at the node are the
+	// same thing on purpose, like CodemodeBounds: a backend that drops the
+	// field keeps the tool withheld, the tighter direction.
+	//
+	// Admission control, not durable accounting: the reserve lives as long
+	// as the node execution that declared it. The durable reservation
+	// machinery (ADR-155) is a different, credential-sized lane.
+	SubagentReserve *scripthost.SubagentReserve
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each
