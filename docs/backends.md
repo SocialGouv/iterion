@@ -930,18 +930,18 @@ hint and the wire model:
 ```iter fragment
 agent reviewer:
   backend: "claude_code"
-  provider: "zai:glm-5.3,anthropic:claude-opus-5-5"   # glm-5.3 on z.ai, claude-opus-5-5 on Anthropic
+  provider: "zai:glm-5.4,anthropic:claude-opus-5-5"   # glm-5.4 on z.ai, claude-opus-5-5 on Anthropic
 ```
 
 This is the case where the chain's two providers serve **different model
-ids over the same Anthropic-wire API** — `glm-5.3` is a z.ai model that
+ids over the same Anthropic-wire API** — `glm-5.4` is a z.ai model that
 Anthropic would reject, so a hint-only swap would break on fall-through.
 The token is split on the **first** colon (a model id that itself
 contains a colon survives intact). An element **without** a model
-(`anthropic` in `zai:glm-5.3,anthropic`) inherits the node's `model:`
+(`anthropic` in `zai:glm-5.4,anthropic`) inherits the node's `model:`
 baseline; an inheriting element after a model-bearing one restores the
 baseline rather than carrying the previous override. A malformed element
-— a colon with an empty provider (`:glm-5.3`) or empty model (`zai:`) —
+— a colon with an empty provider (`:glm-5.4`) or empty model (`zai:`) —
 warns **C172** at compile time. Env expansion still runs on the whole
 field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 `provider:model` separator.
@@ -3166,7 +3166,7 @@ sensible default for the first available provider (the detector's
 `SuggestedModel` for the first available provider, in this priority
 order) — currently
 `anthropic/claude-opus-5-5` for Anthropic,
-`anthropic/glm-5.3` for z.ai,
+`anthropic/glm-5.4` for z.ai,
 `moonshot/kimi-k2` for Moonshot,
 `openai/gpt-6-sol` for OpenAI, and
 `xai/grok-3` for xAI (the `SuggestedModel` fields of

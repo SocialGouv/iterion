@@ -211,7 +211,7 @@ func keyProviderOfRow(row string) secrets.Provider {
 func cloudProviderSkeleton() []detect.ProviderStatus {
 	return []detect.ProviderStatus{
 		{Name: "anthropic", Source: "ANTHROPIC_API_KEY", SuggestedModel: "anthropic/claude-opus-5-5"},
-		{Name: "zai", Source: "ZAI_API_KEY", SuggestedModel: "anthropic/glm-5.3"},
+		{Name: "zai", Source: "ZAI_API_KEY", SuggestedModel: "anthropic/" + secrets.ZAIDefaultModel},
 		{Name: "moonshot", Source: "MOONSHOT_API_KEY", SuggestedModel: "moonshot/kimi-k2"},
 		{Name: "openai", Source: "OPENAI_API_KEY", SuggestedModel: "openai/gpt-6-sol"},
 		{Name: "xai", Source: "XAI_API_KEY", SuggestedModel: "xai/grok-3"},

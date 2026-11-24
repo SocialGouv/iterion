@@ -69,7 +69,7 @@
             "Model": ""
           }
         ],
-        "model": "glm-5.3",
+        "model": "glm-5.4",
         "role": "node",
         "host": false,
         "rescue": true
@@ -203,7 +203,7 @@
             "Model": ""
           }
         ],
-        "model": "glm-5.3",
+        "model": "glm-5.4",
         "role": "node",
         "host": false,
         "rescue": true

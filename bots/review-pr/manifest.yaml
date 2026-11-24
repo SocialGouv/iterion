@@ -1,7 +1,11 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.11.0
+version: 0.11.1
+## 0.11.1 — the GLM rescue route moves to glm-5.4: reviewer_alternate's `glm`
+## fallback (provider zai) names z.ai's current GLM, the id
+## secrets.ZAIDefaultModel carries. A routing cell on the route still
+## repoints it without a release.
 ## 0.11.0 — every route is a literal (ADR-169, #2699): the
 ## `${ITERION_VIBE_*}` dials that read the model, backend, provider and
 ## effort from the process environment are gone, each replaced by the

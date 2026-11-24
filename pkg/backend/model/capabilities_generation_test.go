@@ -94,11 +94,14 @@ func TestGLMStillHandledBeforeClaudeParsing(t *testing.T) {
 }
 
 // The window is read from the GLM generation, not matched against known ids:
-// glm-5.3 — the id the catalog's GLM routes default to — was sized at 200K by
-// an exact "glm-5.2" match, a fifth of what z.ai serves it with.
+// glm-5.3 was sized at 200K by an exact "glm-5.2" match, a fifth of what z.ai
+// serves it with; glm-5.4 — the id the catalog's GLM routes default to
+// (secrets.ZAIDefaultModel) — is 1M on z.ai's Coding Plan.
 func TestGLMContextWindowFollowsTheGeneration(t *testing.T) {
 	t.Parallel()
 	for id, want := range map[string]int{
+		"glm-5.4":           1_000_000,
+		"anthropic/glm-5.4": 1_000_000,
 		"glm-5.3":           1_000_000,
 		"glm-5.3-flash":     1_000_000,
 		"anthropic/glm-5.3": 1_000_000,

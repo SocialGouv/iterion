@@ -25,7 +25,7 @@ agent narrowed:
   ## host's: the default rides the z.ai facade (ZAI_API_KEY — a metered,
   ## cheap GLM), a ChatGPT-forfait-only host 400s on the non-codex mini ids
   ## (measured 2026-11-03), so point the dial at what the host serves.
-  model: "${ITERION_E2E_NARROW_MODEL:-anthropic/glm-5.3}"
+  model: "${ITERION_E2E_NARROW_MODEL:-anthropic/glm-5.4}"
   tools: [command, bash, read_file]
   output: answer
   system: sys

@@ -30,7 +30,7 @@ force-refetch the model-spec cache before resolving.
 
 Examples:
   iterion models                                  # list known models
-  iterion models anthropic/glm-5.3                # resolve one model
+  iterion models anthropic/glm-5.4                # resolve one model
   iterion models openai/gpt-5.5 --json            # machine-readable
   iterion models --refresh                        # refresh cache, then list`,
 	// `models` is both a leaf (it takes a model spec) and a group (it has

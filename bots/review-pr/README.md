@@ -29,7 +29,7 @@ bot: `reviewer` is `openai/gpt-6-astra` on `claw` (glance:
 `openai/gpt-6-luna`), `reviewer_alternate` is `claude-opus-5-5` on
 `claude_code` with an Anthropic-direct provider hint, `converge` is
 `openai/gpt-6-sol` on `claw`, and `reviewer_alternate` carries a GLM fallback
-route (`glm-5.3`, `provider: "zai"`) for the day the Anthropic credential
+route (`glm-5.4`, `provider: "zai"`) for the day the Anthropic credential
 cannot serve. The published run table labels each row
 with the family that actually served — read from the session's routing label
 first (a z.ai facade is GLM, whatever id it was sent), then from the model —
@@ -460,7 +460,7 @@ PINNED ANTHROPIC ROUTE, never of a facade:
 | `auth` | the Anthropic credential present but rejected or expired. Not in the default trigger set; named here deliberately. A run whose forfait the publisher skipped at the cap lands here too when the runner carries no ambient Anthropic auth: the forced-Anthropic primary has no channel, fails "Not logged in" (no spend), and this route takes it |
 | `unavailable` | the resolved credential cannot reach the model it was given |
 
-The rescue model is a literal, `glm-5.3`. An account entitled to a
+The rescue model is a literal, `glm-5.4`. An account entitled to a
 different GLM id — or one z.ai renames — repoints it with a routing cell on
 the route (`review-pr/reviewer_alternate#glm`), without re-releasing the
 bundle.
@@ -526,8 +526,8 @@ chose:
 - the claude forfait: `claude_code` + `claude-opus-5-5` + provider
   `anthropic` (without the hint, a z.ai key holding the wire answers the
   claude id with GLM — the PR #1924 label);
-- GLM: `claude_code` + `glm-5.3` + provider `zai`. Not claw +
-  `anthropic/glm-5.3`: claw reaches z.ai only through a z.ai key sealed as
+- GLM: `claude_code` + `glm-5.4` + provider `zai`. Not claw +
+  `anthropic/glm-5.4`: claw reaches z.ai only through a z.ai key sealed as
   the run's DEFAULT, which a sealed Claude forfait prevents.
 
 See [main.bot](main.bot) for the full DSL.

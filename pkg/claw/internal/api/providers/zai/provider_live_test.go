@@ -10,7 +10,7 @@ import (
 )
 
 // The falsifier for the routing claim itself: a REAL call through the zai
-// provider — real endpoint, real account key, glm-5.3 served. Guarded by
+// provider — real endpoint, real account key, glm-5.4 served. Guarded by
 // ZAI_LIVE_PROBE=1 so CI never spends the account; run it before pushing:
 //
 //	ZAI_LIVE_PROBE=1 go test -run TestLiveZai -v ./internal/api/providers/zai/
@@ -18,20 +18,20 @@ import (
 // What it proves (and what a stub cannot): the wire shape z.ai actually
 // accepts — header, path, model id — for the exact pair this provider
 // exists to route. A stub proves the provider calls its own client; only
-// the live endpoint proves z.ai answers "glm-5.3" on this wire.
+// the live endpoint proves z.ai answers "glm-5.4" on this wire.
 func TestLiveZaiStream(t *testing.T) {
 	key := os.Getenv("ZAI_API_KEY")
 	if key == "" || os.Getenv("ZAI_LIVE_PROBE") == "" {
 		t.Skip("set ZAI_API_KEY + ZAI_LIVE_PROBE=1 to run the live probe")
 	}
-	c, err := New().NewClient(api.ProviderConfig{APIKey: key, Model: "glm-5.3"})
+	c, err := New().NewClient(api.ProviderConfig{APIKey: key, Model: "glm-5.4"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	ch, err := c.StreamResponse(ctx, api.CreateMessageRequest{
-		Model:     "glm-5.3",
+		Model:     "glm-5.4",
 		MaxTokens: 512,
 		Messages:  []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Say OK."}}}},
 	})
@@ -57,7 +57,7 @@ func TestLiveZaiStream(t *testing.T) {
 		t.Fatal("no stream events received")
 	}
 	if text == "" {
-		t.Fatalf("no text deltas received — event kinds: %v (glm-5.3 is a reasoning model: raise MaxTokens so thinking leaves room for text)", kinds)
+		t.Fatalf("no text deltas received — event kinds: %v (glm-5.4 is a reasoning model: raise MaxTokens so thinking leaves room for text)", kinds)
 	}
-	t.Logf("live glm-5.3 answered %d events %v, text=%q", saw, kinds, text)
+	t.Logf("live glm-5.4 answered %d events %v, text=%q", saw, kinds, text)
 }

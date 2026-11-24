@@ -698,7 +698,7 @@ func detectProviders() []ProviderStatus {
 			Name:           "zai",
 			Available:      zaiAvailable,
 			Source:         envSource("ZAI_API_KEY", "ANTHROPIC_BASE_URL"),
-			SuggestedModel: "anthropic/glm-5.3",
+			SuggestedModel: "anthropic/" + secrets.ZAIDefaultModel,
 		},
 		{
 			// Moonshot — the Kimi family through its own
