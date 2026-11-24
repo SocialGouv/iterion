@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -239,7 +240,9 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		s.writeForgeProvisionError(w, r, err)
 		return
 	}
-	s.writeProvisionResult(w, r, teamID, "forge.integration.provisioned", res, s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
+	s.writeProvisionResult(w, r, teamID, "forge.integration.provisioned", res, append(
+		s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
+		s.issueLabelAllowlistWarnings(ctx, teamID, res.BotIDs, res.IntegrationID)...),
 		map[string]any{"repo": req.Repo, "bots": res.BotIDs, "connection_id": req.ConnectionID})
 }
 
@@ -394,8 +397,9 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		s.writeForgeProvisionError(w, r, err)
 		return
 	}
-	s.writeProvisionResult(w, r, teamID, "forge.integration.bots_updated", res,
+	s.writeProvisionResult(w, r, teamID, "forge.integration.bots_updated", res, append(
 		s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
+		s.issueLabelAllowlistWarnings(ctx, teamID, res.BotIDs, res.IntegrationID)...),
 		map[string]any{"repo": ri.RepoFullName, "bots": res.BotIDs})
 }
 
@@ -899,6 +903,58 @@ func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, te
 		return
 	}
 	writeJSON(w, res)
+}
+
+// issueLabelAllowlistWarnings warns (C1xx posture, philosophy §1: warn
+// rather than reject) when an integration's effective issue-label allowlist
+// is EMPTY while an enabled bot declares an issue_labeled forge event.
+// MatchLabel answers an empty allowlist with "any label triggers"
+// (pkg/webhooks/match.go), and the bot's OWN labels are not excluded: every
+// classification label it sets on a filed issue (`produit:*`, `priorite:*`…)
+// arrives as its own `labeled` delivery — the idempotency key includes the
+// label — and starts a run. The allowlist is operator-only (the manifest
+// cannot declare it), so the provisioning write is the one surface that
+// sees both halves. NOT an enforcement: an empty allowlist may be a
+// deliberate allow-all (the warning says so), and a bot enabled later is
+// screened the same way only at its own enable write.
+func (s *Server) issueLabelAllowlistWarnings(ctx context.Context, teamID string, botIDs []string, integrationID string) []string {
+	stored, err := s.forgeIntegrations.Get(store.WithTenant(ctx, teamID), integrationID)
+	if err != nil {
+		return []string{fmt.Sprintf("issue-label trigger: the empty-allowlist screen could not read the stored integration (%v) — skipped, not an all-clear", err)}
+	}
+	if len(stored.LabelAllowlist) > 0 {
+		return nil
+	}
+	var labeled []string
+	for _, botID := range botIDs {
+		if manifestReactsToIssueLabels(s.botManifestFor(ctx, teamID, botID)) {
+			labeled = append(labeled, botID)
+		}
+	}
+	if len(labeled) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("issue-label trigger: bot(s) %s react to issue labels and this integration's label_allowlist is EMPTY. An empty allowlist matches ANY freshly-applied label — including the bot's own classification labels, each one its own trigger lane — so every filed issue starts a run per label. Set label_allowlist to the label(s) that should trigger (or [\"]*\"] for a deliberate allow-all).", strings.Join(labeled, ", "))}
+}
+
+// manifestReactsToIssueLabels reports whether a bot's manifest subscribes
+// the repo hook to issue labels: the forge block's events or a forge
+// invocation, the two shapes a bot declares them in.
+func manifestReactsToIssueLabels(m *bundle.Manifest) bool {
+	if m == nil {
+		return false
+	}
+	for _, e := range m.Forge.Events {
+		if e == bundle.ForgeEventIssueLabeled {
+			return true
+		}
+	}
+	for _, inv := range m.Invocations {
+		if inv.Kind == bundle.InvocationKindForge && inv.Forge != nil && inv.Forge.Event == bundle.ForgeEventIssueLabeled {
+			return true
+		}
+	}
+	return false
 }
 
 // routingBlastRadiusWarnings screens a submitted routing block against the
