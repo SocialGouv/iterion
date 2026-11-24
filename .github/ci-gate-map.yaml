@@ -27,7 +27,7 @@
 # so no member after one compiles against a tree it rewrote mid-run.
 #
 # `checks` — how many check runs the job produces (its matrix). The ruleset
-# keys on CONTEXTS, not on jobs: 19 jobs, 25 check runs.
+# keys on CONTEXTS, not on jobs: 20 jobs, 26 check runs.
 #
 # `inlined` — the one-command Taskfile tasks that are a `run:` of this job
 # BYTE FOR BYTE. Declared here because a row that argues an identity in prose
@@ -53,18 +53,19 @@ jobs:
     checks: 1
     disposition: unexpressible
     reason: >-
-      a pure aggregator — its only step reads test-unit, test-e2e and studio's
-      `result` from the workflow context and fails if any is not success. There
-      is nothing to reproduce: what it aggregates is those three legs, whose
-      own rows carry the members. Running their members IS running this.
-    aggregates: [test-unit, test-e2e, studio]
+      a pure aggregator — its only step reads test-unit, test-e2e, studio and
+      test-native-exec's `result` from the workflow context and fails if any is
+      not success. There is nothing to reproduce: what it aggregates is those
+      four legs, whose own rows carry the members. Running their members IS
+      running this.
+    aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
     required: yes
     checks: 1
     disposition: unexpressible
-    reason: the same shape, over race-shard alone.
-    aggregates: [race-shard]
+    reason: the same shape, over race-shard and test-native-exec.
+    aggregates: [race-shard, test-native-exec]
 
   # ---- the gated legs behind `test` ----
   test-unit:
@@ -75,13 +76,17 @@ jobs:
     members: [test, vet, "ci:gofmt", "test:live:compile", "map:check", "dsl:check"]
     residual: >-
       the job shards with `scripts/ci/testshards -n 3 -i <shard> -skip
-      '(^|/)e2e$' -weights scripts/ci/test-shards-unit-weights.tsv` and runs
+      '^github\.com/SocialGouv/iterion/(e2e|pkg/sandbox/kubernetes)$' -weights
+      scripts/ci/test-shards-unit-weights.tsv`, skips the flake quarantine
+      (`go test -skip` built by scripts/ci/testquarantine from
+      scripts/ci/test-quarantine.tsv, which `task test` does not apply) and runs
       its one-time steps (freshness, gofmt, vet, the census, the live compile)
       on the last shard only; one local `task test` covers the union of the
       three shards but exercises neither the splitter nor its empty-shard
       refusal (internal/ciguard's unit_shards_test.go does). CI runs
       `-count=1` under `CGO_ENABLED=0` at `-timeout 1500s` over
-      everything but `./e2e`, while `task test` sets no `-count` and no CGO and
+      everything but `./e2e` and `./pkg/sandbox/kubernetes` (test-native-exec's),
+      while `task test` sets no `-count` and no CGO and
       caps packages at `-timeout 1200s` — a LOWER ceiling — over `./...`; CI
       exports `CI=true`, which turns a skip into a hard failure at fourteen
       sites, and no Taskfile test task sets it. `ci:gofmt` covers the job's own
@@ -104,9 +109,12 @@ jobs:
     members: ["test:e2e"]
     residual: >-
       the job shards with `scripts/ci/testshards -tests ./e2e -n 4 -i <shard>`
-      and fails the shard if discovery itself failed; one local `task test:e2e`
+      under `GOFLAGS=-race` (discovery lists the build execution runs) and fails the shard if discovery itself failed; one local `task test:e2e`
       covers the union of the four indices but exercises neither the splitter
-      nor that refusal (internal/ciguard's e2e_shards_test.go does).
+      nor that refusal (internal/ciguard's e2e_shards_test.go does). The job
+      runs under `-race` with cgo at `-timeout 2400s` and skips the flake
+      quarantine; `task test:e2e` runs without the detector, whose local half
+      for e2e is `task test:race` (race-shard's member, over `./...`).
 
   studio:
     required: no
@@ -120,6 +128,21 @@ jobs:
       there; and `openapi:check:dry` judges the INDEX (`git show :openapi.json`)
       while CI regenerates in place and diffs the worktree.
 
+  test-native-exec:
+    required: no
+    feeds: [test, race]
+    checks: 1
+    disposition: partial
+    members: [test, "test:race"]
+    residual: >-
+      the job runs `./pkg/sandbox/kubernetes/` alone, plain (`-count=1`,
+      `CGO_ENABLED=0`, `-timeout 1500s`) then under `-race` (`-timeout 2400s`),
+      both skipping the flake quarantine, on a namespace-capable VM after a
+      Bubblewrap read-only-mount preflight; `task test` and `task test:race`
+      cover the package inside `./...` with their own flags, and the native
+      witnesses need bubblewrap and a C compiler on the box (devbox ships the
+      former) — a missing one fails them rather than skipping.
+
   race-shard:
     required: no
     feeds: race
@@ -129,8 +152,10 @@ jobs:
     residual: >-
       `task test:race` is `-timeout 1200s` against the job's 2400s, carries no
       `-count=1`, and runs the whole suite in one process rather than the
-      three shards; the job also pins yq by digest and builds the ultra11y
-      engine first.
+      three shards; the job leaves `./e2e` (test-e2e's) and
+      `./pkg/sandbox/kubernetes` (test-native-exec's) out of its partition and
+      skips the flake quarantine, both of which `task test:race` runs; the job
+      also pins yq by digest and builds the ultra11y engine first.
 
   # ---- the other required contexts ----
   vendor-check:

@@ -5,7 +5,8 @@
 # shard), so treat them as relative weights, not walls; refresh when the mix
 # drifts. Packages under 10 s are left out: unlisted packages weigh 1, so a
 # stale or missing row only degrades the balance — it never errors.
-github.com/SocialGouv/iterion/e2e	1785
+# race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
+# (under -race in test-native-exec), so neither carries a row here.
 github.com/SocialGouv/iterion/bots	1564
 github.com/SocialGouv/iterion/pkg/server	1070
 github.com/SocialGouv/iterion/internal/fswatch	945
@@ -22,7 +23,6 @@ github.com/SocialGouv/iterion/internal/docsguard	205
 github.com/SocialGouv/iterion/pkg/store	158
 github.com/SocialGouv/iterion/pkg/backend/secretguard	157
 github.com/SocialGouv/iterion/cmd/iterion-desktop	155
-github.com/SocialGouv/iterion/pkg/sandbox/kubernetes	153
 github.com/SocialGouv/iterion/pkg/runner	147
 github.com/SocialGouv/iterion/pkg/git	124
 github.com/SocialGouv/iterion/internal/isolationenv	116

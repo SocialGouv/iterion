@@ -5,13 +5,12 @@
 # mix drifts. Packages under 10 s are left out: unlisted packages weigh 1, so a
 # stale or missing row only degrades the balance — it never errors. The -race
 # legs keep their own table (test-shards-weights.tsv): the detector (with cgo)
-# and the co-packing reorder the costs (the unit reading ran unsharded), and
-# e2e, which leads the race table, is excluded from this one.
+# and the co-packing reorder the costs (the unit reading ran unsharded). e2e
+# (test-e2e's) and pkg/sandbox/kubernetes (test-native-exec's) carry no row.
 github.com/SocialGouv/iterion/bots	751
 github.com/SocialGouv/iterion/pkg/server	518
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
 github.com/SocialGouv/iterion/pkg/scripthost	369
-github.com/SocialGouv/iterion/pkg/sandbox/kubernetes	266
 github.com/SocialGouv/iterion/pkg/runtime	225
 github.com/SocialGouv/iterion/pkg/backend/model	206
 github.com/SocialGouv/iterion/internal/fswatch	175

@@ -145,7 +145,7 @@ Two layers answer different questions, and confusing them is what makes
 
 | layer | what it proves | cost | when it runs |
 |---|---|---|---|
-| **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** — `go test ./e2e/...` (900 s) + a `-race` pass, plus `mongo-conformance`, `nats-conformance` and `cloud-e2e` on a kind cluster |
+| **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** — `go test -race ./e2e` in four shards (2400 s each), plus `mongo-conformance`, `nats-conformance` and `cloud-e2e` on a kind cluster |
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | **never automatically, by design** — 59 `task test:live:*` targets, opt-in |
 
 [`e2e-coverage-matrix.md`](e2e-coverage-matrix.md) holds **387 rows**:
