@@ -21,8 +21,8 @@ ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ARG GO_VERSION=1.26.0
 ARG GO_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 # renovate: datasource=node-version depName=node versioning=node
-ARG NODE_VERSION=24.21.0
-ARG NODE_SHA256=6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff
+ARG NODE_VERSION=24.22.1
+ARG NODE_SHA256=eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c
 RUN set -eu \
     && go_dir="$RUNNER_TOOL_CACHE/go/$GO_VERSION/x64" \
     && curl -fsSL -o /tmp/go.tgz "https://dl.google.com/go/go$GO_VERSION.linux-amd64.tar.gz" \
