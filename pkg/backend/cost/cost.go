@@ -200,6 +200,15 @@ func EstimateUSDQuietInEnv(ctx context.Context, model string, inputTokens, outpu
 	return estimateUSDWithCache(model, inputTokens, outputTokens, 0, gatewayPricerQuiet, func(name string) string { return credroute.Getenv(ctx, name) })
 }
 
+// EstimateUSDWithCacheQuietInEnv is EstimateUSDWithCacheInEnv with the
+// gateway id resolved quietly: the form the metrics emitter books a
+// cached step with, so the org usage cap and the credential ledger charge
+// the figure the run meter reports while the launch keeps the catalog's
+// per-id warning budget.
+func EstimateUSDWithCacheQuietInEnv(ctx context.Context, model string, inputTokens, outputTokens, cacheReadTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricerQuiet, func(name string) string { return credroute.Getenv(ctx, name) })
+}
+
 // EstimateUSDWithCache is EstimateUSD for a caller that measured how much
 // of the prompt the provider served from its cache. Cached input prices at
 // the catalog's cache-read rate when one is published (Scaleway bills

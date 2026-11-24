@@ -698,7 +698,22 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		m.runInputTokens += int64(inputT)
 		m.runOutputTokens += int64(outputT)
 		var costDelta float64
-		if modelName != "unknown" {
+		cacheT := toFloat(evt.Data["cache_read_tokens"])
+		if modelName != "unknown" && cacheT > 0 && modelroute.Parse(modelName).ChatCompletionsUsage() {
+			// Chat Completions usage: input_tokens already includes the
+			// cached share, which prices at the catalog's cache-read rate
+			// (the input rate when none is published) — the run meter's
+			// figure for the same step. Anthropic-shaped routes report
+			// cache reads exclusive of input and keep the rate path below.
+			pctx := m.priceCtx
+			if pctx == nil {
+				pctx = context.Background()
+			}
+			if c := cost.EstimateUSDWithCacheQuietInEnv(pctx, modelName, int(inputT), int(outputT), int(cacheT)); c > 0 {
+				m.runCostUSD += c
+				costDelta = c
+			}
+		} else if modelName != "unknown" {
 			rate := m.rateForLocked(modelName)
 			if rate.known {
 				if c := inputT*rate.inputUSDPerToken + outputT*rate.outputUSDPerToken; c > 0 {
