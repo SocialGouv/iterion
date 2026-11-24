@@ -93,23 +93,23 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 // validateRefusedClawTools reports a declared tool claw REGISTERS and iterion
 // cannot serve (toolcatalog.ClawRefusesBuiltin holds the list and the reason).
 //
-// The list is EMPTY today: `agent` left it when the subagent runner was wired
-// at both hosts (#1940), and nothing else claw registers is beyond iterion.
-// So this reports nothing on any shipped workflow, and the arms below are
-// exercised through toolcatalog.SetClawRefusedBuiltinForTest — the seam the
-// parity rule needs for the next capability claw ships before iterion serves
-// it. A deployment whose OWN host wires no subagent runner is a run-time fact
-// no compiler can know (toolcatalog.ClawUnwiredSubagentRefusal answers it),
-// which is why `agent` is not on the list for that case.
+// The list holds the cron_*, team_* and lsp families: claw registers them and
+// their executors answer success into registries iterion never reads back, so
+// pkg/backend/tool refuses every call and this warns the author first. `agent`
+// left it when the subagent runner was wired at both hosts (#1940). A
+// deployment whose OWN host wires no subagent runner is a run-time fact no
+// compiler can know (toolcatalog.ClawUnwiredSubagentRefusal answers it), which
+// is why `agent` is not on the list for that case.
 //
 // It is disjoint from C135 by construction: that code decides names the
 // registry does NOT hold, this one a name it does. The two never fire together
 // on the same entry.
 //
 // A warning, not an error: the node still runs — the refusal arrives as a tool
-// error the model can act on, not as a dead node — and a host MAY wire the
-// capability (e2e does). Philosophy #1: warn rather than reject, and never
-// silently replace an author's explicit choice.
+// error the model can act on, not as a dead node. Philosophy #1: warn rather
+// than reject, and never silently replace an author's explicit choice. The
+// refusal itself is certain: registerClawTool refuses a listed name whatever
+// the host wires, so no message hedges on a host that serves it.
 //
 // Scope is every list the AUTHOR writes that reaches claw's registry — an
 // agent/judge node's `tools:`, its claw `fallbacks:` routes, and a Verified
@@ -141,7 +141,7 @@ func (c *compiler) validateRefusedClawTools(w *Workflow) {
 			for _, name := range refused {
 				r, _ := toolcatalog.ClawRefusesBuiltin(name)
 				c.warnfAt(DiagToolRefusedOnClaw, id, "",
-					"%s %q: tools: names %q, which backend %q registers but cannot serve — %s, so the call is refused at run time unless this deployment's host serves it. %s",
+					"%s %q: tools: names %q, which backend %q registers but cannot serve — %s, so the call is refused at run time on every host. %s",
 					kind, id, name, clawBackendName, r.Reason, r.Remedy)
 			}
 			continue
@@ -158,7 +158,7 @@ func (c *compiler) validateRefusedClawTools(w *Workflow) {
 			for _, name := range refused {
 				r, _ := toolcatalog.ClawRefusesBuiltin(name)
 				c.warnfAt(DiagToolRefusedOnClaw, id, "",
-					"%s %q: tools: names %q, which fallback %s cannot serve on backend %q — %s, so the call is refused at the moment the run is already falling back, unless this deployment's host serves it. %s",
+					"%s %q: tools: names %q, which fallback %s cannot serve on backend %q — %s, so the call is refused at the moment the run is already falling back, on every host. %s",
 					kind, id, name, fallbackLabel(fb), clawBackendName, r.Reason, r.Remedy)
 			}
 			break
@@ -187,7 +187,7 @@ func (c *compiler) validateRefusedRecoveryAgentTools(w *Workflow, tn *ToolNode) 
 	for _, name := range refusedToolNames(tn.Recovery.AgentTools) {
 		r, _ := toolcatalog.ClawRefusesBuiltin(name)
 		c.warnfAt(DiagToolRefusedOnClaw, tn.ID, "",
-			"tool %q: recovery agent_tools: names %q, which backend %q registers but cannot serve on the rung-4 recovery agent — %s, so the call is refused after the deterministic rungs already have, unless this deployment's host serves it. %s",
+			"tool %q: recovery agent_tools: names %q, which backend %q registers but cannot serve on the rung-4 recovery agent — %s, so the call is refused after the deterministic rungs already have, on every host. %s",
 			tn.ID, name, clawBackendName, r.Reason, r.Remedy)
 	}
 }

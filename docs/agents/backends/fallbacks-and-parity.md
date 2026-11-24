@@ -88,7 +88,7 @@ Code:
   honest by a conformance test against the real registry. `list_files` /
   `run_command` / `git_diff` / `search_codebase` circulate in older
   examples and have never been registered — use `glob` / `bash` / `grep`.
-  Every registered name is served, `agent` included: iterion wires one
+  `agent` is served: iterion wires one
   at both of its hosts, in process and in the container, and the child
   is bounded by the NODE — its effective tools, its policy, its step
   budget, its spend
@@ -98,8 +98,12 @@ Code:
   the parity rule's other half, a capability wired for one backend
   wired or typed-refused for the other, never simulated. The list
   behind the compile-time warning (C159) sits beside the catalog
-  ([refused.go](../../../pkg/backend/toolcatalog/refused.go)) and is
-  EMPTY — it stands for the next capability claw ships first. The
+  ([refused.go](../../../pkg/backend/toolcatalog/refused.go)) and holds
+  the `cron_*`, `team_*` and `lsp` names: registered, every call
+  typed-refused, since nothing reads their registries back. C159 fires
+  on a node whose source names claw — its `backend:`, the workflow
+  `default_backend`, or a claw `fallbacks:` route; a node with no
+  backend anywhere stays silent, the run-time refusal still holds. The
   `worker_*` family reads like the same case and is not: the MODEL drives
   that state machine — the node spawns the terminal through `bash` and
   feeds back what it shows via `worker_observe`, which advances

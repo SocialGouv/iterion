@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -65,6 +66,13 @@ func TestExecuteToolNodeRecipe_SandboxRefusesARegistryToolThatBelongsInTheContai
 		}
 		if !strings.Contains(err.Error(), "outside the run's sandbox") {
 			t.Errorf("tool node `command: %s`: error does not name the sandbox: %v", name, err)
+		}
+		// lsp is typed-refused on every host, so running unsandboxed is no
+		// remedy for it; the other names keep that remedy.
+		_, refusedEverywhere := toolcatalog.ClawRefusesBuiltin(name)
+		if offers := strings.Contains(err.Error(), "run the workflow unsandboxed"); offers == refusedEverywhere {
+			t.Errorf("tool node `command: %s`: the remedy offers running unsandboxed = %v, but the tool is refused on every host = %v: %v",
+				name, offers, refusedEverywhere, err)
 		}
 		if ran[name] {
 			t.Errorf("tool node `command: %s`: the host closure ran", name)

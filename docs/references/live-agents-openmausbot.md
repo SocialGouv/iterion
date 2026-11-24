@@ -83,7 +83,7 @@ it: a sleeping cloud machine is woken for a scheduled run.
 | A message while a turn runs | Steered into the turn, or a persisted queue (`server/admission.ts`, `server/steer-queue.ts`) | A queued message drained at each tool boundary; the run console's Steering panel | None |
 | Woken by a clock or a webhook | Schedules, webhooks, app events, set by the bot itself (`server/drivers/agents-catalog.ts:609-663`) | The trigger spine ([ADR-046](../adr/046-event-driven-runs-trigger-spine.md)); `overlap: keepalive` ([scheduling](../scheduling.md#always-on-agents--overlap-keepalive)) | A subscription can only launch a fresh run or promote a card |
 | An event delivered to the conversation that exists | A teammate's result resumes the sender; a `wait_until` follow-up runs in the chat it was asked in, outside rooms and its cloud (`server/wait-host.ts`) | The chat node's second door, `interaction: human_or_host` ([assistant dock](../assistant-dock.md)); a card watch queues a message into the watching run | The door is wired for the assistant only; a card's transition is by itself at most a queued message, never a wake-up |
-| The bot programs itself | `trigger`, `trigger_info`, `delete_trigger`, `wait_until` tools | `watch.subscribe` on board cards, on `claw`; `cron_*` tools whose entries nothing fires | Missing for clocks, webhooks and waits |
+| The bot programs itself | `trigger`, `trigger_info`, `delete_trigger`, `wait_until` tools | `watch.subscribe` on board cards, on `claw`; `cron_*` tools typed-refused on `claw` (C159) | Missing for clocks, webhooks and waits |
 | Memory across conversations | On by default; background capture; recall | A scoped, quota-governed store with a cloud twin ([memory and knowledge](../memory-and-knowledge.md)); a per-bot `auto_memory` space, off by default; `memory_*` tools on `claw` only | Opt-in, with no capture pass and no search of past conversations |
 | An identity above the run | The bot record | A bot id that keys its memory space, its schedules and its configuration; the conversation itself is one run, bounded by `conversation_loop(1000)`, a 12-hour active budget and a 20-dollar cost cap in [`bots/copilot/main.bot`](../../bots/copilot/main.bot) | No address, no successor |
 | A room of several bots, with a router | Rooms, a classifier for un-mentioned messages, `coordinate_bots` (`server/drivers/agents-catalog.ts:226`) | Sub-bots inside a graph, the board, the assistant's `run.launch` + `run.watch` | No shared conversation |
@@ -173,8 +173,8 @@ the message at its next resume: it is not woken by it. The assistant is the
 exception here too: a card it watches arms a run watch on the run that card
 produces, in cloud as well, and a failed or cancelled run does wake it. The
 `claw` loop also
-registers four `cron_*` tools; they write to an in-memory registry that
-nothing reads back, so an entry never fires.
+registers four `cron_*` tools; every call to them is typed-refused
+(C159), so no entry is ever written.
 
 The assistant's closed action catalogue — the `Closed catalogue` block of
 [`bots/copilot/main.bot`](../../bots/copilot/main.bot) — launches, watches,

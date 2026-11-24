@@ -4170,8 +4170,8 @@ func refuseToolsWithNoSandboxPlacement(task delegate.Task) error {
 	for _, td := range task.ToolDefs {
 		if placement, reason := tool.SandboxPlacementOf(td.Name); placement == tool.PlacementRefused {
 			return fmt.Errorf(
-				"claw backend: node %q declares tool %q, which a sandboxed runner cannot execute in-container (%s) — "+
-					"drop it, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)", task.NodeID, td.Name, reason)
+				"claw backend: node %q declares tool %q, which a sandboxed runner cannot execute in-container (%s) — drop it%s",
+				task.NodeID, td.Name, reason, tool.UnsandboxedRemedy(td.Name))
 		}
 	}
 	return nil

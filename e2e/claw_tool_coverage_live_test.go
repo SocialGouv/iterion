@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -41,7 +42,8 @@ import (
 //   - mcp_runner      — MCP tools (greet/reverse) + MCP resources
 //     (list_mcp_resources, read_mcp_resource)
 //     (4 tools)
-//   - lifecycle_runner — task / team / cron CRUD lifecycle
+//   - lifecycle_runner — task CRUD lifecycle, plus one call to each
+//     team_* / cron_* tool, which must earn the typed refusal
 //     (11 tools)
 //
 // Asserts:
@@ -234,16 +236,14 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		t.Fatalf("mkdir plan-mode dir: %v", err)
 	}
-	// Pre-register a fake "go" LSP server so the lsp tool's
-	// diagnostics action returns deterministic empty results without
-	// us having to spawn gopls. The server status is "connected" but
-	// no transport is wired — the registry's Dispatch path produces a
-	// canned response for diagnostics that the LLM can extract from.
+	// Pre-register a "go" LSP server with status "connected" and no
+	// transport: the host wires an LSP registry, and `lsp` must STILL
+	// earn the typed refusal — the refusal holds whatever the host
+	// passes in ClawDefaults (refusedExpected below asserts it).
 	lspReg := clawlsp.NewRegistry()
 	lspReg.Register("go", clawlsp.StatusConnected, &workspaceDir, nil)
 
-	// Fixture .go file the lsp tool can reference (no analysis needed
-	// — claw's registry pattern-matches the extension to language).
+	// Fixture .go file the aux_runner prompt hands the lsp call.
 	lspGoPath := filepath.Join(workspaceDir, "probe.go")
 	if err := os.WriteFile(lspGoPath, []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatalf("write fixture .go: %v", err)
@@ -352,10 +352,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		// mcp_runner
 		"mcp_testsrv_greet", "mcp_testsrv_reverse",
 		"list_mcp_resources", "read_mcp_resource",
-		// lifecycle_runner
+		// lifecycle_runner (team_* / cron_* are in refusedExpected)
 		"task_create", "task_get", "task_list",
-		"team_create", "team_get", "team_list", "team_delete",
-		"cron_create", "cron_get", "cron_list", "cron_delete",
 		// workers_runner — claw worker state machine (in-memory).
 		"worker_create", "worker_observe", "worker_resolve_trust",
 		"worker_await_ready", "worker_get", "worker_send_prompt",
@@ -370,8 +368,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		"config", "remote_trigger", "web_fetch", "mcp_auth",
 		"skill", "repl", "notebook_edit", "read_image",
 		// aux_runner — Phase 4b additions: web_search via Brave-URL
-		// override + ask_user with inline auto-answer + lsp.
-		"web_search", "ask_user", "lsp",
+		// override + ask_user with inline auto-answer (lsp is in
+		// refusedExpected).
+		"web_search", "ask_user",
 		// aux_runner — Phase 5: display tools via Xvfb + xdotool +
 		// ImageMagick.
 		"screenshot", "computer_use",
@@ -404,13 +403,42 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			len(missingSuccess), missingSuccess)
 	}
 
+	// The names on toolcatalog's refused list are declared by
+	// lifecycle_runner and aux_runner and called once each: every call
+	// must reach the dispatch path, never succeed, and earn the typed
+	// refusal, whose error carries the headline the model reads.
+	refusedExpected := toolcatalog.ClawRefusedBuiltins()
+	refusedWithHeadline := map[string]bool{}
+	for _, evt := range events {
+		if evt.Type != store.EventToolError || evt.Data == nil {
+			continue
+		}
+		name, _ := evt.Data["tool"].(string)
+		errText, _ := evt.Data["error"].(string)
+		if strings.Contains(errText, toolcatalog.ClawRefusedToolHeadline) {
+			refusedWithHeadline[name] = true
+		}
+	}
+	for _, name := range refusedExpected {
+		if _, dispatchedOK := dispatched[name]; !dispatchedOK {
+			t.Errorf("refused tool %q was never dispatched, so its refusal went unobserved", name)
+			continue
+		}
+		if called[name] > 0 {
+			t.Errorf("refused tool %q succeeded %d time(s); every call must earn the typed refusal", name, called[name])
+		}
+		if !refusedWithHeadline[name] {
+			t.Errorf("refused tool %q errored without the %q headline", name, toolcatalog.ClawRefusedToolHeadline)
+		}
+	}
+
 	// Verify each agent's output captured the deterministic tool
 	// results — prove the LLM not only DISPATCHED each tool but
 	// EXPLOITED its return value into the workflow's output schema.
 	var (
 		probeText, toolSearchHit, structuredEcho      string
 		greeting, reversed, resourceURI, resourceText string
-		taskID, teamID, cronID                        string
+		taskID                                        string
 		workerID, workerStatusAfterSend               string
 		workerPromptAttempts                          float64
 		tasksTaskID, tasksStoppedStatus               string
@@ -422,7 +450,6 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		auxNotebookStatus, auxImageDescription        string
 		auxTriggerStatus                              float64
 		auxWebSearchText, auxAskUserAnswer            string
-		auxLSPAction                                  string
 		auxScreenshotDescription                      string
 		auxComputerUseDescription                     string
 	)
@@ -446,8 +473,6 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			resourceText, _ = out["resource_text"].(string)
 		case "lifecycle_runner":
 			taskID, _ = out["task_id"].(string)
-			teamID, _ = out["team_id"].(string)
-			cronID, _ = out["cron_id"].(string)
 		case "workers_runner":
 			workerID, _ = out["worker_id"].(string)
 			workerStatusAfterSend, _ = out["worker_status_after_send"].(string)
@@ -471,7 +496,6 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			auxImageDescription, _ = out["image_description"].(string)
 			auxWebSearchText, _ = out["web_search_text"].(string)
 			auxAskUserAnswer, _ = out["ask_user_answer"].(string)
-			auxLSPAction, _ = out["lsp_action"].(string)
 			auxScreenshotDescription, _ = out["screenshot_description"].(string)
 			auxComputerUseDescription, _ = out["computer_use_description"].(string)
 		}
@@ -505,17 +529,11 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		t.Errorf("mcp_runner.resource_text missing fixture content: %q", resourceText)
 	}
 
-	// lifecycle_runner — every CRUD family produced an ID the LLM
+	// lifecycle_runner — the task family produced an ID the LLM
 	// captured (proves the create-tool's return was actually parsed
-	// + used by subsequent get/list/delete calls).
+	// + used by subsequent get/list calls).
 	if taskID == "" {
 		t.Errorf("lifecycle_runner.task_id empty — task_create return not exploited")
-	}
-	if teamID == "" {
-		t.Errorf("lifecycle_runner.team_id empty — team_create return not exploited")
-	}
-	if cronID == "" {
-		t.Errorf("lifecycle_runner.cron_id empty — cron_create return not exploited")
 	}
 
 	// workers_runner — the state machine actually transitioned through
@@ -600,10 +618,6 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if auxAskUserAnswer != "iterion-ask-user-probe-answer" {
 		t.Errorf("aux_runner.ask_user_answer != %q: got %q (inline AskUser handler answer not captured by LLM)",
 			"iterion-ask-user-probe-answer", auxAskUserAnswer)
-	}
-	if auxLSPAction != "diagnostics" {
-		t.Errorf("aux_runner.lsp_action != %q: got %q (lsp Dispatch result not exploited by LLM)",
-			"diagnostics", auxLSPAction)
 	}
 	if auxScreenshotDescription == "" {
 		t.Errorf("aux_runner.screenshot_description empty (Xvfb capture path failed, or LLM did not exploit)")

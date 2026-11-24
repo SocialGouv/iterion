@@ -173,8 +173,8 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 		if placement, reason := tool.SandboxPlacementOf(resolved.QualifiedName); placement != tool.PlacementLauncher {
 			return nil, &toolNodeSetupError{fmt.Errorf(
 				"model: tool node %q: registry tool %q would execute on the host, outside the run's sandbox (placement %s: %s) — "+
-					"write it as a shell `command:`, which runs in the container, or run the workflow unsandboxed (`sandbox: none` / `--sandbox none`)",
-				node.ID, toolName, placement, reason)}
+					"write it as a shell `command:`, which runs in the container%s",
+				node.ID, toolName, placement, reason, tool.UnsandboxedRemedy(resolved.QualifiedName))}
 		}
 	}
 
