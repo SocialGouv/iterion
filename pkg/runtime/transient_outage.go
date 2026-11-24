@@ -14,14 +14,16 @@ import "strings"
 // later and a different one ten minutes later, which is exactly what the
 // queue's redeliveries wait out.
 //
-// The engine's own network classification (networkTransientNeedles) knows
-// Go's wordings and a few generic ones; a shell command reports through curl,
-// git, ssh, python, gh, npm or kubectl — or through the bot's own script — in
-// THEIR words. This table is a list of the wordings known so far. A failure
-// whose text carries one is never counted in a streak: it ends the node's
-// streak and keeps the EXECUTION_FAILED reading — the retry and the
-// redeliveries it always had. It changes no classification and no backoff:
-// NETWORK_TRANSIENT stays what networkTransientNeedles says it is.
+// The engine's own network classification reads a command's report — its
+// stderr and what exec itself reported, never its stdout — with a subset of
+// networkTransientNeedles (error_classify.go); a shell command reports
+// through curl, git, ssh, python, gh, npm or kubectl — or through the bot's
+// own script — in THEIR words. This table is a list of the wordings known so
+// far. A failure whose text carries one is never counted in a streak: it
+// ends the node's streak and keeps the EXECUTION_FAILED reading — the retry
+// and the redeliveries it always had. It changes no classification and no
+// backoff: NETWORK_TRANSIENT stays what the command subset of
+// networkTransientNeedles says it is.
 //
 // It classifies an open alphabet, so it is a heuristic, and both of its
 // errors are bounded:

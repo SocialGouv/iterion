@@ -358,8 +358,21 @@ per-bot value
   stage (`The requested URL returned error: 403`, nothing after it) is
   counted.
 
-  Go's own wordings, `connection refused` and `connection reset` are
-  `NETWORK_TRANSIENT` before any of this and keep their longer backoff; the
+  Go's own wordings decide a command's fate only where the command REPORTS
+  them: the engine reads its stderr and what exec itself reported — never
+  its stdout, which is the command's data — with a subset of its network
+  list. `connection refused` and `connection reset` on stderr or in the exec
+  error stay `NETWORK_TRANSIENT` and keep their longer backoff. Three
+  needles are set aside for commands — `unexpected EOF`, `http: EOF` and
+  `context deadline exceeded` — because a parser, an archive tool or any
+  program's own timeout alarm prints them on a deterministic failure. Two
+  readings keep them: Go's url.Error stream cut, which quotes its URL
+  (`Post "https://…": unexpected EOF`, as `gh` and the go toolchain print
+  it), and a sandboxed command whose end was never proven, where the exec
+  transport ended and not the command. Text the engine wrapped around the
+  tool failure keeps the whole list. Any network wording the command
+  printed on its stdout stays `EXECUTION_FAILED`. Those failures are waited out, not counted: they keep
+  the retry and the redeliveries, never the six-replay network recipe. The
   table changes no classification. It is a heuristic over an open alphabet,
   and its two errors are bounded. An outage it does not know parks the node —
   an operator's resume, or the bot's next scheduled run, heals it. And a
@@ -367,8 +380,11 @@ per-bot value
   redelivered, as every failure was before: a test suite's own `panic: test
   timed out after 10m0s`, `kubectl`'s `timed out waiting for the condition`,
   a `subprocess.TimeoutExpired`, a push, fetch or clone git was refused at
-  the RPC stage (its hang-up line, above), or output that merely quotes such
-  words as data (a failing test printing `got "503 Service Unavailable"`).
+  the RPC stage (its hang-up line, above), a parser's
+  `SyntaxError: unexpected EOF while parsing`, `tar`'s
+  `Unexpected EOF in archive`, or output that merely quotes such
+  words as data (a failing test printing `got "503 Service Unavailable"`,
+  or `dial tcp …: connection refused` on stdout).
   Those are accepted losses, pinned as such in the table's corpus
   (`pkg/runtime/transient_outage_test.go`).
 - **What still parks at the limit**, because nothing in the output says it

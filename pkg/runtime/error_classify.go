@@ -6,6 +6,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"regexp"
 	"strings"
 )
 
@@ -70,12 +72,17 @@ func ClassifyError(err error) ErrorCode {
 	// its stderr is data, and an HTTP-looking line in it ("status code 400",
 	// "error 401") says nothing about the model provider. Every execution
 	// boundary carries this type, `iterion resume` and child runs included.
-	// The network reading still applies: a command whose own I/O hit a
-	// reset connection or a DNS timeout gets the network backoff, as any
-	// other failure does.
+	// The network reading still applies, on the command's REPORT: its stderr
+	// and what exec itself reported, read with the command subset of the
+	// list (toolFailureIsNetworkTransient). Never its stdout — the command's
+	// data — and never the three needles too broad for arbitrary command
+	// output: a parser's `unexpected EOF`, an archive's, any program's
+	// `context deadline exceeded` on a deterministic failure must not buy
+	// six replays of its side effects. The engine's own text around the
+	// tool failure keeps the full list.
 	var toolFailure *model.ToolExecutionError
 	if errors.As(err, &toolFailure) {
-		if matchesNetworkTransient(strings.ToLower(err.Error())) {
+		if toolFailureIsNetworkTransient(err, toolFailure) {
 			return ErrCodeNetworkTransient
 		}
 		return ErrCodeExecutionFailed
@@ -271,9 +278,10 @@ func ClassifyError(err error) ErrorCode {
 	return ErrCodeExecutionFailed
 }
 
-// matchesNetworkTransient is the ONE reading of networkTransientNeedles:
-// the tool branch and the flattened-string fallback of ClassifyError both
-// call it. msg is lowercase.
+// matchesNetworkTransient is the ONE reading of the full
+// networkTransientNeedles list: the flattened-string fallback of
+// ClassifyError, the full-list readings of toolFailureIsNetworkTransient and
+// the not-counted check of countedToolFailure all call it. msg is lowercase.
 func matchesNetworkTransient(msg string) bool {
 	for _, needle := range networkTransientNeedles {
 		if strings.Contains(msg, needle) {
@@ -281,6 +289,72 @@ func matchesNetworkTransient(msg string) bool {
 		}
 	}
 	return false
+}
+
+// commandNetworkNeedlesSetAside holds the needles of the shared list too
+// broad for a COMMAND's own output: `unexpected eof` is a parser's wording
+// as much as a stream cut's, `http: eof` net/http's, and `context deadline
+// exceeded` the alarm any program prints for its own timeout — the ticket's
+// measurement is a python `SyntaxError: unexpected EOF while parsing` bought
+// six replays of a command's side effects. On a command's report the subset
+// skips them; the shared list keeps reading them on backend errors, where
+// the wording names the caller's own HTTP stack.
+var commandNetworkNeedlesSetAside = map[string]bool{
+	"context deadline exceeded": true,
+	"unexpected eof":            true,
+	"http: eof":                 true,
+}
+
+// goURLErrorStreamCut is Go's net/http url.Error for a stream cut, lowercased:
+// `Post "https://host/path": unexpected EOF`, as gh and the go toolchain
+// print it. The quoted URL tells it apart from a parser's or an archive's
+// `unexpected EOF`, so the command subset keeps reading it.
+var goURLErrorStreamCut = regexp.MustCompile(`"https?://[^"\s]+": (?:[a-z0-9 ]+: )?unexpected eof`)
+
+// matchesCommandNetworkTransient is the command subset of the shared list:
+// the same walk, minus the set-aside entries, plus Go's url.Error stream cut.
+// msg is lowercase.
+func matchesCommandNetworkTransient(msg string) bool {
+	if goURLErrorStreamCut.MatchString(msg) {
+		return true
+	}
+	for _, needle := range networkTransientNeedles {
+		if commandNetworkNeedlesSetAside[needle] {
+			continue
+		}
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// toolFailureIsNetworkTransient reads err, whose chain carries the tool
+// node's failure f, for the network needles. When f carries a command that
+// ran with its streams apart (model.ToolCommandFailure), the command's own
+// text is read from its diagnostics alone — the exec cause and stderr — with
+// the command subset of the list: stdout is the command's data, and a network
+// wording echoed there says nothing about the run's connectivity. Two
+// readings keep the full list there: the text of err outside f, which the
+// engine wrote and not the command, and a command whose end was never proven
+// (sandbox.ErrExecStatusUnknown), where the exec transport ended and not the
+// command, so its `unexpected EOF` is a stream cut. Otherwise — a registry
+// tool, an `action:`, a refusal before the command started, or an error a
+// caller hand-built — no stream split exists, and the whole text of err keeps
+// the shared reading.
+func toolFailureIsNetworkTransient(err error, f *model.ToolExecutionError) bool {
+	cmd, ok := f.CommandFailure()
+	if !ok {
+		return matchesNetworkTransient(strings.ToLower(err.Error()))
+	}
+	if matchesNetworkTransient(strings.ToLower(strings.ReplaceAll(err.Error(), f.Error(), ""))) {
+		return true
+	}
+	diagnostics := strings.ToLower(cmd.Diagnostics())
+	if errors.Is(cmd, sandbox.ErrExecStatusUnknown) {
+		return matchesNetworkTransient(diagnostics)
+	}
+	return matchesCommandNetworkTransient(diagnostics)
 }
 
 // modelUnavailableNeedles enumerates lowercase substrings that say the

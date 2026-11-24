@@ -196,11 +196,20 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	// a fact a reader of the chain asks for (errors.As), which a recipe that
 	// exited 0 on an unmet goal does not carry.
 	if res.runErr != nil {
-		return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s; the recipe failed: %w\nstdout: %s\nstderr: %s",
-			node.ID, policy, lastRung, res.runErr, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
+		return nil, &ToolCommandFailure{
+			NodeID:  node.ID,
+			Outcome: fmt.Sprintf("postcondition not met (policy: %s) after %s; the recipe failed", policy, lastRung),
+			Cause:   res.runErr,
+			Stdout:  strings.TrimSpace(res.stdout),
+			Stderr:  strings.TrimSpace(res.stderr),
+		}
 	}
-	return nil, fmt.Errorf("model: tool node %q: postcondition not met (policy: %s) after %s\nstdout: %s\nstderr: %s",
-		node.ID, policy, lastRung, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
+	return nil, &ToolCommandFailure{
+		NodeID:  node.ID,
+		Outcome: fmt.Sprintf("postcondition not met (policy: %s) after %s", policy, lastRung),
+		Stdout:  strings.TrimSpace(res.stdout),
+		Stderr:  strings.TrimSpace(res.stderr),
+	}
 }
 
 // deliveryVerdict ends the node when a recipe run lost a file it
