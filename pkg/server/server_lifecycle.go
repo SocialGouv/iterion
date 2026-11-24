@@ -431,6 +431,14 @@ func (s *Server) ListenAndServe() error {
 				Interval: schedulerTickInterval(),
 			}).Run(ctx)
 		})
+		// Schedule-outcome watch: push the schedule row's own health to the
+		// operator channel, which is the only reader that is not polled.
+		if s.opsAlerts != nil {
+			s.goUntilShutdown("server.scheduleOutcomeWatch", s.runScheduleOutcomeWatch)
+		} else {
+			s.warnf("server: schedule-outcome watch NOT started: operator alerts are disabled " +
+				"(no ITERION_ALERTS_WEBHOOK_URL, or no episode-claim store) — a schedule that stops producing runs shows only on its own row")
+		}
 	}
 	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
 	// grace, on the ONE replica holding its lease (runElectedOrgPurge): the

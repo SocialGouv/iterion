@@ -171,11 +171,17 @@ func (t *Ticker) fireIntent(ctx context.Context, intent LaunchIntent, now time.T
 	// Maintenance postpones this intention. Ordinary failures retain
 	// the scheduler's historical terminal verdict for this slot.
 	lerr := t.Launch(ctx, sb)
-	finish(ctx.Err() != nil || errors.Is(lerr, schedgate.ErrMaintenanceHold))
+	hold := ctx.Err() != nil || errors.Is(lerr, schedgate.ErrMaintenanceHold)
+	finish(hold)
 	if lerr != nil {
 		t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
 	}
-	t.recordLaunchVerdict(ctx, current, lerr, now)
+	// A held slot is not consumed, so it is no verdict on the schedule's
+	// health: the row keeps its previous verdict, the audit record carries
+	// the hold.
+	if !hold {
+		t.recordLaunchVerdict(ctx, current, lerr, now)
+	}
 	if t.Audit != nil {
 		rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.LaunchDecision(lerr))
 		rec.ScheduleName = sb.BotID

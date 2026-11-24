@@ -75,6 +75,11 @@ func (s *MongoStore) ListDue(ctx context.Context, now time.Time, limit int) ([]S
 	}, "list due", "decode", opt)
 }
 
+func (s *MongoStore) ListEnabled(ctx context.Context) ([]ScheduledBot, error) {
+	return s.kit.List(ctx, bson.M{"disabled": bson.M{"$ne": true}}, "list enabled", "decode",
+		options.Find().SetSort(bson.D{{Key: "next_fire_at", Value: 1}, {Key: "_id", Value: 1}}))
+}
+
 // ClaimTick is the CAS: the update matches only while next_fire_at still equals
 // expectedNext, so the first replica to advance it wins and the rest get
 // (false, nil). exactly-once per slot, no leader.
