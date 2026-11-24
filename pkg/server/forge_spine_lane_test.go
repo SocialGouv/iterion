@@ -2,9 +2,9 @@ package server
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,16 +74,27 @@ func spineBotManifest(d spineBotDecl) string {
 	return b.String()
 }
 
-// spineWriteCatalogueBots writes every fixture bot's manifest into the
-// server's workspace. Run BEFORE the first delivery of any phase: the label
-// door's visibility gate reads the catalogue on every launch, and a bot
+// spineWriteCatalogueBots writes every fixture bot into the server's
+// workspace as a BUNDLE directory (manifest.yaml + main.bot): a loose .bot
+// file's entry carries no invocations into the registry, so a fixture built
+// on loose files projects zero rows and the router would refuse every
+// delivery as unprojected. Run BEFORE the first delivery of any phase: the
+// label door's visibility gate reads the catalogue on every launch, and a bot
 // missing from it is filtered, not launched.
 func spineWriteCatalogueBots(t *testing.T, s *Server, bots ...spineBotDecl) {
 	t.Helper()
 	for _, b := range bots {
-		path := filepath.Join(s.cfg.WorkDir, "bots", b.bot+".bot")
-		if err := os.WriteFile(path, []byte(spineBotManifest(b)), 0o644); err != nil {
+		dir := filepath.Join(s.cfg.WorkDir, "bots", b.bot)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("make the bundle dir of %s: %v", b.bot, err)
+		}
+		manifest := "name: " + b.bot + "\nschema_version: 1\n" + spineBotManifest(b)
+		if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
 			t.Fatalf("write the manifest of %s: %v", b.bot, err)
+		}
+		stub := "agent x:\n  model: \"test\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(stub), 0o644); err != nil {
+			t.Fatalf("write main.bot of %s: %v", b.bot, err)
 		}
 	}
 }
@@ -107,8 +118,18 @@ func spineFlipConfig(cfg webhooks.Config) webhooks.Config {
 func spineProjectCatalogueRows(t *testing.T, s *Server, cfg webhooks.Config, bots ...spineBotDecl) []trigger.Subscription {
 	t.Helper()
 	names := spineBotIDs(bots)
-	bound := map[string]bool{}
+	// The projector plans over the INTEGRATION's whole bot set (ri.BotIDs),
+	// bots that claim no issue event included: their manifests feed the
+	// digest too. The config's bot scope is that set here.
+	scope := slices.Clone(cfg.BotIDs)
 	for _, n := range names {
+		if !slices.Contains(scope, n) {
+			scope = append(scope, n)
+		}
+	}
+	slices.Sort(scope)
+	bound := map[string]bool{}
+	for _, n := range scope {
 		bound[n] = true
 	}
 	entries, err := s.effectiveEntriesFor(context.Background(), cfg.TenantID)
@@ -125,17 +146,31 @@ func spineProjectCatalogueRows(t *testing.T, s *Server, cfg webhooks.Config, bot
 		frByBot[e.Name] = e.Forge
 	}
 	for _, n := range names {
-		if _, ok := invByBot[n]; !ok {
+		inv, ok := invByBot[n]
+		if !ok {
 			t.Fatalf("bot %s is not in the catalogue — its manifest was not written or does not parse", n)
+		}
+		// Every fixture bot declares a kind=forge issue_labeled invocation;
+		// an entry that parsed to none means the fixture wrote a shape the
+		// registry does not read (a loose .bot file carries no invocations),
+		// and the plan would project zero rows.
+		hasForge := false
+		for _, i := range inv {
+			if i.Kind == bundle.InvocationKindForge {
+				hasForge = true
+			}
+		}
+		if !hasForge {
+			t.Fatalf("bot %s's catalogue entry carries no kind=forge invocation (%d invocations) — the fixture bundle does not parse", n, len(inv))
 		}
 	}
 	roles := forgetrigger.RoleBots{Implementer: featureDevBotID, Reviewer: defaultWebhookBotReviewPR}
 	plan := forgetrigger.PlanIntegration(forge.SubscriptionInput{
 		Integration: forge.RepoIntegration{
 			ID: spineIntegrationID, TenantID: cfg.TenantID,
-			RepoFullName: spineRepo, WebhookID: cfg.ID, BotIDs: names,
+			RepoFullName: spineRepo, WebhookID: cfg.ID, BotIDs: scope,
 		},
-		Config: cfg, Bots: names, InvByBot: invByBot, FrByBot: frByBot,
+		Config: cfg, Bots: scope, InvByBot: invByBot, FrByBot: frByBot,
 	}, roles, time.Now().UTC())
 	if plan.Err != nil {
 		t.Fatalf("plan the spine rows: %v", plan.Err)

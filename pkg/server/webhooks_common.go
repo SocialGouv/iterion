@@ -685,19 +685,30 @@ func (s *Server) checkBotPermitted(
 	return botID, true
 }
 
-// gateLabelBotVisibility is the label door's visibility arm (#2676): the
-// shared resolver's verdict, delivered as the family's filtered answer. It
-// records the filtered delivery, writes the 200 body and reports ok=false
-// when the bot is disabled — or when its visibility could not be read: a
-// refused overlay starts nothing, fail closed, the card door's rule.
-func (s *Server) gateLabelBotVisibility(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, botID, payloadHash, srcIP string) bool {
-	visible, err := s.botVisibleForLaunch(ctx, cfg.TenantID, botID)
+// labelBotVisibilityRefusal is the label door's visibility verdict (#2676),
+// split from its writer so the spine router can judge a PER-BOT refusal
+// beside the bots that still launch: "" when the bot is visible and may
+// launch, else the reason — a disabled bot, or a visibility that could not
+// be read (a refused overlay starts nothing, fail closed, the card door's
+// rule).
+func (s *Server) labelBotVisibilityRefusal(ctx context.Context, tenantID, botID string) string {
+	visible, err := s.botVisibleForLaunch(ctx, tenantID, botID)
 	if err == nil && visible {
-		return true
+		return ""
 	}
-	reason := fmt.Sprintf("bot %q is disabled in the catalogue — a label does not start it", botID)
 	if err != nil {
-		reason = fmt.Sprintf("the visibility of bot %q could not be read: %v", botID, err)
+		return fmt.Sprintf("the visibility of bot %q could not be read: %v", botID, err)
+	}
+	return fmt.Sprintf("bot %q is disabled in the catalogue — a label does not start it", botID)
+}
+
+// gateLabelBotVisibility is the legacy writer around
+// labelBotVisibilityRefusal: it records the filtered delivery, writes the
+// 200 body and reports ok=false when the bot must not launch.
+func (s *Server) gateLabelBotVisibility(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, botID, payloadHash, srcIP string) bool {
+	reason := s.labelBotVisibilityRefusal(ctx, cfg.TenantID, botID)
+	if reason == "" {
+		return true
 	}
 	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 	if s.logger != nil {
@@ -810,6 +821,12 @@ func (s *Server) writeSingleLaunchResult(w http.ResponseWriter, r *http.Request,
 		writeJSONStatus(w, http.StatusOK, map[string]string{
 			"status": webhooks.StatusFiltered, "error": res.Error,
 		})
+	case res.Status == webhooks.StatusCarded:
+		// A carded claim the ROUTER decided: the card is the launch, the
+		// answer names it — the same body the legacy carded writer wrote.
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{
+			"status": "carded", "bot": res.BotID, "card_id": res.CardID,
+		})
 	default:
 		// Floor the code. httpError with 0 reaches WriteHeader(0), which
 		// net/http PANICS on — killing the request goroutine, so the forge
@@ -913,6 +930,11 @@ type webhookLaunchResult struct {
 	RunID      string `json:"run_id,omitempty"`
 	DeliveryID string `json:"delivery_id,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// SubscriptionID and CardID carry a spine target's attribution in the
+	// launches array: the forge-bound subscription that claimed the event,
+	// and the card a board target claims (ADR-172 §7).
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	CardID         string `json:"card_id,omitempty"`
 
 	denial     *launchDenial
 	httpStatus int

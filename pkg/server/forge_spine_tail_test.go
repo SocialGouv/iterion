@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -670,5 +672,40 @@ func TestSpineIssueLabel_StaleDigest_Is503(t *testing.T) {
 	}
 	if got := f.launchesByBot("nestor"); got != 2 {
 		t.Fatalf("nestor's launches = %d, want 2 — the re-synced projection routes", got)
+	}
+}
+
+// The digest a delivery recomputes covers the SAME bot set the projector
+// planned over: the integration's whole bot scope, a bot that claims no issue
+// event included (its manifest is hashed as a bot with no route). A router
+// that hashed only the bots of its bound rows would hold every row of such an
+// integration stale — a repo carrying a reviewer beside its label bots would
+// answer 503 subscriptions_stale on every label, forever.
+func TestSpineIssueLabel_DigestCoversTheBotsThatClaimNoIssueEvent(t *testing.T) {
+	nestor := spineBotDecl{bot: "nestor", mode: bundle.ExecutionDirect, labels: []string{"nestor"}}
+	saboteur := spineBotDecl{bot: "saboteur", mode: bundle.ExecutionDirect, labels: []string{"saboteur"}}
+	f := newSpineRollGitHubFixture(t, nestor, saboteur)
+
+	// A pull-request bot on the same integration: it derives no issue row.
+	dir := filepath.Join(f.s.cfg.WorkDir, "bots", "pr-reviewer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name: pr-reviewer\nschema_version: 1\ninvocations:\n  - kind: forge\n    forge:\n      event: pull_request\n"
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte("agent x:\n  model: \"test\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.BotIDs = append(f.cfg.BotIDs, "pr-reviewer")
+	f.spineFlip(t, nestor, saboteur)
+
+	w := f.deliver(f.body("nestor"), "d-1")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("a label on an integration carrying a pull-request bot: code=%d body=%s, want 202 — the digest must cover the integration's whole bot set", w.Code, w.Body.String())
+	}
+	if got := f.launchesByBot("nestor"); got != 1 {
+		t.Fatalf("nestor's launches = %d, want 1", got)
 	}
 }

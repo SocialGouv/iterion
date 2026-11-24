@@ -103,6 +103,13 @@ type forgeEnableReq struct {
 	// (forge.RepoIntegration.LabelAllowlist).
 	LabelAllowlist []string `json:"label_allowlist,omitempty"`
 
+	// BotTriggers are the per-bot label triggers the integration's issue
+	// lane projects (ADR-172 §2): an entry replaces that bot's stored value,
+	// an absent bot keeps its own, and a nil map keeps them all. Labels nil
+	// takes the manifest's, an empty list any label; Enabled nil leaves the
+	// bot to the derivation rule.
+	BotTriggers map[string]forge.BotTrigger `json:"bot_triggers,omitempty"`
+
 	// Routing is the repo's routing policy (pkg/llmroute, ADR-129) — the
 	// binding level for every launch this integration makes. ABSENT leaves
 	// the stored block untouched (an enable that adds one bot must not drop
@@ -229,6 +236,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		AutoFix:           req.AutoFixOnGateFailure,
 		HoldLabels:        req.HoldLabels,
 		LabelAllowlist:    req.LabelAllowlist,
+		BotTriggers:       req.BotTriggers,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
 		Pool:              pool,
@@ -283,6 +291,13 @@ type forgeUpdateReq struct {
 	// implementer (e.g. ["implement"]); nil keeps the current set
 	// (forge.RepoIntegration.LabelAllowlist).
 	LabelAllowlist []string `json:"label_allowlist,omitempty"`
+
+	// BotTriggers are the per-bot label triggers the integration's issue
+	// lane projects (ADR-172 §2): an entry replaces that bot's stored value,
+	// an absent bot keeps its own, and a nil map keeps them all. Labels nil
+	// takes the manifest's, an empty list any label; Enabled nil leaves the
+	// bot to the derivation rule.
+	BotTriggers map[string]forge.BotTrigger `json:"bot_triggers,omitempty"`
 
 	// Routing is the repo's routing policy (pkg/llmroute, ADR-129); the
 	// same three-way rule as the enable request (absent keeps, null
@@ -365,6 +380,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
+			BotTriggers:          req.BotTriggers,
 			Routing:              req.Routing,
 			Pool:                 req.Pool,
 		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke, pool, poolSpoke)
@@ -383,6 +399,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		AutoFix:           req.AutoFixOnGateFailure,
 		HoldLabels:        req.HoldLabels,
 		LabelAllowlist:    req.LabelAllowlist,
+		BotTriggers:       req.BotTriggers,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
 		Pool:              pool,
@@ -801,6 +818,12 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// a tightening cannot be told apart here — park every non-empty set
 	// (fail toward approval, by the predicate's own doctrine).
 	if len(req.ScheduleCrons) > 0 {
+		return true
+	}
+	// Per-bot label triggers (ADR-172): widening a bot's labels, enabling
+	// it, or putting it on the residual starts it on labels it did not
+	// start on — the same doctrine as LabelAllowlist.
+	if forge.BotTriggersExpandSurface(ri.BotTriggers, req.BotTriggers) {
 		return true
 	}
 	// A routing block (ADR-129): a per-repo provider/model/effort pin moves

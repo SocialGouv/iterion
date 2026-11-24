@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -741,6 +742,26 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 				"this org requires approval for expanding a managed integration's automation — request the change through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin")
 			return
 		}
+	}
+	// On a config the integration manages and routes to the spine, the
+	// config's LaunchVars must stay the manifest union (ADR-172 §6): a hand
+	// pin here would leak across bots the spine launches — the spine builds
+	// each bot's vars from its own subscription, never from this map. The
+	// pin is refused without writing, naming the keys it refuses; a managed
+	// config on full legacy still accepts it.
+	if req.LaunchVars != nil && cfg.ProvisionIntegrationID != "" &&
+		(cfg.ForgeRouting.Issues == webhooks.RoutingSpine ||
+			cfg.ForgeRouting.PullRequests == webhooks.RoutingSpine ||
+			cfg.ForgeRouting.Comments == webhooks.RoutingSpine) {
+		keys := make([]string, 0, len(req.LaunchVars))
+		for k := range req.LaunchVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		httpError(w, http.StatusConflict,
+			"launch_vars_on_spine: a spine-routed config's launch_vars stay the manifest union — the pins %s would leak across the bots the spine launches from their own subscriptions; set them on the integration's launch_vars (the operator layer), or in the bots' manifests",
+			strings.Join(keys, ", "))
+		return
 	}
 	if req.Name != nil {
 		cfg.Name = *req.Name

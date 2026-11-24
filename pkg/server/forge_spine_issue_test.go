@@ -357,20 +357,29 @@ func TestSpineIssueLabel_TwoBotsEachStartOnTheirOwnLabel(t *testing.T) {
 		spineBotDecl{bot: "nestor", mode: bundle.ExecutionDirect, labels: []string{"nestor"}},
 		spineBotDecl{bot: "saboteur", mode: bundle.ExecutionBoard, labels: []string{"saboteur"}},
 	)
+	// Each bot starts on ITS OWN label — one delivery per label (plan row 1;
+	// GitHub's labeled action carries exactly one label). One label claimed
+	// by BOTH bots is row 3's separate witness.
 	w := f.deliver(f.body("nestor"))
 	if w.Code != http.StatusAccepted {
-		t.Fatalf("a label each bot claims on its own: code=%d body=%s, want 202 accepted with one launch per bot", w.Code, w.Body.String())
+		t.Fatalf("the nestor label: code=%d body=%s, want 202 accepted with nestor's run", w.Code, w.Body.String())
 	}
 	launches := spineLaunches(t, w)
-	if len(launches) != 2 {
-		t.Fatalf("launches = %v, want one per bot", launches)
-	}
-	if launches[0]["bot"] != "nestor" || launches[1]["bot"] != "saboteur" {
-		t.Fatalf("launches = %v, want [nestor, saboteur] — sorted by bot", launches)
+	if len(launches) != 1 || launches[0]["bot"] != "nestor" {
+		t.Fatalf("launches = %v, want exactly nestor", launches)
 	}
 	// nestor started a run through the direct tail.
 	if got := f.launchesByBot(t, "nestor"); len(got) != 1 {
 		t.Fatalf("nestor's direct launches = %d, want 1", len(got))
+	}
+	// saboteur's own label: the board half — the card is the launch.
+	w = f.deliver(f.body("saboteur"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("the saboteur label: code=%d body=%s, want 202 accepted with saboteur's card", w.Code, w.Body.String())
+	}
+	launches = spineLaunches(t, w)
+	if len(launches) != 1 || launches[0]["bot"] != "saboteur" {
+		t.Fatalf("launches = %v, want exactly saboteur", launches)
 	}
 	// saboteur started a card on the board, assigned to saboteur.
 	cards := laneCards(t, f.board)
@@ -403,16 +412,28 @@ func TestSpineIssueLabel_TwoBotsEachStartOnTheirOwnLabel_GitLab(t *testing.T) {
 		spineBotDecl{bot: "nestor", mode: bundle.ExecutionDirect, labels: []string{"nestor"}},
 		spineBotDecl{bot: "saboteur", mode: bundle.ExecutionBoard, labels: []string{"saboteur"}},
 	)
-	w := f.deliver(f.body("saboteur"))
+	// Each bot starts on ITS OWN label — one delivery per label, the GitLab
+	// twin of the GitHub half above (plan row 1). The one-event-two-labels
+	// shape is the sibling TwoAddedLabels witness.
+	w := f.deliver(f.body("nestor"))
 	if w.Code != http.StatusAccepted {
-		t.Fatalf("a label each bot claims on its own: code=%d body=%s, want 202 accepted with one launch per bot", w.Code, w.Body.String())
+		t.Fatalf("the nestor label: code=%d body=%s, want 202 accepted with nestor's run", w.Code, w.Body.String())
 	}
 	launches := spineLaunches(t, w)
-	if len(launches) != 2 || launches[0]["bot"] != "nestor" || launches[1]["bot"] != "saboteur" {
-		t.Fatalf("launches = %v, want [nestor, saboteur]", launches)
+	if len(launches) != 1 || launches[0]["bot"] != "nestor" {
+		t.Fatalf("launches = %v, want exactly nestor", launches)
 	}
 	if got := f.launchesByBot(t, "nestor"); len(got) != 1 {
 		t.Fatalf("nestor's direct launches = %d, want 1", len(got))
+	}
+	// saboteur's own label: the board half.
+	w = f.deliver(f.body("saboteur"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("the saboteur label: code=%d body=%s, want 202 accepted with saboteur's card", w.Code, w.Body.String())
+	}
+	launches = spineLaunches(t, w)
+	if len(launches) != 1 || launches[0]["bot"] != "saboteur" {
+		t.Fatalf("launches = %v, want exactly saboteur", launches)
 	}
 	cards := laneCards(t, f.board)
 	if len(cards) != 1 || cards[0].Bot != "saboteur" {

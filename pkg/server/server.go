@@ -1235,6 +1235,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Bots:            s.forgeBotForge,
 			Invocations:     s.forgeBotInvocations,
 			Schedules:       cfg.ScheduledBots,
+			// The forge subscription projector (ADR-172): nil — no
+			// projection, and every switch to the spine refused — when no
+			// trigger store is wired. Its role bots are the ones the router's
+			// staleness check reads, so both sides hash the same digest.
+			Subscriptions: s.forgeSubscriptionProjector(cfg.TriggerStore),
 			AdminFor:        s.forgeAdminFor,
 			AdminForToken:   s.forgeAdminForToken,
 			BotAvatar:       s.projectBotAvatar(),
