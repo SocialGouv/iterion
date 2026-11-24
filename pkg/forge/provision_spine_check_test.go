@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -115,5 +116,50 @@ func TestSyncSubscriptions_TenantBeforeWiring(t *testing.T) {
 	}
 	if _, err := s.SyncSubscriptions(context.Background(), "t1", res.IntegrationID); !errors.Is(err, ErrSubscriptionProjection) {
 		t.Fatalf("the owning team's sync with no projector = %v, want ErrSubscriptionProjection", err)
+	}
+}
+
+// R2-F6: the check judges the config the in-fence projection reads. On the
+// short-circuit path that is the stored config, so an integration whose
+// webhook config is gone is refused by the check — before the provision
+// writes anything — exactly as the projection refuses it, never judged on a
+// stand-in id the projection would not find.
+//
+// Mutation: provisionProjectionInput fills cfg.ID from existing.WebhookID on
+// the short-circuit path too → red on "the provision wrote a binding".
+func TestProvision_SpineCheckRefusesAMissingConfigBeforeWriting(t *testing.T) {
+	ctx := context.Background()
+	s := newSpineOrch(t)
+	res := s.provision(t, ProvisionRequest{BotIDs: []string{"nestor"}})
+	s.flipToSpine(t, res)
+	before, _ := s.stored(t, res)
+	s.hour()
+	bindings, err := s.Bindings.ListByTenantBot(ctx, "t1", "nestor")
+	if err != nil || len(bindings) == 0 {
+		t.Fatalf("nestor's bindings after the first provision: %v (err %v), want the one it backfills", bindings, err)
+	}
+	for _, b := range bindings {
+		if err := s.Bindings.Delete(ctx, b.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Webhooks.Delete(ctx, res.WebhookID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"nestor"}, ActorID: "u1"})
+	if !errors.Is(err, ErrSubscriptionProjection) || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("provision over a missing config = %v, want the projection's refusal naming the missing config", err)
+	}
+	if got, _ := s.Bindings.ListByTenantBot(ctx, "t1", "nestor"); len(got) != 0 {
+		t.Fatalf("the provision wrote a binding (%+v) before the projection refused it: the check judged a config the projection did not find", got)
+	}
+	after, err := s.Integrations.GetProvision(ctx, res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Version != before.Version {
+		t.Fatalf("integration version %d→%d: the refused provision wrote", before.Version, after.Version)
 	}
 }

@@ -282,7 +282,6 @@ func (s *Server) routeIssueThroughSpine(ctx context.Context, w http.ResponseWrit
 		// (a board or lane-store failure): per-bot claim failures, named in
 		// the partial answer beside the bots that did claim.
 		unclaimed []webhookLaunchResult
-		failures  []string
 	)
 	for _, t := range targets {
 		ev := laneEvent{PayloadHash: payloadHash, DeliveryID: meta.DeliveryID}
@@ -309,7 +308,6 @@ func (s *Server) routeIssueThroughSpine(ctx context.Context, w http.ResponseWrit
 			if err != nil {
 				unclaimed = append(unclaimed, webhookLaunchResult{BotID: t.sub.BotID, Status: webhooks.StatusLaunchError,
 					Error: err.Error(), SubscriptionID: t.sub.ID, httpStatus: http.StatusServiceUnavailable})
-				failures = append(failures, fmt.Sprintf("%s: %v", t.sub.BotID, err))
 				continue
 			}
 			switch {
@@ -364,15 +362,13 @@ func (s *Server) routeIssueThroughSpine(ctx context.Context, w http.ResponseWrit
 
 	// The answer follows the claims.
 	switch {
-	case len(pre)+len(launches) > 0:
-		// A board claim that could not be decided rides beside the claims
-		// as a per-bot failure: the tail names it in the partial answer, and
-		// the redelivery that answer asks for claims it.
-		s.acceptWebhookTargetsWith(ctx, w, r, cfg, meta, launches, append(pre, unclaimed...), payloadHash, srcIP)
-	case len(unclaimed) > 0:
-		// Nothing claimed and a claim undecided: the whole delivery is
-		// retryable, every other bot already a duplicate or filtered.
-		s.laneUnavailable(ctx, w, cfg, meta, payloadHash, srcIP, errors.New(strings.Join(failures, "; ")))
+	case len(pre)+len(launches)+len(unclaimed) > 0:
+		// Every bot's outcome rides into the tail beside the claims: a board
+		// claim that could not be decided is a per-bot failure the tail
+		// names in the partial answer (the redelivery that answer asks for
+		// claims it), and the bots this delivery answered as duplicates
+		// stand in the launches array beside the ones it starts.
+		s.acceptWebhookTargetsWith(ctx, w, r, cfg, meta, launches, slices.Concat(pre, unclaimed, dupes), payloadHash, srcIP)
 	case len(dupes) > 0:
 		// Every target a duplicate: 200, answered by the first.
 		s.writeSpineAnswered(w, cfg, dupes[0])
@@ -391,13 +387,13 @@ func (s *Server) routeIssueThroughSpine(ctx context.Context, w http.ResponseWrit
 
 // writeSpineAnswered answers a delivery every matched bot of which is a
 // duplicate, from the first answering record: the card carded for the event
-// ("carded", the card id), else its claim row (duplicate, its run and
-// delivery ids).
+// ("carded", the bot and the card id — the legacy carded writer's body),
+// else its claim row (duplicate, its run and delivery ids).
 func (s *Server) writeSpineAnswered(w http.ResponseWriter, cfg webhooks.Config, first webhookLaunchResult) {
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 	if first.CardID != "" && first.DeliveryID == "" {
 		writeJSONStatus(w, http.StatusOK, map[string]string{
-			"status": "carded", "card_id": first.CardID,
+			"status": "carded", "bot": first.BotID, "card_id": first.CardID,
 		})
 		return
 	}

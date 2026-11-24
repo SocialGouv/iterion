@@ -203,6 +203,14 @@ func (e laneEvent) cardedFor(c *native.Issue) bool {
 	return false
 }
 
+// botLaneCard reports whether c carries a bot lane label — a card the
+// spine carded for one bot, as opposed to a lane card of the bot-less era.
+func botLaneCard(c *native.Issue) bool {
+	return slices.ContainsFunc(c.Labels, func(x string) bool {
+		return strings.HasPrefix(x, boardLaneLabelPrefix+"@")
+	})
+}
+
 // ownsCard reports whether a card listed under the subject's "cmd:" label
 // belongs to this lane.
 //
@@ -218,14 +226,6 @@ func (e laneEvent) cardedFor(c *native.Issue) bool {
 // A legacy lane (Bot == "") keeps the pre-bot rule: its own label, and every
 // pre-lane card of its project. An '@'-card is laned and never its own — an
 // old replica reading a bot card reaches the same verdict.
-// botLaneCard reports whether c carries a bot lane label — a card the
-// spine carded for one bot, as opposed to a lane card of the bot-less era.
-func botLaneCard(c *native.Issue) bool {
-	return slices.ContainsFunc(c.Labels, func(x string) bool {
-		return strings.HasPrefix(x, boardLaneLabelPrefix+"@")
-	})
-}
-
 func (l triggerLane) ownsCard(c *native.Issue) bool {
 	label := l.boardLabel()
 	laned := false

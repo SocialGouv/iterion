@@ -423,19 +423,23 @@ func overlappingRows(cands []*candidate) []rowOverlap {
 
 // labelSetsMayIntersect reports whether two rows' label sets may claim the
 // same added label: either holds no pattern (any label, or the residual),
-// either holds a wildcard ("*", or a "*suffix"), or both hold one literal,
-// compared as webhooks.MatchLabel compares it.
+// either holds a wildcard ("*", or a "*suffix"), or both hold one literal —
+// one labelKey, or two spellings webhooks.MatchLabel folds together
+// (strings.EqualFold), so a fold the key does not make still counts.
 func labelSetsMayIntersect(a, b []string) bool {
 	if holdsOpenPattern(a) || holdsOpenPattern(b) {
 		return true
 	}
-	held := map[string]bool{}
-	for _, pattern := range a {
-		held[labelKey(pattern)] = true
-	}
-	for _, pattern := range b {
-		if key := labelKey(pattern); key != "" && held[key] {
-			return true
+	for _, x := range a {
+		kx := labelKey(x)
+		if kx == "" {
+			continue
+		}
+		for _, y := range b {
+			ky := labelKey(y)
+			if ky != "" && (kx == ky || strings.EqualFold(strings.TrimSpace(x), strings.TrimSpace(y))) {
+				return true
+			}
 		}
 	}
 	return false
@@ -529,12 +533,16 @@ func sortedBots(bots []string) []string {
 // after plan that may start its bot on a label the before plan did not
 // start it on: a row enabled that was not (or did not exist), a residual
 // row that excludes a pattern less, a row that claims any label where it
-// claimed a set, or an explicit set that gains a pattern. Patterns compare
-// as webhooks.MatchLabel reads them (trimmed, case-insensitive); a pattern
-// not literally held counts as new, so the comparison errs toward naming a
-// widening. The residual couples the bots: narrowing, disabling or removing
-// one bot widens the residual winner, which shows here as the winner's
-// exclusions shrinking.
+// claimed a set, a residual row turned explicit on a pattern that may claim
+// a label its exclusions held back, or an explicit set that gains a
+// pattern. Patterns compare as webhooks.MatchLabel reads them (trimmed,
+// case-insensitive): a pattern counts as held only when one of the other
+// side admits exactly its labels (webhooks.SameLabelPattern), and a pattern
+// may claim an excluded label when either is a wildcard or both spell one
+// literal (labelSetsMayIntersect), so the comparison errs toward naming a
+// widening. The residual couples the bots: narrowing, disabling or
+// removing one bot widens the residual winner, which shows here as the
+// winner's exclusions shrinking.
 func Widenings(before, after Plan) []string {
 	prev := map[string]trigger.Subscription{}
 	for _, row := range before.Rows {
@@ -567,34 +575,44 @@ func claimGains(prev, next trigger.Matcher) []string {
 	case nextAny && !prevAny:
 		return []string{describeClaim(next)}
 	case nextAny && prevAny:
-		nextExcl := keySet(next.ExcludeAddedLabels)
 		var gained []string
-		for _, p := range slices.Sorted(maps.Keys(prevExcl)) {
-			if !nextExcl[p] {
-				gained = append(gained, p)
+		for _, p := range prev.ExcludeAddedLabels {
+			if k := labelKey(p); k != "" && !holdsPattern(next.ExcludeAddedLabels, p) {
+				gained = append(gained, k)
 			}
 		}
-		return gained
+		slices.Sort(gained)
+		return slices.Compact(gained)
 	case !nextAny && prevAny:
+		// The residual claimed every label but its exclusions: a pattern
+		// of the explicit set gains whatever it may share with one of them.
+		if len(prevExcl) == 0 {
+			return nil
+		}
 		var gained []string
 		for _, p := range next.AddedLabels {
-			if k := labelKey(p); prevExcl[k] || (k == "*" && len(prevExcl) > 0) {
+			if k := labelKey(p); k != "" && labelSetsMayIntersect([]string{p}, prev.ExcludeAddedLabels) {
 				gained = append(gained, k)
 			}
 		}
 		return gained
 	}
-	held := keySet(prev.AddedLabels)
-	if held["*"] {
+	if keySet(prev.AddedLabels)["*"] {
 		return nil
 	}
 	var gained []string
 	for _, p := range next.AddedLabels {
-		if k := labelKey(p); k != "" && !held[k] {
+		if k := labelKey(p); k != "" && !holdsPattern(prev.AddedLabels, p) {
 			gained = append(gained, k)
 		}
 	}
 	return gained
+}
+
+// holdsPattern reports whether patterns holds one that admits exactly the
+// labels p admits (webhooks.SameLabelPattern).
+func holdsPattern(patterns []string, p string) bool {
+	return slices.ContainsFunc(patterns, func(q string) bool { return webhooks.SameLabelPattern(p, q) })
 }
 
 // describeClaim renders a row's added-label claim for a widening's message.

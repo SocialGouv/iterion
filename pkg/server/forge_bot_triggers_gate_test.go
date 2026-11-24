@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,14 +21,23 @@ import (
 // bot that did not start on them. A team admin's PATCH then parks; one that
 // moves no label goes through.
 //
-// Mutation: updateExpandsSurface returns expandsProvisionSurface alone (no
-// plan comparison) → red on "want 202 parked".
+// A wildcard moves labels the same way: alpha back on its manifest's
+// "*-urgent" starts on the "p0-urgent" its residual row left to beta, and
+// alpha back on "p0-urgent" starts on what beta's "*-urgent" held back.
+//
+// Mutations: updateExpandsSurface returns expandsProvisionSurface alone (no
+// plan comparison) → red on "want 202 parked"; claimGains compares a
+// residual row turned explicit to its exclusions by labelKey alone → red on
+// the two wildcard cases.
 func TestForgeRepoBots_BotTriggersTransferringALabelParks(t *testing.T) {
 	cases := []struct {
 		name   string
 		stored map[string]forge.BotTrigger
 		patch  string
 		parks  bool
+		// manifest is each bot's issue_labeled labels; nil declares x for
+		// both.
+		manifest map[string][]string
 	}{
 		{
 			name:   "a residual pin dropped hands x to alpha",
@@ -45,6 +55,27 @@ func TestForgeRepoBots_BotTriggersTransferringALabelParks(t *testing.T) {
 			parks: true,
 		},
 		{
+			name:     "a residual pin dropped puts alpha on *-urgent, over beta's p0-urgent",
+			stored:   map[string]forge.BotTrigger{"alpha": {Residual: true}},
+			patch:    `{"bot_triggers":{"alpha":{}}}`,
+			parks:    true,
+			manifest: map[string][]string{"alpha": {"*-urgent"}, "beta": {"p0-urgent"}},
+		},
+		{
+			name:     "a residual pin dropped puts alpha on p0-urgent, under beta's *-urgent",
+			stored:   map[string]forge.BotTrigger{"alpha": {Residual: true}},
+			patch:    `{"bot_triggers":{"alpha":{}}}`,
+			parks:    true,
+			manifest: map[string][]string{"alpha": {"p0-urgent"}, "beta": {"*-urgent"}},
+		},
+		{
+			name:     "a residual pin dropped puts alpha on docs, which it served",
+			stored:   map[string]forge.BotTrigger{"alpha": {Residual: true}},
+			patch:    `{"bot_triggers":{"alpha":{}}}`,
+			parks:    false,
+			manifest: map[string][]string{"alpha": {"docs"}, "beta": {"p0-urgent"}},
+		},
+		{
 			name: "alpha's labels restated moves nothing",
 			stored: map[string]forge.BotTrigger{
 				"alpha": {Labels: []string{"secu", "deploy-prod"}},
@@ -58,14 +89,18 @@ func TestForgeRepoBots_BotTriggersTransferringALabelParks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, done := newApprovalTestServer(t)
 			defer done()
-			// Two bots whose issue_labeled invocation declares the label x.
-			// The orchestrator resolves both the provision's and the gate's
-			// plans through these lookups.
+			// Two bots whose issue_labeled invocation declares the case's
+			// labels. The orchestrator resolves both the provision's and the
+			// gate's plans through these lookups.
 			s.forgeOrchestrator.Bots = func(context.Context, string, string) (*bundle.ForgeRequirements, error) { return nil, nil }
-			s.forgeOrchestrator.Invocations = func(context.Context, string, string) ([]bundle.Invocation, error) {
+			s.forgeOrchestrator.Invocations = func(_ context.Context, _ string, bot string) ([]bundle.Invocation, error) {
+				labels := []string{"x"}
+				if tc.manifest != nil {
+					labels = tc.manifest[bot]
+				}
 				return []bundle.Invocation{{
 					Kind:  bundle.InvocationKindForge,
-					Forge: &bundle.InvocationForge{Event: bundle.ForgeEventIssueLabeled, Labels: []string{"x"}},
+					Forge: &bundle.InvocationForge{Event: bundle.ForgeEventIssueLabeled, Labels: labels},
 				}}, nil
 			}
 			connID := firstConnID(t, s)
@@ -98,6 +133,65 @@ func TestForgeRepoBots_BotTriggersTransferringALabelParks(t *testing.T) {
 				t.Fatalf("a team admin's PATCH %s on a gated org: code=%d body=%s, want 200 applied — it moves no label", tc.patch, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// R2-F3: the gate fails closed toward approval on a plan it cannot make.
+// The stored triggers plan, the updated ones are refused (alpha's catalogue
+// gained a second issue route between the gate's two manifest reads, and the
+// one bot_triggers label set every row of a bot shares now overlaps itself):
+// the gate cannot say what the update starts, so it parks — on an
+// integration no lane routes by the spine, whose provision only records the
+// refusal and writes the update.
+//
+// Mutation: updateExpandsSurface answers false on a refused updated plan →
+// red on "want 202 parked".
+func TestForgeRepoBots_RefusedUpdatedPlanParks(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	var armed atomic.Bool
+	var alphaReads atomic.Int32
+	route := func(label string) bundle.Invocation {
+		return bundle.Invocation{Kind: bundle.InvocationKindForge,
+			Forge: &bundle.InvocationForge{Event: bundle.ForgeEventIssueLabeled, Labels: []string{label}}}
+	}
+	s.forgeOrchestrator.Bots = func(context.Context, string, string) (*bundle.ForgeRequirements, error) { return nil, nil }
+	s.forgeOrchestrator.Invocations = func(_ context.Context, _ string, bot string) ([]bundle.Invocation, error) {
+		if bot == "alpha" && armed.Load() && alphaReads.Add(1) > 1 {
+			return []bundle.Invocation{route("a"), route("b")}, nil
+		}
+		return []bundle.Invocation{route(bot)}, nil
+	}
+	connID := firstConnID(t, s)
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(orgAdminCtx(), http.MethodPost, "/api/teams/t1/forge/repo-bots",
+		`{"connection_id":"`+connID+`","repo":"group/api","bot_ids":["alpha","beta"]}`, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("org admin enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	ri, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ri.BotTriggers = map[string]forge.BotTrigger{"alpha": {Labels: []string{"a"}}}
+	if err := s.forgeIntegrations.Update(context.Background(), ri); err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+	r := forgeReq(teamAdminCtx(), http.MethodPatch, "/api/teams/t1/forge/repo-bots/"+res.IntegrationID,
+		`{"bot_triggers":{"alpha":{"labels":["a"]}}}`, "t1")
+	r.SetPathValue("integration_id", res.IntegrationID)
+	w = httptest.NewRecorder()
+	s.handleUpdateForgeRepoBots(w, r)
+	if alphaReads.Load() < 2 {
+		t.Fatalf("alpha's manifest was read %d times by the update, want the gate's two reads", alphaReads.Load())
+	}
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("a team admin's PATCH whose updated plan is refused, on a gated org: code=%d body=%s, want 202 parked", w.Code, w.Body.String())
 	}
 }
 

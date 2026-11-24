@@ -356,7 +356,27 @@ func TestProjector_Idempotent_TwoConcurrentSyncs(t *testing.T) {
 			if first.err != nil || second.err != nil {
 				t.Fatalf("two concurrent syncs of one plan: %v / %v", first.err, second.err)
 			}
-			if !reflect.DeepEqual(first.report, second.report) {
+			// The transfer warnings describe the transition THIS sync applied
+			// (forgetrigger.ResidualTransfers reads the rows it found): a sync
+			// that lists after the other wrote applies none and warns of none.
+			// Everything else in the two reports is the plan's and must agree;
+			// each sync's warnings are a subset of what one sync alone warns.
+			ref := trigger.NewMemorySubscriptionStore()
+			seed(ref)
+			alone, err := testProjector(ref).SyncIntegration(context.Background(), in)
+			if err != nil {
+				t.Fatalf("the reference sync: %v", err)
+			}
+			for _, o := range []syncOutcome{first, second} {
+				for _, w := range o.report.Warnings {
+					if !slices.Contains(alone.Warnings, w) {
+						t.Errorf("a concurrent sync warns %q, which one sync alone does not (%q)", w, alone.Warnings)
+					}
+				}
+			}
+			a, b := first.report, second.report
+			a.Warnings, b.Warnings = nil, nil
+			if !reflect.DeepEqual(a, b) {
 				t.Errorf("the two syncs report differently:\n %+v\n %+v", first.report, second.report)
 			}
 			if got := storedRows(t, st, testTenant); !reflect.DeepEqual(got, want) {

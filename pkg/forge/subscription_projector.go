@@ -196,7 +196,10 @@ func BotTriggersExpandSurface(stored, requested map[string]BotTrigger) bool {
 
 // botTriggerLabelsWiden reports whether replacing prev by next may claim a
 // label prev did not. Patterns are compared as webhooks.MatchLabel reads
-// them: trimmed and case-insensitive, "*" claiming everything.
+// them: trimmed and case-insensitive, "*" claiming everything; a next
+// pattern is held only when a prev one admits exactly its labels
+// (webhooks.SameLabelPattern), so any other pattern — a wildcard over a
+// literal, a literal under a wildcard — widens.
 func botTriggerLabelsWiden(prev, next []string) bool {
 	switch {
 	case next == nil:
@@ -207,11 +210,7 @@ func botTriggerLabelsWiden(prev, next []string) bool {
 		// A first explicit set is the gesture that enables a bot.
 		return true
 	}
-	held := make(map[string]bool, len(prev))
-	for _, p := range prev {
-		held[strings.ToLower(strings.TrimSpace(p))] = true
-	}
-	if len(prev) == 0 || held["*"] {
+	if len(prev) == 0 || slices.ContainsFunc(prev, func(p string) bool { return strings.TrimSpace(p) == "*" }) {
 		// The stored set already claims every label.
 		return false
 	}
@@ -219,7 +218,7 @@ func botTriggerLabelsWiden(prev, next []string) bool {
 		return true
 	}
 	for _, p := range next {
-		if !held[strings.ToLower(strings.TrimSpace(p))] {
+		if !slices.ContainsFunc(prev, func(q string) bool { return webhooks.SameLabelPattern(p, q) }) {
 			return true
 		}
 	}
@@ -268,9 +267,7 @@ func (o *Orchestrator) resolveBotManifests(ctx context.Context, tenantID string,
 // A zero in.Config (the integration names a webhook config that does not
 // exist) is a refusal like any other: there is nothing to project from.
 func (o *Orchestrator) projectSubscriptions(ctx context.Context, in SubscriptionInput, failOnRefusal bool) (report SubscriptionReport, refused, err error) {
-	if in.Config.ID == "" {
-		refused = fmt.Errorf("integration %s names webhook config %q, which does not exist", in.Integration.ID, in.Integration.WebhookID)
-	} else {
+	if refused = absentConfigRefusal(in); refused == nil {
 		report, refused = o.Subscriptions.SyncIntegration(ctx, in)
 	}
 	if refused != nil {
@@ -290,6 +287,17 @@ func (o *Orchestrator) projectSubscriptions(ctx context.Context, in Subscription
 		return report, nil, fmt.Errorf("forge: stamp the subscription sync on integration %s: %w", in.Integration.ID, err)
 	}
 	return report, nil, nil
+}
+
+// absentConfigRefusal is the refusal of a projection whose input carries no
+// webhook config (a zero in.Config): the integration names a config that
+// does not exist, so there is nothing to project from. A projection and the
+// check that precedes it refuse it alike.
+func absentConfigRefusal(in SubscriptionInput) error {
+	if in.Config.ID != "" {
+		return nil
+	}
+	return fmt.Errorf("integration %s names webhook config %q, which does not exist", in.Integration.ID, in.Integration.WebhookID)
 }
 
 // SyncSubscriptions re-projects one integration's forge subscriptions on

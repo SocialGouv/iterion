@@ -312,10 +312,7 @@ func TestSpineIssueLabel_ClaimWriteFailsAfterFirst_Is503AndClaimedStillLaunch(t 
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("the redelivery: code=%d body=%s, want 202 with saboteur launched", w.Code, w.Body.String())
 	}
-	launches := spineLaunches(t, w)
-	if len(launches) != 1 || launches[0]["bot"] != "saboteur" {
-		t.Fatalf("launches = %v, want exactly saboteur", launches)
-	}
+	wantOutcomes(t, w, map[string]string{"nestor": webhooks.StatusDuplicate, "saboteur": webhooks.StatusAccepted})
 	if got := f.launchesByBot("nestor"); got != 1 {
 		t.Fatalf("nestor's launches = %d, want 1 — its claim serves, the redelivery is its duplicate", got)
 	}

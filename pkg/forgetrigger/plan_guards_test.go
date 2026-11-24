@@ -195,3 +195,93 @@ func TestProjector_ReportsALabelTakenFromTheResidual(t *testing.T) {
 		}
 	}
 }
+
+// R2-F1: a residual row turned explicit gains every label its new patterns
+// may share with what the residual excluded — a wildcard on either side, or
+// one literal under the matcher's case folding — not only the labels it
+// spells as the exclusion did. Each case first proves, through the matcher,
+// that the bot starts on a label it did not start on, then that Widenings
+// names it.
+//
+// Mutation: claimGains' residual→explicit branch compares the pattern to the
+// exclusions by labelKey alone → red on "Widenings names nothing" for the
+// two wildcard cases and the folded literal.
+func TestWidenings_ResidualTurnedExplicitGainsWhatItsPatternsMayShare(t *testing.T) {
+	cfg := botScope("alpha", "beta")
+	stored := map[string]forge.BotTrigger{"alpha": {Residual: true}}
+	next := map[string]forge.BotTrigger{"alpha": {}}
+	for _, tc := range []struct {
+		name              string
+		alphaMan, betaMan []string
+		label             string
+	}{
+		{"alpha's wildcard covers the literal beta declares", []string{"*-urgent"}, []string{"p0-urgent"}, "p0-urgent"},
+		{"alpha's literal falls under the wildcard beta declares", []string{"p0-urgent"}, []string{"*-urgent"}, "p0-urgent"},
+		{"alpha's literal folds onto the literal beta declares", []string{"ſecu"}, []string{"secu"}, "secu"},
+	} {
+		bots := []manifestBot{labelBot("alpha", bundle.ExecutionDirect, tc.alphaMan...), labelBot("beta", bundle.ExecutionDirect, tc.betaMan...)}
+		before := planBothOrders(t, cfg, stockRoles, stored, bots...)
+		after := planBothOrders(t, cfg, stockRoles, next, bots...)
+		if before.Err != nil || after.Err != nil {
+			t.Fatalf("%s: plans refused: before %v, after %v", tc.name, before.Err, after.Err)
+		}
+		ev := labelEvent(tc.label)
+		if b, a := trigger.MatchedAddedLabel(rowOf(t, before, "alpha").Match, ev), trigger.MatchedAddedLabel(rowOf(t, after, "alpha").Match, ev); b != "" || a == "" {
+			t.Fatalf("%s: alpha claims %q before and %q after on %q, want nothing before and the label after — the case does not widen", tc.name, b, a, tc.label)
+		}
+		if got := forgetrigger.Widenings(before, after); !strings.Contains(strings.Join(got, "; "), "bot alpha") {
+			t.Errorf("%s: alpha now starts on %q, but Widenings names nothing for it: %q", tc.name, tc.label, got)
+		}
+	}
+
+	// A pattern that shares no label with the exclusions gains nothing: the
+	// bot keeps serving a label it already served.
+	bots := []manifestBot{labelBot("alpha", bundle.ExecutionDirect, "docs"), labelBot("beta", bundle.ExecutionDirect, "p0-urgent")}
+	before := planBothOrders(t, cfg, stockRoles, stored, bots...)
+	after := planBothOrders(t, cfg, stockRoles, next, bots...)
+	if got := forgetrigger.Widenings(before, after); len(got) > 0 {
+		t.Errorf("alpha back on docs, beta on p0-urgent: widenings = %q, want none", got)
+	}
+}
+
+// R2-F1, the class: the other branches of claimGains name a widening the
+// matcher would make — an explicit set gaining a wildcard over a literal it
+// held, a residual whose exclusion narrows from a wildcard to one literal it
+// covered, and an explicit pattern whose lower-cased key equals a held one
+// while the matcher's fold keeps the two apart ("İ" lower-cases to "i", yet
+// webhooks.MatchLabel never matches "i" against "İ").
+//
+// Mutation: claimGains' explicit→explicit held check compares labelKey sets
+// (the literal comparison) → red on "explicit İ → i".
+func TestWidenings_TheOtherBranchesErrTowardAWidening(t *testing.T) {
+	cfg := botScope("alpha", "beta")
+	bots := []manifestBot{labelBot("alpha", bundle.ExecutionDirect), labelBot("beta", bundle.ExecutionDirect)}
+	for _, tc := range []struct {
+		name         string
+		stored, next map[string]forge.BotTrigger
+		widen, label string
+	}{
+		{"explicit p0-urgent → *-urgent",
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"p0-urgent"}}, "beta": {Residual: true}},
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"*-urgent"}}, "beta": {Residual: true}},
+			"alpha", "p1-urgent"},
+		{"the residual's exclusion narrows from *-urgent to p0-urgent",
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"*-urgent"}}, "beta": {Residual: true}},
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"p0-urgent"}}, "beta": {Residual: true}},
+			"beta", "p1-urgent"},
+		{"explicit İ → i",
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"İ"}}, "beta": {Residual: true}},
+			map[string]forge.BotTrigger{"alpha": {Labels: []string{"i"}}, "beta": {Residual: true}},
+			"alpha", "i"},
+	} {
+		before := planBothOrders(t, cfg, stockRoles, tc.stored, bots...)
+		after := planBothOrders(t, cfg, stockRoles, tc.next, bots...)
+		ev := labelEvent(tc.label)
+		if b, a := trigger.MatchedAddedLabel(rowOf(t, before, tc.widen).Match, ev), trigger.MatchedAddedLabel(rowOf(t, after, tc.widen).Match, ev); b != "" || a == "" {
+			t.Fatalf("%s: %s claims %q before and %q after on %q, want nothing before and the label after — the case does not widen", tc.name, tc.widen, b, a, tc.label)
+		}
+		if got := forgetrigger.Widenings(before, after); !strings.Contains(strings.Join(got, "; "), "bot "+tc.widen) {
+			t.Errorf("%s: %s now starts on %q, but widenings = %q name nothing for it", tc.name, tc.widen, tc.label, got)
+		}
+	}
+}

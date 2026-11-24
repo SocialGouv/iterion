@@ -87,6 +87,18 @@ func MatchLabel(allowlist []string, label string) bool {
 	return matchCaseInsensitiveAllowlist(allowlist, label)
 }
 
+// SameLabelPattern reports whether two allowlist patterns admit exactly the
+// same labels under MatchLabel: trimmed, they fold together
+// (strings.EqualFold) and spell the same number of bytes. A "*suffix" is
+// held against the label's tail by byte length, so two folded suffixes of
+// different lengths admit different labels; and a lower-cased key may join
+// two spellings the fold keeps apart ("İ" and "i"), so neither alone says
+// that one pattern stands for another.
+func SameLabelPattern(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	return len(a) == len(b) && strings.EqualFold(a, b)
+}
+
 // matchCaseInsensitiveAllowlist is the shared body behind MatchAuthor and
 // MatchLabel: empty allowlist matches all; otherwise a trimmed, case-
 // insensitive match against value, with "*" as an explicit allow-all, a

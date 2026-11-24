@@ -154,10 +154,10 @@ The answer then follows from the claims:
 |---|---|
 | No row claims the event | `200 {"status":"filtered","reason":…}`, naming each candidate and why it did not claim |
 | One target | Today's exact body |
-| Several targets | `202 {"status":"accepted","delivery_id":<first claimed>,"launches":[{bot,subscription_id,status,delivery_id,card_id,run_id,error}…]}` (the existing `webhookLaunchResult` JSON, plus two fields) |
+| Several targets | `202 {"status":"accepted","delivery_id":<first claimed>,"launches":[{bot,subscription_id,status,delivery_id,card_id,run_id,error}…]}` (the existing `webhookLaunchResult` JSON, plus two fields). The array names each bot's outcome, the bots this delivery answered as duplicates included |
 | Every target a duplicate | `200 duplicate` |
-| Denials with nothing claimed | The first denial in sorted order (the existing multi-target rule) |
-| A claim write fails after another target claimed | `503 {"status":"partial","launches":[…]}`, while the claimed targets still launch and dedupe on a redelivery. GitLab retries a failed delivery; **GitHub never does**, so the unclaimed bots wait for a manual *Redeliver*. A `launch_error` audit row under a random key names the bots that were not claimed, and an errtrack event is sent. The partial loss is an assumed limit |
+| Denials with nothing claimed and no claim failed | The first denial in sorted order (the existing multi-target rule) |
+| A claim fails (a claim write, or a board claim that could not be decided), whatever else the delivery decided | `503 {"status":"partial","launches":[…]}` naming what claimed, while the claimed targets still launch and dedupe on a redelivery. It outranks a denial or a duplicate beside it. GitLab retries a failed delivery; **GitHub never does**, so the unclaimed bots wait for a manual *Redeliver*. A `launch_error` audit row under a random key names the bots that were not claimed, and an errtrack event is sent. The partial loss is an assumed limit |
 | A spine-routed integration with no row bound at all | `503` with an errtrack event and the reason "not projected" (the same GitHub caveat applies) |
 | Rows projected from a manifest that has changed since (§2 digest) | `503 subscriptions_stale`, with an errtrack event and the sync route (the same GitHub caveat applies) |
 
@@ -222,7 +222,7 @@ The demo phase relies on the unique Delivery key, the deterministic card id and 
   - a crash between the ack and a launch still strands that bot's claim;
   - a bot enabled between an event and its redelivery launches on the redelivery.
 - **The flip instant.** One lane's two deliveries, handled concurrently by two replicas on either side of a flip or of a re-projected mode change, can claim in two stores and both launch. The cross-store reads close every sequential case; nothing shared by both stores exists to close the concurrent one.
-- **A partial claim on GitHub.** When a claim write fails after another bot claimed, the unclaimed bots wait for a manual *Redeliver*. The `launch_error` audit row and the errtrack event name them.
+- **A partial claim on GitHub.** When a claim fails, the unclaimed bots wait for a manual *Redeliver*. The `launch_error` audit row and the errtrack event name them.
 - **An image rollback past P1** forgets the spine's claims. The runbook flips back and drains first (§8). A manual redelivery, on the old image, of an event routed by spine can still launch again.
 - **Stale rows answer 503 until re-synced.** A manifest edit that the eager re-projection missed (a failed projection) makes a spine-routed integration answer `503 subscriptions_stale` until the rows are synced. On GitHub, that event waits for a manual *Redeliver*.
 - **The stranded re-drive horizon.** A claim stranded longer than the horizon is closed, not launched, so its request is dropped visibly.

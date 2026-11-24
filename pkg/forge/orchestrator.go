@@ -636,7 +636,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	if hasExisting && o.Subscriptions != nil && AnyLaneRoutesSpine(existing.ForgeRouting) {
 		in := o.provisionProjectionInput(existing, prevCfg, shortCircuit, desiredBots, desiredTriggers, frByBot, invByBot,
 			operatorVars, operatorOverlap, operatorHold, operatorLabels)
-		if _, err := o.Subscriptions.Check(ctx, in); err != nil {
+		err := absentConfigRefusal(in)
+		if err == nil {
+			_, err = o.Subscriptions.Check(ctx, in)
+		}
+		if err != nil {
 			return ProvisionResult{}, fmt.Errorf("%w: integration %s: %w", ErrSubscriptionProjection, existing.ID, err)
 		}
 	}
@@ -1537,6 +1541,12 @@ func (o *Orchestrator) syncProvisionProjections(ctx context.Context, ri RepoInte
 // bots, the single-bot default) otherwise. It reads only what the projection
 // reads of a config: the bot scope the legacy election runs on and the
 // launch vars the hand-pinned report compares.
+//
+// The short-circuit path projects the stored config, so a config that does
+// not exist stays absent here (a zero ID), and absentConfigRefusal refuses
+// the input as the projection would. The rebuild writes the config the
+// projection then reads, so a missing stored one is named by the
+// integration's webhook id until the rebuild writes it.
 func (o *Orchestrator) provisionProjectionInput(existing RepoIntegration, prevCfg webhooks.Config, shortCircuit bool,
 	bots []string, triggers map[string]BotTrigger, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation,
 	operatorVars map[string]string, overlap string, hold, labels []string) SubscriptionInput {
@@ -1544,7 +1554,7 @@ func (o *Orchestrator) provisionProjectionInput(existing RepoIntegration, prevCf
 	ri.BotIDs = bots
 	ri.BotTriggers = triggers
 	cfg := prevCfg
-	if cfg.ID == "" {
+	if cfg.ID == "" && !shortCircuit {
 		cfg.ID = existing.WebhookID
 	}
 	cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(bots, frByBot))

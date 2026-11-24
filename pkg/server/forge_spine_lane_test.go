@@ -412,10 +412,9 @@ func TestSpineIssueLabel_LegacyClaimStillDedupes(t *testing.T) {
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("a fresh label while the legacy claim serves: code=%d body=%s, want 202 with saboteur launched and nestor absorbed by the legacy claim", w.Code, w.Body.String())
 		}
-		launches := spineLaunches(t, w)
-		if len(launches) != 1 || launches[0]["bot"] != "saboteur" {
-			t.Fatalf("launches = %v, want exactly saboteur — nestor's lane is served by the legacy claim", launches)
-		}
+		// nestor's lane is served by the legacy claim: a duplicate beside
+		// saboteur's claim.
+		wantOutcomes(t, w, map[string]string{"nestor": webhooks.StatusDuplicate, "saboteur": webhooks.StatusAccepted})
 		if got := f.launchesByBot("saboteur"); got != 1 {
 			t.Fatalf("saboteur's launches = %d, want 1", got)
 		}
@@ -447,10 +446,7 @@ func TestSpineIssueLabel_LegacyClaimStillDedupes(t *testing.T) {
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("a fresh label while the legacy card serves: code=%d body=%s, want 202 with saboteur carded and nestor absorbed", w.Code, w.Body.String())
 		}
-		launches := spineLaunches(t, w)
-		if len(launches) != 1 || launches[0]["bot"] != "saboteur" {
-			t.Fatalf("launches = %v, want exactly saboteur", launches)
-		}
+		wantOutcomes(t, w, map[string]string{"nestor": webhooks.StatusDuplicate, "saboteur": webhooks.StatusCarded})
 		cards := laneCards(t, f.board)
 		if len(cards) != 2 {
 			t.Fatalf("cards = %d, want 2 — the legacy card and ONE new one for saboteur", len(cards))

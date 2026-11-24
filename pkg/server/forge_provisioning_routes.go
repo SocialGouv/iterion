@@ -932,9 +932,13 @@ func validateBotTriggers(triggers map[string]forge.BotTrigger, bots []string) er
 // and the updated integration are planned (forgetrigger.PlanIntegration over
 // the inputs the projector reads) and any row that starts its bot on a label
 // it did not start on before parks the update. A read error is returned —
-// the gate never fails open; a plan the stored state cannot make (refused)
-// parks, a refused updated plan starts nothing and goes on to the provision,
-// which refuses it on its own.
+// the gate never fails open. A refused plan, on either side, parks too: with
+// no plan to compare, the gate cannot say what the update starts, and only
+// an integration that routes a lane by the spine has its provision refuse a
+// refused projection — elsewhere the provision records the refusal and
+// writes the update. That includes an update meant to repair a refused
+// stored plan (removing the bot whose rows overlap): it parks, and the org
+// approves it.
 func (s *Server) updateExpandsSurface(ctx context.Context, ri forge.RepoIntegration, req forgeUpdateReq) (bool, error) {
 	if expandsProvisionSurface(ri, req) {
 		return true, nil
@@ -952,11 +956,8 @@ func (s *Server) updateExpandsSurface(ctx context.Context, ri forge.RepoIntegrat
 	roles, now := s.forgeRoleBots(), time.Now().UTC()
 	beforePlan := forgetrigger.PlanIntegration(before, roles, now)
 	afterPlan := forgetrigger.PlanIntegration(after, roles, now)
-	switch {
-	case beforePlan.Err != nil:
+	if beforePlan.Err != nil || afterPlan.Err != nil {
 		return true, nil
-	case afterPlan.Err != nil:
-		return false, nil
 	}
 	return len(forgetrigger.Widenings(beforePlan, afterPlan)) > 0, nil
 }

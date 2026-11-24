@@ -156,11 +156,11 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 
 // acceptWebhookTargetsWith is the spine router's entry into the tail: the
 // same claim-then-acknowledge flow, plus the outcomes the router already
-// decided (pre — the cards it created, the refusals it judged) beside the
+// decided (pre — the cards it created, the refusals it judged, the
+// duplicates it found, the board claims it could not decide) beside the
 // targets it hands over, and the answer rules a fan-out the ROUTER resolved
-// owes (ADR-172 §7): a claim write that fails after another target claimed
-// answers 503 partial while the claimed targets still launch, and a 202
-// always renders the launches array.
+// owes (ADR-172 §7): a claim that fails answers 503 partial while the
+// claimed targets still launch, and a 202 always renders the launches array.
 func (s *Server) acceptWebhookTargetsWith(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, meta webhookEventMeta, targets []forgeLaunchTarget, pre []webhookLaunchResult, hash, ip string) {
 	s.acceptWebhookTargetsCore(ctx, w, r, cfg, meta, targets, pre, hash, ip, false)
 }
@@ -221,10 +221,13 @@ func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWr
 			s.parkFailedSpineClaim(ctx, cfg, meta, t, hash, ip, result.Error)
 		}
 	}
-	// The spine's answer rules. A claim WRITE that failed after another
-	// target claimed is a partial: the claimed targets launch anyway (their
+	// The spine's answer rules. A claim that failed — a claim WRITE here, or
+	// a board claim the router could not decide — is a partial, whatever
+	// else the delivery decided: the claimed targets launch anyway (their
 	// rows are durable and dedupe a redelivery), the unclaimed bots are named
-	// in a launch_error audit row, and the forge sees a retryable 503.
+	// in a launch_error audit row, and the forge sees a retryable 503. It
+	// outranks a denial or a duplicate beside it: those are answers for
+	// their own bots, while the unclaimed bot still waits on a redelivery.
 	if !legacyBodies && len(claimFailed) > 0 {
 		claimed := make([]webhookLaunchResult, 0, len(launches))
 		for _, pl := range launches {
@@ -236,31 +239,29 @@ func (s *Server) acceptWebhookTargetsCore(ctx context.Context, w http.ResponseWr
 				claimed = append(claimed, res)
 			}
 		}
-		if len(claimFailed) > 0 && (len(claimed) > 0 || len(launches) > 0) {
-			sortLaunchResults(claimed)
-			unclaimed := make([]string, 0, len(claimFailed))
-			for _, res := range claimFailed {
-				unclaimed = append(unclaimed, fmt.Sprintf("%s (%s)", res.BotID, res.Error))
-			}
-			reason := "not claimed: " + strings.Join(unclaimed, "; ") +
-				"; GitHub does not retry — Redeliver to start them"
-			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, hash, ip, reason)
-			s.warnf("webhooks: %s/%s %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, reason)
-			writeJSONStatusRaw(w, http.StatusServiceUnavailable, map[string]any{
-				"status":   "partial",
-				"launches": claimed,
-			})
-			for _, pl := range launches {
-				launchCtx, cancelLaunch := launchBookingContext(ctx)
-				result := pl.fn(launchCtx)
-				cancelLaunch()
-				results[pl.idx] = result
-				if result.Status == webhooks.StatusLaunched {
-					s.scheduleForgeBoardProjection(meta.ProjectPath)
-				}
-			}
-			return
+		sortLaunchResults(claimed)
+		unclaimed := make([]string, 0, len(claimFailed))
+		for _, res := range claimFailed {
+			unclaimed = append(unclaimed, fmt.Sprintf("%s (%s)", res.BotID, res.Error))
 		}
+		reason := "not claimed: " + strings.Join(unclaimed, "; ") +
+			"; GitHub does not retry — Redeliver to start them"
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, hash, ip, reason)
+		s.warnf("webhooks: %s/%s %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, reason)
+		writeJSONStatusRaw(w, http.StatusServiceUnavailable, map[string]any{
+			"status":   "partial",
+			"launches": claimed,
+		})
+		for _, pl := range launches {
+			launchCtx, cancelLaunch := launchBookingContext(ctx)
+			result := pl.fn(launchCtx)
+			cancelLaunch()
+			results[pl.idx] = result
+			if result.Status == webhooks.StatusLaunched {
+				s.scheduleForgeBoardProjection(meta.ProjectPath)
+			}
+		}
+		return
 	}
 	if len(launches) == 0 {
 		// The spine entry renders a claimed outcome — the router's carded
