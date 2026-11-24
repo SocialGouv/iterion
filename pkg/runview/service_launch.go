@@ -758,12 +758,6 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		return nil, err
 	}
 	logZeroMatchOnce(s.logger, foldWarnings)
-	// The tenant's providers lock holds on this lane too (#2665 item 7):
-	// the publisher's gate, read before it seals, is read here before the
-	// executor is built.
-	if err := refuseOutsideAllowlist(wf, &spec); err != nil {
-		return nil, err
-	}
 
 	ctxContract, contextErr := s.resolveExecutionContext(parent, runID, spec, wf, hash)
 	if contextErr != nil {
@@ -799,6 +793,25 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	}
 	for k, v := range spec.Vars {
 		inputs[k] = v
+	}
+	// The tenant's providers lock holds on this lane too (#2665 item 7):
+	// the publisher's gate, read before it seals, is read here before the
+	// executor is built — on the merged inputs the run stores, so a preset
+	// that routes a node outside the list refuses here rather than at the
+	// resume that reads those inputs back. A preset's values are the bot
+	// author's text and narrow as trusted; a key the launch also sets keeps
+	// the launch's own trust.
+	gateTrusted := spec.TrustedVarNames
+	if spec.Preset != "" {
+		gateTrusted = append([]string(nil), spec.TrustedVarNames...)
+		for k := range wf.Presets[spec.Preset].Values {
+			if _, launched := spec.Vars[k]; !launched {
+				gateTrusted = append(gateTrusted, k)
+			}
+		}
+	}
+	if err := refuseOutsideAllowlistOn(wf, &spec, inputs, gateTrusted); err != nil {
+		return nil, err
 	}
 
 	// An input that names no var of the workflow is refused, not dropped:
@@ -1083,6 +1096,12 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if sourceErr != nil && !spec.Force {
 		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
 	}
+	// The providers lock, restated before anything consumes the staged
+	// uploads: on a publisher it anticipates SubmitResume's own walk (same
+	// frozen list, same dispatch view).
+	if err := refuseResumeOutsideAllowlist(wf, r); err != nil {
+		return err
+	}
 	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
 	if errors.Is(err, runtime.ErrArtifactContractIncompatible) && !spec.Force {
 		return s.scratchBeforeForce(parent, r, wf, spec, runtime.WithArtifactContractChange, err)
@@ -1266,6 +1285,18 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if sourceErr != nil && !spec.Force {
 		return nil, s.scratchBeforeForce(parent, r, wf, spec, runtime.WithSourceChange, sourceErr)
+	}
+	// The tenant's providers lock holds on the local lanes' resume too: the
+	// cloud resume runs the same walk in SubmitResume before it republishes,
+	// so a deployment that publishes holds none here. Read before anything
+	// moves the run — before the budget writes, resumeDetached (no
+	// subprocess is spawned past this line) and spawnRun — on the run's own
+	// frozen policy, so a source edited between park and resume cannot add a
+	// shape the launch's gate never walked.
+	if s.publisher == nil {
+		if err := refuseResumeOutsideAllowlist(wf, r); err != nil {
+			return nil, err
+		}
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight

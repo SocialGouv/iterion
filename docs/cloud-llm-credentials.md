@@ -1125,9 +1125,17 @@ field is `providers:` is dropped WITHOUT a word: the allowlist reaches a
 cloud runner on the queue message (`RunMessage.LLMProviders` →
 `ExecutorSpec.LLMProviders`, `loop.go`) and an in-process run through its
 launch spec (`startInProcess` refuses on it with the publisher's own gate,
-`model.AllowlistRefusal`, threads it to its executor and stamps the policy on
+`model.AllowlistRefusal`, over the inputs the run stores — a preset's values
+included — threads it to its executor and stamps the policy on
 the run document for a local resume to replay), and this lane sends none —
-the local-parity limit ADR-129 §8 states. The folded
+the local-parity limit ADR-129 §8 states. A local resume (in-process or
+detached spawn) repeats the same gate on the run document's frozen list
+before it moves the run (`Service.Resume` and its preflight, the dispatch
+view over the run's own overrides, chain and inputs — the walk the cloud
+resume runs before it republishes). A run the detached lane launched froze
+no list (that lane resolves no policy, ADR-129 §8), so its resume holds no
+lock either; a forced detached resume hands its child the file path and
+`--force` with no hash pin, and the child recompiles that file. The folded
 list is what the run document stamps, what the queue message carries, what
 every pre-flight reads and what a resume replays instead of re-folding
 (`TestResume_ReplaysTheFoldedRowsNotThePolicy`) — an in-process resume's

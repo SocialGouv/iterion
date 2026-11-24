@@ -3,6 +3,7 @@ package runview
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -409,10 +411,11 @@ func TestInProcessSubbotChildDispatchesUnderTheRootsProviderAllowlist(t *testing
 // The public path that brings a subbot under a providers list: a run
 // launched under the team's list [anthropic] with no subbot node, its .bot
 // edited to add one whose child is authored on OpenAI, then force-resumed.
-// The resume screens no allowlist, so the child's own dispatch is the guard:
-// the child's document names the allowlist refusal, never a call on
-// openai/gpt-6-sol.
-func TestInProcessForceResumedSubbotChildDispatchesUnderTheRootsProviderAllowlist(t *testing.T) {
+// The resume reads the same gate the launch read, so the fieldless subbot
+// refuses the resume itself — before any child exists, with the run still
+// parked and its interaction unanswered. A child's dispatch under the
+// root's list stays covered by the table above.
+func TestInProcessForceResumeRefusesASubbotAddedUnderTheProvidersList(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
@@ -450,27 +453,41 @@ workflow parent:
 		t.Fatalf("launch: %v", err)
 	}
 	awaitRunCompletion(t, res.Done, "launch pass")
-	if r, err := svc.store.LoadRun(ctx, res.RunID); err != nil || r.Status != store.RunStatusPausedWaitingHuman {
-		t.Fatalf("precondition: the launch parks on its gate (run %+v, err %v)", r, err)
+	parked, err := svc.store.LoadRun(ctx, res.RunID)
+	if err != nil || parked.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("precondition: the launch parks on its gate (run %+v, err %v)", parked, err)
+	}
+	if parked.Checkpoint == nil || parked.Checkpoint.InteractionID == "" {
+		t.Fatal("precondition: the parked run holds no interaction checkpoint")
 	}
 	if err := os.WriteFile(parentPath, []byte(gateThenSubbot), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rres, err := svc.Resume(ctx, ResumeSpec{RunID: res.RunID, FilePath: parentPath, Force: true, Answers: map[string]any{"approved": true}})
-	if err != nil {
-		t.Fatalf("resume: %v", err)
+	_, err = svc.Resume(ctx, ResumeSpec{RunID: res.RunID, FilePath: parentPath, Force: true, Answers: map[string]any{"approved": true}})
+	var unreadable *model.RouteUnreadableError
+	if !errors.As(err, &unreadable) {
+		t.Fatalf("the force-resumed run moved past the edited source: err = %v, want the fieldless refusal", err)
 	}
-	awaitRunCompletion(t, rres.Done, "resume pass")
+	if unreadable.Site != "run_child" || !strings.Contains(unreadable.Error(), "no field exposes") {
+		t.Fatalf("refusal = site %q (%v), want the subbot node named as spending a model no field exposes", unreadable.Site, unreadable)
+	}
 	ids, err := svc.store.ListChildRuns(ctx, res.RunID)
-	if err != nil || len(ids) != 1 {
-		t.Fatalf("precondition: the resumed run spawned one child (ids %v, err %v)", ids, err)
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("a refused resume left children behind (ids %v, err %v), want none", ids, err)
 	}
-	child, err := svc.store.LoadRun(ctx, ids[0])
+	after, err := svc.store.LoadRun(ctx, res.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(child.Error, "outside this run's provider allowlist (anthropic)") {
-		t.Fatalf("the force-resumed child dispatched outside its root's allowlist [anthropic]: status %s, error %q", child.Status, child.Error)
+	if after.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("a refused resume moved the run (status %s, error %q), want it still parked on its gate", after.Status, after.Error)
+	}
+	interaction, err := svc.store.LoadInteraction(ctx, res.RunID, parked.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	if interaction.AnsweredAt != nil || len(interaction.Answers) != 0 {
+		t.Fatalf("a refused resume answered the interaction: %#v", interaction.Answers)
 	}
 }
 
