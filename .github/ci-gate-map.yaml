@@ -298,14 +298,17 @@ jobs:
   govulncheck:
     required: no
     checks: 1
-    disposition: partial
-    members: ["vuln"]
+    disposition: unwritten
     residual: >-
-      `task vuln` runs the same call-graph scan, `govulncheck ./...`; the job's
-      `-format sarif` flag, its empty-SARIF fallback and the upload to the
-      Security tab stay CI-side. The scan needs the vulnerability database
-      over the network, so the member is not a `task check` one — it runs on
-      demand, like the `live` layer.
+      unwritten ON PURPOSE — do not add `vuln` to members. `task vuln` runs
+      the same call-graph scan by hand (`govulncheck ./...`, no SARIF, no
+      upload), but scripts/ci/gate.sh runs the members of EVERY row whatever
+      its `required`, so a member here would make `task ci:gate` exit 1 on any
+      tree with a reachable CVE, including one disclosed after the tree was
+      written, and offline, where the vulnerability database cannot be
+      fetched. The job is advisory so that a zero-day does not gate a hotfix;
+      the local gate keeps that promise by not running it. Making it a member
+      needs an advisory, non-gating member kind in gate.sh first.
 
   desktop-vet-linux:
     required: no
