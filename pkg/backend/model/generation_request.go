@@ -82,6 +82,10 @@ type streamStartResult struct {
 // returns a stream. Production clients must honor requestCtx cancellation;
 // the buffered result channel nevertheless lets Iterion regain control even
 // when an adapter is late to observe that cancellation.
+//
+// A start that fails once parentCtx is done reports parentCtx's error (see
+// startFailureAfterCancel), so the verdict never depends on which of the
+// provider's return and the cancellation the scheduler observes first.
 func startStreamWithColdWatchdog(
 	parentCtx context.Context,
 	requestCtx context.Context,
@@ -90,15 +94,15 @@ func startStreamWithColdWatchdog(
 	coldTimeout time.Duration,
 ) (<-chan api.StreamEvent, error) {
 	if coldTimeout <= 0 {
-		return client.StreamResponse(requestCtx, req)
+		stream, err := client.StreamResponse(requestCtx, req)
+		return startFailureAfterCancel(parentCtx, stream, err)
 	}
+	// Capacity 1: the send never blocks, so the goroutine always delivers its
+	// result and exits, consumed or not.
 	started := make(chan streamStartResult, 1)
 	go func() {
 		stream, err := client.StreamResponse(requestCtx, req)
-		select {
-		case started <- streamStartResult{stream: stream, err: err}:
-		case <-requestCtx.Done():
-		}
+		started <- streamStartResult{stream: stream, err: err}
 	}()
 
 	timer := time.NewTimer(coldTimeout)
@@ -113,12 +117,46 @@ func startStreamWithColdWatchdog(
 
 	select {
 	case result := <-started:
-		return result.stream, result.err
+		return startFailureAfterCancel(parentCtx, result.stream, result.err)
 	case <-parentCtx.Done():
 		return nil, parentCtx.Err()
 	case <-timer.C:
+		// A cold window that expires on a cancelled run is the teardown, not
+		// a stalled provider: the cancellation stays the verdict whichever
+		// ready arm the select picks.
+		if ctxErr := parentCtx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
 	}
+}
+
+// startFailureAfterCancel makes the run's cancellation the verdict of a
+// stream start that failed once parentCtx is done. The failure is then the
+// teardown's echo, and the watchdog's parent arm reports the same
+// cancellation whenever the scheduler observes it first: classifying the
+// provider's error instead (an ambiguous effect, a transport fault) would
+// decide the run's terminal status by goroutine order. When the start's
+// result is the one observed, the provider's message stays in the text for
+// diagnosis, outside the error chain, so no typed classifier (errors.Is/As)
+// reads it; text matchers such as isContextWindowError still see it. A
+// definite provider refusal seen after the cancellation is therefore counted
+// as an unknown bill by extraction accounting: the over-count is deliberate,
+// the alternative re-introduces order-dependence. An opened
+// stream (err == nil) passes through: its aggregation observes the same
+// cancellation on its own.
+func startFailureAfterCancel(parentCtx context.Context, stream <-chan api.StreamEvent, err error) (<-chan api.StreamEvent, error) {
+	if err == nil {
+		return stream, nil
+	}
+	if ctxErr := parentCtx.Err(); ctxErr != nil {
+		// The client's error is the cancellation itself, nothing joined.
+		if err == ctxErr { //nolint:errorlint // identity, not a chain match: a wrapped or joined error carries more than the cancellation
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w (stream start failed after the cancellation: %v)", ctxErr, err)
+	}
+	return stream, err
 }
 
 // modelProvider is wireModelID's other half: the routing prefix of a
@@ -483,7 +521,12 @@ func callAndAggregate(
 	if err == nil && coldTimeout > 0 {
 		coldRemaining = time.Until(start.Add(coldTimeout))
 		if coldRemaining <= 0 {
-			err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+			// On a cancelled run the expired window is the teardown's, and
+			// the cancellation is the verdict, as in the watchdog's timer arm.
+			err = ctx.Err()
+			if err == nil {
+				err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
+			}
 		}
 	}
 	if err != nil {

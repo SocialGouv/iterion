@@ -2472,3 +2472,66 @@ func TestGenerateTextWithToolsAndSchema_UserPromptSubmitFiresOnce(t *testing.T) 
 		t.Fatalf("UserPromptSubmit fired %d times for one operator prompt, want 1", fires)
 	}
 }
+
+// A stream that opens after the cold window expired, on a run cancelled as
+// it opens, ends on the cancellation and still books the opened call's
+// unknown bill.
+type cancelOnOpenParent struct {
+	context.Context
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	spend    time.Duration
+	armed    bool
+	doneSeen int
+}
+
+func (p *cancelOnOpenParent) Done() <-chan struct{} {
+	p.mu.Lock()
+	p.doneSeen++
+	first := p.doneSeen == 1
+	p.mu.Unlock()
+	if first {
+		time.Sleep(p.spend)
+	}
+	return p.Context.Done()
+}
+
+func (p *cancelOnOpenParent) Err() error {
+	p.mu.Lock()
+	a := p.armed
+	p.mu.Unlock()
+	if a {
+		p.cancel()
+	}
+	return p.Context.Err()
+}
+
+type cancelOnOpenClient struct{ p *cancelOnOpenParent }
+
+func (c cancelOnOpenClient) StreamResponse(context.Context, api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.p.mu.Lock()
+	c.p.armed = true
+	c.p.mu.Unlock()
+	return make(chan api.StreamEvent), nil
+}
+
+func TestCallAndAggregateExpiredColdWindowOnCancelledRunIsTheCancellation(t *testing.T) {
+	t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "20ms")
+	for i := range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		p := &cancelOnOpenParent{Context: ctx, cancel: cancel, spend: 30 * time.Millisecond}
+		agg, err := callAndAggregate(p, cancelOnOpenClient{p: p}, api.CreateMessageRequest{},
+			GenerationOptions{Model: "anthropic/claude-opus-5"})
+		cancel()
+		verdict := err
+		if verdict == nil && agg != nil {
+			verdict = agg.err
+		}
+		if !errors.Is(verdict, context.Canceled) || errors.As(verdict, new(*StreamIdleError)) {
+			t.Fatalf("iteration %d: verdict=%v, want the run's cancellation", i, verdict)
+		}
+		if agg == nil || agg.usage.UnreportedCalls != 1 {
+			t.Fatalf("iteration %d: agg=%v err=%v: the opened stream's unknown bill is not booked", i, agg, err)
+		}
+	}
+}

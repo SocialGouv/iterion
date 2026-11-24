@@ -224,6 +224,13 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 			res.err = ctx.Err()
 			return res
 		case <-timerC:
+			// A window that expires on a cancelled run is the teardown, not
+			// a stall: the cancellation stays the verdict whichever ready
+			// arm the select picks.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				res.err = ctxErr
+				return res
+			}
 			idle := coldTimeout
 			if phase == StreamIdleHot {
 				idle = hotTimeout
