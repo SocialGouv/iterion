@@ -102,6 +102,9 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   building — so the merge that drains the queue releases the whole burst; the
   nightly and a `workflow_dispatch` release regardless
   ([releases and the queue](../../merge-policy.md#releases-and-the-queue)).
+  While main carries a breaking change, the major hold skips automatic runs
+  green with a notice and refuses a non-major dispatch — only the exact
+  `N+1.0.0` cuts ([the major hold](../../merge-policy.md#the-major-hold)).
   release-it writes the new section into [CHANGELOG.md](../../../CHANGELOG.md) as part of the
   release commit itself (`infile` + `git add . --update`), so the file cannot drift
   from the tags — never hand-edit it. The same hook slot regenerates

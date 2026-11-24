@@ -10,12 +10,20 @@ name: 🏷️ Version
 # releases everything the burst landed. The nightly and a workflow_dispatch
 # release regardless — the nightly is the backstop for a queue that drains
 # without a merge (its last entry ejected) or never drains, and a dispatch is
-# an operator's explicit request.
+# an operator's explicit request. The queue hold guards only a merged pull
+# request's release: the nightly and a dispatch ignore it. The major hold —
+# the step before release-it — is the one guard they do not ignore: while
+# main carries a breaking change, an automatic run skips green with a notice
+# and a non-major dispatch from main is refused, and only the exact
+# N+1.0.0 dispatch cuts. The decision lives in
+# scripts/ci/release-major-hold.sh, exercised by
+# internal/ciguard/release_major_hold_test.go; this file only gathers the
+# facts.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release as an increment (patch | minor) or an explicit 0.x.y version. The project stays 0.x — do not pass 'major'."
+        description: "Release as an increment (patch | minor) or an explicit X.Y.Z version. A major is cut only by its exact version (N+1.0.0, e.g. 8.0.0): 'major' is refused, and while main carries a breaking change a patch or minor from main is refused too."
         required: false
         default: minor
   pull_request:
@@ -209,8 +217,38 @@ jobs:
             echo "::notice::no commit since ${LAST_TAG} — nothing to release"
           fi
 
-      - name: Run release-it
+      - name: Hold a major until an operator dispatches its exact version
+        # release-it cuts a major from a single `feat!:` commit, and an
+        # explicit dispatch increment overrides the bump its changelog
+        # recommends — so the first `!` after v7 would auto-cut v8 here, and a
+        # dispatched `minor` would ship the breaking changes under a 7.x
+        # minor. This release hold answers every run that may release, the
+        # nightly and a dispatch included (unlike the queue hold above): an
+        # automatic run whose recommended version is the next major skips
+        # green with a notice and no tag; a dispatched patch, minor,
+        # same-major version or blank input from main is refused; only the
+        # exact 8.0.0-style dispatch cuts. Refs other than main are not
+        # guarded here. The decision and its exit codes live in
+        # scripts/ci/release-major-hold.sh, exercised by
+        # internal/ciguard/release_major_hold_test.go — this step only
+        # gathers the facts from the tree release-it will release, and a
+        # verdict other than release skips release-it below.
+        id: major
         if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          REF="$(git rev-parse --abbrev-ref HEAD)"
+          CURRENT="$(git describe --tags --abbrev=0 --match 'v[0-9]*')"
+          CURRENT="${CURRENT#v}"
+          RECOMMENDED="$(pnpm release-it --release-version --ci)"
+          export REF CURRENT RECOMMENDED
+          bash scripts/ci/release-major-hold.sh >> "$GITHUB_OUTPUT"
+
+      - name: Run release-it
+        if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false') && steps.major.outputs.verdict == 'release'
         env:
           # Use the token-bureau App token so the GitHub Release that
           # release-it creates carries an App identity. Releases created

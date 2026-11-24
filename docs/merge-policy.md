@@ -433,6 +433,30 @@ keeps a single pending run and silently replaces it with the next one: a merged
 pull request's run could replace a pending nightly or dispatch, then hold its
 release while the queue builds.
 
+## The major hold
+
+release-it cuts a major from a single `feat!:` commit, and an explicit
+dispatch increment overrides the bump its changelog recommends — so the first
+breaking change after a `v7` tag would auto-cut `v8`, and a dispatched `minor`
+would ship the breaking changes under a 7.x minor. `version.yml` therefore
+asks a **major hold** before release-it; the decision lives in
+[`scripts/ci/release-major-hold.sh`](../scripts/ci/release-major-hold.sh),
+exercised by `internal/ciguard/release_major_hold_test.go`:
+
+- an **automatic run** — a merged pull request or the nightly — whose
+  recommended version is the next major ends **green** with a notice naming
+  the version: no tag is cut, main keeps carrying the breaking change;
+- a **dispatch** of `patch`, `minor`, an explicit same-major version or a
+  blank input on `main` is **refused** (red) while a major is pending;
+- only the dispatch of the **exact** `N+1.0.0` cuts the major; the word
+  `major` and any higher version are refused with that message;
+- a ref other than `main` is not guarded here — the hold protects main alone,
+  and the `release/*` line owns its own rules.
+
+With no breaking change pending, every run releases exactly as before. The
+release hold decides *whether this run may tag* — how the major is cut, and
+when, is a separate decision, not this hold's.
+
 ## A rebuilt group's older runs are cancelled
 
 GitHub rebuilds a queue group whenever its base moves — a push to `main`, an
