@@ -66,7 +66,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # their step budget (the placeholder cause, run 019ec9d5). Newer/older repos
 # still auto-fetch their own pinned toolchain via the default GOTOOLCHAIN=auto.
 # ---------------------------------------------------------------------
-ARG GO_VERSION=1.26.4
+ARG GO_VERSION=1.26.11
 RUN ARCH=$(dpkg --print-architecture) \
  && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tgz \
  && rm -rf /usr/local/go \
