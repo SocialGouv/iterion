@@ -1753,9 +1753,11 @@ jobs:
         # matter) so the file passes validation. The update is scoped to the
         # result, not to `.stacks`: assigning through a missing key would
         # create `"stacks": null` on every stack-less result, which the
-        # schema refuses just as hard.
+        # schema refuses just as hard. `results[]?`: a run's `results` key is
+        # optional in SARIF 2.1.0 (only `tool` is required), and iterating a
+        # missing one would abort jq and red the job with nothing to publish.
         run: |
-          jq '.runs[].results[] |= (if (.stacks | type) == "array" then .stacks |= unique else . end)' \
+          jq '.runs[].results[]? |= (if (.stacks | type) == "array" then .stacks |= unique else . end)' \
             govulncheck.sarif > govulncheck.dedup.sarif && mv govulncheck.dedup.sarif govulncheck.sarif
       - name: Upload SARIF
         # The job is advisory (not a required check): findings themselves
