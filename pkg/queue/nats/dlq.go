@@ -101,10 +101,6 @@ func dlqView(seq uint64, m *jetstream.RawStreamMsg) DLQMessage {
 	return v
 }
 
-// ListDLQ pages through the DLQ stream from cursorSeq (0 = oldest),
-// returning up to limit messages and the cursor to continue from
-// (0 = exhausted). Deleted sequences are skipped — DiscardDLQ leaves
-// holes by design.
 // dlqStreamFor names the DLQ stream holding a pool's parked messages:
 // empty pool = the shared default DLQ. The pool DLQ streams are created by
 // the server's reconciler (EnsurePoolSchema) and written by PublishDLQ's
@@ -137,30 +133,54 @@ func (c *Conn) PoolDLQDepth(ctx context.Context, pool string) (uint64, error) {
 	return c.dlqDepthOn(ctx, c.dlqStreamFor(pool))
 }
 
+// ListDLQ pages through the DLQ stream from cursorSeq (0 = oldest),
+// returning up to limit messages and the cursor to continue from
+// (0 = exhausted). Deleted sequences are skipped — DiscardDLQ leaves
+// holes by design.
 func (c *Conn) ListDLQ(ctx context.Context, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
 	return c.listDLQStream(ctx, c.cfg.DLQStream, cursorSeq, limit)
 }
 
+// dlqSource is the slice of a JetStream stream the DLQ pager reads.
+// Narrow on purpose — jetstream.Stream satisfies it, and the tests drive
+// the pager without a broker (the schemaManager / epochKV pattern).
+type dlqSource interface {
+	Info(ctx context.Context, opts ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error)
+	GetMsg(ctx context.Context, seq uint64, opts ...jetstream.GetMsgOpt) (*jetstream.RawStreamMsg, error)
+}
+
 func (c *Conn) listDLQStream(ctx context.Context, streamName string, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
 	stream, err := c.js.Stream(ctx, streamName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("queue/nats: dlq stream: %w", err)
 	}
-	info, err := stream.Info(ctx)
+	return listDLQFrom(ctx, stream, cursorSeq, limit)
+}
+
+// listDLQFrom pages a DLQ stream from cursorSeq, skipping holes left by
+// discarded messages.
+func listDLQFrom(ctx context.Context, src dlqSource, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	info, err := src.Info(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("queue/nats: dlq info: %w", err)
 	}
 	first, last := info.State.FirstSeq, info.State.LastSeq
+	// A stream that never stored a message reports first_seq = last_seq = 0,
+	// and JetStream refuses a get on sequence 0 with a bad request
+	// (API 10003) rather than message-not-found; stream sequences start at 1.
+	if first == 0 {
+		first = 1
+	}
 	if cursorSeq < first {
 		cursorSeq = first
 	}
 	out := make([]DLQMessage, 0, limit)
 	seq := cursorSeq
 	for ; seq <= last && len(out) < limit; seq++ {
-		m, err := stream.GetMsg(ctx, seq)
+		m, err := src.GetMsg(ctx, seq)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrMsgNotFound) {
 				continue // discarded — hole in the sequence
