@@ -79,7 +79,7 @@ has cost money and bought nothing.
 
 Full reference for the live layer (harness, judge panel, env knobs, authoring
 a new target): [`docs/live-e2e-coverage.md`](../../live-e2e-coverage.md).
-Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/issues/1421).
+Chantier and current state: [epic #1410](https://github.com/SocialGouv/iterion/issues/1410).
 
 ## Testing Patterns
 

@@ -103,7 +103,7 @@ default** — implemented and documented, not proven in production.
 | `review-pr` | **Revi** | 🟡 | `revi/review` is a required check on `iterion` **and** `buildkit-operator`. The last 25 merged iterion PRs (#1342→#1392) are **25/25 SUCCESS**. On the `mesure-impact` binding: **10 runs / 30 days, 0 failures**, p50 552 s, p95 884 s, **$13.68** total (~$1.37 a review) |
 | `feed-watch` | **Vigie** | 🟠 | **10 schedules** armed on the Ministères-Sociaux tenant, last *dispatched* today at 05:00Z. But a schedule record carries no run id, status or error ([#1426](https://github.com/SocialGouv/iterion/issues/1426)), and the runs API ignores `team_id` ([#1419](https://github.com/SocialGouv/iterion/issues/1419)) — **nothing here proves a run happened**. On the operator's host the same bot family is the top error source over two months ([#1425](https://github.com/SocialGouv/iterion/issues/1425)) |
 | `vuln-watch` | **Senti** | 🟠 | hourly (`25 * * * *`), last *dispatched* 2026-09-18T10:25Z — same caveat as Vigie: dispatch is not outcome |
-| `prod-watch` | **Argus** | ⚪ | slice A landed 2026-09-23 (the deterministic, zero-LLM watch tick + its hermetic harness, [#1696](https://github.com/SocialGouv/iterion/issues/1696)); **not wired to any deployment yet** — the epic is [#1695](https://github.com/SocialGouv/iterion/issues/1695) |
+| `prod-watch` | **Argus** | ⚪ | slice A landed 2026-09-23 (the deterministic, zero-LLM watch tick + its hermetic harness, [#1696](https://github.com/SocialGouv/iterion/issues/1696)); **not wired to any deployment yet** — tracked under [the bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) since 2026-11-23 |
 | `docs-refresh` | **Doki** | 🟡 | weekly against this repo (Monday 04:00Z), opens its own MR; last fire 2026-09-14 |
 | `sec-audit-source` | **Seki** | 🟡 | reaching the cloud; **5 open findings sit untriaged in Inbox** (#1322 #1323 #1324 #1328 #1333) |
 | `branch-improve-loop` | **Billy** | 🟠 | proven in the gate loop, then **paused on iterion** since 2026-09-15 (`auto_fix_on_gate_failure` off — cost). `/billy` still answers on demand |
@@ -118,11 +118,11 @@ which, treat them as unmeasured, not solved.
 
 **Epics:** [Revi](https://github.com/SocialGouv/iterion/issues/1396) ·
 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) ·
-[Seki](https://github.com/SocialGouv/iterion/issues/1398) ·
-[the merge gate](https://github.com/SocialGouv/iterion/issues/1395) ·
+[bots prometteurs](https://github.com/SocialGouv/iterion/issues/3526) ·
+[Obsy](https://github.com/SocialGouv/iterion/issues/3525) ·
 [the bot catalogue](https://github.com/SocialGouv/iterion/issues/1399)
 
-## 🚦 The merge gate — the one 🔴
+## 🚦 The merge gate
 
 `revi/review` is required on two repos. It **produces** on iterion (25/25) and
 **does not produce** on `buildkit-operator`: the single open PR there,
@@ -134,7 +134,9 @@ unsatisfiable — so that PR can only land through an admin bypass.
 requiring the check on that repo. #874 (an opt-in read-only review lane for
 fork PRs) is the third path, and it is designed but not built.
 
-**Epic:** [the merge gate](https://github.com/SocialGouv/iterion/issues/1395)
+**Epic:** [Revi](https://github.com/SocialGouv/iterion/issues/1396) — the
+merge-gate epic #1395 folded into it on 2026-11-23; #874 and #3310 moved with
+it.
 
 ## Tests — the free layer and the paid layer
 
@@ -180,43 +182,40 @@ a live target last passed** — so the question can only be answered by spending
 money. That is the gap [#1422](https://github.com/SocialGouv/iterion/issues/1422)
 closes.
 
-**Epic:** [end-to-end proof](https://github.com/SocialGouv/iterion/issues/1421)
+**Epic:** [CI health](https://github.com/SocialGouv/iterion/issues/1410)
 
 ## The chantier map
 
-All 26 epics, their mark, and where the detail lives. Counts are board items
-(closed + open) as of 2026-09-18.
+The 23 open epics, their mark, and where the detail lives. Counts are board
+items (closed + open) carrying the epic's `Epic` value, the epic issue
+excluded, as of 2026-11-23 — the day the board went from 34 epics to 23; a
+closed epic's items keep its option and are not counted here.
 
 | epic | mark | items | what it is |
 |---|---|---|---|
-| 🚦 [Merge gate](https://github.com/SocialGouv/iterion/issues/1395) | 🔴 | 15 | revi × billy × vetty, and the repos they guard |
-| 💬 [Assistant](https://github.com/SocialGouv/iterion/issues/1400) | 🟠 | 13 | Copi & Nexie |
-| 🔌 [Backends](https://github.com/SocialGouv/iterion/issues/1404) | 🟠 | 18 | execution backends and their parity |
-| 🩺 [CI health](https://github.com/SocialGouv/iterion/issues/1410) | 🟠 | 16 | flakes, races, the merge queue |
-| 🧩 [Codemode](https://github.com/SocialGouv/iterion/issues/3153) | 🟠 | 48 | the model writes code that calls the node's own tools; claw absorbed into the tree (`pkg/claw`); one reference harness — counted 2026-11-20. The v1 is wired and opt-in (`codemode: on`): a credential-less child under kernel bounds, the posture bench held 7/7 on a production node on 2026-11-20, the **deployed** v7.19.1 child reporting its socket wall and memory room ([posture-bench-remote](agents/testing/posture-bench-remote.md#measured-on-production-2026-11-18)). The holes: no catalog bot opts in, so no production workload has run it yet; concurrency, `store()`, rich results, the sandbox crossing and the RT stream are ticketed ([#3443](https://github.com/SocialGouv/iterion/issues/3443)–[#3469](https://github.com/SocialGouv/iterion/issues/3469)) |
-| 🧩 [Connectors](https://github.com/SocialGouv/iterion/issues/1406) | 🟠 | 12 | connectors, MCP, plugins, skills |
-| 📚 [Docs](https://github.com/SocialGouv/iterion/issues/1414) | 🟠 | 4 | the doc site, ADRs, this page |
-| 🧪 [E2E proof](https://github.com/SocialGouv/iterion/issues/1421) | 🟠 | 4 | the free layer always, the paid layer deliberately |
-| 👁️ [Observability](https://github.com/SocialGouv/iterion/issues/1415) | 🟠 | 1 | events, logs, error tracking |
-| 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟠 | 19 | isolation and the permission gate |
-| 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
-| 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 1 | the watch feed in production |
-| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules, [event sources](event-sources.md) — pushed and polled ([#3269](https://github.com/SocialGouv/iterion/issues/3269), gaps in [#3396](https://github.com/SocialGouv/iterion/issues/3396)) |
-| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 38 bundles, shapes, `dsl: 2`, dogfood |
-| 🏷️ [Brand & product home](https://github.com/SocialGouv/iterion/issues/1429) | 🟡 | 1 | what iterion says it is, and how it talks to users |
-| ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 13 | tenancy, replicas, persistence |
-| 🔑 [Credentials](https://github.com/SocialGouv/iterion/issues/1408) | 🟡 | 31 | BYOK, quotas, metering, cost |
-| ✍️ [DSL authoring](https://github.com/SocialGouv/iterion/issues/1401) | 🟡 | 46 | the authoring-first DSL — the largest chantier |
-| 🔗 [Forge](https://github.com/SocialGouv/iterion/issues/1409) | 🟡 | 25 | GitHub App, GitLab, Forgejo, webhooks |
-| 🪞 [Goldy](https://github.com/SocialGouv/iterion/issues/1428) | 🟡 | 3 | the golden-master oracle |
-| 🚀 [Prod ops](https://github.com/SocialGouv/iterion/issues/1411) | 🟡 | 8 | deploy, rollout, incidents |
-| 📐 [Public contracts](https://github.com/SocialGouv/iterion/issues/1402) | 🟡 | 9 | contracts & execution by ports |
-| 🚚 [Release & distribution](https://github.com/SocialGouv/iterion/issues/1427) | 🟡 | 1 | the train that puts iterion in a user's hands |
-| 🔍 [Revi](https://github.com/SocialGouv/iterion/issues/1396) | 🟡 | 24 | PR review in production |
-| ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 24 | fan-out, checkpoints, resume, rewind |
-| 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
-| 🧠 [Memory & knowledge](https://github.com/SocialGouv/iterion/issues/1430) | ⚪ | 1 | scopes, the knowledge store, lifecycle, quotas |
-| 🛰️ [Standing crews](https://github.com/SocialGouv/iterion/issues/3133) | ⚪ | 13 | bots that stay addressable, wake on events, remember and work together — opened 2026-11-10 by [the live-agents study](references/live-agents-openmausbot.md), counted that day |
+| 🔀 [Adaptive routing](https://github.com/SocialGouv/iterion/issues/2000) | 🟠 | 45 | on claw, the model / provider / credential route chosen and switched under an explicit policy — allowed destinations, payer, budgets, resume conditions |
+| 🔌 [Backends](https://github.com/SocialGouv/iterion/issues/1404) | 🟠 | 111 | claw: a reliable, efficient and modular execution |
+| 🌱 [Bots prometteurs](https://github.com/SocialGouv/iterion/issues/3526) | 🟠 | 11 | Vetty, Doki, Seki, Appy from demonstrator to product: a real consumer, a measured cost, on claw — absorbed Seki, auto-maintenance and Doki × TPE |
+| 🩺 [CI health](https://github.com/SocialGouv/iterion/issues/1410) | 🟠 | 147 | flakes, races, the merge queue, and the end-to-end proof — the free layer always, the paid layer deliberately (absorbed E2E proof) |
+| 🔑 [Credentials](https://github.com/SocialGouv/iterion/issues/1408) | 🟠 | 103 | identity, accounting, prices and capacity you can trust: BYOK, quotas, metering, cost |
+| 📚 [Docs](https://github.com/SocialGouv/iterion/issues/1414) | 🟠 | 16 | the doc site, ADRs, this page, and what iterion says it is (absorbed Brand & product home, Discoverability) |
+| 🧭 [Migration claw](https://github.com/SocialGouv/iterion/issues/3153) | 🟠 | 16 | one harness: claw absorbed into the tree (`pkg/claw`), `claude_code` frozen then retired |
+| 🔭 [Obsy](https://github.com/SocialGouv/iterion/issues/3525) | 🟠 | 1 | instruments a repository (Sentry SDK, JSON logs, release) and opens the MR; to be proven in production on a real consumer, then run on claw |
+| 📦 [Sandbox](https://github.com/SocialGouv/iterion/issues/1405) | 🟠 | 96 | isolation and the permission gate |
+| 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 76 | editor, board, run console, desktop (absorbed Assistant: Copi & Nexie) |
+| 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 2 | the watch feed in production |
+| 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 45 | board, dispatcher, triggers, schedules, [event sources](event-sources.md) — pushed and polled ([#3269](https://github.com/SocialGouv/iterion/issues/3269), gaps in [#3396](https://github.com/SocialGouv/iterion/issues/3396)); connectors and MCP (absorbed Connectors) |
+| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 52 | bundles, shapes, `dsl: 2`, dogfood, pruning (absorbed Goldy, Argus, Acci) |
+| ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 84 | tenancy, replicas, persistence |
+| 🧩 [Codemode](https://github.com/SocialGouv/iterion/issues/3524) | 🟡 | 35 | the model writes code that calls the node's own tools, in a child process behind the tool gate. The v1 is wired and opt-in (`codemode: on`): a credential-less child under kernel bounds, the posture bench held 7/7 on a production node on 2026-11-20, the **deployed** v7.19.1 child reporting its socket wall and memory room ([posture-bench-remote](agents/testing/posture-bench-remote.md#measured-on-production-2026-11-18)). The hole: no catalog bot opts in (catalog grep, 2026-11-23), so no production workload has run it yet; CM-13 ([#3448](https://github.com/SocialGouv/iterion/issues/3448)) is in progress and CM-6 ([#3444](https://github.com/SocialGouv/iterion/issues/3444)) waits on the operator |
+| ✍️ [DSL authoring](https://github.com/SocialGouv/iterion/issues/1401) | 🟡 | 130 | the authoring-first DSL and its typed contracts — the largest chantier (absorbed Public contracts) |
+| 🔗 [Forge](https://github.com/SocialGouv/iterion/issues/1409) | 🟡 | 50 | GitHub App, GitLab, Forgejo, webhooks |
+| 🚀 [Prod ops](https://github.com/SocialGouv/iterion/issues/1411) | 🟡 | 16 | deploy, rollout, incidents, alerts (absorbed Observability) |
+| 🚚 [Release & distribution](https://github.com/SocialGouv/iterion/issues/1427) | 🟡 | 4 | the train that puts iterion in a user's hands |
+| 🔍 [Revi](https://github.com/SocialGouv/iterion/issues/1396) | 🟡 | 45 | PR review and the merge gate in production (absorbed Merge gate) |
+| ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 91 | fan-out, checkpoints, resume, rewind |
+| 🛰️ [Standing crews](https://github.com/SocialGouv/iterion/issues/3133) | ⚪ | 12 | bots that stay addressable, wake on events, remember and work together — opened 2026-11-10 by [the live-agents study](references/live-agents-openmausbot.md) (absorbed Memory & knowledge) |
+| ✂️ [Élagage v8](https://github.com/SocialGouv/iterion/issues/3527) | ⚪ | 61 | one breaking release (v8) that keeps a single way of doing things: claw as the only harness, a DSL without legacy profiles, one data-format generation |
 
 ## ✅ Keeping this page honest
 
