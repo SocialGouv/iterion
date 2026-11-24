@@ -4,8 +4,9 @@
 # (unsharded) on a slow runner — relative weights, not walls; refresh when the
 # mix drifts. Packages under 10 s are left out: unlisted packages weigh 1, so a
 # stale or missing row only degrades the balance — it never errors. The -race
-# legs keep their own table (test-shards-weights.tsv): the detector reorders
-# the costs (bots 1288 s there, 751 s here; pkg/backend/model 1051 s there).
+# legs keep their own table (test-shards-weights.tsv): the detector (with cgo)
+# and the co-packing reorder the costs (the unit reading ran unsharded), and
+# e2e, which leads the race table, is excluded from this one.
 github.com/SocialGouv/iterion/bots	751
 github.com/SocialGouv/iterion/pkg/server	518
 github.com/SocialGouv/iterion/pkg/backend/delegate	422

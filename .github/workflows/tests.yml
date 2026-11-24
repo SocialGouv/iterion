@@ -657,10 +657,11 @@ jobs:
     # `$( )`: inline substitution loses the splitter's exit code, and an
     # empty-shard refusal would degrade into `go test` with no package
     # arguments. The weights table carries measured -race package durations;
-    # `bots` is the heaviest row and one sequential test binary — LPT places
-    # it first, nothing beats its wall, and the remaining rows pack the three
-    # shards to near-equal weight; bots' co-packages run concurrently beside
-    # it and finish long before it.
+    # LPT packs the three shards to near-equal weight, and the three heaviest
+    # rows (e2e, bots, pkg/server) each lead one shard. The leg's wall is the
+    # larger of its heaviest package (e2e or bots, each one sequential test
+    # binary) and its shard's load spread over the runner's parallel test
+    # slots; LPT balances the second, only splitting e2e/bots lowers the first.
     #
     # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
     # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
@@ -741,18 +742,16 @@ jobs:
           bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Race tests (shard ${{ matrix.shard }} of 3)
-        # 1800s bounds a HANG, not a slow machine — the same bound the
-        # unsharded job carried; with the suite split three ways it now
-        # carries ~3x the headroom it had. The 40-minute leg budget caps the
-        # run. See the scripts/ci/testshards doc for why the assignment form
-        # is load-bearing.
+        # Each package gets 2400 s under -race, inside the job's 50-minute
+        # ceiling. See the scripts/ci/testshards doc for why the assignment
+        # form is load-bearing.
         run: |
           set -euo pipefail
           pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          # bots alone under -race is the wall of this leg: 1556 s on 1591e1911, over 1800 s on
-          # 69f2f501d (2026-10-29). 2400 s is the stopgap; the t.Parallel campaign (#2564 P2)
-          # and the next floor (#2789) are the fix.
+          # e2e alone under -race took 1785 s (merge_group run 45186345093) and 1468 s
+          # (run 45180564490) on 2026-11-23: 1800 s leaves it no headroom, so the
+          # per-package bound stays at 2400 s (#2789).
           go test -race -mod=vendor -count=1 -timeout 2400s $pkgs
 
   # ---- required aggregator: the name the ruleset requires ----

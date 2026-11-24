@@ -11,8 +11,9 @@ import (
 // The t.Parallel campaign of the modernize family — what it freed, what holds
 // the rest, and the rule that keeps it (#2564 P2b, ARB-43).
 //
-// This package is the `race` leg's wall: ~1556 s under -race on merge_group,
-// and its heaviest tests are the bot-level ones that drive a python harness
+// This package was the `race` leg's wall: ~1556 s under -race on merge_group
+// (2026-10); on run 45186345093 (2026-11-23) it reads 1564 s, behind e2e at
+// 1785 s, and its heaviest tests are the bot-level ones that drive a python harness
 // which itself runs git in a throwaway repository. Every one of them built its
 // workspace with modernizeRepo, which installed the auto-maintenance refusal
 // on the PROCESS with t.Setenv — and t.Setenv forbids t.Parallel outright (it
