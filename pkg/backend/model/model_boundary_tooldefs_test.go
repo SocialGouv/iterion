@@ -144,7 +144,7 @@ func TestTheCodemodeIndexIsComposedFromScreenedDefinitions(t *testing.T) {
 	}}
 
 	index := func(defs []delegate.ToolDef) string {
-		catalog := scriptCatalog(toolDefsToGeneration(defs), ScriptHostToolName)
+		catalog := scriptCatalog(toolDefsToGeneration(defs), ScriptHostToolName, false)
 		bounded, omitted, err := toolindex.Bound(catalog)
 		if err != nil {
 			t.Fatalf("bound the catalogue: %v", err)
@@ -202,7 +202,7 @@ func TestAnUndecodableSchemaIsReturnedAsIsAndNeverServed(t *testing.T) {
 	}
 
 	// The catalogue omits it and records how large it was.
-	catalog := scriptCatalog(toolDefsToGeneration(out.ToolDefs), ScriptHostToolName)
+	catalog := scriptCatalog(toolDefsToGeneration(out.ToolDefs), ScriptHostToolName, false)
 	bounded, _, err := toolindex.Bound(catalog)
 	if err != nil {
 		t.Fatalf("bound the catalogue: %v", err)
