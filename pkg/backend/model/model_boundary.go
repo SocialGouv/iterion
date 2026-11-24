@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 )
 
 // executeDelegate is the ONE seam a task crosses into a backend, and the
@@ -334,9 +335,13 @@ func screenedInputValue(v any, screen func(string) string) any {
 // section, the calibration fragments, the skill hints and the preset focus
 // AFTER this seam, and each of those carries text the run itself never
 // rendered — the agent's own MEMORY.md, the author's cursor fragments, the
-// workspace's SKILL.md frontmatter. TestEveryModelReadTextOfATaskCrossesTheBoundary
-// reads the composers and refuses a field this pass neither redacts nor
-// allowlists with its reason.
+// workspace's SKILL.md frontmatter. A tool definition's description and
+// input schema are model-read text as well — for an MCP tool, a remote
+// server's text — and they reach a model three ways downstream of the seam:
+// the wire schema buildRequest encodes, the codemode catalogue and its
+// description index, and the IOTask wire to the in-container runner.
+// TestEveryModelReadTextOfATaskCrossesTheBoundary reads the composers and
+// refuses a field this pass neither redacts nor allowlists with its reason.
 //
 // A field pass cannot reach the text a backend composes for ITSELF — the
 // ambient instruction files it reads under the task's work dir, the
@@ -385,6 +390,33 @@ func (e *ClawExecutor) taskForModel(task delegate.Task) delegate.Task {
 			hints[i].Description = redact(hints[i].Description)
 		}
 		task.SkillHints = hints
+	}
+	// A tool definition's description and its schema are, for an MCP tool, a
+	// remote server's text; three readers sit downstream of this seam — the
+	// wire schema buildRequest encodes, the codemode index and catalogue
+	// (which cut a description, so a pass at the wire could not recognise a
+	// value the cut split), and the IOTask wire to the in-container runner.
+	// The name and the property names stay as written: they are the keys a
+	// call is dispatched, gated and validated by. Every string VALUE of the
+	// schema is screened, the structural ones included — a `required`
+	// member, a `type`, a `$ref` — so a low-entropy declared value contained
+	// in a property name or equal to a keyword leaves that entry as its
+	// placeholder and the schema inconsistent; a skip keyed on those key
+	// names would also fire under default/const/enum/examples and x-*
+	// extensions, where the same key names hold arbitrary data, and leave a
+	// value there unscreened. An undecodable schema is
+	// returned as is and never served — buildRequest refuses it and
+	// toolindex.Bound omits it — so the identity of a document the guard
+	// cannot read leaks nothing. The slice is copied: the caller's task
+	// keeps the definitions as resolved.
+	if len(task.ToolDefs) > 0 {
+		defs := make([]delegate.ToolDef, len(task.ToolDefs))
+		copy(defs, task.ToolDefs)
+		for i := range defs {
+			defs[i].Description = redact(defs[i].Description)
+			defs[i].InputSchema = secretguard.RedactJSON(defs[i].InputSchema, redact)
+		}
+		task.ToolDefs = defs
 	}
 	return task
 }

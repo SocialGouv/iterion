@@ -377,11 +377,33 @@ form in every hook/log:
 - **The model boundary.** What a model READS goes out in placeholder form
   whatever produced it: the rendered system and user prompts, the user
   content blocks, the auto-memory section, the calibration fragments, the
-  skill hints and the preset focus of every task cross into a backend
-  through one seam (`ClawExecutor.executeDelegate`, `Guard.RedactForModel`),
-  which turns every known value back into its placeholder — a value an
-  upstream node printed and a prompt reads through `{{outputs.A.x}}`, an
-  input an edge mapped from it, a `{{vars.x}}` holding one. The crossing
+  skill hints, the preset focus and every tool definition's description and
+  input schema (for an MCP tool, a remote server's text) of every task
+  cross into a backend through one seam (`ClawExecutor.executeDelegate`,
+  `Guard.RedactForModel`), which turns every known value back into its
+  placeholder — a value an upstream node printed and a prompt reads through
+  `{{outputs.A.x}}`, an input an edge mapped from it, a `{{vars.x}}` holding
+  one. The description and the schema reach the model three ways downstream
+  of the seam — the wire schema the request encodes, the codemode catalogue
+  and its description index (whose 120-rune summary would split a value a
+  wire-side pass could no longer recognise, which is why the screen sits at
+  the task seam), and the `IOTask` wire a sandboxed runner receives — so the
+  definitions its in-container model reads were screened on the host before
+  the hop. Two bounds of that pass are deliberate: a tool's name and a
+  schema property's name stay as written, since they are the keys a call is
+  dispatched, gated and validated by (the tool map, the permission gate, the
+  hooks, the sandbox placement and the input validators read them), and a
+  schema that does not decode is left as is — buildRequest refuses it and
+  the catalogue omits it, so an unreadable document is never served to a
+  model. Only the keys of the schema stay as written: every string value is
+  screened, the structural ones included (a `required` member, a `type`, a
+  `$ref`), so a declared value contained in a property name or equal to a
+  keyword leaves that `required` entry or keyword as its placeholder and the
+  schema the model reads can turn inconsistent. Only a low-entropy declared
+  value can do that; the pass accepts it so that no value is ever left
+  unscreened in instance data (`default`, `enum`, `examples`) or a vendor
+  extension, where a string under a key named `type` or `required` is
+  arbitrary data. The crossing
   itself keeps the real values: the live output map still feeds the nodes
   downstream and the resume checkpoint, so a tool node of B can spend what
   A obtained while B's model only reads the placeholder (ADR-146, axis 1a).
@@ -441,7 +463,8 @@ form in every hook/log:
   wire, which carries no closure by design (secret materialisation stays on
   the parent side), and the container builds no guard of its own — so the
   instruction-file block it composes in there is screened by nothing, while
-  the prompts it receives were screened on the host before the hop. Closing
+  the prompts and the tool definitions it receives were screened on the
+  host before the hop. Closing
   it means either composing that block on the host or giving the runner a
   guard; until then a declared secret written into a workspace instruction
   file is readable by the next sandboxed node on that workspace.
