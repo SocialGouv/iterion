@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/reliability"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -105,10 +106,16 @@ type ReliabilityReport struct {
 	// so the honest answer is per-run — watcher_cursor_count on a run's own
 	// report and runs_with_watcher_cursors in the baseline — never a global
 	// flag an operator would read as "on everywhere".
-	Mode                  string `json:"mode"`
-	ContextPolicy         string `json:"context_policy"`
-	RetryCircuitThreshold int    `json:"retry_circuit_threshold"`
-	RetryCircuitCooldown  string `json:"retry_circuit_cooldown"`
+	Mode          string `json:"mode"`
+	ContextPolicy string `json:"context_policy"`
+	// LegacyTenants is the canonical form of
+	// ITERION_RELIABILITY_LEGACY_TENANTS: the tenants the tenant-scoped
+	// legacy cap still holds back while the rest of the deployment applies
+	// the resolved mode. The promotion decision names the escape hatch that
+	// is active; omitted when the list is unset.
+	LegacyTenants         []string `json:"legacy_tenants,omitempty"`
+	RetryCircuitThreshold int      `json:"retry_circuit_threshold"`
+	RetryCircuitCooldown  string   `json:"retry_circuit_cooldown"`
 
 	Baseline *reliability.Baseline            `json:"baseline,omitempty"`
 	Run      *reliability.CompatibilityReport `json:"run,omitempty"`
@@ -130,6 +137,7 @@ func RunReliabilityReport(ctx context.Context, opts ReliabilityOptions, p *Print
 	out := ReliabilityReport{
 		Mode:                  string(cfg.Mode),
 		ContextPolicy:         string(cfg.ContextPolicy()),
+		LegacyTenants:         cfg.LegacyTenants,
 		RetryCircuitThreshold: cfg.RetryCircuitThreshold,
 		RetryCircuitCooldown:  cfg.RetryCircuitCooldown.String(),
 	}
@@ -229,6 +237,9 @@ func emitReliabilityReport(out ReliabilityReport, p *Printer) error {
 	p.KV("store", out.Source)
 	p.KV("mode", out.Mode)
 	p.KV("context policy", out.ContextPolicy)
+	if len(out.LegacyTenants) > 0 {
+		p.KV("legacy tenants", strings.Join(out.LegacyTenants, ", "))
+	}
 	p.KV("retry circuit", fmt.Sprintf("threshold %d, cooldown %s", out.RetryCircuitThreshold, out.RetryCircuitCooldown))
 
 	if r := out.Run; r != nil {
@@ -256,15 +267,20 @@ func emitReliabilityReport(out ReliabilityReport, p *Printer) error {
 			}},
 		)
 		p.Blank()
-		// The admission row is printed separately, and denials are stated
+		// The admission rows are printed separately, and denials are stated
 		// out of how many decisions were recorded: the pilot criterion is
-		// that a report cannot hide blocked admissions, and "0 denied"
-		// over a population the gate never visited would do exactly that.
+		// that a report cannot hide blocked admissions, and "0 denied" over
+		// a population the gate never visited would do exactly that. The
+		// would-deny census sits beside them: it is what the admission gate
+		// SAW and did not refuse — the admission-gate violations a promotion
+		// to enforce turns into denials (resume-time artifact-contract
+		// refusals are a separate class, recorded as events under report) —
+		// so it is read before the roll, not discovered after.
 		p.Table(
-			[]string{"ADMISSIONS_RECORDED", "ADMISSIONS_DENIED", "LEGACY_CONTEXT_RUNS"},
+			[]string{"ADMISSIONS_RECORDED", "ADMISSIONS_DENIED", "ADMISSIONS_WOULD_DENY", "LEGACY_CONTEXT_RUNS"},
 			[][]string{{
 				strconv.Itoa(b.AdmissionsRecorded), strconv.Itoa(b.AdmissionsDenied),
-				strconv.Itoa(b.LegacyContextRuns),
+				strconv.Itoa(b.AdmissionsWouldDeny), strconv.Itoa(b.LegacyContextRuns),
 			}},
 		)
 	}
