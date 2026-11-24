@@ -159,8 +159,12 @@ func (s *Server) expireForgePublishGrantForRun(ctx context.Context, runID string
 // reconciler may still have to answer for. Holding a publish grant is NOT
 // owing a verdict: the server mints one for any bot launched with a pr_url,
 // and a repo's gate context is deliberately shared between the bots that gate
-// it. What decides is the context the OPERATOR pinned for this repo, and
-// whether the launch pinned the gate off.
+// it. What decides is the context the OPERATOR pinned for this repo, whether
+// the launch pinned the gate off, and whether the bot answers the gate at all
+// (gate_advisory_bot, stamped at launch on a bot that declares no `statuses`
+// token scope — such a bot is not relied on to replace a claim with a
+// verdict, and reading it as owed would paint its own synthetic failure and
+// relaunch IT instead of the review that died).
 //
 // One predicate, two readers — the reconciler decides whether to post by it,
 // and the grant reaper decides how long to keep the credential that posting
@@ -172,6 +176,9 @@ func runOwesGateVerdict(run *store.Run) bool {
 		return false
 	}
 	if strings.TrimSpace(runInputString(run, "gate_context")) == "" {
+		return false
+	}
+	if runInputString(run, gateAdvisoryBotVar) == "true" {
 		return false
 	}
 	return !runGateDisabled(run)

@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -632,5 +634,85 @@ func TestGateReconcile_AnAnsweredDeliveryDenialIsLeftAlone(t *testing.T) {
 	if gc.setCalls != 0 {
 		t.Fatalf("posted %d statuses (%q), want 0 — the bot's own verdict already answers this context",
 			gc.setCalls, gc.last.Description)
+	}
+}
+
+// A run of a bot that declares no statuses scope (gate_advisory_bot, stamped
+// at launch) owes the gate nothing: it is not relied on to replace a claim
+// with a verdict, so reading it as owed would paint a synthetic "review died" over a
+// reply run's silence and relaunch the CONVERSE bot instead of the review
+// that died. No forge traffic, no relaunch: the run returns after the grant
+// and deferral reads, without a settle mark.
+func TestGateReconcile_AdvisoryBotRunOwesNoVerdict(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	inputs := gatingInputs()
+	inputs[gateAdvisoryBotVar] = "true"
+	s, runID := gateReconcileFixture(t, inputs, gc)
+
+	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 0 || gc.listCalls != 0 {
+		t.Errorf("%d posts / %d reads, want none — a bot without the statuses scope owes the gate nothing", gc.setCalls, gc.listCalls)
+	}
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if runOwesGateVerdict(run) {
+		t.Error("runOwesGateVerdict is true for an advisory-bot run — the reconciler would relaunch the converse bot")
+	}
+	if runAwaitsGateRepair(run) {
+		t.Error("runAwaitsGateRepair is true for an advisory-bot run — its grant would be held for a repair that must not happen")
+	}
+}
+
+// The two launches share one head and one pinned gate context. The converse
+// launch must not take the claim (it never posts a status, so the check would
+// read "running" under a run that will never answer it), and the review that
+// dies afterwards must still be repaired on the pinned context — its own
+// claim, its own run URL, its synthetic failure. Before the advisory stamp the
+// converse claim overwrote the review's, the reconciler read "another run
+// holds the in-flight claim" and left the dead review unrepaired.
+func TestGateReconcile_ReviewDyingUnderAConverseLaunchIsRepaired(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	s.forgeOrchestrator = &forge.Orchestrator{
+		Bots: func(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {
+			if botID == "review-pr" {
+				return &bundle.ForgeRequirements{
+					TokenScopes: map[string]string{bundle.ForgeScopeStatuses: "write"},
+				}, nil
+			}
+			return &bundle.ForgeRequirements{
+				TokenScopes: map[string]string{"pull_requests": "write"},
+			}, nil
+		},
+	}
+
+	// The review claims the head, then a review-thread reply launches the
+	// converse bot on the same revision — stamped advisory, it claims nothing.
+	s.markGateInFlight(context.Background(), "team1", "review-pr", inFlightVars(), runID)
+	converse := inFlightVars()
+	if _, _, err := s.injectForgePublishVars(context.Background(), "team1", "", "revi-converse", converse, nil, store.RunTrustDefault); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	s.markGateInFlight(context.Background(), "team1", "revi-converse", converse, "run-converse")
+	if gc.setCalls != 1 || gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/"+runID {
+		t.Fatalf("after the converse launch the claim points at %q (%d posts) — the converse bot took a claim it can never answer", gc.last.TargetURL, gc.setCalls)
+	}
+
+	// The review dies. The repair must still happen, named for the review run.
+	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 2 {
+		t.Fatalf("posted %d statuses, want 2 — a review that dies under a converse launch must get its synthetic failure", gc.setCalls)
+	}
+	if gc.last.State != forge.CommitStateFailure || !isSyntheticGateInterruption(gc.last.Description) {
+		t.Errorf("final status %s/%q, want the synthetic failure", gc.last.State, gc.last.Description)
+	}
+	if gc.last.TargetURL != "https://iterion.test"+deeplink.StudioBase+"/runs/"+runID {
+		t.Errorf("the repair points at %q, want the run that owed the verdict", gc.last.TargetURL)
 	}
 }

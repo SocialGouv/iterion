@@ -1048,7 +1048,16 @@ that from doing harm of its own:
   bots. **A repo that does not pin it gets no repair.** (Inferring it from
   contexts the server had posted before was tried and dropped: that memory is
   empty in exactly the two situations this exists for — a bot whose publish
-  step never succeeds, and a rollout that restarts every replica.)
+  step never succeeds, and a rollout that restarts every replica.) Claim and
+  repair also apply only to a bot relied on to answer the check: a launch whose
+  bot declares no `statuses` token scope (the provisioner's gating posture) is
+  stamped `gate_advisory_bot=true` at launch, and neither claims the context
+  nor owes a verdict — reading it as owed would paint a synthetic failure over
+  a reply run's silence and relaunch the wrong bot. The publish endpoint does
+  not read the declared scope, so such a bot that still posts a gate verdict
+  through its publish node is honoured, but gets no claim and no repair. A bot
+  that does not resolve (no provisioning wired, an unreadable manifest) keeps
+  the gate armed, today's behaviour.
 - **It only speaks for the revision that run reviewed.** The head moves while a
   run is alive — the author pushes a fix, a brancher commits, `review_on_sync`
   starts a fresh review. A newer head is a newer review's responsibility, so
