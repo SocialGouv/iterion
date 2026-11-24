@@ -1625,6 +1625,13 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	if prURL == "" {
 		return vars, "", nil
 	}
+	// Every PR-targeted launch crosses here — the webhook tail, the CLI, the
+	// board card, the pipeline admission — and this is the one place that
+	// holds both the bot and the final vars, before the run record stores them
+	// as its inputs. A bot that declares no `statuses` token scope is marked so
+	// the gate's claim and repair never act on its launch (#3310); the marker is
+	// deleted first, so the server owns the name whatever the caller sent.
+	s.stampGateAdvisoryBot(ctx, teamID, botID, vars)
 	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
 		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
 			!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {

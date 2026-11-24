@@ -160,6 +160,60 @@ func TestNoticeGateDLQParked_SilentForANonGatingRun(t *testing.T) {
 	}
 }
 
+// A DLQ-parked run of a bot without the `statuses` scope (gate_advisory_bot)
+// owes no verdict, so the reconciler marks nothing failed and relaunches
+// nothing: the notice that promises both must not be posted on its PR.
+func TestGateReconcile_DLQParkedAdvisoryRunGetsNoNotice(t *testing.T) {
+	s, runID, gc, c := dlqGateFixture(t, nil)
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Inputs[gateAdvisoryBotVar] = "true"
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("posted %d statuses, want none — an advisory run owes the gate nothing", gc.setCalls)
+	}
+	if len(c.bodies) != 0 {
+		t.Fatalf("an advisory run got a DLQ notice promising a failed check and a relaunch that never happen: %v", c.bodies)
+	}
+}
+
+// A DLQ-parked run that owes a verdict but names no reviewed revision
+// (head_sha unset — a studio/API or board launch) is settled unpinned by the
+// reconciler: no failed check, no relaunch. The notice promising both must
+// not be posted on its PR.
+func TestGateReconcile_DLQParkedUnpinnedRunGetsNoNotice(t *testing.T) {
+	s, runID, gc, c := dlqGateFixture(t, nil)
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(run.Inputs, "head_sha")
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if !runOwesGateVerdict(run) {
+		t.Fatal("fixture: the unpinned run must still owe a verdict, or this test proves nothing")
+	}
+
+	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("posted %d statuses, want none — an unpinned run is settled without a check", gc.setCalls)
+	}
+	if len(c.bodies) != 0 {
+		t.Fatalf("an unpinned run got a DLQ notice promising a failed check and a relaunch that never happen: %v", c.bodies)
+	}
+}
+
 // The check is what the developer reads first, and for a DLQ-parked run the
 // dead-review trailer is false advice: a push (or the bot's command) launches
 // a FRESH run while the parked run stays parked, so the check would tell the

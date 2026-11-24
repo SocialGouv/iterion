@@ -84,6 +84,12 @@ func TestTheGraceFollowsWhoActuallyOwesAVerdict(t *testing.T) {
 	if runOwesGateVerdict(nil) {
 		t.Error("a run that could not be read owes nothing")
 	}
+	// A bot without the statuses scope is not relied on to post the verdict: reading it
+	// as owed would paint its own synthetic failure and relaunch IT instead of
+	// the review that died.
+	if runOwesGateVerdict(&store.Run{Inputs: map[string]any{"gate_context": "revi/review", gateAdvisoryBotVar: "true"}}) {
+		t.Error("an advisory-bot run owes no verdict, and must not hold a horizon-long credential for a repair that must not happen")
+	}
 }
 
 // The two-tier rule itself. Keeping the every-minute pass narrow is what makes
