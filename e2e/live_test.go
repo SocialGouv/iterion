@@ -4,10 +4,15 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io"
 	"os"
 	"os/exec"
@@ -1835,18 +1840,15 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
-	// 1x1 transparent PNG fixture.
-	pngBytes := []byte{
-		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-		0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
-		0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-		0x42, 0x60, 0x82,
+	// A solid red PNG: the model can only name its colour by seeing the image
+	// itself — the tool hands it an image block, not the JSON of one.
+	red := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	draw.Draw(red, red.Bounds(), &image.Uniform{C: color.RGBA{R: 220, A: 255}}, image.Point{}, draw.Src)
+	var pngBuf bytes.Buffer
+	if eerr := png.Encode(&pngBuf, red); eerr != nil {
+		t.Fatalf("encode png fixture: %v", eerr)
 	}
+	pngBytes := pngBuf.Bytes()
 	imagePath := filepath.Join(workspaceDir, "tiny.png")
 	if werr := os.WriteFile(imagePath, pngBytes, 0o644); werr != nil {
 		t.Fatalf("write png fixture: %v", werr)
@@ -1928,7 +1930,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		t.Errorf("expected >= 1 read_image call, got %d", readImageCount)
 	}
 
-	// Agent output: applied=true, media_type contains "image", data_size >= 50.
+	// Agent output: applied=true, the colour it saw is red.
 	var sawOutput bool
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "visioner" || evt.Data == nil {
@@ -1939,22 +1941,17 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 			continue
 		}
 		applied, _ := out["applied"].(bool)
-		mediaType, _ := out["media_type"].(string)
-		dataSize, _ := out["data_size"].(float64)
+		colour, _ := out["color"].(string)
 		toolUsed, _ := out["tool_used"].(string)
 		t.Logf("visioner.applied = %v", applied)
-		t.Logf("visioner.media_type = %q", mediaType)
-		t.Logf("visioner.data_size = %v", dataSize)
+		t.Logf("visioner.color = %q", colour)
 		t.Logf("visioner.tool_used = %q", toolUsed)
 
 		if !applied {
 			t.Error("visioner reported applied=false")
 		}
-		if !strings.Contains(strings.ToLower(mediaType), "image") {
-			t.Errorf("media_type does not look like image/*, got %q", mediaType)
-		}
-		if dataSize < 50 {
-			t.Errorf("data_size suspiciously small for a base64-encoded PNG: %v", dataSize)
+		if !strings.Contains(strings.ToLower(colour), "red") {
+			t.Errorf("color = %q, want red: the model did not see the image", colour)
 		}
 		if toolUsed != "read_image" {
 			t.Errorf("expected tool_used=read_image, got %q", toolUsed)

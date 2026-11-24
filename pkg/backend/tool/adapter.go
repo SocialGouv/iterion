@@ -40,5 +40,6 @@ func (td *ToolDef) ToDelegateDef() delegate.ToolDef {
 		Execute:        td.Execute,
 		QualifiedName:  td.QualifiedName,
 		ConcurrentSafe: td.concurrentSafe,
+		ImageResult:    td.imageResult,
 	}
 }

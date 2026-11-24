@@ -370,20 +370,28 @@ func isAgentTool(name string) bool {
 //
 // A block that carries several text parts is joined rather than truncated to
 // the first: "the first one wins" is a verdict reconstructed from order, which
-// this repo has paid for.
+// this repo has paid for. A program receives text only, so an image block
+// (read_image, screenshot) becomes an explicit marker: a bare success would
+// let the program — and the model reading its result — believe it saw an
+// image it never received.
 func toolResultText(block api.ContentBlock) string {
 	if len(block.Content) == 0 {
 		return ""
 	}
-	if len(block.Content) == 1 {
-		return block.Content[0].Text
-	}
 	parts := make([]string, 0, len(block.Content))
 	for _, c := range block.Content {
+		if c.Type == "image" {
+			parts = append(parts, scriptImageOmitted)
+			continue
+		}
 		parts = append(parts, c.Text)
 	}
 	return strings.Join(parts, "\n")
 }
+
+// scriptImageOmitted stands for an image block in a tool result a program
+// receives.
+const scriptImageOmitted = "[image omitted: a program receives text only — call the tool directly for the model to see the image]"
 
 // normaliseInput makes an empty or absent input the empty object.
 //

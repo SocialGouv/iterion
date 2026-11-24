@@ -244,12 +244,13 @@ func registerClawSpecs(reg *Registry, specs []clawBuiltinSpec) error {
 // keeps the underlying tool's own transport guards (https-only, no
 // redirect downgrade).
 func RegisterClawReadImage(reg *Registry, scope *ReadScope) error {
-	return RegisterClawTool(reg,
-		clawtools.ReadImageTool(),
-		clawComputerUseAdapter(func(ctx context.Context, input map[string]any) (clawtools.ReadImageResult, error) {
+	return registerClawTool(reg, clawBuiltinSpec{
+		tool: clawtools.ReadImageTool(),
+		exec: clawImageResultAdapter(func(ctx context.Context, input map[string]any) (clawtools.ReadImageResult, error) {
 			return executeScopedReadImage(ctx, input, scope)
 		}),
-	)
+		imageResult: true,
+	})
 }
 
 // executeScopedReadImage gates read_image's `path` input on the read
@@ -293,8 +294,8 @@ func executeScopedReadImage(ctx context.Context, input map[string]any, scope *Re
 // strings.
 func RegisterClawComputerUse(reg *Registry) error {
 	return registerClawSpecs(reg, []clawBuiltinSpec{
-		{tool: clawtools.ScreenshotTool(), exec: clawComputerUseAdapter(clawtools.ExecuteScreenshot)},
-		{tool: clawtools.ComputerUseTool(), exec: clawComputerUseAdapter(clawtools.ExecuteComputerUse)},
+		{tool: clawtools.ScreenshotTool(), exec: clawImageResultAdapter(clawtools.ExecuteScreenshot), imageResult: true},
+		{tool: clawtools.ComputerUseTool(), exec: clawImageResultAdapter(clawtools.ExecuteComputerUse), imageResult: true},
 	})
 }
 
@@ -312,13 +313,14 @@ func RegisterClawConfig(reg *Registry, configMap map[string]any) error {
 	return RegisterClawTool(reg, clawtools.ConfigTool(), exec)
 }
 
-// clawComputerUseAdapter wraps a (ctx, input) → (ReadImageResult, error)
+// clawImageResultAdapter wraps a (ctx, input) → (ReadImageResult, error)
 // function into the (ctx, input) → (string, error) signature the
-// iterion tool registry expects. The result is JSON-encoded so
-// downstream agents see the description + blocks structure verbatim.
-// Works for ReadImageResult and ComputerUseResult alike — claw declares
-// them as a type alias.
-func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.ReadImageResult, error)) func(context.Context, map[string]any) (string, error) {
+// iterion tool registry expects. The result is JSON-encoded; a tool
+// registered with imageResult has the tool loop decode it back
+// (ImageResultContent), so the model receives the image blocks, not their
+// base64 as text. Works for ReadImageResult and ComputerUseResult alike —
+// claw declares them as a type alias.
+func clawImageResultAdapter(fn func(context.Context, map[string]any) (clawtools.ReadImageResult, error)) func(context.Context, map[string]any) (string, error) {
 	return func(ctx context.Context, input map[string]any) (string, error) {
 		res, err := fn(ctx, input)
 		if err != nil {
@@ -356,13 +358,16 @@ func registerClawTool(reg *Registry, spec clawBuiltinSpec) error {
 		}
 		return spec.exec(ctx, args)
 	}
-	return reg.registerBuiltin(spec.tool.Name, spec.tool.Description, schemaJSON, wrapped, spec.concurrentSafe)
+	return reg.registerBuiltin(spec.tool.Name, spec.tool.Description, schemaJSON, wrapped, builtinTraits{concurrentSafe: spec.concurrentSafe, imageResult: spec.imageResult})
 }
 
 type clawBuiltinSpec struct {
 	tool           api.Tool
 	exec           func(ctx context.Context, input map[string]any) (string, error)
 	concurrentSafe bool
+	// imageResult: exec is a clawImageResultAdapter, its output a claw image
+	// result the tool loop hands the model as image blocks.
+	imageResult bool
 }
 
 // RegisterClawSimple registers the no-dependency claw tools that don't

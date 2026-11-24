@@ -591,12 +591,14 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 	defs := reg.List()
 	tools := make([]GenerationTool, 0, len(defs))
 	for _, td := range defs {
+		def := td.ToDelegateDef()
 		tools = append(tools, GenerationTool{
 			Name:           td.QualifiedName,
 			Description:    td.Description,
 			InputSchema:    td.InputSchema,
 			Execute:        td.Execute,
-			concurrentSafe: td.ToDelegateDef().ConcurrentSafe,
+			concurrentSafe: def.ConcurrentSafe,
+			imageResult:    def.ImageResult,
 		})
 	}
 	return filterSubagentTools(tools, allowed)

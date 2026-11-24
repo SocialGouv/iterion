@@ -460,3 +460,29 @@ func TestRegisterSandboxLocalTools_CommandRegistersWithTheLaunchersCeiling(t *te
 		t.Errorf("with no dial the answer is %q, want the body under the built-in default", out)
 	}
 }
+
+// TestHybridToolDefs_ImageResultRidesTheLocalRegistration: the runner serves
+// read_image from its own registration, and the definition it hands the tool
+// loop must keep that registration's image-result attestation — without it
+// the loop would hand the model the image's base64 as text.
+func TestHybridToolDefs_ImageResultRidesTheLocalRegistration(t *testing.T) {
+	dispatcher, _ := newStubLauncher(t)
+	workspace := t.TempDir()
+	register := func(reg *tool.Registry, ws string) error {
+		return registerSandboxLocalTools(reg, ws, sandboxScratchScope{}, nil, 0, nil, false, store.RunTrustDefault)
+	}
+	defs, err := buildHybridToolDefs(advertise([]string{"read_image", "read_file"}), dispatcher, workspace, register)
+	if err != nil {
+		t.Fatalf("buildHybridToolDefs: %v", err)
+	}
+	got := map[string]bool{}
+	for _, d := range defs {
+		got[d.Name] = d.ImageResult
+	}
+	if !got["read_image"] {
+		t.Error("read_image lost its image-result attestation in the sandbox runner")
+	}
+	if got["read_file"] {
+		t.Error("read_file claims an image result it does not produce")
+	}
+}

@@ -4394,6 +4394,7 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 			InputSchema:    d.InputSchema,
 			Execute:        d.Execute,
 			concurrentSafe: d.ConcurrentSafe,
+			imageResult:    d.ImageResult,
 			// The authorship travels with the definition: a deferring node
 			// demotes exactly the tools the author's own `tools:` list
 			// contributed, and never one the runtime appended.

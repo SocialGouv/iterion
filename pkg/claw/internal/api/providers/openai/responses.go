@@ -122,8 +122,9 @@ type oaiResponsesMessage struct {
 }
 
 type oaiResponsesContentPart struct {
-	Type string `json:"type"`           // "input_text" | "output_text" | "input_image"
-	Text string `json:"text,omitempty"` // text payload
+	Type     string `json:"type"`                // "input_text" | "output_text" | "input_image"
+	Text     string `json:"text,omitempty"`      // text payload
+	ImageURL string `json:"image_url,omitempty"` // input_image: a URL or a base64 data URL
 }
 
 type oaiResponsesTool struct {
@@ -342,10 +343,14 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 		// system-message-less call doesn't fail at the wire layer.
 		instructions = "You are a helpful assistant."
 	}
+	input, err := convertMessagesToResponsesInput(req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("openai responses: %w", err)
+	}
 	r := &oaiResponsesRequest{
 		Model:        wireModel,
 		Instructions: instructions,
-		Input:        convertMessagesToResponsesInput(req.Messages),
+		Input:        input,
 		Tools:        tools,
 		Stream:       true,
 	}
@@ -387,14 +392,18 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 // /v1/responses input array. The shape is broadly similar to chat
 // completions but each content block carries a typed wrapper, and tool
 // results live in a sibling "function_call_output" item rather than a
-// dedicated tool role.
-func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessage {
+// dedicated tool role. A function_call_output's output is text, so the
+// images a tool returned ride as input_image parts of the user message that
+// follows it, the output announcing them. An image block with neither
+// base64 data nor a URL is refused rather than dropped.
+func convertMessagesToResponsesInput(messages []api.Message) ([]oaiResponsesMessage, error) {
 	var out []oaiResponsesMessage
 
-	for _, msg := range messages {
+	for i, msg := range messages {
 		switch msg.Role {
 		case "user":
 			var parts []oaiResponsesContentPart
+			var toolImages []oaiResponsesContentPart
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "text":
@@ -404,8 +413,30 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 							Text: block.Text,
 						})
 					}
+				case "image":
+					url, err := openaiwire.ImageURLOf(block)
+					if err != nil {
+						return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: err.Error()}
+					}
+					parts = append(parts, oaiResponsesContentPart{Type: "input_image", ImageURL: url})
 				case "tool_result":
 					output := httputil.ExtractText(block.Content)
+					var images []oaiResponsesContentPart
+					for _, c := range block.Content {
+						if c.Type != "image" {
+							continue
+						}
+						url, err := openaiwire.ImageURLOf(c)
+						if err != nil {
+							return nil, &api.RequestValidationError{Field: fmt.Sprintf("messages[%d].content", i), Reason: fmt.Sprintf("tool result %s: %v", block.ToolUseID, err)}
+						}
+						images = append(images, oaiResponsesContentPart{Type: "input_image", ImageURL: url})
+					}
+					if len(images) > 0 {
+						output = strings.TrimSpace(output + "\n" + fmt.Sprintf(openaiwire.ToolImageNotice, len(images)))
+						toolImages = append(toolImages, oaiResponsesContentPart{Type: "input_text", Text: fmt.Sprintf(openaiwire.ToolImageCaption, block.ToolUseID)})
+						toolImages = append(toolImages, images...)
+					}
 					out = append(out, oaiResponsesMessage{
 						Type:   "function_call_output",
 						CallID: block.ToolUseID,
@@ -413,6 +444,7 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 					})
 				}
 			}
+			parts = append(toolImages, parts...)
 			if len(parts) > 0 {
 				out = append(out, oaiResponsesMessage{
 					Role:    "user",
@@ -450,7 +482,7 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 // convertToolsToResponses maps tool definitions to the responses-API tool

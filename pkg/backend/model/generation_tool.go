@@ -29,6 +29,10 @@ type GenerationTool struct {
 	// concurrentSafe follows the actual native Execute closure.
 	concurrentSafe bool
 
+	// imageResult follows the ToolDef: Execute's output is a claw image
+	// result, which shapeToolOutcome hands the model as image blocks.
+	imageResult bool
+
 	// authorDeclared follows the ToolDef that resolved this tool: the entry
 	// came from the node's own `tools:` list, not from a runtime append.
 	// Set once at the conversion from ToolDefs, read once at the deferral
