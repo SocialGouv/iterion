@@ -280,6 +280,7 @@ func TestReservedLaunchArgsMatchTheBoardKeys(t *testing.T) {
 		boardKeyOverridesKey:    true,
 		boardSecretOverridesKey: true,
 		boardWebhookIDKey:       true,
+		boardOwnVarsKey:         true,
 	}
 	for _, res := range native.ReservedLaunchArgs {
 		if !known[res] {

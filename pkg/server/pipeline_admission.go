@@ -786,10 +786,12 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launch
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, policyErr)
 	}
 	// The integration's var layers around the card's bot_args, the operator's
-	// names trusted — the board dispatcher's composition (#2665 item 1).
+	// names trusted — the board dispatcher's composition (#2665 item 1). A
+	// card carrying its own invocation vars (lc.OwnVars, the spine's marker)
+	// skips cfg.LaunchVars; the operator layer stays live and wins.
 	var trustedVars []string
 	if integration != nil {
-		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, lc.OwnVars, func(format string, args ...any) {
 			s.logger.Warn("pipeline admission: ticket "+iss.ID+": "+format, args...)
 		})
 	}

@@ -46,11 +46,17 @@ import (
 // Two fresh events racing for the same free lane therefore collide on the
 // same key and one of them answers as a duplicate.
 
-// triggerLane names one re-armable trigger on one forge subject.
+// triggerLane names one re-armable trigger on one forge subject. Bot names
+// the bot the lane serves once its integration routes by subscription
+// (ADR-172); "" is the legacy lane the elected winner serves. A lane carries
+// no per-delivery alias list: what a lane owns derives from (Project,
+// Subject, Trigger, Bot) alone, so two concurrent events on one bot lane
+// hold the same set and compute the same next card id.
 type triggerLane struct {
 	Project string // the payload's project path ("owner/repo")
 	Subject string // "issue:<n>"
 	Trigger string // the label applied, or "opened" for the zero-touch lane
+	Bot     string // the bot this lane serves; "" on the legacy lane
 }
 
 // laneEvent is one forge event as its deliveries present it.
@@ -134,8 +140,54 @@ const (
 // boardLabel is the label every card of this lane carries. A project path
 // holds no '#' on any forge and a subject is "issue:<n>", so the rendering
 // is unambiguous whatever the trigger label contains.
+//
+// A bot lane renders the bot between the prefix and the project
+// ("cmd:lane:@nestor/acme/widgets#issue:42#nestor"). That rendering can
+// never equal a legacy one, whatever the trigger label holds: no project
+// path starts with '@' on GitHub, GitLab or Forgejo, and a bot id is a
+// slug — so an old replica's ownsCard reads a bot card as laned and not its
+// own, and a bot card can never be mistaken for a legacy card.
 func (l triggerLane) boardLabel() string {
+	if l.Bot != "" {
+		return boardLaneLabelPrefix + "@" + l.Bot + "/" + l.Project + "#" + l.Subject + "#" + l.Trigger
+	}
+	return l.legacyBoardLabel()
+}
+
+// legacyBoardLabel always renders the bot-less form: the label a lane card
+// carried before lanes carried bots, and the one the legacy writer keeps
+// stamping. A bot lane owns the legacy rendering of its OWN trigger only
+// when the card's bot is its own (ownsCard) — the card a legacy era left
+// beside this bot's claims, never a card of another trigger of the subject.
+func (l triggerLane) legacyBoardLabel() string {
 	return boardLaneLabelPrefix + l.Project + "#" + l.Subject + "#" + l.Trigger
+}
+
+// botLaneBase is the bot-scoped idempotency base of a bot lane: the lane's
+// legacy base string extended with the bot, so a bot's claims chain under
+// their own key — never beside another bot's claims, and never beside the
+// legacy election's. Every writer and reader of a bot lane derives the base
+// through this one function, so the chains they write and walk agree.
+func botLaneBase(legacyBase, bot string) string {
+	return knowledge.ChecksumHex([]byte(legacyBase + "|bot:" + bot))
+}
+
+// laneSpineHalf is the spine half a LEGACY lane read covers once its
+// integration has ever routed by subscription (cfg.SpineSince set): the
+// elected bot's bot-scoped Delivery chains, one per added label that passes
+// the repository gate, and — on a board read — the same labels' bot lanes,
+// whose cards join the owned set. A never-flipped config passes none, and
+// its reads stay byte-identical.
+type laneSpineHalf struct {
+	// Bot is the bot whose claims the read covers: the legacy election's
+	// winner at read time.
+	Bot string
+	// Bases are the bot-scoped chains (botLaneBase of each gated added
+	// label), read read-only and filtered on BotID == Bot.
+	Bases []string
+	// Triggers are the labels the bases were derived from, in the same
+	// order: the bot lanes whose cards join a board read's owned set.
+	Triggers []string
 }
 
 // boardDeliveryLabel marks the card carded for the event of one identity key.
@@ -152,10 +204,20 @@ func (e laneEvent) cardedFor(c *native.Issue) bool {
 }
 
 // ownsCard reports whether a card listed under the subject's "cmd:" label
-// belongs to this lane. A card carded before lanes existed carries only that
-// subject label: it belongs to every lane of its subject, scoped to its
-// project when its stamped launch context names one — conservative, so a
-// card still serving blocks the lanes it might be serving.
+// belongs to this lane.
+//
+// A bot lane owns, of its (bot, trigger): its own label; the legacy lane
+// card of the SAME project, subject and trigger, when the card's bot is this
+// lane's — the card the legacy election left beside this bot's claims; no
+// other cmd:lane: card, so a lane of another bot or another trigger is its
+// own lane and a stale card of bot A never absorbs bot B; and a card from
+// before lanes existed whose bot is this lane's or unnamed, within its
+// project — conservative, so a card still serving blocks the lanes it might
+// be serving.
+//
+// A legacy lane (Bot == "") keeps the pre-bot rule: its own label, and every
+// pre-lane card of its project. An '@'-card is laned and never its own — an
+// old replica reading a bot card reaches the same verdict.
 func (l triggerLane) ownsCard(c *native.Issue) bool {
 	label := l.boardLabel()
 	laned := false
@@ -167,7 +229,30 @@ func (l triggerLane) ownsCard(c *native.Issue) bool {
 			laned = true
 		}
 	}
+	if l.Bot == "" {
+		if laned {
+			return false
+		}
+		if p := c.BotArgs[boardProjectPathKey]; p != "" && p != l.Project {
+			return false
+		}
+		return true
+	}
+	// The legacy rendering of this lane's own trigger: the card's bot
+	// decides — another bot's legacy card is that bot's lane, never ours.
+	for _, x := range c.Labels {
+		if x == l.legacyBoardLabel() {
+			return c.Bot == l.Bot
+		}
+	}
 	if laned {
+		// Another lane's label: another bot's lane label, or this bot's lane
+		// under another trigger. Either way it is not ours.
+		return false
+	}
+	// A pre-lane card: the bot's own, or one the bot-less era left — the
+	// card may be serving this bot, so it must block its lane.
+	if c.Bot != "" && c.Bot != l.Bot {
 		return false
 	}
 	if p := c.BotArgs[boardProjectPathKey]; p != "" && p != l.Project {
@@ -251,54 +336,316 @@ const (
 	claimServing
 )
 
-// claimTriggerLane walks the direct lane's claims from generation zero and
-// returns the one this delivery belongs to (see the promises above).
-func (s *Server) claimTriggerLane(ctx context.Context, cfg webhooks.Config, base string, ev laneEvent) (laneClaim, error) {
+// laneRead is one lane read: what the one reader walks, and whose claims
+// count.
+type laneRead struct {
+	// Lane is the lane the read serves. nil reads Delivery chains only —
+	// the board half needs a lane's subject and label to read cards.
+	Lane *triggerLane
+	// Bases are the Delivery chains this read may claim under; Bases[0] is
+	// the primary, the chain the claimer writes. Its rows are read
+	// unfiltered; a further base behaves like Legacy.
+	Bases []string
+	// Legacy are other families' chains, read read-only: a row of another
+	// bot is skipped, a serving claim absorbs, nothing is ever claimed
+	// under them. A legacy lane's spine half rides here.
+	Legacy []string
+	// EventOnly are chains read only for THIS event's identity: a claim
+	// made for it answers (a duplicate), nothing else in the chain counts.
+	// The base legacy used for this event (GitLab payload order) rides here
+	// on a spine read.
+	EventOnly []string
+	// Bot is the bot the read serves. Rows of the non-primary families and
+	// the board's event scan answer only it. "" with no families is the
+	// never-flipped legacy read, which reads nothing new.
+	Bot string
+	// BotTriggers are the labels whose bot lanes join the owned set of a
+	// LEGACY lane's board read (the read's spine half). Empty on a bot
+	// lane's own read: the lane already owns its own and its legacy cards.
+	BotTriggers []string
+	// Board says the target claims a card (a board mode with a
+	// coordinator): a retryable row on the primary chain then counts as
+	// serving — the sweeper owns it — instead of being taken over.
+	Board bool
+}
+
+// laneVerdict is the answer every lane reader consumes, decided before
+// anything is claimed or metered. answered names the Delivery row that
+// already answers the event — a duplicate of it, or a serving claim that
+// absorbs it (absorb says the caller must record the absorption); card
+// names the board card that answers; nextKey is the primary chain's claim
+// key when nothing answers; nextCardID is the deterministic id of the
+// lane's next card; displaced is the event of a failed claim this delivery
+// takes over. The first answer wins in walk order, so a claim in either
+// store blocks a claim in the other.
+type laneVerdict struct {
+	answered   *webhooks.Delivery
+	card       *native.Issue
+	absorb     bool
+	nextKey    string
+	nextCardID string
+	displaced  *laneEvent
+}
+
+// readTriggerLane is the ONE lane reader, used by every lane reader: the
+// spine's direct and board targets, and legacy's claimTriggerLane and
+// cardTriggerLane. It reads, in this order, and writes nothing:
+//
+//  1. the absorbed-delivery rows under every base — the primary's
+//     unfiltered, the side families' filtered on BotID == rd.Bot;
+//  2. the generation chains under Legacy (read-only, rows of rd.Bot):
+//     claimed by this event answers (a duplicate of that row), serving or
+//     retryable absorbs (the sweeper owns a retryable secondary row), ended
+//     continues; under EventOnly only claimed-by is checked;
+//  3. when a board coordinator is wired — a card is then a claim — the
+//     lane's cards: this event's delivery marker on any card of the subject
+//     whose bot is the read's bot (or empty), owned or not, answers (a
+//     duplicate); a non-terminal owned card absorbs; otherwise the lane's
+//     next deterministic card id;
+//  4. the primary chain: claimed by this event replays its key; serving
+//     absorbs (skipped under overlap: supersede); retryable is taken over —
+//     or, on a board target, counts as serving; ended continues to the next
+//     generation, which yields nextKey.
+//
+// A claim found in either store answers, so the target then claims only in
+// its own mode's store.
+func (s *Server) readTriggerLane(ctx context.Context, cfg webhooks.Config, rd laneRead, ev laneEvent) (laneVerdict, error) {
+	primary := ""
+	if len(rd.Bases) > 0 {
+		primary = rd.Bases[0]
+	}
 	if s.webhookDeliveries == nil {
 		// The launch tail answers "webhooks unavailable" itself.
-		return laneClaim{key: base}, nil
+		return laneVerdict{nextKey: primary}, nil
 	}
-	absorbed, err := s.laneAbsorbedRow(ctx, base, ev)
+	// 1. the absorption recorded for this event, under any base that may
+	// hold it and any identity the record may have been written under — the
+	// primary's unfiltered, the side families' filtered on this bot.
+	for _, base := range slices.Concat(rd.Bases, rd.Legacy, rd.EventOnly) {
+		d, err := s.laneAbsorbedRow(ctx, base, ev)
+		if err != nil {
+			return laneVerdict{}, err
+		}
+		if d == nil {
+			continue
+		}
+		if !slices.Contains(rd.Bases, base) && rd.Bot != "" && d.BotID != rd.Bot {
+			continue
+		}
+		return laneVerdict{answered: d}, nil
+	}
+	// 2. the side generation chains, read-only.
+	for _, base := range rd.Legacy {
+		d, absorb, err := s.walkSideChain(ctx, base, rd.Bot, false, ev)
+		if err != nil {
+			return laneVerdict{}, err
+		}
+		if d != nil {
+			return laneVerdict{answered: d, absorb: absorb}, nil
+		}
+	}
+	for _, base := range rd.EventOnly {
+		d, _, err := s.walkSideChain(ctx, base, rd.Bot, true, ev)
+		if err != nil {
+			return laneVerdict{}, err
+		}
+		if d != nil {
+			return laneVerdict{answered: d}, nil
+		}
+	}
+	// 3. the board half, when a wired coordinator makes a card a claim.
+	card, absorb, nextCardID, err := s.readLaneBoard(cfg, rd, ev)
 	if err != nil {
-		return laneClaim{}, err
+		return laneVerdict{}, err
 	}
-	if absorbed != nil {
-		return laneClaim{answered: absorbed}, nil
+	if card != nil {
+		return laneVerdict{card: card, absorb: absorb}, nil
 	}
+	// 4. the primary chain, which yields the claim key.
+	v, err := s.walkPrimaryChain(ctx, cfg, primary, rd.Board, ev)
+	if err != nil {
+		return laneVerdict{}, err
+	}
+	v.nextCardID = nextCardID
+	return v, nil
+}
+
+// walkSideChain walks one non-primary generation chain read-only: a row of
+// another bot is skipped; this event's own claim answers (a duplicate of
+// that row); a serving or retryable claim absorbs — the sweeper owns a
+// retryable secondary row, so nobody takes it over; an ended claim
+// continues. Under eventOnly only claimed-by is checked: the chain belongs
+// to another trigger's lane, and its verdicts must not absorb a fresh
+// event.
+func (s *Server) walkSideChain(ctx context.Context, base, bot string, eventOnly bool, ev laneEvent) (*webhooks.Delivery, bool, error) {
+	for gen := 0; ; gen++ {
+		row, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, laneGenerationKey(base, gen))
+		if errors.Is(err, webhooks.ErrNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("read claim %d of the lane's side chain: %w", gen, err)
+		}
+		if bot != "" && row.BotID != bot {
+			continue
+		}
+		if ev.claimedBy(row) {
+			return &row, false, nil
+		}
+		if eventOnly {
+			continue
+		}
+		state, err := s.laneClaimStateOf(ctx, row)
+		if err != nil {
+			return nil, false, fmt.Errorf("judge claim %d (delivery %s) of the lane's side chain: %w", gen, row.ID, err)
+		}
+		if state == claimEnded {
+			continue
+		}
+		return &row, true, nil
+	}
+}
+
+// walkPrimaryChain walks the primary chain, the one this read claims under:
+// this event's claim replays its key (the tail replays or retries it); a
+// serving claim absorbs — skipped under overlap: supersede, the policy the
+// tail applies (supersededRunIDs reads launched rows only, so a claim still
+// launching is absorbed instead); a retryable claim is taken over by this
+// event, unless the target claims a card, in which case the row is a claim
+// from a direct-mode period and the sweeper owns it — it counts as serving;
+// an ended claim continues to the next generation, whose key the caller
+// claims.
+func (s *Server) walkPrimaryChain(ctx context.Context, cfg webhooks.Config, base string, boardTarget bool, ev laneEvent) (laneVerdict, error) {
 	for gen := 0; ; gen++ {
 		key := laneGenerationKey(base, gen)
 		row, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, key)
 		if errors.Is(err, webhooks.ErrNotFound) {
-			return laneClaim{key: key}, nil
+			return laneVerdict{nextKey: key}, nil
 		}
 		if err != nil {
-			return laneClaim{}, fmt.Errorf("read claim %d of the trigger lane: %w", gen, err)
+			return laneVerdict{}, fmt.Errorf("read claim %d of the trigger lane: %w", gen, err)
 		}
 		if ev.claimedBy(row) {
-			// The event this claim was made for, delivered again: the tail
-			// replays it, or retries it when its launch failed with no run.
-			return laneClaim{key: key}, nil
+			return laneVerdict{nextKey: key}, nil
 		}
 		state, err := s.laneClaimStateOf(ctx, row)
 		if err != nil {
-			return laneClaim{}, fmt.Errorf("judge claim %d (delivery %s) of the trigger lane: %w", gen, row.ID, err)
+			return laneVerdict{}, fmt.Errorf("judge claim %d (delivery %s) of the trigger lane: %w", gen, row.ID, err)
 		}
 		switch state {
 		case claimEnded:
 			continue
 		case claimRetryable:
+			if boardTarget {
+				return laneVerdict{answered: &row, absorb: true}, nil
+			}
 			displaced := eventOf(row)
-			return laneClaim{key: key, displaced: &displaced}, nil
+			return laneVerdict{nextKey: key, displaced: &displaced}, nil
 		}
-		// Serving. Under overlap: supersede the next claim replaces the
-		// serving run: the tail's supersede pass cancels the launched run
-		// it selects (supersededRunIDs reads launched rows only, so a claim
-		// still launching is absorbed instead).
 		if row.Status == webhooks.StatusLaunched && overlapSupersedes(cfg) {
 			continue
 		}
-		return laneClaim{answered: &row, absorb: true}, nil
+		return laneVerdict{answered: &row, absorb: true}, nil
 	}
+}
+
+// readLaneBoard is the board half of a lane read: the cards a wired
+// coordinator turns into claims. It returns the answering card (a duplicate
+// when absorb is false, a serving claim that absorbs when true), else the
+// lane's next deterministic card id. Without a coordinator a card is a
+// tracking card, not a claim, and is read by nobody.
+func (s *Server) readLaneBoard(cfg webhooks.Config, rd laneRead, ev laneEvent) (*native.Issue, bool, string, error) {
+	if rd.Lane == nil || s.cfg.CloudBoardCoordinator == nil || s.cfg.CloudBoardFor == nil {
+		return nil, false, "", nil
+	}
+	bs := s.cfg.CloudBoardFor(cfg.TenantID)
+	if bs == nil {
+		return nil, false, "", nil
+	}
+	board, err := bs.Board()
+	if err != nil {
+		return nil, false, "", fmt.Errorf("read the board: %w", err)
+	}
+	cards, err := bs.List(native.ListFilter{Labels: []string{"cmd:" + rd.Lane.Subject}})
+	if err != nil {
+		return nil, false, "", fmt.Errorf("list the cards of %s: %w", rd.Lane.Subject, err)
+	}
+	bot := rd.Bot
+	if bot == "" {
+		bot = rd.Lane.Bot
+	}
+	var owned []*native.Issue
+	for _, c := range cards {
+		if rd.Lane.ownsCard(c) {
+			owned = append(owned, c)
+		}
+	}
+	if bot != "" && rd.Lane.Bot == "" {
+		// The spine half of a legacy read: the elected bot's bot lanes hold
+		// cards beside the legacy lane's own.
+		for _, trig := range rd.BotTriggers {
+			ln := triggerLane{Project: rd.Lane.Project, Subject: rd.Lane.Subject, Trigger: trig, Bot: bot}
+			for _, c := range cards {
+				if !ln.ownsCard(c) {
+					continue
+				}
+				duplicate := false
+				for _, o := range owned {
+					if o.ID == c.ID {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					owned = append(owned, c)
+				}
+			}
+		}
+	}
+	sort.Slice(owned, func(i, j int) bool { return owned[i].ID < owned[j].ID })
+	// Event identity may read wider than ownership: the delivery marker on
+	// any card of the subject whose bot is the read's bot (or the bot-less
+	// era's) answers this event, owned or not — a card legacy carded for it
+	// under another trigger (GitLab payload order) is a duplicate, and it
+	// never joins the owned set that decides serving and the next id.
+	scan := owned
+	if bot != "" {
+		scan = nil
+		for _, c := range cards {
+			if c.Bot == bot || c.Bot == "" {
+				scan = append(scan, c)
+			}
+		}
+		sort.Slice(scan, func(i, j int) bool { return scan[i].ID < scan[j].ID })
+	}
+	for _, c := range scan {
+		if ev.cardedFor(c) {
+			return c, false, "", nil
+		}
+	}
+	ids := make([]string, 0, len(owned))
+	for _, c := range owned {
+		if st := board.StateByName(c.State); st == nil || !st.Terminal {
+			return c, true, "", nil
+		}
+		ids = append(ids, c.ID)
+	}
+	return nil, false, laneCardID(cfg.TenantID, *rd.Lane, ids), nil
+}
+
+// claimTriggerLane is the direct lane's claim-side projection of
+// readTriggerLane: the walk of ONE chain, with no lane and no spine half —
+// the shape every lane-less caller before the spine consumed. Kept for its
+// legacy callers.
+func (s *Server) claimTriggerLane(ctx context.Context, cfg webhooks.Config, base string, ev laneEvent) (laneClaim, error) {
+	v, err := s.readTriggerLane(ctx, cfg, laneRead{Bases: []string{base}}, ev)
+	if err != nil {
+		return laneClaim{}, err
+	}
+	if v.answered != nil {
+		return laneClaim{answered: v.answered, absorb: v.absorb}, nil
+	}
+	return laneClaim{key: v.nextKey, displaced: v.displaced}, nil
 }
 
 // laneClaimStateOf classifies one claim row. A row naming a run is judged by
@@ -366,9 +713,11 @@ type boardLaneAnswer struct {
 	nextID string
 }
 
-// boardLaneVerdict reads the lane's cards on the tenant board. A card in a
-// terminal column has ended; any other column — inbox to review, or one the
-// board no longer declares — still serves.
+// boardLaneVerdict is the board lane's narrow claim-side projection: the
+// owned cards of ONE lane on one board store, no Delivery chains, no spine
+// half, no bot filter on the event scan — the shape the board writer
+// consumed before the one reader existed. Kept for its legacy callers; the
+// carded path reads through readTriggerLane.
 func boardLaneVerdict(bs native.BoardStore, tenantID string, lane triggerLane, ev laneEvent) (boardLaneAnswer, error) {
 	board, err := bs.Board()
 	if err != nil {
